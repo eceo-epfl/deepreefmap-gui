@@ -1,1 +1,1 @@
-"""Survey-mode GUI: the simple workflow of plan, batch, and analysis tabs."""
+"""Simple-mode GUI: the plan, batch, and analysis workflow with preset settings."""
