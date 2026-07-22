@@ -1,7 +1,7 @@
 import pytest
 
-from deepreefmap.survey.models import Transect, TransectPass, VideoAsset
-from deepreefmap.survey.models.exporters import save_transects_csv
+from deepreefmap_gui.survey.models import Transect, TransectPass, VideoAsset
+from deepreefmap_gui.survey.models.exporters import save_transects_csv
 
 
 @pytest.fixture

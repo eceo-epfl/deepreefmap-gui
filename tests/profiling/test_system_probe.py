@@ -6,7 +6,7 @@ import json
 import sys
 import types
 
-from deepreefmap.profiling import system_probe as sp
+from deepreefmap_gui.profiling import system_probe as sp
 
 
 def _fake_torch(*, cuda=False, mps=False, name="GPU", free=1, total=2):

@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from deepreefmap.io.video_hash import describe_video
-from deepreefmap.survey.models.common import utc_now_iso
+from deepreefmap_gui.survey.models.common import utc_now_iso
 
 
 @dataclass(slots=True)

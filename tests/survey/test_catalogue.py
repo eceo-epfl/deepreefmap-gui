@@ -2,11 +2,11 @@ import json
 
 import pytest
 
-from deepreefmap.survey import catalogue
-from deepreefmap.survey.catalogue import UNASSIGNED_TITLE
-from deepreefmap.survey.models import RunRecord, Transect, TransectPass, VideoAsset
-from deepreefmap.survey.models.convert import survey_manifest_block
-from deepreefmap.survey.store import SurveyStore
+from deepreefmap_gui.survey import catalogue
+from deepreefmap_gui.survey.catalogue import UNASSIGNED_TITLE
+from deepreefmap_gui.survey.models import RunRecord, Transect, TransectPass, VideoAsset
+from deepreefmap_gui.survey.models.convert import survey_manifest_block
+from deepreefmap_gui.survey.store import SurveyStore
 
 
 @pytest.fixture

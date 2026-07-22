@@ -31,7 +31,7 @@ def test_gauge_timer_runs_only_on_the_system_tab(make_window) -> None:
 
 
 def test_gauges_reflect_a_sampled_utilisation(make_window, monkeypatch) -> None:
-    import deepreefmap.profiling.system_probe as probe
+    import deepreefmap_gui.profiling.system_probe as probe
 
     window = make_window()
     monkeypatch.setattr(
@@ -55,7 +55,7 @@ def test_gauges_reflect_a_sampled_utilisation(make_window, monkeypatch) -> None:
 
 
 def test_machine_specs_line_reports_gpu_and_cores(make_window, monkeypatch) -> None:
-    import deepreefmap.profiling.system_probe as probe
+    import deepreefmap_gui.profiling.system_probe as probe
 
     window = make_window()
     monkeypatch.setattr(
@@ -87,7 +87,7 @@ def _low_ram_profile(probe):
 
 
 def test_memory_warning_shows_inline_notice_and_icon(make_window, monkeypatch) -> None:
-    import deepreefmap.profiling.system_probe as probe
+    import deepreefmap_gui.profiling.system_probe as probe
 
     window = make_window()
     monkeypatch.setattr(probe, "probe_system", lambda *a, **k: _low_ram_profile(probe))
@@ -109,7 +109,7 @@ def test_memory_warning_hidden_without_a_video(make_window) -> None:
 
 
 def test_memory_icon_colour_tracks_warn_vs_block(make_window, monkeypatch) -> None:
-    import deepreefmap.profiling.system_probe as probe
+    import deepreefmap_gui.profiling.system_probe as probe
 
     window = make_window()
     window._video_duration_s = 378.0
@@ -143,7 +143,7 @@ def test_memory_icon_click_opens_system_tab(make_window) -> None:
 
 
 def test_recorded_runs_summary_shows_peak_and_risk(make_window, monkeypatch) -> None:
-    import deepreefmap.profiling.run_history as history
+    import deepreefmap_gui.profiling.run_history as history
 
     window = make_window()
     monkeypatch.setattr(
@@ -174,7 +174,7 @@ def test_recorded_runs_summary_shows_peak_and_risk(make_window, monkeypatch) -> 
 
 
 def test_recorded_runs_summary_shows_swap_spill(make_window, monkeypatch) -> None:
-    import deepreefmap.profiling.run_history as history
+    import deepreefmap_gui.profiling.run_history as history
 
     window = make_window()
     monkeypatch.setattr(
@@ -202,7 +202,7 @@ def test_recorded_runs_summary_shows_swap_spill(make_window, monkeypatch) -> Non
 
 
 def test_recorded_runs_group_shows_run_count(make_window, monkeypatch) -> None:
-    import deepreefmap.profiling.run_history as history
+    import deepreefmap_gui.profiling.run_history as history
 
     window = make_window()
     monkeypatch.setattr(
@@ -222,7 +222,7 @@ def test_recorded_runs_group_shows_run_count(make_window, monkeypatch) -> None:
 
 
 def test_recorded_runs_summary_empty_state(make_window, monkeypatch) -> None:
-    import deepreefmap.profiling.run_history as history
+    import deepreefmap_gui.profiling.run_history as history
 
     window = make_window()
     monkeypatch.setattr(history, "group_recorded_runs", lambda *a, **k: [])
@@ -250,7 +250,7 @@ def _group_titles(window):
 
 
 def test_recorded_runs_filter_defaults_to_most_recent_combination(make_window, monkeypatch) -> None:
-    import deepreefmap.profiling.run_history as history
+    import deepreefmap_gui.profiling.run_history as history
 
     # Patch before building: the window populates the filter from real machine
     # history during construction, and a later reload preserves that selection.
@@ -273,7 +273,7 @@ def test_recorded_runs_filter_defaults_to_most_recent_combination(make_window, m
 
 
 def test_recorded_runs_filter_all_shows_every_group_with_subtitle(make_window, monkeypatch) -> None:
-    import deepreefmap.profiling.run_history as history
+    import deepreefmap_gui.profiling.run_history as history
 
     window = make_window()
     monkeypatch.setattr(

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from deepreefmap.profiling.perf_sampler import ResourceSample, ResourceSampler, peaks_from_marks
+from deepreefmap_gui.profiling.perf_sampler import ResourceSample, ResourceSampler, peaks_from_marks
 
 # Same span shape as instrumentation.py's STAGE_SPANS: (begin_mark, end_mark, stage).
 _SPANS = (
@@ -44,7 +44,7 @@ def test_vram_none_when_no_sample_reported_it() -> None:
 
 
 def test_sampler_collects_samples_then_stops(monkeypatch) -> None:
-    import deepreefmap.profiling.system_probe as probe
+    import deepreefmap_gui.profiling.system_probe as probe
 
     calls = {"n": 0}
 

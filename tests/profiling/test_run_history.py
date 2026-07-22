@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from deepreefmap.profiling.run_history import (
+from deepreefmap_gui.profiling.run_history import (
     _MAX_RUNS_PER_KEY,
     distinct_model_combinations,
     group_recorded_runs,
@@ -182,7 +182,7 @@ def test_second_run_estimates_are_calibrated_from_first_run(tmp_path) -> None:
     # 490s). Expected behaviour: a second run seeded through record_run →
     # load_priors predicts that measured duration at mapping start, and the
     # whole-run total becomes visible, where a history-less run shows neither.
-    from deepreefmap.profiling.eta import RunEtaEstimator
+    from deepreefmap_gui.profiling.eta import RunEtaEstimator
 
     path = tmp_path / "run_timings.json"
     key = history_key("loger_star", "coralscapes-vit-b-dpt", 1376, 768, 5)

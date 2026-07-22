@@ -66,7 +66,7 @@ def test_advanced_run_controls_hidden_in_simple(window):
 def test_simple_mode_creates_survey_db_under_root(window):
     from pathlib import Path
 
-    from deepreefmap.survey.store import SURVEY_DB_NAME
+    from deepreefmap_gui.survey.store import SURVEY_DB_NAME
 
     root = Path(window._out_root_input.text()).expanduser()
     assert (root / SURVEY_DB_NAME).exists()

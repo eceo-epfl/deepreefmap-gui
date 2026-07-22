@@ -35,8 +35,8 @@ from deepreefmap_gui.core.theme import (
     WINDOW,
     WINDOW_TEXT,
 )
-from deepreefmap.survey.preset import save_user_preset
-from deepreefmap.survey.store import SURVEY_DB_NAME, SurveyStore
+from deepreefmap_gui.survey.preset import save_user_preset
+from deepreefmap_gui.survey.store import SURVEY_DB_NAME, SurveyStore
 
 logger = logging.getLogger(__name__)
 

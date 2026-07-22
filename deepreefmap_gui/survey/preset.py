@@ -9,7 +9,7 @@ from typing import Any
 
 import yaml
 
-from deepreefmap.paths import survey_preset_path
+from deepreefmap_gui.paths import survey_preset_path
 
 PRESET_SCHEMA_VERSION = 2
 
@@ -47,7 +47,7 @@ PRESET_KEYS = {
 
 
 def _bundled_text() -> str:
-    return resources.files("deepreefmap.resources").joinpath("configs/survey_preset.yaml").read_text()
+    return resources.files("deepreefmap_gui.resources").joinpath("configs/survey_preset.yaml").read_text()
 
 
 def _bundled_defaults() -> dict[str, Any]:

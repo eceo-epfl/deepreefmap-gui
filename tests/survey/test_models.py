@@ -2,8 +2,8 @@ import uuid
 
 import pytest
 
-from deepreefmap.survey.models import RunRecord, SurveyBatch, Transect, TransectPass, VideoAsset
-from deepreefmap.survey.models.convert import (
+from deepreefmap_gui.survey.models import RunRecord, SurveyBatch, Transect, TransectPass, VideoAsset
+from deepreefmap_gui.survey.models.convert import (
     build_document,
     from_row,
     parse_document,

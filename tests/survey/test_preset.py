@@ -1,13 +1,13 @@
 import pytest
 
-from deepreefmap.survey.preset import (
+from deepreefmap_gui.survey.preset import (
     PRESET_KEYS,
     load_survey_preset,
     parse_preset,
     save_user_preset,
 )
 
-from deepreefmap.survey.preset import _bundled_defaults
+from deepreefmap_gui.survey.preset import _bundled_defaults
 
 SAMPLE = {
     **_bundled_defaults(),
@@ -78,7 +78,7 @@ def test_v1_file_upgrades_keeping_its_own_choices():
 def test_upgraded_v1_file_saves_back_as_v2(tmp_path, monkeypatch):
     target = tmp_path / "survey_preset.yaml"
     target.write_text(V1_FILE)
-    monkeypatch.setattr("deepreefmap.survey.preset.survey_preset_path", lambda: target)
+    monkeypatch.setattr("deepreefmap_gui.survey.preset.survey_preset_path", lambda: target)
     monkeypatch.delenv("DEEPREEFMAP_SURVEY_PRESET", raising=False)
     save_user_preset(load_survey_preset())
     assert "schema_version: 2" in target.read_text()
@@ -95,7 +95,7 @@ def test_native_processing_size_stays_null_by_default():
 
 def test_save_user_preset_round_trips(tmp_path, monkeypatch):
     target = tmp_path / "nested" / "survey_preset.yaml"
-    monkeypatch.setattr("deepreefmap.survey.preset.survey_preset_path", lambda: target)
+    monkeypatch.setattr("deepreefmap_gui.survey.preset.survey_preset_path", lambda: target)
     monkeypatch.delenv("DEEPREEFMAP_SURVEY_PRESET", raising=False)
     path = save_user_preset(SAMPLE)
     assert path == target

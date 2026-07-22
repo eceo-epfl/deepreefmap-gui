@@ -7,8 +7,8 @@ import logging
 import statistics
 from pathlib import Path
 
-from deepreefmap.paths import run_timings_path as timings_path
-from deepreefmap.profiling.eta import STAGES
+from deepreefmap_gui.paths import run_timings_path as timings_path
+from deepreefmap_gui.profiling.eta import STAGES
 
 logger = logging.getLogger(__name__)
 
@@ -200,7 +200,7 @@ def load_priors(key: str, path: Path | None = None) -> dict[str, float]:
     runs = _load_all(path or timings_path()).get(key, [])
     if not runs:
         return {}
-    from deepreefmap.profiling.eta import driver_denominator
+    from deepreefmap_gui.profiling.eta import driver_denominator
 
     priors: dict[str, float] = {}
     for spec in STAGES:
@@ -244,3 +244,37 @@ def record_run(
         target.write_text(json.dumps(all_runs, indent=2))
     except OSError:
         logger.warning("Could not write run timing profile to %s", target, exc_info=True)
+
+
+def record_run_from_manifest(manifest: dict) -> None:
+    """Fold a finished run's manifest timings into the local timing profile."""
+    durations = manifest.get("stage_durations") or {}
+    if not durations:
+        return
+    try:
+        key = history_key(
+            str(manifest.get("mapping_backend", "")),
+            str(manifest.get("segmentation_model", "")),
+            int(manifest.get("processing_width", 0)),
+            int(manifest.get("processing_height", 0)),
+            int(manifest.get("fps", 0)),
+        )
+        params = {
+            k: manifest.get(k)
+            for k in (
+                "fps", "mapping_backend", "segmentation_model", "processing_width",
+                "processing_height", "mapping_options", "enable_tsdf", "grid_bins",
+            )
+            if manifest.get(k) is not None
+        }
+        record_run(
+            key,
+            {k: float(v) for k, v in durations.items()},
+            frames=int(manifest.get("frames_processed", 0)),
+            points=manifest.get("metric_points"),
+            params=params,
+            stage_peaks=manifest.get("stage_peaks") or None,
+            system_profile=manifest.get("system_profile") or None,
+        )
+    except Exception:
+        logger.warning("Could not record run timings", exc_info=True)

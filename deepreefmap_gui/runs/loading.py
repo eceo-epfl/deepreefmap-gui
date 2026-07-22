@@ -149,10 +149,12 @@ class RunLoadingMixin(MixinBase):
         cancel_event: threading.Event,
         pause_event: threading.Event,
     ) -> None:
-        from deepreefmap.pipeline.orchestrator import ReconstructionCancelled, run_reconstruction
+        from deepreefmap.pipeline.orchestrator import ReconstructionCancelled
+
+        from deepreefmap_gui.profiling.instrumentation import instrumented_reconstruction
 
         try:
-            run_reconstruction(
+            instrumented_reconstruction(
                 viewer=self._viewer,
                 cancel_event=cancel_event,
                 pause_event=pause_event,

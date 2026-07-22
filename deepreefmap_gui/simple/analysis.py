@@ -30,13 +30,13 @@ from deepreefmap.config.classes import COVER_LEVELS
 from deepreefmap_gui.map.overlays import OverlayTransect
 from deepreefmap_gui.map.widget import SlippyMapWidget
 from deepreefmap_gui.simple.charts import GroupedBarChart, pass_color
-from deepreefmap.survey.analysis import (
+from deepreefmap_gui.survey.analysis import (
     assemble_transect_covers,
     cover_labels,
     repeatability_stats,
     reproducibility_groups,
 )
-from deepreefmap.survey.models.exporters import save_repeatability_csv
+from deepreefmap_gui.survey.models.exporters import save_repeatability_csv
 
 logger = logging.getLogger(__name__)
 

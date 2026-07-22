@@ -40,10 +40,10 @@ from deepreefmap_gui.runs.run_cards import (
     format_run_metadata,
     related_run_counts,
 )
-from deepreefmap.profiling.eta import format_duration
-from deepreefmap.survey import catalogue
-from deepreefmap.survey.catalogue import FacetGroup, RunEntry
-from deepreefmap.survey.models.transect_pass import PASS_DIRECTIONS
+from deepreefmap_gui.profiling.eta import format_duration
+from deepreefmap_gui.survey import catalogue
+from deepreefmap_gui.survey.catalogue import FacetGroup, RunEntry
+from deepreefmap_gui.survey.models.transect_pass import PASS_DIRECTIONS
 
 logger = logging.getLogger(__name__)
 

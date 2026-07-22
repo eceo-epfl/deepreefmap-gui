@@ -7,11 +7,11 @@ from collections.abc import Iterable, Mapping
 from dataclasses import fields
 from typing import Any, TypeVar, cast, get_args, get_type_hints
 
-from deepreefmap.survey.models.run_record import RunRecord
-from deepreefmap.survey.models.survey_batch import SurveyBatch
-from deepreefmap.survey.models.transect import Transect
-from deepreefmap.survey.models.transect_pass import TransectPass
-from deepreefmap.survey.models.video_asset import VideoAsset
+from deepreefmap_gui.survey.models.run_record import RunRecord
+from deepreefmap_gui.survey.models.survey_batch import SurveyBatch
+from deepreefmap_gui.survey.models.transect import Transect
+from deepreefmap_gui.survey.models.transect_pass import TransectPass
+from deepreefmap_gui.survey.models.video_asset import VideoAsset
 
 T = TypeVar("T")
 

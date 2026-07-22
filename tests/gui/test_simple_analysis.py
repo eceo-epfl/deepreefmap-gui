@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from deepreefmap.survey.models import RunRecord, Transect, TransectPass, VideoAsset
+from deepreefmap_gui.survey.models import RunRecord, Transect, TransectPass, VideoAsset
 
 
 @pytest.fixture
@@ -78,7 +78,7 @@ def test_analysis_map_labels_and_counts_each_transect(analysis_window):
 
 
 def test_unprocessed_transect_says_so(analysis_window):
-    from deepreefmap.survey.models import Transect
+    from deepreefmap_gui.survey.models import Transect
 
     window = analysis_window
     window._survey_store().add_transect(

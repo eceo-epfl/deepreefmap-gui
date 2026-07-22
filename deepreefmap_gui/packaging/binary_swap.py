@@ -207,7 +207,7 @@ def prune_stale_envs(current_prefix: str | os.PathLike[str] | None = None) -> li
     env's siblings are past versions. Outside a PyApp env (a dev venv) only the
     legacy-marker cleanup happens.
     """
-    from deepreefmap.paths import env_prune_marker_path
+    from deepreefmap_gui.paths import env_prune_marker_path
 
     # Legacy marker from the pre-sweep prune mechanism.
     env_prune_marker_path().unlink(missing_ok=True)

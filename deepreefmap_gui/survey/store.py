@@ -16,19 +16,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from deepreefmap.survey.models.common import utc_now_iso
-from deepreefmap.survey.models.convert import (
+from deepreefmap_gui.survey.models.common import utc_now_iso
+from deepreefmap_gui.survey.models.convert import (
     build_document,
     from_row,
     parse_document,
     to_row,
 )
-from deepreefmap.survey.models.exporters import load_survey_json, save_survey_json
-from deepreefmap.survey.models.run_record import RUN_STATUSES, TERMINAL_STATUSES, RunRecord
-from deepreefmap.survey.models.survey_batch import SurveyBatch
-from deepreefmap.survey.models.transect import Transect
-from deepreefmap.survey.models.transect_pass import TransectPass
-from deepreefmap.survey.models.video_asset import VideoAsset
+from deepreefmap_gui.survey.models.exporters import load_survey_json, save_survey_json
+from deepreefmap_gui.survey.models.run_record import RUN_STATUSES, TERMINAL_STATUSES, RunRecord
+from deepreefmap_gui.survey.models.survey_batch import SurveyBatch
+from deepreefmap_gui.survey.models.transect import Transect
+from deepreefmap_gui.survey.models.transect_pass import TransectPass
+from deepreefmap_gui.survey.models.video_asset import VideoAsset
 
 logger = logging.getLogger(__name__)
 

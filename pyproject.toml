@@ -26,6 +26,10 @@ dependencies = [
   "PySide6>=6.7,<7",
   "pyvista>=0.44",
   "pyvistaqt>=0.11",
+  # System probe (RAM/VRAM/CPU sampling) in profiling/system_probe.py.
+  "psutil>=5.9",
+  # Survey preset files (survey/preset.py).
+  "pyyaml>=6.0.2",
 ]
 
 [project.optional-dependencies]
@@ -36,7 +40,7 @@ dependencies = [
 cu126 = ["torch==2.12.1+cu126", "torchvision==0.27.1+cu126"]
 cu130 = ["torch==2.12.1+cu130", "torchvision==0.27.1+cu130"]
 rocm = ["torch==2.9.1+rocm6.4", "torchvision==0.24.1+rocm6.4", "pytorch-triton-rocm>=3.0"]
-dev = ["pytest>=8.4.0", "ruff>=0.12.0", "mypy>=2.0.0", "types-tqdm"]
+dev = ["pytest>=8.4.0", "ruff>=0.12.0", "mypy>=2.0.0", "types-tqdm", "types-PyYAML"]
 
 [project.urls]
 Repository = "https://github.com/eceo-epfl/deepreefmap-gui"
@@ -53,7 +57,7 @@ build-backend = "setuptools.build_meta"
 include = ["deepreefmap_gui*"]
 
 [tool.setuptools.package-data]
-"deepreefmap_gui.resources" = ["*.png", "fonts/*.ttf", "fonts/*.txt"]
+"deepreefmap_gui.resources" = ["*.png", "fonts/*.ttf", "fonts/*.txt", "configs/*.yaml"]
 
 [tool.uv]
 conflicts = [

@@ -40,7 +40,7 @@ if TYPE_CHECKING:
     from deepreefmap_gui.system.log_view import LogView
     from deepreefmap_gui.runs.progress import ProgressModel
     from deepreefmap_gui.viewer.pick_tooltip import PickCard
-    from deepreefmap.profiling.eta import RunEtaEstimator
+    from deepreefmap_gui.profiling.eta import RunEtaEstimator
     from deepreefmap_gui.core.spinner import SpinnerStopButton
     from deepreefmap_gui.form.time_edit import TimeSecondsEdit
     from deepreefmap_gui.runs.timing_popup import HoverColumn, TimingPopup
@@ -51,8 +51,8 @@ if TYPE_CHECKING:
     from deepreefmap_gui.map.widget import SlippyMapWidget
     from deepreefmap_gui.simple.charts import GroupedBarChart
     from deepreefmap_gui.simple.plan import NotesEdit
-    from deepreefmap.survey.models import SurveyBatch
-    from deepreefmap.survey.store import SurveyStore
+    from deepreefmap_gui.survey.models import SurveyBatch
+    from deepreefmap_gui.survey.store import SurveyStore
 
     # QWidget, not QMainWindow: DeepReefMapWindow lists QMainWindow first among
     # its bases, so a QMainWindow base here breaks C3 linearisation.

@@ -1438,9 +1438,9 @@ class FormPanelMixin(MixinBase):
             notice.setVisible(False)
 
         try:
-            from deepreefmap.profiling.run_history import history_key, load_expected_peaks
-            from deepreefmap.profiling.memory_estimate import estimate_peak_bytes, preflight_check
-            from deepreefmap.profiling.system_probe import format_bytes, probe_system
+            from deepreefmap_gui.profiling.run_history import history_key, load_expected_peaks
+            from deepreefmap_gui.profiling.memory_estimate import estimate_peak_bytes, preflight_check
+            from deepreefmap_gui.profiling.system_probe import format_bytes, probe_system
 
             fps = self._fps_spin.value()
             frames = self._estimate_frame_count(fps)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 
-from deepreefmap.survey.models.common import utc_now_iso
+from deepreefmap_gui.survey.models.common import utc_now_iso
 
 RUN_STATUSES = ("pending", "running", "succeeded", "failed", "cancelled")
 TERMINAL_STATUSES = ("succeeded", "failed", "cancelled")

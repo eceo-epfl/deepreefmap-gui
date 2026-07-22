@@ -35,9 +35,9 @@ from deepreefmap_gui.core.icons import crosshair_icon
 from deepreefmap_gui.core.theme import PRIMARY
 from deepreefmap_gui.map.overlays import OverlayTransect
 from deepreefmap_gui.map.widget import SlippyMapWidget
-from deepreefmap.survey.models import Transect, haversine_m
-from deepreefmap.survey.models.exporters import save_transects_csv
-from deepreefmap.survey.models.importers import (
+from deepreefmap_gui.survey.models import Transect, haversine_m
+from deepreefmap_gui.survey.models.exporters import save_transects_csv
+from deepreefmap_gui.survey.models.importers import (
     import_transects_csv,
     import_transects_gpx,
     parse_latlon,

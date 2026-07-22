@@ -3,14 +3,14 @@ import json
 import pytest
 
 from deepreefmap.config.classes import load_classes
-from deepreefmap.survey.analysis import (
+from deepreefmap_gui.survey.analysis import (
     assemble_transect_covers,
     cover_labels,
     repeatability_stats,
     reproducibility_groups,
 )
-from deepreefmap.survey.models import RunRecord, Transect, TransectPass, VideoAsset
-from deepreefmap.survey.store import SurveyStore
+from deepreefmap_gui.survey.models import RunRecord, Transect, TransectPass, VideoAsset
+from deepreefmap_gui.survey.store import SurveyStore
 
 
 @pytest.fixture(scope="module")

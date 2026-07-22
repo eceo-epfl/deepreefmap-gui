@@ -7,8 +7,8 @@ so the ETA quietly degrades to weight-based projection. This pins them together.
 
 from __future__ import annotations
 
-from deepreefmap.pipeline.instrumentation import STAGE_SPANS
-from deepreefmap.profiling.eta import STAGES
+from deepreefmap_gui.profiling.instrumentation import STAGE_SPANS
+from deepreefmap_gui.profiling.eta import STAGES
 
 
 def test_timed_spans_match_eta_stages() -> None:

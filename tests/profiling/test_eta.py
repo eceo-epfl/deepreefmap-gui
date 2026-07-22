@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from deepreefmap.profiling.eta import RunEtaEstimator, stage_for_phase
+from deepreefmap_gui.profiling.eta import RunEtaEstimator, stage_for_phase
 
 
 def test_no_estimate_before_any_signal() -> None:
@@ -114,7 +114,7 @@ def test_first_run_pending_stage_has_no_estimate() -> None:
 
 
 def test_format_duration_sub_second_reads_lt_1s() -> None:
-    from deepreefmap.profiling.eta import format_duration
+    from deepreefmap_gui.profiling.eta import format_duration
 
     assert format_duration(0.3) == "<1s"
     assert format_duration(0.0) == "0s"
@@ -241,7 +241,7 @@ def test_running_stage_label_is_monotonic() -> None:
 
 
 def test_stage_label_for_phase() -> None:
-    from deepreefmap.profiling.eta import stage_label_for_phase
+    from deepreefmap_gui.profiling.eta import stage_label_for_phase
 
     assert stage_label_for_phase("ortho_pca") == "Ortho"
     assert stage_label_for_phase("preprocess") == "Preprocess"
@@ -259,7 +259,7 @@ def test_mapping_substeps_fold_onto_the_one_mapping_stage() -> None:
     # The align and resume-save sub-phases are their own bars on the total, but
     # the estimator keeps them under a single learnable "mapping" stage so the
     # coarse status label stays "Mapping" and mapping isn't marked done early.
-    from deepreefmap.profiling.eta import stage_label_for_phase
+    from deepreefmap_gui.profiling.eta import stage_label_for_phase
 
     assert stage_for_phase("mapping_align") == "mapping"
     assert stage_for_phase("mapping_save") == "mapping"
@@ -318,7 +318,7 @@ def test_prior_overrun_hides_the_falsified_number() -> None:
 
 
 def test_format_remaining_rounds_up_coarsely() -> None:
-    from deepreefmap.profiling.eta import format_remaining
+    from deepreefmap_gui.profiling.eta import format_remaining
 
     assert format_remaining(0.0) == "~5s"
     assert format_remaining(12.0) == "~15s"

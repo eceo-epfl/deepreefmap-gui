@@ -1,7 +1,7 @@
 import pytest
 
 from deepreefmap_gui.simple.batch import _COL_STATUS, _COL_TRANSECT
-from deepreefmap.survey.models import Transect
+from deepreefmap_gui.survey.models import Transect
 
 
 @pytest.fixture

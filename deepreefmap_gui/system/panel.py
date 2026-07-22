@@ -152,7 +152,7 @@ class SystemPanelMixin(MixinBase):
 
     def _refresh_recorded_runs(self) -> None:
         """Reload history, repopulate the model-combination filter, then render."""
-        from deepreefmap.profiling.run_history import distinct_model_combinations, group_recorded_runs
+        from deepreefmap_gui.profiling.run_history import distinct_model_combinations, group_recorded_runs
 
         try:
             self._recorded_run_groups = group_recorded_runs()
@@ -242,7 +242,7 @@ class SystemPanelMixin(MixinBase):
         self, grid: QGridLayout, row: int, name: str, used: int | None, total: int | None, recorded: bool
     ) -> None:
         """Add a `name | bar | value` meter row, or a muted note when there is no data."""
-        from deepreefmap.profiling.system_probe import format_bytes
+        from deepreefmap_gui.profiling.system_probe import format_bytes
 
         label = QLabel(name)
         label.setStyleSheet(f"color: {TEXT_MUTED};")
@@ -263,7 +263,7 @@ class SystemPanelMixin(MixinBase):
         self, grid: QGridLayout, row: int, run_seconds: float | None, seconds_per_frame: float | None
     ) -> None:
         """Add a `Time | median wall-clock · s/frame` row (no bar, time has no ceiling)."""
-        from deepreefmap.profiling.eta import format_duration
+        from deepreefmap_gui.profiling.eta import format_duration
 
         label = QLabel("Time")
         label.setStyleSheet(f"color: {TEXT_MUTED};")
@@ -292,7 +292,7 @@ class SystemPanelMixin(MixinBase):
                 widget.deleteLater()
 
     def _refresh_system_gauges(self) -> None:
-        from deepreefmap.profiling.system_probe import format_bytes, sample_utilisation
+        from deepreefmap_gui.profiling.system_probe import format_bytes, sample_utilisation
 
         try:
             util = sample_utilisation()
@@ -317,7 +317,7 @@ class SystemPanelMixin(MixinBase):
         self._refresh_disk_gauge()
 
     def _refresh_disk_gauge(self) -> None:
-        from deepreefmap.profiling.system_probe import format_bytes, probe_system
+        from deepreefmap_gui.profiling.system_probe import format_bytes, probe_system
 
         try:
             profile = probe_system()
@@ -330,7 +330,7 @@ class SystemPanelMixin(MixinBase):
 
     def _set_machine_specs(self, profile: object) -> None:
         """One muted line of static hardware the gauges don't already show."""
-        from deepreefmap.profiling.system_probe import GPU_MPS, SystemProfile, format_bytes
+        from deepreefmap_gui.profiling.system_probe import GPU_MPS, SystemProfile, format_bytes
 
         assert isinstance(profile, SystemProfile)
         gpu = profile.gpu

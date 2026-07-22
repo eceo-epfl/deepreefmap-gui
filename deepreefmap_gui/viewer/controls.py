@@ -71,41 +71,6 @@ class ViewerControlsMixin(MixinBase):
         self._reset_progress_bars()
         self._status_label.setText("Load cancelled.")
 
-    def _harvest_run_timings(self, manifest: dict) -> None:
-        """Fold a finished run's stage durations into the local timing profile."""
-        durations = manifest.get("stage_durations") or {}
-        if not durations:
-            return
-        from deepreefmap.profiling.run_history import history_key, record_run
-
-        try:
-            key = history_key(
-                str(manifest.get("mapping_backend", "")),
-                str(manifest.get("segmentation_model", "")),
-                int(manifest.get("processing_width", 0)),
-                int(manifest.get("processing_height", 0)),
-                int(manifest.get("fps", 0)),
-            )
-            params = {
-                k: manifest.get(k)
-                for k in (
-                    "fps", "mapping_backend", "segmentation_model", "processing_width",
-                    "processing_height", "mapping_options", "enable_tsdf", "grid_bins",
-                )
-                if manifest.get(k) is not None
-            }
-            record_run(
-                key,
-                {k: float(v) for k, v in durations.items()},
-                frames=int(manifest.get("frames_processed", 0)),
-                points=manifest.get("metric_points"),
-                params=params,
-                stage_peaks=manifest.get("stage_peaks") or None,
-                system_profile=manifest.get("system_profile") or None,
-            )
-        except Exception:
-            logger.warning("Could not record run timings", exc_info=True)
-
     def _on_viewer_control_changed(self) -> None:
         if not self._viewer.has_scene_data:
             return
@@ -1105,14 +1070,14 @@ class ViewerControlsMixin(MixinBase):
                 if manifest_path.exists():
                     try:
                         self._active_run_manifest = json.loads(manifest_path.read_text())
-                        self._harvest_run_timings(self._active_run_manifest)
                     except Exception:
                         self._active_run_manifest = None
                 self._settings.setValue("last_run_dir", str(self._active_run_dir))
                 self._refresh_data_manager()
-                # The run just recorded its measured peaks; re-grade the current
-                # form so the next run's warning uses them instead of the analytic
-                # estimate, without waiting for the user to touch a control.
+                # The run worker records its measured peaks right after the
+                # pipeline returns; re-grade the current form so the next run's
+                # warning uses them instead of the analytic estimate, without
+                # waiting for the user to touch a control.
                 self._update_memory_profile_warning()
             close_run_log_file(self._run_log_file_handler)
             self._run_log_file_handler = None

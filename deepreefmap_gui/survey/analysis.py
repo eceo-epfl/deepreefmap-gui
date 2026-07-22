@@ -11,7 +11,7 @@ from pathlib import Path
 
 from deepreefmap.config.classes import ClassConfig
 from deepreefmap.postproc.benthic_cover import aggregate_cover
-from deepreefmap.survey.store import SurveyStore
+from deepreefmap_gui.survey.store import SurveyStore
 
 logger = logging.getLogger(__name__)
 

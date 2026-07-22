@@ -55,7 +55,7 @@ def test_restoring_twice_is_harmless(simple_window):
 
 def test_settings_edited_in_the_dialog_persist(simple_window, monkeypatch, tmp_path):
     monkeypatch.setattr(
-        "deepreefmap.survey.preset.survey_preset_path", lambda: tmp_path / "p.yaml"
+        "deepreefmap_gui.survey.preset.survey_preset_path", lambda: tmp_path / "p.yaml"
     )
     window = simple_window
     monkeypatch.setattr(RunSettingsDialog, "exec", lambda self: window._grid_bins_spin.setValue(1234))

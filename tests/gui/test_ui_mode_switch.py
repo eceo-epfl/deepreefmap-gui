@@ -1,4 +1,4 @@
-from deepreefmap.survey.preset import PRESET_KEYS
+from deepreefmap_gui.survey.preset import PRESET_KEYS
 
 
 def test_preset_covers_every_settings_field(window):
@@ -33,7 +33,7 @@ def test_advanced_tweaks_survive_the_round_trip(window, tmp_path, monkeypatch):
     Expected behaviour: simple mode keeps the value instead of resetting it.
     """
     monkeypatch.setattr(
-        "deepreefmap.survey.preset.survey_preset_path", lambda: tmp_path / "p.yaml"
+        "deepreefmap_gui.survey.preset.survey_preset_path", lambda: tmp_path / "p.yaml"
     )
     window._mode_buttons["advanced"].click()
     window._grid_bins_spin.setValue(1234)
@@ -104,10 +104,10 @@ def test_entering_advanced_expands_the_preset(window):
 
 
 def test_returning_to_simple_persists_tweaks(window, tmp_path, monkeypatch):
-    from deepreefmap.survey.preset import parse_preset
+    from deepreefmap_gui.survey.preset import parse_preset
 
     target = tmp_path / "survey_preset.yaml"
-    monkeypatch.setattr("deepreefmap.survey.preset.survey_preset_path", lambda: target)
+    monkeypatch.setattr("deepreefmap_gui.survey.preset.survey_preset_path", lambda: target)
     window._mode_buttons["advanced"].click()
     window._fps_spin.setValue(3)
     window._seg_combo.setCurrentText("segformer-b2")

@@ -214,7 +214,7 @@ def test_prune_stale_envs_keeps_current_and_newest_fallback(tmp_path, monkeypatc
 
     marker = tmp_path / "pending_env_prune.json"
     marker.write_text("{}")  # leftover from the retired marker mechanism
-    monkeypatch.setattr("deepreefmap.paths.env_prune_marker_path", lambda: marker)
+    monkeypatch.setattr("deepreefmap_gui.paths.env_prune_marker_path", lambda: marker)
 
     removed = binary_swap.prune_stale_envs(current_prefix=current_env / "python")
 
@@ -230,7 +230,7 @@ def test_prune_stale_envs_refuses_paths_outside_pyapp(tmp_path, monkeypatch) -> 
     from deepreefmap_gui.packaging import binary_swap
 
     monkeypatch.setattr(
-        "deepreefmap.paths.env_prune_marker_path",
+        "deepreefmap_gui.paths.env_prune_marker_path",
         lambda: tmp_path / "absent.json",
     )
     current = tmp_path / "not-pyapp" / "1.1.0"
@@ -319,7 +319,7 @@ def test_update_then_prune_end_to_end(tmp_path, monkeypatch) -> None:
     uv_cache.mkdir(parents=True)
 
     monkeypatch.setattr(
-        "deepreefmap.paths.env_prune_marker_path",
+        "deepreefmap_gui.paths.env_prune_marker_path",
         lambda: tmp_path / "pending_env_prune.json",
     )
     # While the old version runs, sys.prefix points into its env.

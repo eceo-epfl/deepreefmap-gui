@@ -153,7 +153,7 @@ class BatchMixin(MixinBase):
     def _run_batch_worker(
         self, jobs: list[_BatchJob], base_out: Path, common: dict
     ) -> None:
-        from deepreefmap.pipeline.orchestrator import run_reconstruction
+        from deepreefmap_gui.profiling.instrumentation import instrumented_reconstruction
 
         ok = 0
         last_error = ""
@@ -167,7 +167,7 @@ class BatchMixin(MixinBase):
             out_dir = base_out / self._sanitize_run_name(job.name)
             out_dir.mkdir(parents=True, exist_ok=True)
             try:
-                run_reconstruction(
+                instrumented_reconstruction(
                     video_paths=[str(video_path)],
                     output_dir=out_dir,
                     transect_length=job.transect_length,

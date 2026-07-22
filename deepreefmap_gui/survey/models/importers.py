@@ -7,7 +7,7 @@ import uuid
 from pathlib import Path
 from xml.etree import ElementTree
 
-from deepreefmap.survey.models.transect import Transect
+from deepreefmap_gui.survey.models.transect import Transect
 
 _CSV_REQUIRED = {"name", "start_lat", "start_lon", "end_lat", "end_lon"}
 

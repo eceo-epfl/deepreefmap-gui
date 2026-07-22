@@ -18,11 +18,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from deepreefmap.survey.models.run_record import RunRecord
-from deepreefmap.survey.models.transect import Transect
-from deepreefmap.survey.models.transect_pass import TransectPass
-from deepreefmap.survey.models.video_asset import VideoAsset
-from deepreefmap.survey.store import SurveyStore
+from deepreefmap_gui.survey.models.run_record import RunRecord
+from deepreefmap_gui.survey.models.transect import Transect
+from deepreefmap_gui.survey.models.transect_pass import TransectPass
+from deepreefmap_gui.survey.models.video_asset import VideoAsset
+from deepreefmap_gui.survey.store import SurveyStore
 
 logger = logging.getLogger(__name__)
 

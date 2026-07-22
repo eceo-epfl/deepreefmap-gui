@@ -10,7 +10,7 @@ from PySide6.QtCore import QObject, QUrl, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 
-from deepreefmap.paths import tile_cache_dir
+from deepreefmap_gui.paths import tile_cache_dir
 
 from deepreefmap_gui.map.layers import TileLayer
 from deepreefmap_gui.packaging.releases import current_version

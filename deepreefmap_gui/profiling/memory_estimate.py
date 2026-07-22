@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from deepreefmap.profiling.system_probe import GPU_CUDA, GPU_MPS, SystemProfile, format_bytes
+from deepreefmap_gui.profiling.system_probe import GPU_CUDA, GPU_MPS, SystemProfile, format_bytes
 
 # Analytic per-frame model, traced through orchestrator/loger_backend/filters. Two
 # independent per-frame terms:

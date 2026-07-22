@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 
 from deepreefmap_gui.core.window_protocol import MixinBase
-from deepreefmap.profiling.eta import (
+from deepreefmap_gui.profiling.eta import (
     RunEtaEstimator,
     format_duration,
     format_remaining,
@@ -269,7 +269,7 @@ class ProgressBarsMixin(MixinBase):
 
     def _new_run_estimator(self) -> RunEtaEstimator:
         """Estimator seeded from this machine's history for the selected backends."""
-        from deepreefmap.profiling.run_history import history_key, load_expected_points, load_priors
+        from deepreefmap_gui.profiling.run_history import history_key, load_expected_points, load_priors
 
         try:
             key = history_key(

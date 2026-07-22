@@ -5,7 +5,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
-from deepreefmap.profiling.eta import StageRow, format_duration, format_remaining
+from deepreefmap_gui.profiling.eta import StageRow, format_duration, format_remaining
 from deepreefmap_gui.core.theme import BORDER, GROOVE, PRIMARY, SUCCESS, TEXT_MUTED, WINDOW_TEXT
 
 _STATE_COLOR = {"done": SUCCESS, "running": PRIMARY, "pending": TEXT_MUTED}

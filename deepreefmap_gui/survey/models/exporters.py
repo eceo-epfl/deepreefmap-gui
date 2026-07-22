@@ -8,7 +8,7 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
-from deepreefmap.survey.models.transect import Transect
+from deepreefmap_gui.survey.models.transect import Transect
 
 TRANSECT_CSV_COLUMNS = [
     "name",

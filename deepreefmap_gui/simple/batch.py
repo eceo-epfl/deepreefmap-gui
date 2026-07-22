@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
 from deepreefmap_gui.core.theme import WARN_BG, WARN_BORDER, WARN_TEXT
 from deepreefmap_gui.form.video_scrub import VideoScrubDialog
 from deepreefmap.pipeline.artifacts import ReconstructionCancelled
-from deepreefmap.survey.models import (
+from deepreefmap_gui.survey.models import (
     PASS_DIRECTIONS,
     RunRecord,
     SurveyBatch,
@@ -40,9 +40,9 @@ from deepreefmap.survey.models import (
     TransectPass,
     VideoAsset,
 )
-from deepreefmap.survey.models.convert import survey_manifest_block
-from deepreefmap.survey.preset import load_survey_preset
-from deepreefmap.survey.store import SurveyStore
+from deepreefmap_gui.survey.models.convert import survey_manifest_block
+from deepreefmap_gui.survey.preset import load_survey_preset
+from deepreefmap_gui.survey.store import SurveyStore
 
 logger = logging.getLogger(__name__)
 
@@ -534,7 +534,7 @@ class SimpleBatchMixin(MixinBase):
         batch: SurveyBatch,
         pause_event: threading.Event,
     ) -> None:
-        from deepreefmap.pipeline.orchestrator import run_reconstruction
+        from deepreefmap_gui.profiling.instrumentation import instrumented_reconstruction
 
         ok = 0
         last_error = ""
@@ -550,7 +550,7 @@ class SimpleBatchMixin(MixinBase):
             out_dir = out_root / job.dir_name
             out_dir.mkdir(parents=True, exist_ok=True)
             try:
-                run_reconstruction(
+                instrumented_reconstruction(
                     video_paths=[job.video.path],
                     output_dir=out_dir,
                     transect_length=job.transect.length_m,

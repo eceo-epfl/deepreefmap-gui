@@ -6,7 +6,7 @@ import math
 import uuid
 from dataclasses import dataclass, field
 
-from deepreefmap.survey.models.common import utc_now_iso
+from deepreefmap_gui.survey.models.common import utc_now_iso
 
 _EARTH_RADIUS_M = 6_371_000.0
 

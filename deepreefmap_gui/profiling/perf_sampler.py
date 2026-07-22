@@ -39,7 +39,7 @@ class ResourceSampler:
         self._thread = None
 
     def _loop(self) -> None:
-        from deepreefmap.profiling.system_probe import sample_utilisation
+        from deepreefmap_gui.profiling.system_probe import sample_utilisation
 
         while not self._stop.is_set():
             try:

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from deepreefmap.profiling.memory_estimate import estimate_peak_bytes, memory_risk, preflight_check
-from deepreefmap.profiling.system_probe import GPU_CUDA, GPU_MPS, GPU_NONE, GpuInfo, SystemProfile
+from deepreefmap_gui.profiling.memory_estimate import estimate_peak_bytes, memory_risk, preflight_check
+from deepreefmap_gui.profiling.system_probe import GPU_CUDA, GPU_MPS, GPU_NONE, GpuInfo, SystemProfile
 
 _GB = 1024**3
 

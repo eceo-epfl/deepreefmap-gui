@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from deepreefmap.profiling.perf_sampler import ResourceSampler, peaks_from_marks
+from deepreefmap_gui.profiling.perf_sampler import ResourceSampler, peaks_from_marks
 
 # Coarse pipeline stages, in order, that the timing marks bracket. The GUI reads
 # these durations back to build a per-machine cost profile
@@ -37,7 +37,7 @@ class RunInstrumentation:
     """
 
     def __init__(self, output_dir: Path) -> None:
-        from deepreefmap.profiling.system_probe import probe_system
+        from deepreefmap_gui.profiling.system_probe import probe_system
 
         self.marks: dict[str, float] = {"start": time.monotonic()}
         self.system_profile: dict = probe_system(output_dir).to_dict()
@@ -60,3 +60,40 @@ class RunInstrumentation:
     def stop(self) -> None:
         """Join the sampler thread, which otherwise polls for the life of the process."""
         self._sampler.stop()
+
+
+def apply_manifest_timings(output_dir: Path, instr: RunInstrumentation) -> dict | None:
+    """Fold measured durations/peaks into run_manifest.json; returns the manifest."""
+    import json
+
+    manifest_path = output_dir / "run_manifest.json"
+    if not manifest_path.exists():
+        return None
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except Exception:
+        return None
+    manifest["stage_durations"] = instr.stage_durations()
+    manifest["stage_peaks"] = instr.stage_peaks()
+    manifest["run_duration_s"] = instr.total_seconds()
+    manifest["system_profile"] = instr.system_profile
+    manifest_path.write_text(json.dumps(manifest, indent=2))
+    return manifest
+
+
+def instrumented_reconstruction(**kwargs) -> None:
+    """run_reconstruction with stage timing + memory sampling, folded into the
+    run manifest and the local run-history profile afterwards."""
+    from deepreefmap.pipeline.orchestrator import run_reconstruction
+
+    from deepreefmap_gui.profiling.run_history import record_run_from_manifest
+
+    output_dir = Path(kwargs["output_dir"])
+    instr = RunInstrumentation(output_dir)
+    try:
+        run_reconstruction(on_mark=instr.mark, **kwargs)
+    finally:
+        instr.stop()
+    manifest = apply_manifest_timings(output_dir, instr)
+    if manifest is not None:
+        record_run_from_manifest(manifest)

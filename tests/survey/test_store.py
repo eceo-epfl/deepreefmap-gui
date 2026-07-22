@@ -5,9 +5,9 @@ import uuid
 
 import pytest
 
-from deepreefmap.survey.models import RunRecord, SurveyBatch, Transect, TransectPass, VideoAsset
-from deepreefmap.survey.models.convert import survey_manifest_block
-from deepreefmap.survey.store import SurveyStore
+from deepreefmap_gui.survey.models import RunRecord, SurveyBatch, Transect, TransectPass, VideoAsset
+from deepreefmap_gui.survey.models.convert import survey_manifest_block
+from deepreefmap_gui.survey.store import SurveyStore
 
 
 @pytest.fixture
