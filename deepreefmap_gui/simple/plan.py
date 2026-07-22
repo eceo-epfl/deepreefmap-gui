@@ -32,8 +32,9 @@ from PySide6.QtWidgets import (
 )
 
 from deepreefmap_gui.core.icons import copy_icon, crosshair_icon
-from deepreefmap_gui.core.theme import BORDER, GUTTER, PRIMARY, RADIUS, TEXT_MUTED
+from deepreefmap_gui.core.theme import BORDER, GUTTER, PRIMARY, RADIUS
 from deepreefmap_gui.core.widgets import EmptyState, section_card
+from deepreefmap_gui.simple.progress import plan_state
 from deepreefmap_gui.map.overlays import OverlayTransect
 from deepreefmap_gui.map.widget import SlippyMapWidget
 from deepreefmap_gui.survey.models import Transect, haversine_m
@@ -45,6 +46,47 @@ from deepreefmap_gui.survey.models.importers import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def transect_length_text(length_m: float | None, geodesic_m: float) -> str:
+    """The one length worth showing for a transect.
+
+    A typed tape length is the cable actually laid on the reef and is what the
+    run is scaled to, so it supersedes the straight-line distance between the
+    GPS endpoints; the geodesic only stands in when no tape length was recorded.
+    """
+    if length_m:
+        return f"{length_m:g} m tape"
+    return f"{geodesic_m:.0f} m GPS"
+
+
+def transect_list_label(transect: Transect) -> str:
+    """One row of the transect list: name, then whatever is actually known.
+
+    Derived from the dataclass alone with no store query, because the list is
+    rebuilt on every keystroke while a new transect is being typed.
+    """
+    parts = [transect.name, transect_length_text(transect.length_m, transect.geodesic_length_m())]
+    if transect.depth_m:
+        parts.append(f"{transect.depth_m:g} m deep")
+    return "  ·  ".join(parts)
+
+
+def transect_tooltip(transect: Transect) -> str:
+    """Coordinates and notes, which the row itself no longer has room for."""
+    lines = [
+        f"<b>{transect.name}</b>",
+        f"Start {transect.start_lat:.5f}, {transect.start_lon:.5f}",
+        f"End {transect.end_lat:.5f}, {transect.end_lon:.5f}",
+        f"{transect.geodesic_length_m():.0f} m between the GPS endpoints",
+    ]
+    if transect.length_m:
+        lines.append(f"{transect.length_m:g} m tape laid")
+    if transect.depth_m:
+        lines.append(f"{transect.depth_m:g} m deep")
+    if transect.description:
+        lines.append(f"<i>{transect.description}</i>")
+    return "<br>".join(lines)
 
 
 def _framed(inner: QWidget) -> QWidget:
@@ -89,10 +131,11 @@ class SimplePlanMixin(MixinBase):
     _plan_map_fitted: bool = False
 
     def _build_plan_page(self) -> QWidget:
-        """Plan step: the map beside the transect editor, over the run browser.
+        """Plan step: the map beside the transect editor.
 
-        Keeping the browser here means a video that landed under the wrong
-        transect, or none at all, is fixed where the transects are.
+        The run browser used to sit underneath here, which put the same
+        transects on the page twice and buried the archive inside a planning
+        step. It lives in Browse now.
         """
         page = QSplitter(Qt.Orientation.Horizontal)
         page.setHandleWidth(GUTTER)
@@ -186,12 +229,18 @@ class SimplePlanMixin(MixinBase):
         self._tr_length.setRange(0.0, 500.0)
         self._tr_length.setDecimals(1)
         self._tr_length.setSuffix(" m")
-        self._tr_length.setToolTip("Tape length. 0 means unknown.")
+        # An unset field should say so rather than assert a confident 0.0 m.
+        self._tr_length.setSpecialValueText("unknown")
+        self._tr_length.setToolTip(
+            "Tape length measured underwater. When set it is what the run is "
+            "scaled to, in place of the distance between the GPS endpoints."
+        )
         self._tr_depth = QDoubleSpinBox()
         self._tr_depth.setRange(0.0, 100.0)
         self._tr_depth.setDecimals(1)
         self._tr_depth.setSuffix(" m")
-        self._tr_depth.setToolTip("Depth. 0 means unknown.")
+        self._tr_depth.setSpecialValueText("unknown")
+        self._tr_depth.setToolTip("Depth of the transect. Leave at unknown if not recorded.")
         grid.addWidget(QLabel("Length"), 4, 0)
         grid.addWidget(self._tr_length, 4, 1)
         grid.addWidget(QLabel("Depth"), 4, 2)
@@ -201,10 +250,6 @@ class SimplePlanMixin(MixinBase):
         self._tr_description = NotesEdit()
         grid.addWidget(self._tr_description, 5, 1, 1, 3)
 
-        self._tr_geodesic_label = QLabel("")
-        self._tr_geodesic_label.setAlignment(Qt.AlignmentFlag.AlignRight)
-        self._tr_geodesic_label.setStyleSheet(f"color: {TEXT_MUTED};")
-        grid.addWidget(self._tr_geodesic_label, 6, 0, 1, 4)
         layout.addWidget(details)
         layout.addStretch(1)
 
@@ -224,16 +269,9 @@ class SimplePlanMixin(MixinBase):
         page.setStretchFactor(0, 1)
         page.setStretchFactor(1, 0)
         side_pane.setMinimumWidth(340)
-
-        split = QSplitter(Qt.Orientation.Vertical)
-        split.setHandleWidth(GUTTER)
-        split.addWidget(page)
-        split.addWidget(self._build_simple_data_host())
-        split.setStretchFactor(0, 3)
-        split.setStretchFactor(1, 2)
         # No list refresh here: refreshes happen when the simple mode is entered,
         # so opening the store (which creates survey.db) waits until then.
-        return split
+        return page
 
     # --- List handling ---
 
@@ -241,12 +279,11 @@ class SimplePlanMixin(MixinBase):
         self._transect_list.blockSignals(True)
         self._transect_list.clear()
         selected_row = -1
-        for row, transect in enumerate(self._survey_store().list_transects()):
-            label = f"{transect.name}  ({transect.start_lat:.5f}, {transect.start_lon:.5f})"
-            if transect.length_m:
-                label += f"  {transect.length_m:g} m"
-            item = QListWidgetItem(label)
+        saved = self._survey_store().list_transects()
+        for row, transect in enumerate(saved):
+            item = QListWidgetItem(transect_list_label(transect))
             item.setData(Qt.ItemDataRole.UserRole, str(transect.id))
+            item.setData(Qt.ItemDataRole.ToolTipRole, transect_tooltip(transect))
             self._transect_list.addItem(item)
             if transect.id == select_id:
                 selected_row = row
@@ -264,6 +301,10 @@ class SimplePlanMixin(MixinBase):
         if selected_row >= 0:
             self._transect_list.setCurrentRow(selected_row)
         self._transect_stack.setCurrentIndex(0 if self._transect_list.count() else 1)
+        # Cached for the Plan badge, which must not query the store itself: this
+        # runs on every keystroke while a transect is being typed.
+        self._plan_state = plan_state(len(saved), draft_label is not None)
+        self._refresh_section_state()
         self._refresh_plan_map()
 
     def _draft_label(self) -> str | None:
@@ -272,13 +313,16 @@ class SimplePlanMixin(MixinBase):
         if self._transect_form_id is not None:
             return None
         name = self._tr_name_input.text().strip()
-        start = self._tr_start_coord.text().strip()
-        if not (name or start):
+        if not (name or self._tr_start_coord.text().strip()):
             return None
         label = name or "New transect"
-        if start:
-            label += f"  ({start})"
-        return label
+        # Once both ends parse the draft can say the same things a saved row
+        # does, so the length appears while it is still being entered.
+        try:
+            lat1, lon1, lat2, lon2 = self._form_coordinates()
+        except ValueError:
+            return f"{label}  ·  incomplete"
+        return f"{label}  ·  {transect_length_text(None, haversine_m(lat1, lon1, lat2, lon2))}"
 
     def _on_draft_changed(self) -> None:
         if self._transect_form_id is None:
@@ -319,9 +363,8 @@ class SimplePlanMixin(MixinBase):
         self._tr_depth.setValue(transect.depth_m or 0.0)
         self._tr_description.setPlainText(transect.description)
         self._pick_stage = None
-        self._refresh_geodesic_label()
         self._refresh_plan_map()
-        self._focus_data_on_transect(transect.id)
+        self._set_scope_transect(transect.id)
 
     # --- Form handling ---
 
@@ -337,7 +380,6 @@ class SimplePlanMixin(MixinBase):
             edit.clear()
         self._tr_length.setValue(0.0)
         self._tr_depth.setValue(0.0)
-        self._tr_geodesic_label.setText("")
         self._pick_stage = None
         self._tr_name_input.setFocus()
 
@@ -347,7 +389,6 @@ class SimplePlanMixin(MixinBase):
     def _set_endpoint(self, which: str, lat: float, lon: float) -> None:
         self._coord_edit(which).setText(f"{lat:.6f}, {lon:.6f}")
         self._status_label.setText(f"{which.capitalize()} point set.")
-        self._refresh_geodesic_label()
         self._refresh_plan_map()
         self._maybe_autosave()
 
@@ -365,17 +406,8 @@ class SimplePlanMixin(MixinBase):
         return values[0], values[1], values[2], values[3]
 
     def _on_coords_edited(self) -> None:
-        self._refresh_geodesic_label()
         self._refresh_plan_map()
         self._maybe_autosave()
-
-    def _refresh_geodesic_label(self) -> None:
-        try:
-            lat1, lon1, lat2, lon2 = self._form_coordinates()
-        except ValueError:
-            self._tr_geodesic_label.setText("")
-            return
-        self._tr_geodesic_label.setText(f"Geodesic: {haversine_m(lat1, lon1, lat2, lon2):.1f} m")
 
     def _on_transect_save(self) -> None:
         store = self._survey_store()
@@ -606,3 +638,7 @@ class SimplePlanMixin(MixinBase):
         """Refresh survey views that mirror the store."""
         self._refresh_survey_transect_combos()
         self._refresh_survey_analysis()
+        # Creating the transect an unassigned pass was waiting for has to
+        # re-evaluate the Run gate, or the batch stays blocked with nothing left
+        # to fix.
+        self._recompute_survey_start()

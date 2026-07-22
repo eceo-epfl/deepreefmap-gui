@@ -44,7 +44,9 @@ def test_transect_autosaves_once_complete(plan_window):
     w._maybe_autosave()
     assert w._survey_store().list_transects()[0].length_m == 50.0
     assert w._transect_list.count() == 1
-    assert "Geodesic" in w._tr_geodesic_label.text()
+    # A typed tape length is the cable actually laid, so it stands in the row in
+    # place of the straight-line distance between the GPS endpoints.
+    assert "50 m tape" in w._transect_list.item(0).text()
 
 
 def test_draft_row_tracks_typing_before_save(plan_window):

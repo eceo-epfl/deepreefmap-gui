@@ -39,6 +39,7 @@ from deepreefmap_gui.core.theme import (
     WARN_TEXT,
 )
 from deepreefmap_gui.core.widgets import EmptyState, StatusPillDelegate, section_card
+from deepreefmap_gui.simple.progress import BLOCKED, run_gate
 from deepreefmap_gui.form.video_scrub import VideoScrubDialog
 from deepreefmap.pipeline.artifacts import ReconstructionCancelled
 from deepreefmap_gui.survey.models import (
@@ -175,6 +176,10 @@ class SimpleBatchMixin(MixinBase):
         self._survey_pass_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._survey_pass_table.setItemDelegateForColumn(_COL_STATUS, StatusPillDelegate(self))
         self._survey_pass_table.itemSelectionChanged.connect(self._recompute_row_actions)
+        # Seeing the result is what you actually want after processing, so the
+        # row you processed opens it. Only the Video and Status columns get the
+        # signal; the three between them hold cell widgets that eat the click.
+        self._survey_pass_table.cellDoubleClicked.connect(self._on_survey_pass_activated)
         h_header = self._survey_pass_table.horizontalHeader()
         h_header.setDefaultAlignment(
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
@@ -200,6 +205,13 @@ class SimpleBatchMixin(MixinBase):
         )
         passes_card, passes_layout = section_card("Passes")
         passes_layout.addWidget(self._survey_table_stack, 1)
+        # Outcome of the last batch, kept on the page rather than written to the
+        # status bar, which the next thing to happen overwrites.
+        self._survey_summary_label = QLabel("")
+        self._survey_summary_label.setWordWrap(True)
+        self._survey_summary_label.setStyleSheet(f"color: {TEXT_MUTED};")
+        self._survey_summary_label.setVisible(False)
+        passes_layout.addWidget(self._survey_summary_label)
         layout.addWidget(passes_card, 1)
 
         row_buttons = QHBoxLayout()
@@ -234,6 +246,31 @@ class SimpleBatchMixin(MixinBase):
         for btn in (self._survey_split_btn, self._survey_remove_btn):
             btn.setEnabled(selected)
         self._survey_table_stack.setCurrentIndex(0 if self._survey_rows else 1)
+
+    def _on_survey_pass_activated(self, row_index: int, _column: int) -> None:
+        """Open the run this pass produced, without leaving the Run step."""
+        if self._run_in_flight():
+            self._status_label.setText("Wait for the batch to finish before opening a run.")
+            return
+        if not 0 <= row_index < len(self._survey_rows):
+            return
+        row = self._survey_rows[row_index]
+        if row.pass_id is None:
+            self._status_label.setText("This pass has not been processed yet.")
+            return
+        runs = self._survey_store().runs_for_pass(row.pass_id)
+        # The last run that actually succeeded, not simply the last one: a pass
+        # retried after a failure would otherwise open a directory with no
+        # manifest in it.
+        succeeded = [run for run in runs if run.status == "succeeded"]
+        if not succeeded:
+            self._status_label.setText("This pass has no successful run to open.")
+            return
+        run_dir = Path(self._out_root_input.text()).expanduser() / succeeded[-1].run_dir_name
+        if not run_dir.is_dir():
+            self._status_label.setText(f"Run folder is missing: {run_dir.name}")
+            return
+        self._auto_load_run(run_dir)
 
     def _on_edit_run_settings(self) -> None:
         """Open the real run form in a dialog and adopt whatever comes back."""
@@ -503,52 +540,72 @@ class SimpleBatchMixin(MixinBase):
                 remaining.append(row)
         return remaining
 
+    def _survey_failed_count(self) -> int:
+        """Passes whose most recent run failed and has not since succeeded."""
+        store = self._survey_store()
+        failed = 0
+        for row in self._survey_rows:
+            if row.pass_id is None:
+                continue
+            runs = store.runs_for_pass(row.pass_id)
+            if runs and not any(run.status == "succeeded" for run in runs):
+                failed += any(run.status == "failed" for run in runs)
+        return failed
+
     def _recompute_survey_start(self) -> None:
-        # Every row mutation lands here, so the row actions and the empty state
-        # follow the table from one place.
+        """The Run step's one verdict, applied through a single exit.
+
+        The badge, the count in the header and the forward button all read this,
+        so they cannot disagree. Every row mutation funnels through here, which
+        is why it must not return early before the repaint.
+        """
+        # Row actions and the empty state follow the table from one place.
         self._recompute_row_actions()
         if self._survey_worker_running:
             self._survey_start_btn.setEnabled(False)
+            self._refresh_section_state()
             return
-        unassigned = sum(1 for row in self._survey_rows if row.transect_id is None)
-        remaining = self._survey_remaining_rows() if self._survey_rows else []
 
+        unassigned = sum(1 for row in self._survey_rows if row.transect_id is None)
         # An unassigned row has no pass yet, so it never counts as remaining.
-        # Check it first or the step would offer to move on with work undone.
-        if unassigned:
-            self._set_survey_forward_action("process")
+        remaining = self._survey_remaining_rows() if self._survey_rows else []
+        missing = self._survey_missing_models() if self._survey_preset is not None else []
+        gate = run_gate(
+            pass_count=len(self._survey_rows),
+            unassigned=unassigned,
+            remaining=len(remaining),
+            failed=self._survey_failed_count() if self._survey_rows else 0,
+            has_preset=self._survey_preset is not None,
+            missing_models=missing,
+        )
+        self._survey_gate = gate
+
+        if gate.state == BLOCKED:
+            self._set_survey_forward_action("process", count=len(remaining))
             self._survey_start_btn.setEnabled(False)
-            # The message sits on the button itself: the status label is at the
-            # far end of the window, easy to miss from the pass table.
-            self._survey_start_btn.setText(f"Assign transects first ({unassigned} to do)")
-            self._status_label.setText(f"{unassigned} pass(es) still need a transect.")
-            return
-        if not remaining:
-            self._set_survey_forward_action("analyse")
+            if unassigned:
+                # The message sits on the button itself: the status label is at
+                # the far end of the window, easy to miss from the pass table.
+                self._survey_start_btn.setText(f"Assign transects first ({unassigned} to do)")
+            self._status_label.setText(gate.reason)
+        elif remaining:
+            self._set_survey_forward_action("process", count=len(remaining))
+            self._survey_start_btn.setEnabled(True)
+        else:
+            self._set_survey_forward_action("browse")
             self._survey_start_btn.setEnabled(bool(self._survey_rows))
-            return
-        self._set_survey_forward_action("process", count=len(remaining))
-        if self._survey_preset is None:
-            self._survey_start_btn.setEnabled(False)
-            return
-        missing = self._survey_missing_models()
-        if missing:
-            self._survey_start_btn.setEnabled(False)
-            self._status_label.setText(
-                f"Download {', '.join(missing)} first: switch to Advanced and open Models."
-            )
-            return
-        self._survey_start_btn.setEnabled(True)
+        self._survey_start_btn.setToolTip(gate.reason)
+        self._refresh_section_state()
 
     def _set_survey_forward_action(self, action: str, count: int = 0) -> None:
-        """Point the Run step's one forward button at processing or at the next step."""
+        """Point the Run step's one forward button at processing or at Browse."""
         try:
             self._survey_start_btn.clicked.disconnect()
         except RuntimeError:
             pass
-        if action == "analyse":
-            self._survey_start_btn.setText("Next: Analyse →")
-            self._survey_start_btn.clicked.connect(partial(self._go_to_step, "analyse"))
+        if action == "browse":
+            self._survey_start_btn.setText("Open Browse →")
+            self._survey_start_btn.clicked.connect(partial(self._go_to_step, "browse"))
         else:
             self._survey_start_btn.setText(f"Next: Process ({count}) →")
             self._survey_start_btn.clicked.connect(self._on_survey_start)
@@ -665,9 +722,14 @@ class SimpleBatchMixin(MixinBase):
         if panel is not None:
             panel.clear_batch_context()
         self._set_app_mode("SETUP")
-        # A finished batch is best summarised by the analysis section.
-        if self._ui_mode == "simple":
-            self._set_simple_section("analyse")
+        # The outcome goes on the page and stays there. The status bar is the
+        # wrong home for it: the next thing that happens overwrites it, and a
+        # finished batch is exactly when the user walks away from the laptop.
+        summary = f"{ok} of {total} pass{'' if total == 1 else 'es'} succeeded"
+        if ok:
+            summary += " · double-click a row to open its run"
+        self._survey_summary_label.setText(summary)
+        self._survey_summary_label.setVisible(True)
         if ok == total:
             self._status_label.setText(f"Batch complete: {ok}/{total} pass(es) succeeded.")
         elif last_error:

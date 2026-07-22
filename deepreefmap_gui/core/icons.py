@@ -7,9 +7,9 @@ from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPen, QPixmap
 
 from deepreefmap_gui.core.theme import (
     BORDER_STRONG,
-    PRIMARY,
+    ERROR,
     SUCCESS,
-    TEXT_DIM,
+    TEXT_MUTED,
     WARNING,
     WINDOW,
 )
@@ -188,15 +188,34 @@ def copy_icon(size: int = 16, color: QColor | None = None) -> QIcon:
     return QIcon(pm)
 
 
-# Where a step sits relative to the one you are on.
-STEP_STATES = ("done", "current", "upcoming")
+# What a step has to say about itself. Deliberately not about position: the
+# checked pill in the header already shows which step you are on, which frees
+# the badge to carry meaning instead of repeating the selection.
+#
+# The vocabulary is owned by simple/progress.py, which must stay Qt-free and so
+# cannot be imported from core. Spelled out here rather than imported upwards;
+# tests/gui/test_simple_progress.py asserts the two never drift apart.
+STEP_STATES = ("todo", "ok", "attention", "blocked")
+
+_STEP_RING = {
+    "todo": BORDER_STRONG,
+    "ok": SUCCESS,
+    "attention": WARNING,
+    "blocked": ERROR,
+}
+_STEP_INK = {
+    "todo": TEXT_MUTED,
+    "ok": SUCCESS,
+    "attention": WARNING,
+    "blocked": ERROR,
+}
 
 
 def step_badge_icon(number: int, state: str, size: int = 20) -> QIcon:
     """Numbered disc for the wizard stepper.
 
-    Done steps carry a tick rather than their number, so a glance at the header
-    says how far through the survey you are without reading the labels.
+    A satisfied step carries a tick and a blocked one an exclamation, so the
+    header says what still needs doing without the labels being read.
     """
     if state not in STEP_STATES:
         raise ValueError(f"Unknown step state: {state!r}")
@@ -204,24 +223,16 @@ def step_badge_icon(number: int, state: str, size: int = 20) -> QIcon:
     cx, cy = size / 2, size / 2
     r = size * 0.42
 
-    if state == "current":
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(PRIMARY))
-        p.drawEllipse(QPointF(cx, cy), r, r)
-        fg = QColor(WINDOW)
-    elif state == "done":
-        p.setPen(QPen(QColor(SUCCESS), 1.4))
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawEllipse(QPointF(cx, cy), r, r)
-        fg = QColor(SUCCESS)
-    else:
-        p.setPen(QPen(QColor(BORDER_STRONG), 1.2))
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawEllipse(QPointF(cx, cy), r, r)
-        fg = QColor(TEXT_DIM)
+    # Filled with the shell colour rather than left transparent: the badge sits
+    # on the accent pill when its step is selected, and a dim ring and numeral
+    # drawn straight onto that blue are barely legible.
+    p.setPen(QPen(QColor(_STEP_RING[state]), 1.2 if state == "todo" else 1.4))
+    p.setBrush(QColor(WINDOW))
+    p.drawEllipse(QPointF(cx, cy), r, r)
+    ink = QColor(_STEP_INK[state])
 
-    if state == "done":
-        pen = QPen(fg, 1.8)
+    if state == "ok":
+        pen = QPen(ink, 1.8)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         p.setPen(pen)
@@ -232,8 +243,9 @@ def step_badge_icon(number: int, state: str, size: int = 20) -> QIcon:
         f.setPixelSize(max(8, int(size * 0.52)))
         f.setBold(True)
         p.setFont(f)
-        p.setPen(fg)
-        p.drawText(QRectF(0, 0, size, size), Qt.AlignmentFlag.AlignCenter, str(number))
+        p.setPen(ink)
+        glyph = "!" if state == "blocked" else str(number)
+        p.drawText(QRectF(0, 0, size, size), Qt.AlignmentFlag.AlignCenter, glyph)
     p.end()
     return QIcon(pm)
 

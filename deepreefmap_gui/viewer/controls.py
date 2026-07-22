@@ -37,12 +37,11 @@ class ViewerControlsMixin(MixinBase):
         self._app_mode = mode
         simple = getattr(self, "_ui_mode", "advanced") == "simple"
         if simple:
-            # RUNNING shows the pass table, VIEWING the analysis; SETUP leaves
-            # the user wherever they are.
+            # RUNNING shows the pass table so the batch has somewhere to report.
+            # VIEWING deliberately does not move: a run is opened from the pass
+            # table or from Browse, and both are places you want to stay.
             if mode == "RUNNING":
                 self._set_simple_section("run")
-            elif mode == "VIEWING":
-                self._set_simple_section("analyse")
         elif hasattr(self, "_sidebar_tabs"):
             # Guarded because the very first _set_app_mode("SETUP") call happens
             # inside _build_form_panel before the tab widget is constructed.
@@ -50,9 +49,14 @@ class ViewerControlsMixin(MixinBase):
                 self._TAB_RESULTS if mode == "VIEWING" else self._TAB_RUN
             )
         # A loaded run with the canvas gated off would show an idle progress
-        # panel; surface the cloud and let the user toggle it back off.
+        # panel; surface the cloud and let the user toggle it back off. Signals
+        # are blocked so opening one run does not silently make 3D preview the
+        # persisted default for every future session.
         if mode == "VIEWING" and hasattr(self, "_preview_toggle_btn"):
+            self._preview_toggle_btn.blockSignals(True)
             self._preview_toggle_btn.setChecked(True)
+            self._preview_toggle_btn.blockSignals(False)
+            self._viewer.set_canvas_allowed(True)
         self._update_work_area()
 
     def _refresh_run_warnings_view(self) -> None:

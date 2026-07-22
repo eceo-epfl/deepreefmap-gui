@@ -18,9 +18,11 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFrame,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QPushButton,
     QSpinBox,
+    QSplitter,
     QStackedWidget,
     QToolButton,
     QVBoxLayout,
@@ -42,6 +44,7 @@ from deepreefmap_gui.core.theme import (
     WINDOW,
     WINDOW_TEXT,
 )
+from deepreefmap_gui.simple.progress import browse_state, plan_state, run_gate
 from deepreefmap_gui.survey.preset import save_user_preset
 from deepreefmap_gui.survey.store import SURVEY_DB_NAME, SurveyStore
 
@@ -52,8 +55,15 @@ UI_MODES = ("advanced", "simple")
 # Left-to-right order in the segmented control: simplest first.
 UI_MODE_ORDER = ("simple", "advanced")
 
-# The wizard: plan your transects, run your videos, look at the results.
-WIZARD_STEPS = ("plan", "run", "analyse")
+# Doing the work is a short sequence; looking at what came out is not a step you
+# finish but a place you return to, so the two are different kinds of thing.
+WORKSPACES = ("survey", "browse")
+
+# Inside Survey: plan your transects, then process the day's videos.
+SURVEY_STEPS = ("plan", "run")
+
+# Every destination the stack can show, in stack order.
+SIMPLE_SECTIONS = (*SURVEY_STEPS, "browse")
 
 _STEP_BADGE_PX = 20
 
@@ -167,7 +177,12 @@ class UiModeMixin(MixinBase):
     _survey_store_obj: SurveyStore | None = None
     _form_defaults: dict[str, Any]
     _simple_nav_buttons: dict[str, QToolButton]
-    _work_area_state: tuple[bool, bool] | None = None
+    _workspace_buttons: dict[str, QToolButton]
+    _section_counts: dict[str, QLabel]
+    _step_widgets: list[QWidget]
+    _section_state_cache: tuple | None = None
+    _last_survey_step: str = "plan"
+    _work_area_state: tuple[bool, bool, str] | None = None
 
     def _build_mode_toggle(self) -> QWidget:
         """Segmented control: both names stay readable and the filled half says
@@ -217,6 +232,13 @@ class UiModeMixin(MixinBase):
         if getattr(self, "_ui_mode", "advanced") == "simple":
             return "Ready. Plan your transects, then add videos on the Run step."
         return "Ready. Fill the form and click Start."
+
+    def _refresh_browse_state(self) -> None:
+        """Cache Browse's count from entries the data manager already scanned."""
+        entries = getattr(self, "_data_entries", None) or []
+        unfiled = sum(1 for entry in entries if entry.transect_id is None)
+        self._browse_state = browse_state(len(entries), unfiled)
+        self._refresh_section_state()
 
     def _adopt_form_as_preset(self) -> None:
         """Take the form's current settings as the survey preset and persist them."""
@@ -290,11 +312,15 @@ class UiModeMixin(MixinBase):
         self._update_work_area()
 
     def _build_simple_shell(self) -> QWidget:
-        """Simple mode as a three step wizard: numbered steps you can click as
-        breadcrumbs, over a stack of pages that each end in a Back/Next footer.
+        """Two workspaces over one page stack.
 
-        The steps sit in their own band so the header reads as chrome above the
-        page rather than as one more row of controls inside it.
+        Survey is the work you do in order: plan the transects, then process the
+        videos. Browse is where everything you have ever produced lives, which
+        is not a step you finish but a place you come back to — so it sits
+        beside the flow rather than at the end of it.
+
+        Both live in one header band, so the band answers "where am I in simple
+        mode" while the top bar keeps answering "which interface am I in".
         """
         shell = QWidget()
         layout = QVBoxLayout(shell)
@@ -311,16 +337,43 @@ class UiModeMixin(MixinBase):
 
         self._simple_stack = QStackedWidget()
         self._simple_nav_buttons = {}
+        self._workspace_buttons = {}
+        self._section_counts = {}
         self._wizard_back_buttons = {}
         self._wizard_next_buttons = {}
-        group = QButtonGroup(shell)
-        group.setExclusive(True)
+        self._section_state_cache = None
+
+        workspace_group = QButtonGroup(shell)
+        workspace_group.setExclusive(True)
+        for index, workspace in enumerate(WORKSPACES):
+            btn = QToolButton()
+            btn.setText(workspace.capitalize())
+            btn.setCheckable(True)
+            btn.setStyleSheet(_segment_qss(first=index == 0))
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setToolTip(
+                "Plan transects and process this session's videos."
+                if workspace == "survey"
+                else "Everything processed so far, and how repeat passes compare."
+            )
+            btn.clicked.connect(partial(self._on_workspace_clicked, workspace))
+            workspace_group.addButton(btn)
+            nav.addWidget(btn)
+            self._workspace_buttons[workspace] = btn
+        nav.addSpacing(GUTTER * 2)
+
+        # Pages are built before the step buttons that select them, because the
+        # Run page constructs the button the Plan footer forwards to.
         pages = {
             "plan": self._build_plan_page(),
             "run": self._build_simple_run_page(),
-            "analyse": self._build_analysis_page(),
+            "browse": self._build_browse_page(),
         }
-        for number, name in enumerate(WIZARD_STEPS, start=1):
+
+        step_group = QButtonGroup(shell)
+        step_group.setExclusive(True)
+        self._step_widgets = []
+        for number, name in enumerate(SURVEY_STEPS, start=1):
             btn = QToolButton()
             btn.setText(name.capitalize())
             btn.setCheckable(True)
@@ -328,15 +381,33 @@ class UiModeMixin(MixinBase):
             btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
             btn.setIconSize(QSize(_STEP_BADGE_PX, _STEP_BADGE_PX))
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            group.addButton(btn)
+            step_group.addButton(btn)
             nav.addWidget(btn)
-            if number < len(WIZARD_STEPS):
-                nav.addWidget(_step_connector())
-            index = self._simple_stack.addWidget(self._wrap_wizard_page(name, pages[name]))
-            btn.toggled.connect(partial(self._on_simple_nav_toggled, index))
+            self._step_widgets.append(btn)
+            # The count sits outside the pill so it does not fight the fill when
+            # the step is selected.
+            count = QLabel("")
+            count.setStyleSheet(f"color: {TEXT_MUTED};")
+            nav.addWidget(count)
+            self._step_widgets.append(count)
+            self._section_counts[name] = count
+            if number < len(SURVEY_STEPS):
+                connector = _step_connector()
+                nav.addWidget(connector)
+                self._step_widgets.append(connector)
+            btn.toggled.connect(partial(self._on_simple_nav_toggled, name))
             self._simple_nav_buttons[name] = btn
+
+        browse_count = QLabel("")
+        browse_count.setStyleSheet(f"color: {TEXT_MUTED};")
+        nav.addWidget(browse_count)
+        self._section_counts["browse"] = browse_count
+
         nav.addStretch(1)
         layout.addWidget(header)
+
+        for name in SIMPLE_SECTIONS:
+            self._simple_stack.addWidget(self._wrap_wizard_page(name, pages[name]))
 
         body = QWidget()
         body_layout = QVBoxLayout(body)
@@ -345,27 +416,89 @@ class UiModeMixin(MixinBase):
         body_layout.addWidget(self._simple_stack, 1)
         layout.addWidget(body, 1)
 
-        self._simple_nav_buttons["plan"].setChecked(True)
-        self._refresh_step_badges()
+        self._set_simple_section("plan")
+        self._refresh_section_state()
         return shell
 
-    def _refresh_step_badges(self) -> None:
-        """Steps before the live one read as done, the rest as still to come."""
-        current = 0
-        for index, name in enumerate(WIZARD_STEPS):
-            if self._simple_nav_buttons[name].isChecked():
-                current = index
-                break
-        for index, name in enumerate(WIZARD_STEPS):
-            if index < current:
-                state = "done"
-            elif index == current:
-                state = "current"
-            else:
-                state = "upcoming"
-            self._simple_nav_buttons[name].setIcon(
-                step_badge_icon(index + 1, state, _STEP_BADGE_PX)
-            )
+    def _build_browse_page(self) -> QWidget:
+        """Browse: the run archive, with per-transect comparison underneath it.
+
+        The browser groups runs by transect and the analysis works per transect,
+        so the two belong on one surface — selecting a transect above drives the
+        comparison below.
+        """
+        split = QSplitter(Qt.Orientation.Vertical)
+        split.setHandleWidth(GUTTER)
+        split.addWidget(self._build_simple_data_host())
+        split.addWidget(self._build_analysis_page())
+        split.setStretchFactor(0, 2)
+        split.setStretchFactor(1, 3)
+        return split
+
+    def _current_section(self) -> str:
+        index = self._simple_stack.currentIndex()
+        if 0 <= index < len(SIMPLE_SECTIONS):
+            return SIMPLE_SECTIONS[index]
+        return "plan"
+
+    def _on_workspace_clicked(self, workspace: str) -> None:
+        if workspace == "browse":
+            self._set_simple_section("browse")
+        elif self._current_section() == "browse":
+            # Coming back from Browse lands on the step you left, not always the
+            # first one.
+            self._set_simple_section(getattr(self, "_last_survey_step", "plan"))
+
+    def _sync_workspace_chrome(self) -> None:
+        """Reflect which workspace the live section belongs to, and hide the
+        step controls entirely in Browse — they steer nothing there."""
+        section = self._current_section()
+        in_survey = section in SURVEY_STEPS
+        button = self._workspace_buttons["survey" if in_survey else "browse"]
+        button.blockSignals(True)
+        button.setChecked(True)
+        button.blockSignals(False)
+        for widget in self._step_widgets:
+            widget.setVisible(in_survey)
+        self._section_counts["browse"].setVisible(not in_survey)
+
+    def _refresh_section_state(self) -> None:
+        """Paint each step's badge and count from the cached verdicts.
+
+        A pure painter: it reads attributes other code has already computed and
+        never touches the store or the filesystem, because it is called from
+        paths that run on every keystroke.
+        """
+        if not hasattr(self, "_simple_nav_buttons"):
+            return
+        states = {
+            "plan": getattr(self, "_plan_state", None) or plan_state(0, False),
+            "run": getattr(self, "_survey_gate", None) or run_gate(
+                pass_count=0,
+                unassigned=0,
+                remaining=0,
+                failed=0,
+                has_preset=True,
+                missing_models=[],
+            ),
+            "browse": getattr(self, "_browse_state", None) or browse_state(0, 0),
+        }
+        key = tuple((name, s.state, s.count, s.reason) for name, s in states.items())
+        if self._section_state_cache == key:
+            return
+        self._section_state_cache = key
+        for number, name in enumerate(SURVEY_STEPS, start=1):
+            verdict = states[name]
+            button = self._simple_nav_buttons[name]
+            button.setIcon(step_badge_icon(number, verdict.state, _STEP_BADGE_PX))
+            button.setToolTip(verdict.reason or f"{name.capitalize()}: {verdict.count}")
+        for name, verdict in states.items():
+            self._section_counts[name].setText(verdict.count)
+            self._section_counts[name].setToolTip(verdict.reason)
+        self._workspace_buttons["browse"].setToolTip(
+            states["browse"].reason
+            or "Everything processed so far, and how repeat passes compare."
+        )
 
     def _wrap_wizard_page(self, name: str, page: QWidget) -> QWidget:
         container = QWidget()
@@ -379,22 +512,25 @@ class UiModeMixin(MixinBase):
         """Back on the left, the step's forward action on the right.
 
         The Run step's forward action is the run button itself, so there is one
-        obvious thing to press rather than a Next beside a Start.
+        obvious thing to press rather than a Next beside a Start. Browse has no
+        footer: it is a destination, not a step on the way to one.
         """
         row = QHBoxLayout()
         row.setContentsMargins(0, 6, 0, 0)
-        index = WIZARD_STEPS.index(name)
+        if name not in SURVEY_STEPS:
+            return row
+        index = SURVEY_STEPS.index(name)
         if index > 0:
             back = QPushButton("← Back")
             back.setProperty("quiet", "true")
-            back.clicked.connect(partial(self._go_to_step, WIZARD_STEPS[index - 1]))
+            back.clicked.connect(partial(self._go_to_step, SURVEY_STEPS[index - 1]))
             self._wizard_back_buttons[name] = back
             row.addWidget(back)
         row.addStretch(1)
         if name == "run":
             row.addWidget(self._survey_start_btn)
-        elif index < len(WIZARD_STEPS) - 1:
-            nxt = WIZARD_STEPS[index + 1]
+        elif index < len(SURVEY_STEPS) - 1:
+            nxt = SURVEY_STEPS[index + 1]
             button = QPushButton(f"Next: {nxt.capitalize()} →")
             button.setProperty("cta", "true")
             button.clicked.connect(partial(self._go_to_step, nxt))
@@ -406,30 +542,53 @@ class UiModeMixin(MixinBase):
         self._set_simple_section(name)
 
     def _set_wizard_navigation_enabled(self, enabled: bool) -> None:
-        """A run in flight owns the section, so stepping away is blocked."""
+        """A run in flight owns the Survey steps, so stepping away is blocked.
+
+        Browse stays reachable throughout: a batch takes tens of minutes and
+        looking at what finished earlier is exactly what you want to do while it
+        runs. Opening a run from there is refused separately, so the live run
+        keeps the viewer.
+        """
         steps: list[QAbstractButton] = list(self._simple_nav_buttons.values())
         steps.extend(self._wizard_back_buttons.values())
         steps.extend(self._wizard_next_buttons.values())
+        steps.append(self._workspace_buttons["survey"])
         for button in steps:
             button.setEnabled(enabled)
 
-    def _on_simple_nav_toggled(self, index: int, checked: bool) -> None:
+    def _on_simple_nav_toggled(self, name: str, checked: bool) -> None:
         if checked:
-            self._simple_stack.setCurrentIndex(index)
-            self._refresh_step_badges()
+            self._set_simple_section(name)
 
     def _set_simple_section(self, name: str) -> None:
-        self._simple_nav_buttons[name].setChecked(True)
+        if name not in SIMPLE_SECTIONS:
+            raise ValueError(f"Unknown simple section: {name!r}")
+        if name in SURVEY_STEPS:
+            self._last_survey_step = name
+            button = self._simple_nav_buttons[name]
+            if not button.isChecked():
+                button.blockSignals(True)
+                button.setChecked(True)
+                button.blockSignals(False)
+        self._simple_stack.setCurrentIndex(SIMPLE_SECTIONS.index(name))
+        self._sync_workspace_chrome()
+        self._update_work_area()
 
     def _update_work_area(self) -> None:
         """The one place that decides whether the viewer pane shows and how the
-        work splitter divides, from (ui_mode, app_mode)."""
+        work splitter divides, from (ui_mode, app_mode, section)."""
         if not hasattr(self, "_work_hsplitter"):
             return
         simple = getattr(self, "_ui_mode", "advanced") == "simple"
         app_mode = getattr(self, "_app_mode", "SETUP")
-        show_viewer = not simple or app_mode in ("RUNNING", "VIEWING")
-        state = (simple, show_viewer)
+        section = self._current_section() if hasattr(self, "_simple_stack") else "plan"
+        # Browse is a reading surface: a run opened from it wants the viewer, but
+        # a batch running in the background must not shove 3D onto the page you
+        # went there to read.
+        show_viewer = not simple or (
+            app_mode == "VIEWING" or (app_mode == "RUNNING" and section != "browse")
+        )
+        state = (simple, show_viewer, section)
         if getattr(self, "_work_area_state", None) == state:
             return
         self._work_area_state = state

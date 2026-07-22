@@ -87,7 +87,7 @@ class SimpleAnalysisMixin(MixinBase):
         selector.addWidget(QLabel("Transect"))
         self._analysis_transect_combo = QComboBox()
         self._analysis_transect_combo.currentIndexChanged.connect(
-            lambda *_: self._refresh_survey_analysis()
+            lambda *_: self._on_analysis_transect_changed()
         )
         selector.addWidget(self._analysis_transect_combo, 1)
         # "Detail" rather than "Level": the combo picks how finely the classes
@@ -183,6 +183,11 @@ class SimpleAnalysisMixin(MixinBase):
     def _analysis_transect_id(self) -> uuid.UUID | None:
         data = self._analysis_transect_combo.currentData()
         return uuid.UUID(data) if data else None
+
+    def _on_analysis_transect_changed(self) -> None:
+        """Changing the transect here also moves the browser above it."""
+        self._refresh_survey_analysis()
+        self._set_scope_transect(self._analysis_transect_id())
 
     def _refresh_survey_analysis(self) -> None:
         store = self._survey_store()

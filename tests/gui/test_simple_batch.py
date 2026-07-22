@@ -142,8 +142,8 @@ def test_run_batch_records_success_and_links_manifest(
     assert survey["pass"]["direction"] == "forward"
     runs = batch_window._survey_store().list_runs()
     assert [r.status for r in runs] == ["succeeded"]
-    # Nothing left to process, so the step offers the way forward instead.
-    assert batch_window._survey_start_btn.text() == "Next: Analyse →"
+    # Nothing left to process, so the step points at the archive instead.
+    assert batch_window._survey_start_btn.text() == "Open Browse →"
     assert batch_window._survey_pass_table.item(0, _COL_STATUS).text() == "succeeded"
 
 
@@ -166,7 +166,9 @@ def test_advanced_settings_reach_a_survey_run(batch_window, tmp_path, monkeypatc
     assert calls[0]["require_gravity_telemetry"] is True
 
 
-def test_batch_lands_on_analysis_when_done(batch_window, tmp_path, monkeypatch, qapp):
+def test_batch_stays_on_run_when_done(batch_window, tmp_path, monkeypatch, qapp):
+    """Expected behaviour: a finished batch reports where the work happened
+    rather than relocating the user to another section."""
     monkeypatch.setattr(
         "deepreefmap.pipeline.orchestrator.run_reconstruction", lambda **k: None
     )
@@ -178,7 +180,10 @@ def test_batch_lands_on_analysis_when_done(batch_window, tmp_path, monkeypatch, 
     batch_window._pipeline_thread.join(timeout=10)
     qapp.processEvents()
     assert batch_window._app_mode == "SETUP"
-    assert batch_window._simple_stack.currentIndex() == 2
+    assert batch_window._simple_stack.currentIndex() == 1
+    summary = batch_window._survey_summary_label
+    assert not summary.isHidden()
+    assert "1 of 1 pass succeeded" in summary.text()
 
 
 def test_failed_run_keeps_pass_remaining(batch_window, tmp_path, monkeypatch, qapp):
@@ -266,3 +271,51 @@ def test_pause_button_drives_the_survey_pause_event(batch_window, tmp_path, monk
     assert not batch_window._pause_event.is_set()
     batch_window._on_pause_toggled(False)
     assert batch_window._pause_event.is_set()
+
+
+def test_double_click_opens_the_run_that_succeeded(batch_window, tmp_path, monkeypatch):
+    """Scenario: a pass failed, was retried, and succeeded the second time.
+
+    Expected behaviour: the row opens the successful run. Taking the most
+    recent record instead would open a directory with no manifest whenever a
+    later attempt failed.
+    """
+    from deepreefmap_gui.survey.models import RunRecord
+
+    add_video(batch_window, tmp_path, monkeypatch)
+    assign_transect(batch_window, 0)
+    store = batch_window._survey_store()
+    pass_id = batch_window._survey_rows[0].pass_id
+
+    for name, status in (("run_bad", "failed"), ("run_good", "succeeded")):
+        record = RunRecord(pass_id=pass_id, run_dir_name=name)
+        store.add_run(record)
+        store.set_run_status(record.id, status)
+        (tmp_path / name).mkdir()
+
+    opened = []
+    monkeypatch.setattr(batch_window, "_auto_load_run", opened.append, raising=False)
+    batch_window._on_survey_pass_activated(0, 0)
+    assert opened == [tmp_path / "run_good"]
+
+
+def test_double_click_is_refused_while_a_batch_runs(batch_window, tmp_path, monkeypatch):
+    """The live run owns the viewer; an old one must not take it away."""
+    add_video(batch_window, tmp_path, monkeypatch)
+    assign_transect(batch_window, 0)
+    opened = []
+    monkeypatch.setattr(batch_window, "_auto_load_run", opened.append, raising=False)
+    monkeypatch.setattr(batch_window, "_run_in_flight", lambda: True, raising=False)
+    batch_window._on_survey_pass_activated(0, 0)
+    assert opened == []
+    assert "Wait for the batch" in batch_window._status_label.text()
+
+
+def test_unprocessed_row_says_so_rather_than_doing_nothing(batch_window, tmp_path, monkeypatch):
+    add_video(batch_window, tmp_path, monkeypatch)
+    assign_transect(batch_window, 0)
+    opened = []
+    monkeypatch.setattr(batch_window, "_auto_load_run", opened.append, raising=False)
+    batch_window._on_survey_pass_activated(0, 0)
+    assert opened == []
+    assert "no successful run" in batch_window._status_label.text()

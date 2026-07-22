@@ -118,11 +118,12 @@ def test_data_panel_moves_between_hosts(make_window):
 
 
 def test_data_tab_and_nav_registered(make_window):
-    """Advanced keeps a Data tab; simple folds the browser into the Plan step."""
+    """Advanced keeps a Data tab; simple hosts the browser in Browse."""
     window = make_window()
     assert window._sidebar_tabs.tabText(window._TAB_DATA) == "Data"
     assert window._sidebar_tabs.tabText(window._TAB_SYSTEM) == "System"
-    assert list(window._simple_nav_buttons) == ["plan", "run", "analyse"]
+    assert list(window._simple_nav_buttons) == ["plan", "run"]
+    assert list(window._workspace_buttons) == ["survey", "browse"]
     assert window._data_host_simple.isAncestorOf(window._data_panel)
 
 

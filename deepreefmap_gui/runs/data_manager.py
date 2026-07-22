@@ -23,6 +23,8 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QSplitter,
+    QStackedWidget,
     QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
@@ -33,6 +35,7 @@ from PySide6.QtWidgets import (
 from deepreefmap_gui.core.theme import (
     BORDER,
     BUTTON,
+    GUTTER,
     PRIMARY,
     RADIUS_SM,
     SURFACE_HI,
@@ -41,7 +44,7 @@ from deepreefmap_gui.core.theme import (
     WINDOW,
     WINDOW_TEXT,
 )
-from deepreefmap_gui.core.widgets import section_card
+from deepreefmap_gui.core.widgets import EmptyState, section_card
 from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.runs.run_cards import (
     RUN_META_ROLE,
@@ -58,7 +61,10 @@ from deepreefmap_gui.survey.models.transect_pass import PASS_DIRECTIONS
 
 logger = logging.getLogger(__name__)
 
-_FACETS = (("runs", "Runs"), ("transects", "Transects"), ("videos", "Videos"))
+# Keys are persisted and test-pinned; only the labels say what each view does.
+_FACETS = (("runs", "All runs"), ("transects", "By transect"), ("videos", "By video"))
+
+_RAIL_TITLES = {"transects": "Transects", "videos": "Videos"}
 
 _GROUP_KEY_ROLE = Qt.ItemDataRole.UserRole
 
@@ -97,18 +103,17 @@ class DataManagerMixin(MixinBase):
         self._data_sizes_scan_running = False
 
         panel = QWidget()
-        layout = QHBoxLayout(panel)
+        layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 4, 0, 0)
-        layout.setSpacing(8)
+        layout.setSpacing(GUTTER)
 
-        rail = QWidget()
-        rail.setFixedWidth(230)
-        rail_layout = QVBoxLayout(rail)
-        rail_layout.setContentsMargins(0, 0, 0, 0)
-        rail_layout.setSpacing(6)
+        # Facets and the disk total sit above the split, so neither disappears
+        # with the rail when a facet has no grouping to show.
+        top_row = QHBoxLayout()
+        top_row.setSpacing(GUTTER)
         facet_row = QHBoxLayout()
         facet_row.setSpacing(0)
-        group = QButtonGroup(rail)
+        group = QButtonGroup(panel)
         group.setExclusive(True)
         self._data_facet_buttons: dict[str, QToolButton] = {}
         for index, (name, title) in enumerate(_FACETS):
@@ -126,33 +131,46 @@ class DataManagerMixin(MixinBase):
                 lambda checked, n=name: self._on_data_facet_changed(n) if checked else None
             )
             self._data_facet_buttons[name] = btn
-        facet_row.addStretch(1)
-        rail_layout.addLayout(facet_row)
+        top_row.addLayout(facet_row)
+        top_row.addStretch(1)
+        self._data_disk_label = QLabel("")
+        self._data_disk_label.setStyleSheet(f"color: {TEXT_SECONDARY};")
+        top_row.addWidget(self._data_disk_label)
+        layout.addLayout(top_row)
 
+        self._data_split = QSplitter(Qt.Orientation.Horizontal)
+        self._data_split.setHandleWidth(GUTTER)
+
+        # "All runs" has no grouping, so the whole rail goes rather than leaving
+        # a dead column where the tree used to be.
+        self._data_rail, rail_layout = section_card("Group")
         self._data_tree = QTreeWidget()
         self._data_tree.setHeaderHidden(True)
         self._data_tree.itemSelectionChanged.connect(self._on_data_tree_selection)
-        rail_layout.addWidget(self._data_tree, 1)
+        self._data_tree_stack = QStackedWidget()
+        self._data_tree_stack.addWidget(self._data_tree)
+        self._data_tree_stack.addWidget(EmptyState("Nothing to group yet"))
+        rail_layout.addWidget(self._data_tree_stack, 1)
+        self._data_split.addWidget(self._data_rail)
 
-        self._data_disk_label = QLabel("")
-        self._data_disk_label.setStyleSheet(f"color: {TEXT_SECONDARY};")
-        self._data_disk_label.setWordWrap(True)
-        rail_layout.addWidget(self._data_disk_label)
-        layout.addWidget(rail)
-
-        right = QVBoxLayout()
-        right.setSpacing(6)
+        runs_card, runs_layout = section_card()
         self._data_group_header = QLabel("")
         self._data_group_header.setStyleSheet(f"color: {TEXT_SECONDARY};")
         self._data_group_header.setWordWrap(True)
-        right.addWidget(self._data_group_header)
+        runs_layout.addWidget(self._data_group_header)
 
         self._data_run_list = QListWidget()
         self._data_run_list.setItemDelegate(RunCardDelegate(self._data_run_list))
         self._data_run_list.itemDoubleClicked.connect(self._on_data_run_activated)
+        self._data_run_list.itemSelectionChanged.connect(self._update_data_actions)
         self._data_run_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._data_run_list.customContextMenuRequested.connect(self._on_data_context_menu)
-        right.addWidget(self._data_run_list, 1)
+        self._data_run_stack = QStackedWidget()
+        self._data_run_stack.addWidget(self._data_run_list)
+        self._data_run_stack.addWidget(
+            EmptyState("No runs here yet", "Processed passes collect here.")
+        )
+        runs_layout.addWidget(self._data_run_stack, 1)
 
         actions = QHBoxLayout()
         actions.setSpacing(6)
@@ -169,8 +187,13 @@ class DataManagerMixin(MixinBase):
         self._data_delete_btn.clicked.connect(self._on_data_delete_clicked)
         actions.addWidget(self._data_delete_btn)
         actions.addStretch(1)
-        right.addLayout(actions)
-        layout.addLayout(right, 1)
+        runs_layout.addLayout(actions)
+        self._data_split.addWidget(runs_card)
+        self._data_split.setStretchFactor(0, 0)
+        self._data_split.setStretchFactor(1, 1)
+        self._data_split.setSizes([260, 700])
+        layout.addWidget(self._data_split, 1)
+        self._update_data_actions()
 
         # Debounced refresh: the out-root watcher fires for every file touched
         # at the top level during a run (survey.db-wal churn included). Sizes
@@ -185,14 +208,12 @@ class DataManagerMixin(MixinBase):
         return panel
 
     def _build_simple_data_host(self) -> QWidget:
-        # Carded in simple mode so the run browser reads as a section of the
-        # Plan step; in advanced it keeps its own tab and needs no frame.
-        card, layout = section_card("Data")
+        # The panel cards its own halves, so the host is a bare slot in both
+        # modes rather than a card wrapping cards.
         self._data_host_simple = QWidget()
         host_layout = QVBoxLayout(self._data_host_simple)
         host_layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self._data_host_simple, 1)
-        return card
+        return self._data_host_simple
 
     def _host_data_panel(self, simple: bool) -> None:
         """Move the single Data panel into whichever mode is showing."""
@@ -234,6 +255,10 @@ class DataManagerMixin(MixinBase):
         self._rebuild_data_tree()
         self._update_data_disk_label()
         self._start_data_size_scan()
+        # Guarded: this runs during form construction, before the simple shell
+        # that owns the header exists.
+        if hasattr(self, "_section_counts"):
+            self._refresh_browse_state()
 
     def _on_data_watch_refresh(self) -> None:
         self._run_size_cache.clear()
@@ -245,17 +270,50 @@ class DataManagerMixin(MixinBase):
         try:
             tree.clear()
             self._data_groups = {}
-            if self._data_facet == "runs":
-                tree.setVisible(False)
+            grouped = self._data_facet != "runs"
+            if not grouped:
                 self._data_selected_key = None
             else:
-                tree.setVisible(True)
+                self._set_rail_title(_RAIL_TITLES.get(self._data_facet, "Group"))
                 for facet_group in self._data_facet_groups():
                     self._add_tree_group(facet_group, None)
                 self._restore_tree_selection()
+                self._data_tree_stack.setCurrentIndex(
+                    0 if tree.topLevelItemCount() else 1
+                )
         finally:
             tree.blockSignals(False)
+        self._set_rail_visible(grouped)
         self._rebuild_data_run_list()
+
+    def _set_rail_visible(self, visible: bool) -> None:
+        """Hide the whole rail, not just the tree inside it.
+
+        Hiding only the tree left a fixed-width column with nothing in it, which
+        read as a broken panel rather than as a view without groups.
+        """
+        # Tracked rather than read back from isVisible(): a widget in a window
+        # that has not been shown yet reports False whatever we asked for, so
+        # the first hide would look like a no-op and never take effect.
+        if getattr(self, "_data_rail_shown", None) == visible:
+            return
+        self._data_rail_shown = visible
+        if not visible:
+            # Qt collapses a hidden splitter child to zero and does not restore
+            # the width by itself, so remember it.
+            sizes = self._data_split.sizes()
+            if sizes and sizes[0]:
+                self._data_rail_width = sizes[0]
+        self._data_rail.setVisible(visible)
+        if visible:
+            width = getattr(self, "_data_rail_width", 260)
+            total = sum(self._data_split.sizes()) or 960
+            self._data_split.setSizes([width, max(200, total - width)])
+
+    def _set_rail_title(self, title: str) -> None:
+        label = self._data_rail.findChild(QLabel)
+        if label is not None:
+            label.setText(title)
 
     def _data_facet_groups(self) -> list[FacetGroup]:
         if self._data_facet == "transects":
@@ -294,16 +352,57 @@ class DataManagerMixin(MixinBase):
         self._data_selected_key = None
 
     def _focus_data_on_transect(self, transect_id: uuid.UUID) -> None:
-        """Point the browser at one transect, so the Plan step shows that
-        transect's runs directly beneath its map."""
+        """Point the browser at one transect."""
         if not hasattr(self, "_data_tree"):
             return
+        # Facet and key first, then the button: the toggle short-circuits when
+        # the facet already matches, so the key survives.
         self._data_facet = "transects"
-        self._data_facet_buttons["transects"].setChecked(True)
         self._data_selected_key = ("transect", str(transect_id))
+        self._data_facet_buttons["transects"].setChecked(True)
         self._rebuild_data_tree()
 
+    def _set_scope_transect(self, transect_id: uuid.UUID | None) -> None:
+        """One transect in focus across every widget that has an opinion.
+
+        The Browse page carries a browser tree and an analysis combo that both
+        pick a transect; left independent they would reproduce on one page the
+        duplication being removed from another.
+        """
+        if getattr(self, "_scope_syncing", False):
+            return
+        self._scope_syncing = True
+        try:
+            self._scope_transect_id = transect_id
+            if transect_id is not None:
+                self._focus_data_on_transect(transect_id)
+            combo = getattr(self, "_analysis_transect_combo", None)
+            if combo is not None:
+                wanted = str(transect_id) if transect_id is not None else None
+                for index in range(combo.count()):
+                    if combo.itemData(index) == wanted:
+                        combo.setCurrentIndex(index)
+                        break
+        finally:
+            self._scope_syncing = False
+
+    def _update_data_actions(self) -> None:
+        """The four actions all need a selected run, so they say when there is none."""
+        has = self._data_run_list.currentItem() is not None
+        for button in (
+            self._data_open_btn,
+            self._data_rename_btn,
+            self._data_assign_btn,
+            self._data_delete_btn,
+        ):
+            button.setEnabled(has)
+
     def _on_data_facet_changed(self, name: str) -> None:
+        # _focus_data_on_transect sets the facet and the key together and then
+        # checks the button; without this the check would land here first and
+        # throw the key away, rebuilding the tree twice for one selection.
+        if name == self._data_facet:
+            return
         self._data_facet = name
         self._data_selected_key = None
         if hasattr(self, "_data_tree"):
@@ -311,8 +410,12 @@ class DataManagerMixin(MixinBase):
 
     def _on_data_tree_selection(self) -> None:
         items = self._data_tree.selectedItems()
-        self._data_selected_key = items[0].data(0, _GROUP_KEY_ROLE) if items else None
+        key = items[0].data(0, _GROUP_KEY_ROLE) if items else None
+        self._data_selected_key = key
         self._rebuild_data_run_list()
+        # Picking a transect here drives the comparison below it on the same page.
+        if key is not None and len(key) == 2 and key[0] == "transect":
+            self._set_scope_transect(uuid.UUID(key[1]))
 
     def _data_listed_entries(self) -> list[RunEntry]:
         if self._data_facet == "runs" or self._data_selected_key is None:
@@ -347,10 +450,13 @@ class DataManagerMixin(MixinBase):
             if keep is not None and str(entry.run_dir) == keep:
                 self._data_run_list.setCurrentItem(item)
         self._data_group_header.setText(self._data_header_text(listed))
+        self._data_group_header.setVisible(bool(listed))
+        self._data_run_stack.setCurrentIndex(0 if listed else 1)
+        self._update_data_actions()
 
     def _data_header_text(self, listed: list[RunEntry]) -> str:
         if not listed:
-            return "No runs here yet."
+            return ""
         stats = catalogue.group_stats(listed)
         bits = [f"{stats.run_count} run{'s' if stats.run_count != 1 else ''}"]
         if stats.duration_range:
@@ -381,6 +487,11 @@ class DataManagerMixin(MixinBase):
     def _open_data_run(self, item: QListWidgetItem) -> None:
         run_dir = item.data(Qt.ItemDataRole.UserRole)
         if not run_dir:
+            return
+        # Browse stays reachable while a batch runs, so opening an old run here
+        # would take the viewer away from the run currently streaming into it.
+        if self._run_in_flight():
+            self._status_label.setText("Wait for the batch to finish before opening a run.")
             return
         path = Path(run_dir)
         # Banner first, straight from the manifest, so the click lands
