@@ -1,6 +1,6 @@
 import pytest
 
-from deepreefmap.gui.simple.batch import _COL_STATUS, _COL_TRANSECT
+from deepreefmap_gui.simple.batch import _COL_STATUS, _COL_TRANSECT
 from deepreefmap.survey.models import Transect
 
 
@@ -27,10 +27,10 @@ def add_video(window, tmp_path, monkeypatch, name="GX010001.MP4"):
     path = tmp_path / name
     path.write_bytes(name.encode() * 4096)
     monkeypatch.setattr(
-        "deepreefmap.gui.simple.batch._probe_video", lambda _path: (60.0, 30.0)
+        "deepreefmap_gui.simple.batch._probe_video", lambda _path: (60.0, 30.0)
     )
     monkeypatch.setattr(
-        "deepreefmap.gui.simple.batch.QFileDialog.getOpenFileNames",
+        "deepreefmap_gui.simple.batch.QFileDialog.getOpenFileNames",
         staticmethod(lambda *a, **k: ([str(path)], "")),
     )
     window._on_survey_add_videos()

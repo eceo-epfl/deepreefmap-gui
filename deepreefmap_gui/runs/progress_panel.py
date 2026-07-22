@@ -5,7 +5,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QLabel, QProgressBar, QVBoxLayout, QWidget
 
-from deepreefmap.gui.core.theme import PRIMARY, TEXT_SECONDARY
+from deepreefmap_gui.core.theme import PRIMARY, TEXT_SECONDARY
 
 
 class ProgressPanel(QWidget):

@@ -10,9 +10,10 @@ from PySide6.QtCore import QObject, QUrl, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 
-from deepreefmap import __version__ as deepreefmap_version
-from deepreefmap.gui.map.layers import TileLayer
 from deepreefmap.paths import tile_cache_dir
+
+from deepreefmap_gui.map.layers import TileLayer
+from deepreefmap_gui.packaging.releases import current_version
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +76,7 @@ class TileCache(QObject):
         request = QNetworkRequest(QUrl(url))
         request.setHeader(
             QNetworkRequest.KnownHeaders.UserAgentHeader,
-            f"deepreefmap/{deepreefmap_version} (+https://github.com/EPFL-ECEO/deepreefmap)",
+            f"deepreefmap-gui/{current_version()} (+https://github.com/eceo-epfl/deepreefmap-gui)",
         )
         self._in_flight.add(key)
         reply = self._network.get(request)
@@ -107,6 +108,6 @@ class TileCache(QObject):
 @lru_cache(maxsize=None)
 def shared_tile_cache() -> TileCache:
     """One cache (and network manager) shared by every map widget."""
-    from deepreefmap.gui.map.layers import OSM_LAYER
+    from deepreefmap_gui.map.layers import OSM_LAYER
 
     return TileCache(OSM_LAYER)

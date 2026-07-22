@@ -12,7 +12,7 @@ import pytest
 
 
 def test_viewer_widget_creates(qapp) -> None:
-    from deepreefmap.gui.viewer.widget import QtPointCloudViewer
+    from deepreefmap_gui.viewer.widget import QtPointCloudViewer
 
     viewer = QtPointCloudViewer(class_colors={1: (255, 0, 0)}, class_names={1: "test"})
     assert viewer.n_frames == 0
@@ -20,7 +20,7 @@ def test_viewer_widget_creates(qapp) -> None:
 
 
 def test_viewer_show_point_cloud(qapp) -> None:
-    from deepreefmap.gui.viewer.widget import QtPointCloudViewer
+    from deepreefmap_gui.viewer.widget import QtPointCloudViewer
 
     viewer = QtPointCloudViewer()
     xyz = np.random.rand(100, 3).astype(np.float32)
@@ -29,7 +29,7 @@ def test_viewer_show_point_cloud(qapp) -> None:
 
 
 def test_viewer_empty_cloud_noop(qapp) -> None:
-    from deepreefmap.gui.viewer.widget import QtPointCloudViewer
+    from deepreefmap_gui.viewer.widget import QtPointCloudViewer
 
     viewer = QtPointCloudViewer()
     viewer.show_point_cloud(np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.uint8))
@@ -53,7 +53,7 @@ def _fake_geometry_scene():
 
 
 def test_geometry_scene_enables_timeline(qapp) -> None:
-    from deepreefmap.gui.viewer.widget import QtPointCloudViewer
+    from deepreefmap_gui.viewer.widget import QtPointCloudViewer
 
     viewer = QtPointCloudViewer()
     fb, mr, xyz, rgb = _fake_geometry_scene()
@@ -67,7 +67,7 @@ def test_geometry_scene_enables_timeline(qapp) -> None:
 
 
 def test_geometry_scene_clears_back_to_empty(qapp) -> None:
-    from deepreefmap.gui.viewer.widget import QtPointCloudViewer
+    from deepreefmap_gui.viewer.widget import QtPointCloudViewer
 
     viewer = QtPointCloudViewer()
     fb, mr, xyz, rgb = _fake_geometry_scene()
@@ -80,7 +80,7 @@ def test_geometry_scene_clears_back_to_empty(qapp) -> None:
 
 
 def test_colorize_seg_maps_classes() -> None:
-    from deepreefmap.gui.viewer.render import _colorize_seg
+    from deepreefmap_gui.viewer.render import _colorize_seg
 
     labels = np.array([[1, 2], [2, 1]], dtype=np.int32)
     colors = {1: (255, 0, 0), 2: (0, 255, 0)}
@@ -90,7 +90,7 @@ def test_colorize_seg_maps_classes() -> None:
 
 
 def test_colorize_seg_fallback_gray() -> None:
-    from deepreefmap.gui.viewer.render import _colorize_seg
+    from deepreefmap_gui.viewer.render import _colorize_seg
 
     labels = np.array([[99]], dtype=np.int32)
     result = _colorize_seg(labels, {})
@@ -98,7 +98,7 @@ def test_colorize_seg_fallback_gray() -> None:
 
 
 def test_colorize_depth_handles_nan() -> None:
-    from deepreefmap.gui.viewer.render import _colorize_depth
+    from deepreefmap_gui.viewer.render import _colorize_depth
 
     depth = np.array([[float("nan"), 1.0], [2.0, float("nan")]], dtype=np.float32)
     result = _colorize_depth(depth)
@@ -108,7 +108,7 @@ def test_colorize_depth_handles_nan() -> None:
 
 
 def test_colorize_depth_all_nan() -> None:
-    from deepreefmap.gui.viewer.render import _colorize_depth
+    from deepreefmap_gui.viewer.render import _colorize_depth
 
     depth = np.full((3, 3), float("nan"), dtype=np.float32)
     result = _colorize_depth(depth)
@@ -123,7 +123,7 @@ def test_colorize_depth_all_nan() -> None:
     ],
 )
 def test_to_rgba_normalizes_by_dtype(rgb, expected_r) -> None:
-    from deepreefmap.gui.viewer.render import _to_rgba
+    from deepreefmap_gui.viewer.render import _to_rgba
 
     rgba = _to_rgba(rgb)
     assert rgba.shape == (1, 4)
@@ -132,7 +132,7 @@ def test_to_rgba_normalizes_by_dtype(rgb, expected_r) -> None:
 
 
 def test_build_frustum_lines_shape() -> None:
-    from deepreefmap.gui.viewer.render import _build_frustum_lines
+    from deepreefmap_gui.viewer.render import _build_frustum_lines
 
     pose = np.eye(4, dtype=np.float64)
     lines = _build_frustum_lines(pose, fov_y=1.0, aspect=1.5)
@@ -141,7 +141,7 @@ def test_build_frustum_lines_shape() -> None:
 
 
 def test_build_frustum_lines_origin_at_pose_position() -> None:
-    from deepreefmap.gui.viewer.render import _build_frustum_lines
+    from deepreefmap_gui.viewer.render import _build_frustum_lines
 
     pose = np.eye(4, dtype=np.float64)
     pose[:3, 3] = [10.0, 20.0, 30.0]
@@ -153,7 +153,7 @@ def test_build_frustum_lines_origin_at_pose_position() -> None:
 
 
 def test_estimate_world_up_points_toward_cameras() -> None:
-    from deepreefmap.gui.viewer.render import _estimate_world_up
+    from deepreefmap_gui.viewer.render import _estimate_world_up
 
     rng = np.random.default_rng(0)
     # Flat substrate in the XY plane; cameras hover above it along +Z.
@@ -173,7 +173,7 @@ def test_estimate_world_up_points_toward_cameras() -> None:
 
 
 def test_compute_transect_view_aligns_along_camera_path() -> None:
-    from deepreefmap.gui.viewer.render import _compute_transect_view
+    from deepreefmap_gui.viewer.render import _compute_transect_view
 
     # Cameras drift along world +X from -5 to +5; points scatter around the line.
     cam_origins = np.stack([
@@ -204,7 +204,7 @@ def test_compute_transect_view_aligns_along_camera_path() -> None:
 
 
 def test_compute_transect_view_falls_back_for_degenerate_data() -> None:
-    from deepreefmap.gui.viewer.render import _compute_transect_view
+    from deepreefmap_gui.viewer.render import _compute_transect_view
 
     # Single point, so PCA degenerates. The helper must still return finite numbers.
     pts = np.array([[1.0, 2.0, 3.0]], dtype=np.float64)
@@ -215,14 +215,14 @@ def test_compute_transect_view_falls_back_for_degenerate_data() -> None:
 
 
 def test_select_pick_pixel_all_background_returns_none() -> None:
-    from deepreefmap.gui.viewer.widget import QtPointCloudViewer
+    from deepreefmap_gui.viewer.widget import QtPointCloudViewer
 
     z = np.ones((5, 5), dtype=np.float32)  # far plane everywhere == nothing drawn
     assert QtPointCloudViewer._select_pick_pixel(z, (2, 2)) is None
 
 
 def test_select_pick_pixel_snaps_to_only_foreground_pixel() -> None:
-    from deepreefmap.gui.viewer.widget import QtPointCloudViewer
+    from deepreefmap_gui.viewer.widget import QtPointCloudViewer
 
     z = np.ones((5, 5), dtype=np.float32)
     z[1, 3] = 0.4  # one covered pixel at (col=3, row=1), cursor a few px away
@@ -230,14 +230,14 @@ def test_select_pick_pixel_snaps_to_only_foreground_pixel() -> None:
 
 
 def test_select_pick_pixel_prefers_pixel_under_cursor() -> None:
-    from deepreefmap.gui.viewer.widget import QtPointCloudViewer
+    from deepreefmap_gui.viewer.widget import QtPointCloudViewer
 
     z = np.full((5, 5), 0.5, dtype=np.float32)  # everything covered
     assert QtPointCloudViewer._select_pick_pixel(z, (2, 2)) == (2, 2)
 
 
 def test_select_pick_pixel_breaks_distance_ties_by_depth() -> None:
-    from deepreefmap.gui.viewer.widget import QtPointCloudViewer
+    from deepreefmap_gui.viewer.widget import QtPointCloudViewer
 
     # Two covered pixels equidistant from the cursor; the front-most (smaller
     # depth) wins so picks land on the visible surface, not one behind it.

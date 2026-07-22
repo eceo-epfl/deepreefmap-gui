@@ -15,7 +15,7 @@ import pytest
 
 
 def test_fetch_versions_mock_env(monkeypatch) -> None:
-    from deepreefmap.packaging.releases import fetch_release_versions
+    from deepreefmap_gui.packaging.releases import fetch_release_versions
 
     monkeypatch.setenv("DEEPREEFMAP_MOCK_VERSIONS", "2.0.0,1.5.0,1.0.1")
     versions = fetch_release_versions()
@@ -23,7 +23,7 @@ def test_fetch_versions_mock_env(monkeypatch) -> None:
 
 
 def test_fetch_versions_mock_empty(monkeypatch) -> None:
-    from deepreefmap.packaging.releases import fetch_release_versions
+    from deepreefmap_gui.packaging.releases import fetch_release_versions
 
     monkeypatch.setenv("DEEPREEFMAP_MOCK_VERSIONS", "")
     versions = fetch_release_versions()
@@ -43,14 +43,14 @@ def test_fetch_versions_mock_empty(monkeypatch) -> None:
     ],
 )
 def test_newer_releases_orders_and_filters(releases, current, expected) -> None:
-    from deepreefmap.packaging.releases import newer_releases
+    from deepreefmap_gui.packaging.releases import newer_releases
 
     newer = newer_releases(releases, current)
     assert [r["tag_name"] for r in newer] == expected
 
 
 def test_newer_releases_unparseable_current_falls_back_to_inequality() -> None:
-    from deepreefmap.packaging.releases import newer_releases
+    from deepreefmap_gui.packaging.releases import newer_releases
 
     releases = [{"tag_name": "v1.0.0"}, {"tag_name": "v1.0.1"}]
     newer = newer_releases(releases, "dev")
@@ -58,7 +58,7 @@ def test_newer_releases_unparseable_current_falls_back_to_inequality() -> None:
 
 
 def test_fetch_versions_real_404(monkeypatch) -> None:
-    from deepreefmap.packaging.releases import fetch_release_versions
+    from deepreefmap_gui.packaging.releases import fetch_release_versions
 
     monkeypatch.delenv("DEEPREEFMAP_MOCK_VERSIONS", raising=False)
     monkeypatch.setenv("DEEPREEFMAP_GH_REPO", "nonexistent-org-xyz/nonexistent-repo-abc")
@@ -68,7 +68,7 @@ def test_fetch_versions_real_404(monkeypatch) -> None:
 
 def test_fetch_versions_parses_github_response(monkeypatch) -> None:
     """Spin up a local HTTP server returning fake GitHub releases JSON."""
-    from deepreefmap.packaging.releases import fetch_release_versions
+    from deepreefmap_gui.packaging.releases import fetch_release_versions
 
     monkeypatch.delenv("DEEPREEFMAP_MOCK_VERSIONS", raising=False)
 
@@ -93,7 +93,7 @@ def test_fetch_versions_parses_github_response(monkeypatch) -> None:
     t = threading.Thread(target=server.handle_request, daemon=True)
     t.start()
 
-    import deepreefmap.packaging.releases as mod
+    import deepreefmap_gui.packaging.releases as mod
     orig = mod.gh_releases_url
     mod.gh_releases_url = lambda: f"http://127.0.0.1:{port}/releases"
     try:
@@ -113,7 +113,7 @@ def test_fetch_versions_parses_github_response(monkeypatch) -> None:
     ],
 )
 def test_selectable_releases(include_older, expected) -> None:
-    from deepreefmap.packaging.releases import selectable_releases
+    from deepreefmap_gui.packaging.releases import selectable_releases
 
     releases = [
         {"tag_name": "v1.0.0"},
@@ -125,7 +125,7 @@ def test_selectable_releases(include_older, expected) -> None:
 
 
 def test_gh_api_url_override(monkeypatch) -> None:
-    from deepreefmap.packaging.releases import gh_releases_url
+    from deepreefmap_gui.packaging.releases import gh_releases_url
 
     monkeypatch.setenv("DEEPREEFMAP_GH_API_URL", "http://127.0.0.1:9999/releases")
     monkeypatch.setenv("DEEPREEFMAP_GH_REPO", "owner/repo")  # override wins
@@ -136,20 +136,20 @@ def test_gh_api_url_override(monkeypatch) -> None:
 
 
 def test_fetch_releases_mock_synthesises_assets(monkeypatch) -> None:
-    from deepreefmap.packaging.releases import fetch_releases
+    from deepreefmap_gui.packaging.releases import fetch_releases
 
     monkeypatch.setenv("DEEPREEFMAP_MOCK_VERSIONS", "2.0.0,1.0.1")
     releases = fetch_releases()
     assert releases is not None
     assert [r["tag_name"] for r in releases] == ["v2.0.0", "v1.0.1"]
     names = {a["name"] for a in releases[0]["assets"]}
-    assert "deepreefmap-linux-x64" in names
-    assert "deepreefmap-windows-x64.exe" in names
+    assert "deepreefmap-gui-linux-x64" in names
+    assert "deepreefmap-gui-windows-x64.exe" in names
 
 
 def _fetch_releases_via_local_server(releases):
     """Serve one fake GitHub /releases response and run _fetch_releases against it."""
-    from deepreefmap.packaging.releases import fetch_releases
+    from deepreefmap_gui.packaging.releases import fetch_releases
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -165,7 +165,7 @@ def _fetch_releases_via_local_server(releases):
     port = server.server_address[1]
     threading.Thread(target=server.handle_request, daemon=True).start()
 
-    import deepreefmap.packaging.releases as mod
+    import deepreefmap_gui.packaging.releases as mod
     orig = mod.gh_releases_url
     mod.gh_releases_url = lambda: f"http://127.0.0.1:{port}/releases"
     try:
@@ -176,18 +176,18 @@ def _fetch_releases_via_local_server(releases):
 
 
 def test_fetch_releases_keeps_assets_from_github_response(monkeypatch) -> None:
-    from deepreefmap.packaging import binary_swap
+    from deepreefmap_gui.packaging import binary_swap
 
     monkeypatch.delenv("DEEPREEFMAP_MOCK_VERSIONS", raising=False)
-    monkeypatch.setattr(binary_swap, "resolve_asset_name", lambda platform=None: "deepreefmap-linux-x64")
+    monkeypatch.setattr(binary_swap, "resolve_asset_name", lambda platform=None: "deepreefmap-gui-linux-x64")
     releases = [
         {
             "tag_name": "v2.0.0",
             "draft": False,
             "assets": [
                 {
-                    "name": "deepreefmap-linux-x64",
-                    "browser_download_url": "https://example.invalid/v2.0.0/deepreefmap-linux-x64",
+                    "name": "deepreefmap-gui-linux-x64",
+                    "browser_download_url": "https://example.invalid/v2.0.0/deepreefmap-gui-linux-x64",
                 },
             ],
         },
@@ -196,24 +196,24 @@ def test_fetch_releases_keeps_assets_from_github_response(monkeypatch) -> None:
     result = _fetch_releases_via_local_server(releases)
     assert result is not None and len(result) == 1
     assert result[0]["tag_name"] == "v2.0.0"
-    assert result[0]["assets"][0]["browser_download_url"].endswith("/deepreefmap-linux-x64")
+    assert result[0]["assets"][0]["browser_download_url"].endswith("/deepreefmap-gui-linux-x64")
 
 
 def test_fetch_releases_drops_releases_without_platform_binary(monkeypatch) -> None:
     # The published v1.0.0 pre-dates binary distribution (no assets); it must
     # never be offered, nor a release carrying only another platform's binary.
-    from deepreefmap.packaging import binary_swap
+    from deepreefmap_gui.packaging import binary_swap
 
     monkeypatch.delenv("DEEPREEFMAP_MOCK_VERSIONS", raising=False)
-    monkeypatch.setattr(binary_swap, "resolve_asset_name", lambda platform=None: "deepreefmap-linux-x64")
+    monkeypatch.setattr(binary_swap, "resolve_asset_name", lambda platform=None: "deepreefmap-gui-linux-x64")
     releases = [
         {
             "tag_name": "v2.0.0",
             "draft": False,
             "assets": [
                 {
-                    "name": "deepreefmap-linux-x64-2.0.0",
-                    "browser_download_url": "https://example.invalid/v2.0.0/deepreefmap-linux-x64-2.0.0",
+                    "name": "deepreefmap-gui-linux-x64-2.0.0",
+                    "browser_download_url": "https://example.invalid/v2.0.0/deepreefmap-gui-linux-x64-2.0.0",
                 },
             ],
         },
@@ -222,8 +222,8 @@ def test_fetch_releases_drops_releases_without_platform_binary(monkeypatch) -> N
             "draft": False,
             "assets": [
                 {
-                    "name": "deepreefmap-windows-x64-1.5.0.exe",
-                    "browser_download_url": "https://example.invalid/v1.5.0/deepreefmap-windows-x64-1.5.0.exe",
+                    "name": "deepreefmap-gui-windows-x64-1.5.0.exe",
+                    "browser_download_url": "https://example.invalid/v1.5.0/deepreefmap-gui-windows-x64-1.5.0.exe",
                 },
             ],
         },
@@ -237,10 +237,10 @@ def test_fetch_releases_drops_releases_without_platform_binary(monkeypatch) -> N
 def test_fetch_releases_all_filtered_returns_empty_not_none(monkeypatch) -> None:
     # Empty list means "reached GitHub, nothing installable" and renders as
     # "No releases found."; None is reserved for fetch failures.
-    from deepreefmap.packaging import binary_swap
+    from deepreefmap_gui.packaging import binary_swap
 
     monkeypatch.delenv("DEEPREEFMAP_MOCK_VERSIONS", raising=False)
-    monkeypatch.setattr(binary_swap, "resolve_asset_name", lambda platform=None: "deepreefmap-linux-x64")
+    monkeypatch.setattr(binary_swap, "resolve_asset_name", lambda platform=None: "deepreefmap-gui-linux-x64")
     result = _fetch_releases_via_local_server(
         [{"tag_name": "v1.0.0", "draft": False, "assets": []}]
     )
@@ -248,7 +248,7 @@ def test_fetch_releases_all_filtered_returns_empty_not_none(monkeypatch) -> None
 
 
 def test_pyapp_mock_path(monkeypatch) -> None:
-    from deepreefmap.packaging.releases import pyapp_binary_path
+    from deepreefmap_gui.packaging.releases import pyapp_binary_path
 
     monkeypatch.setenv("DEEPREEFMAP_MOCK_PYAPP", "1")
     monkeypatch.delenv("PYAPP", raising=False)
@@ -256,7 +256,7 @@ def test_pyapp_mock_path(monkeypatch) -> None:
 
 
 def test_pyapp_no_env(monkeypatch) -> None:
-    from deepreefmap.packaging.releases import pyapp_binary_path
+    from deepreefmap_gui.packaging.releases import pyapp_binary_path
 
     monkeypatch.delenv("DEEPREEFMAP_MOCK_PYAPP", raising=False)
     monkeypatch.delenv("PYAPP", raising=False)

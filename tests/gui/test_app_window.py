@@ -63,7 +63,7 @@ def test_updates_tab_dev_mode_vs_installed(window) -> None:
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux-only feature")
 def test_desktop_entry_button_toggles_install(make_window, monkeypatch, tmp_path) -> None:
-    from deepreefmap.packaging import desktop_entry
+    from deepreefmap_gui.packaging import desktop_entry
 
     monkeypatch.setenv("DEEPREEFMAP_MOCK_PYAPP", "1")
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))

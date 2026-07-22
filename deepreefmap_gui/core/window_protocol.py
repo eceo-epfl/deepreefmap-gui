@@ -37,20 +37,20 @@ if TYPE_CHECKING:
 
     from deepreefmap.config.classes import ClassConfig
     from deepreefmap.io.scene_file import SceneFrameAccessor
-    from deepreefmap.gui.system.log_view import LogView
-    from deepreefmap.gui.runs.progress import ProgressModel
-    from deepreefmap.gui.viewer.pick_tooltip import PickCard
+    from deepreefmap_gui.system.log_view import LogView
+    from deepreefmap_gui.runs.progress import ProgressModel
+    from deepreefmap_gui.viewer.pick_tooltip import PickCard
     from deepreefmap.profiling.eta import RunEtaEstimator
-    from deepreefmap.gui.core.spinner import SpinnerStopButton
-    from deepreefmap.gui.form.time_edit import TimeSecondsEdit
-    from deepreefmap.gui.runs.timing_popup import HoverColumn, TimingPopup
+    from deepreefmap_gui.core.spinner import SpinnerStopButton
+    from deepreefmap_gui.form.time_edit import TimeSecondsEdit
+    from deepreefmap_gui.runs.timing_popup import HoverColumn, TimingPopup
     from deepreefmap.pipeline.artifacts import SemanticPointCloud
     from deepreefmap.pointcloud.grid_ortho import OrthoGrid
-    from deepreefmap.gui.viewer.widget import QtPointCloudViewer
-    from deepreefmap.gui.runs.sunburst import SunburstWidget
-    from deepreefmap.gui.map.widget import SlippyMapWidget
-    from deepreefmap.gui.simple.charts import GroupedBarChart
-    from deepreefmap.gui.simple.plan import NotesEdit
+    from deepreefmap_gui.viewer.widget import QtPointCloudViewer
+    from deepreefmap_gui.runs.sunburst import SunburstWidget
+    from deepreefmap_gui.map.widget import SlippyMapWidget
+    from deepreefmap_gui.simple.charts import GroupedBarChart
+    from deepreefmap_gui.simple.plan import NotesEdit
     from deepreefmap.survey.models import SurveyBatch
     from deepreefmap.survey.store import SurveyStore
 

@@ -12,19 +12,19 @@ from pathlib import Path
 
 import pytest
 
-from deepreefmap.packaging import binary_swap
+from deepreefmap_gui.packaging import binary_swap
 
 
 @pytest.mark.parametrize(
     "platform, expected",
     [
-        ("linux", "deepreefmap-linux-x64"),
-        ("win32", "deepreefmap-windows-x64.exe"),
-        ("darwin", "deepreefmap-macos-arm64"),
+        ("linux", "deepreefmap-gui-linux-x64"),
+        ("win32", "deepreefmap-gui-windows-x64.exe"),
+        ("darwin", "deepreefmap-gui-macos-arm64"),
     ],
 )
 def test_resolve_asset_name(platform, expected, monkeypatch) -> None:
-    from deepreefmap.packaging import binary_swap
+    from deepreefmap_gui.packaging import binary_swap
 
     # Pin cu126 so the base name is deterministic regardless of the host's torch wheel.
     monkeypatch.setattr(binary_swap, "_is_rocm_build", lambda: False)
@@ -33,28 +33,28 @@ def test_resolve_asset_name(platform, expected, monkeypatch) -> None:
 
 
 def test_resolve_asset_name_unsupported_raises() -> None:
-    from deepreefmap.packaging.binary_swap import BinarySwapError, resolve_asset_name
+    from deepreefmap_gui.packaging.binary_swap import BinarySwapError, resolve_asset_name
 
     with pytest.raises(BinarySwapError):
         resolve_asset_name("freebsd")
 
 
 def test_resolve_asset_name_rocm_linux(monkeypatch) -> None:
-    from deepreefmap.packaging import binary_swap
+    from deepreefmap_gui.packaging import binary_swap
 
     monkeypatch.setattr(binary_swap, "_is_rocm_build", lambda: True)
-    assert binary_swap.resolve_asset_name("linux") == "deepreefmap-linux-x64-rocm"
+    assert binary_swap.resolve_asset_name("linux") == "deepreefmap-gui-linux-x64-rocm"
 
 
 @pytest.mark.parametrize(
     "platform, expected",
     [
-        ("linux", "deepreefmap-linux-x64-cu130"),
-        ("win32", "deepreefmap-windows-x64-cu130.exe"),
+        ("linux", "deepreefmap-gui-linux-x64-cu130"),
+        ("win32", "deepreefmap-gui-windows-x64-cu130.exe"),
     ],
 )
 def test_resolve_asset_name_cu130(platform, expected, monkeypatch) -> None:
-    from deepreefmap.packaging import binary_swap
+    from deepreefmap_gui.packaging import binary_swap
 
     # A Blackwell (cu130) install must update to the cu130 asset, not the cu126 default.
     monkeypatch.setattr(binary_swap, "_is_rocm_build", lambda: False)
@@ -66,7 +66,7 @@ def test_resolve_asset_name_cu130(platform, expected, monkeypatch) -> None:
 def test_cuda_variant_suffix_from_torch_version(cuda, expected, monkeypatch) -> None:
     import torch
 
-    from deepreefmap.packaging import binary_swap
+    from deepreefmap_gui.packaging import binary_swap
 
     monkeypatch.delenv("PYAPP", raising=False)
     monkeypatch.setattr(torch.version, "cuda", cuda, raising=False)
@@ -74,16 +74,16 @@ def test_cuda_variant_suffix_from_torch_version(cuda, expected, monkeypatch) -> 
 
 
 def test_is_rocm_build_from_pyapp_binary_name(monkeypatch) -> None:
-    from deepreefmap.packaging import binary_swap
+    from deepreefmap_gui.packaging import binary_swap
 
-    monkeypatch.setenv("PYAPP", "/opt/pyapp/deepreefmap-linux-x64-rocm")
+    monkeypatch.setenv("PYAPP", "/opt/pyapp/deepreefmap-gui-linux-x64-rocm")
     assert binary_swap._is_rocm_build() is True
 
 
 def test_is_rocm_build_reads_torch_hip_version(monkeypatch) -> None:
     import torch
 
-    from deepreefmap.packaging import binary_swap
+    from deepreefmap_gui.packaging import binary_swap
 
     monkeypatch.delenv("PYAPP", raising=False)
     monkeypatch.setattr(torch.version, "hip", None, raising=False)
@@ -93,46 +93,46 @@ def test_is_rocm_build_reads_torch_hip_version(monkeypatch) -> None:
 
 
 def test_find_asset_url_returns_match() -> None:
-    from deepreefmap.packaging.binary_swap import BinarySwapError, find_asset_url
+    from deepreefmap_gui.packaging.binary_swap import BinarySwapError, find_asset_url
 
     rel = {
         "tag_name": "v1.0.0",
         "assets": [
-            {"name": "deepreefmap-linux-x64", "browser_download_url": "https://x/y"},
+            {"name": "deepreefmap-gui-linux-x64", "browser_download_url": "https://x/y"},
             {"name": "other", "browser_download_url": "https://nope"},
         ],
     }
-    assert find_asset_url(rel, "deepreefmap-linux-x64") == "https://x/y"
+    assert find_asset_url(rel, "deepreefmap-gui-linux-x64") == "https://x/y"
     with pytest.raises(BinarySwapError):
-        find_asset_url({"tag_name": "v0.5.0", "assets": []}, "deepreefmap-linux-x64")
+        find_asset_url({"tag_name": "v0.5.0", "assets": []}, "deepreefmap-gui-linux-x64")
 
 
 def test_match_asset_url_returns_none_when_absent() -> None:
-    from deepreefmap.packaging.binary_swap import match_asset_url
+    from deepreefmap_gui.packaging.binary_swap import match_asset_url
 
-    assert match_asset_url({"tag_name": "v1.0.0", "assets": []}, "deepreefmap-linux-x64") is None
+    assert match_asset_url({"tag_name": "v1.0.0", "assets": []}, "deepreefmap-gui-linux-x64") is None
 
 
 def test_find_asset_url_matches_version_labelled_assets() -> None:
     # Real releases label assets with the version (release.yml "Label binary");
     # variant suffixes must not cross-match.
-    from deepreefmap.packaging.binary_swap import find_asset_url
+    from deepreefmap_gui.packaging.binary_swap import find_asset_url
 
     rel = {
         "tag_name": "v1.2.0",
         "assets": [
-            {"name": "deepreefmap-linux-x64-cu130-1.2.0", "browser_download_url": "https://x/cu130"},
-            {"name": "deepreefmap-linux-x64-1.2.0", "browser_download_url": "https://x/base"},
-            {"name": "deepreefmap-windows-x64-1.2.0.exe", "browser_download_url": "https://x/win"},
+            {"name": "deepreefmap-gui-linux-x64-cu130-1.2.0", "browser_download_url": "https://x/cu130"},
+            {"name": "deepreefmap-gui-linux-x64-1.2.0", "browser_download_url": "https://x/base"},
+            {"name": "deepreefmap-gui-windows-x64-1.2.0.exe", "browser_download_url": "https://x/win"},
         ],
     }
-    assert find_asset_url(rel, "deepreefmap-linux-x64") == "https://x/base"
-    assert find_asset_url(rel, "deepreefmap-linux-x64-cu130") == "https://x/cu130"
-    assert find_asset_url(rel, "deepreefmap-windows-x64.exe") == "https://x/win"
+    assert find_asset_url(rel, "deepreefmap-gui-linux-x64") == "https://x/base"
+    assert find_asset_url(rel, "deepreefmap-gui-linux-x64-cu130") == "https://x/cu130"
+    assert find_asset_url(rel, "deepreefmap-gui-windows-x64.exe") == "https://x/win"
 
 
 def test_download_to_streams_chunks_and_reports_progress(tmp_path) -> None:
-    from deepreefmap.packaging.binary_swap import download_to
+    from deepreefmap_gui.packaging.binary_swap import download_to
 
     payload = b"x" * (200 * 1024)
 
@@ -168,7 +168,7 @@ def test_download_to_streams_chunks_and_reports_progress(tmp_path) -> None:
 
 
 def test_replace_binary_atomic_rename(tmp_path) -> None:
-    from deepreefmap.packaging.binary_swap import replace_binary
+    from deepreefmap_gui.packaging.binary_swap import replace_binary
 
     target = tmp_path / "current"
     target.write_bytes(b"old")
@@ -182,7 +182,7 @@ def test_replace_binary_atomic_rename(tmp_path) -> None:
 
 
 def test_env_is_healthy_detects_missing_and_intact(tmp_path) -> None:
-    from deepreefmap.packaging.binary_swap import env_is_healthy
+    from deepreefmap_gui.packaging.binary_swap import env_is_healthy
 
     # Missing torch/PySide6 → unhealthy.
     assert env_is_healthy(tmp_path) is False
@@ -199,7 +199,7 @@ def test_env_is_healthy_detects_missing_and_intact(tmp_path) -> None:
 
 
 def test_prune_stale_envs_keeps_current_and_newest_fallback(tmp_path, monkeypatch) -> None:
-    from deepreefmap.packaging import binary_swap
+    from deepreefmap_gui.packaging import binary_swap
 
     pyapp_root = tmp_path / "pyapp" / "deepreefmap" / "hash"
     oldest_env = pyapp_root / "1.0.0"
@@ -227,7 +227,7 @@ def test_prune_stale_envs_keeps_current_and_newest_fallback(tmp_path, monkeypatc
 
 
 def test_prune_stale_envs_refuses_paths_outside_pyapp(tmp_path, monkeypatch) -> None:
-    from deepreefmap.packaging import binary_swap
+    from deepreefmap_gui.packaging import binary_swap
 
     monkeypatch.setattr(
         "deepreefmap.paths.env_prune_marker_path",
@@ -245,7 +245,7 @@ def test_prune_stale_envs_refuses_paths_outside_pyapp(tmp_path, monkeypatch) -> 
 
 
 def test_perform_update_downloads_and_swaps(tmp_path, monkeypatch) -> None:
-    from deepreefmap.packaging import binary_swap
+    from deepreefmap_gui.packaging import binary_swap
 
     payload = b"NEW-BINARY-BYTES"
 
@@ -287,7 +287,7 @@ def test_perform_update_downloads_and_swaps(tmp_path, monkeypatch) -> None:
 def test_update_then_prune_end_to_end(tmp_path, monkeypatch) -> None:
     """The container e2e as a fast headless test: real download + swap, then
     the launch-time sweep drops the old env with the shared uv cache intact."""
-    from deepreefmap.packaging import binary_swap
+    from deepreefmap_gui.packaging import binary_swap
 
     payload = b"NEW-BINARY-BYTES"
 
@@ -352,7 +352,7 @@ def test_update_then_prune_end_to_end(tmp_path, monkeypatch) -> None:
 
 def test_update_dialog_runs_perform_update(qapp, tmp_path, monkeypatch) -> None:
     """Guarantee the Install button's worker is wired to perform_update()."""
-    from deepreefmap.gui.update import dialog as update_dialog
+    from deepreefmap_gui.update import dialog as update_dialog
 
     calls = {}
 
@@ -382,7 +382,7 @@ def test_update_dialog_runs_perform_update(qapp, tmp_path, monkeypatch) -> None:
 
 
 def test_self_restore_invokes_pyapp_self_restore(monkeypatch) -> None:
-    from deepreefmap.packaging import binary_swap
+    from deepreefmap_gui.packaging import binary_swap
 
     calls = []
     monkeypatch.setattr(
@@ -463,7 +463,7 @@ def test_perform_update_provisions_after_swap(tmp_path, monkeypatch) -> None:
 
 
 def test_stream_to_logger_buffers_partial_lines(caplog) -> None:
-    from deepreefmap.gui.system.log_view import _StreamToLogger
+    from deepreefmap_gui.system.log_view import _StreamToLogger
 
     logger = logging.getLogger("deepreefmap.test_stream")
     shim = _StreamToLogger(logger, logging.INFO)
@@ -477,7 +477,7 @@ def test_stream_to_logger_buffers_partial_lines(caplog) -> None:
 
 
 def test_stream_to_logger_drops_bar_redraws(caplog) -> None:
-    from deepreefmap.gui.system.log_view import _StreamToLogger
+    from deepreefmap_gui.system.log_view import _StreamToLogger
 
     logger = logging.getLogger("deepreefmap.test_stream_cr")
     shim = _StreamToLogger(logger, logging.WARNING)

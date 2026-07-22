@@ -19,8 +19,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from deepreefmap.gui.core.theme import ERROR
-from deepreefmap.packaging.binary_swap import (
+from deepreefmap_gui.core.theme import ERROR
+from deepreefmap_gui.packaging.binary_swap import (
     BinarySwapError,
     perform_update,
 )
@@ -160,7 +160,7 @@ class UpdateProgressDialog(QDialog):
     def _run_mock(self) -> None:
         script = [
             (0.05, f"Looking up asset for release {self._release.get('tag_name')}…"),
-            (0.15, "Downloading deepreefmap-linux-x64 (simulated)…"),
+            (0.15, "Downloading deepreefmap-gui-linux-x64 (simulated)…"),
             (0.20, "Verifying download (simulated)…"),
             (0.15, "Replacing binary (simulated)…"),
             (0.05, "Done. Relaunch simulated."),

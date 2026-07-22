@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from deepreefmap.gui.core.window_protocol import MixinBase
+from deepreefmap_gui.core.window_protocol import MixinBase
 
 import logging
 import sqlite3
@@ -31,10 +31,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from deepreefmap.gui.core.icons import crosshair_icon
-from deepreefmap.gui.core.theme import PRIMARY
-from deepreefmap.gui.map.overlays import OverlayTransect
-from deepreefmap.gui.map.widget import SlippyMapWidget
+from deepreefmap_gui.core.icons import crosshair_icon
+from deepreefmap_gui.core.theme import PRIMARY
+from deepreefmap_gui.map.overlays import OverlayTransect
+from deepreefmap_gui.map.widget import SlippyMapWidget
 from deepreefmap.survey.models import Transect, haversine_m
 from deepreefmap.survey.models.exporters import save_transects_csv
 from deepreefmap.survey.models.importers import (

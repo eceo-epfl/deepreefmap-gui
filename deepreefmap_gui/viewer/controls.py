@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from deepreefmap.gui.core.window_protocol import MixinBase
+from deepreefmap_gui.core.window_protocol import MixinBase
 
 import json
 import logging
@@ -10,12 +10,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, SupportsInt, cast
 
 
-from deepreefmap.gui.system.log_view import close_run_log_file
-from deepreefmap.gui.runs.progress import (
+from deepreefmap_gui.system.log_view import close_run_log_file
+from deepreefmap_gui.runs.progress import (
     _SETUP_MESSAGE_TO_PHASE,
     _STAGE_MESSAGE_TO_PHASE,
 )
-from deepreefmap.gui.core.theme import BORDER, OVERLAY_TEXT, PRIMARY, TEXT_MUTED, TEXT_SECONDARY
+from deepreefmap_gui.core.theme import BORDER, OVERLAY_TEXT, PRIMARY, TEXT_MUTED, TEXT_SECONDARY
 
 if TYPE_CHECKING:
     from PySide6.QtWidgets import QToolButton, QVBoxLayout, QWidget
@@ -507,7 +507,7 @@ class ViewerControlsMixin(MixinBase):
             return
         canvas = self._viewer._canvas_container
         if self._pick_card is None:
-            from deepreefmap.gui.viewer.pick_tooltip import PickCard
+            from deepreefmap_gui.viewer.pick_tooltip import PickCard
 
             self._pick_card = PickCard(canvas)
             self._pick_card.isolate_requested.connect(self._on_isolate_class)
@@ -680,7 +680,7 @@ class ViewerControlsMixin(MixinBase):
         buttons_row.setSpacing(6)
         buttons_row.setContentsMargins(0, 0, 0, 0)
 
-        from deepreefmap.gui.core.icons import (
+        from deepreefmap_gui.core.icons import (
             crosshair_icon,
             refresh_icon,
         )

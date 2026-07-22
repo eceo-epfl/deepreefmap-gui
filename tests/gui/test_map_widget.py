@@ -4,10 +4,10 @@ from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtTest import QTest
 
-from deepreefmap.gui.map.layers import OSM_LAYER
-from deepreefmap.gui.map.overlays import OverlayTransect
-from deepreefmap.gui.map.tile_cache import TileCache
-from deepreefmap.gui.map.widget import SlippyMapWidget
+from deepreefmap_gui.map.layers import OSM_LAYER
+from deepreefmap_gui.map.overlays import OverlayTransect
+from deepreefmap_gui.map.tile_cache import TileCache
+from deepreefmap_gui.map.widget import SlippyMapWidget
 
 
 @pytest.fixture

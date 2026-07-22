@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from deepreefmap.gui.runs.run_cards import build_run_card_meta, related_run_counts
+from deepreefmap_gui.runs.run_cards import build_run_card_meta, related_run_counts
 
 
 def _entry(run_dir: str, hashes: list[str | None] | None) -> tuple[Path, dict]:

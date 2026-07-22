@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from deepreefmap.gui.core.window_protocol import MixinBase
+from deepreefmap_gui.core.window_protocol import MixinBase
 
 import logging
 from functools import partial
@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from deepreefmap.gui.core.theme import (
+from deepreefmap_gui.core.theme import (
     BORDER,
     BUTTON,
     DISABLED_FG,

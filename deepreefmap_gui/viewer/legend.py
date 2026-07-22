@@ -18,8 +18,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from deepreefmap.gui.core.theme import OVERLAY_TEXT
-from deepreefmap.gui.viewer.render import _format_point_count
+from deepreefmap_gui.core.theme import OVERLAY_TEXT
+from deepreefmap_gui.viewer.render import _format_point_count
 
 
 class LegendOverlay(QWidget):

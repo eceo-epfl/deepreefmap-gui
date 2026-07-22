@@ -16,7 +16,7 @@ def tiny_video(tmp_path_factory) -> tuple[Path, float]:
 
 
 def test_defaults_span_the_full_video(qapp, tiny_video) -> None:
-    from deepreefmap.gui.form.video_scrub import VideoScrubDialog
+    from deepreefmap_gui.form.video_scrub import VideoScrubDialog
 
     path, duration = tiny_video
     dialog = VideoScrubDialog(path, duration)
@@ -29,7 +29,7 @@ def test_defaults_span_the_full_video(qapp, tiny_video) -> None:
 def test_end_at_slider_max_returns_exact_duration(qapp, tiny_video) -> None:
     # _effective_time_range() only collapses end to "full length" when it
     # matches the probed duration, so the max tick must not round away from it.
-    from deepreefmap.gui.form.video_scrub import VideoScrubDialog
+    from deepreefmap_gui.form.video_scrub import VideoScrubDialog
 
     path, _ = tiny_video
     duration = 2.0004999
@@ -40,7 +40,7 @@ def test_end_at_slider_max_returns_exact_duration(qapp, tiny_video) -> None:
 
 
 def test_slider_maps_ticks_to_seconds(qapp, tiny_video) -> None:
-    from deepreefmap.gui.form.video_scrub import VideoScrubDialog
+    from deepreefmap_gui.form.video_scrub import VideoScrubDialog
 
     path, duration = tiny_video
     dialog = VideoScrubDialog(path, duration, begin_s=0.5, end_s=1.5)
@@ -51,7 +51,7 @@ def test_slider_maps_ticks_to_seconds(qapp, tiny_video) -> None:
 
 
 def test_handles_cannot_cross(qapp, tiny_video) -> None:
-    from deepreefmap.gui.form.video_scrub import VideoScrubDialog
+    from deepreefmap_gui.form.video_scrub import VideoScrubDialog
 
     path, duration = tiny_video
     dialog = VideoScrubDialog(path, duration, begin_s=0.5, end_s=1.0)
@@ -64,7 +64,7 @@ def test_handles_cannot_cross(qapp, tiny_video) -> None:
 
 
 def test_collapsed_range_can_reopen(qapp, tiny_video) -> None:
-    from deepreefmap.gui.form.video_scrub import VideoScrubDialog
+    from deepreefmap_gui.form.video_scrub import VideoScrubDialog
 
     path, duration = tiny_video
     dialog = VideoScrubDialog(path, duration, begin_s=1.0, end_s=1.0)
@@ -77,7 +77,7 @@ def test_collapsed_range_can_reopen(qapp, tiny_video) -> None:
 
 
 def test_preview_paints_a_frame(qapp, tiny_video) -> None:
-    from deepreefmap.gui.form.video_scrub import VideoScrubDialog
+    from deepreefmap_gui.form.video_scrub import VideoScrubDialog
 
     path, duration = tiny_video
     dialog = VideoScrubDialog(path, duration)
@@ -89,7 +89,7 @@ def test_preview_paints_a_frame(qapp, tiny_video) -> None:
 
 
 def test_capture_released_on_close(qapp, tiny_video) -> None:
-    from deepreefmap.gui.form.video_scrub import VideoScrubDialog
+    from deepreefmap_gui.form.video_scrub import VideoScrubDialog
 
     path, duration = tiny_video
     dialog = VideoScrubDialog(path, duration)
@@ -99,7 +99,7 @@ def test_capture_released_on_close(qapp, tiny_video) -> None:
 
 
 def test_format_time_shows_seconds_and_minutes() -> None:
-    from deepreefmap.gui.form.video_scrub import _format_time
+    from deepreefmap_gui.form.video_scrub import _format_time
 
     assert _format_time(83.45) == "83.45 s (1:23.45)"
     assert _format_time(0.0) == "0.00 s (0:00.00)"

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from deepreefmap.gui.core.window_protocol import MixinBase
+from deepreefmap_gui.core.window_protocol import MixinBase
 
 import json
 import logging

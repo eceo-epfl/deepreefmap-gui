@@ -28,7 +28,7 @@ _FONT_FILES = (
 
 def apply_app_fonts(app: QApplication) -> None:
     """Register the bundled fonts and pin a consistent global UI font."""
-    fonts_dir = resources.files("deepreefmap.resources").joinpath("fonts")
+    fonts_dir = resources.files("deepreefmap_gui.resources").joinpath("fonts")
     loaded_any = False
     for name in _FONT_FILES:
         try:

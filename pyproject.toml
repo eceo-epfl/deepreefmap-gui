@@ -1,0 +1,132 @@
+[project]
+name = "deepreefmap-gui"
+version = "1.1.0"
+description = "Desktop application for semantic 3D mapping of coral reefs with deepreefmap"
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [
+  { name = "Evan Thomas", email = "evan.thomas@epfl.ch" },
+]
+keywords = ["coral reefs", "semantic mapping", "3d reconstruction", "gui"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Image Processing",
+]
+dependencies = [
+  # loger/gopro match the features the packaged binary ships (scripts/build_config.env
+  # in the library previously listed them as BASE_FEATURES).
+  "deepreefmap[loger,gopro]>=1.1,<2",
+  "PySide6>=6.7,<7",
+  "pyvista>=0.44",
+  "pyvistaqt>=0.11",
+]
+
+[project.optional-dependencies]
+# Torch variant pins, kept in lockstep with deepreefmap's cu126/cu130/rocm
+# extras. Declared here (not chained through the library's extras) because uv
+# applies [tool.uv.sources] index routing and extra conflicts only to this
+# project's own dependencies, not to a path dependency's.
+cu126 = ["torch==2.12.1+cu126", "torchvision==0.27.1+cu126"]
+cu130 = ["torch==2.12.1+cu130", "torchvision==0.27.1+cu130"]
+rocm = ["torch==2.9.1+rocm6.4", "torchvision==0.24.1+rocm6.4", "pytorch-triton-rocm>=3.0"]
+dev = ["pytest>=8.4.0", "ruff>=0.12.0", "mypy>=2.0.0", "types-tqdm"]
+
+[project.urls]
+Repository = "https://github.com/eceo-epfl/deepreefmap-gui"
+Issues = "https://github.com/eceo-epfl/deepreefmap-gui/issues"
+
+[project.scripts]
+deepreefmap-gui = "deepreefmap_gui.cli:main"
+
+[build-system]
+requires = ["setuptools>=82.0.1", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["deepreefmap_gui*"]
+
+[tool.setuptools.package-data]
+"deepreefmap_gui.resources" = ["*.png", "fonts/*.ttf", "fonts/*.txt"]
+
+[tool.uv]
+conflicts = [
+  [{ extra = "cu126" }, { extra = "cu130" }, { extra = "rocm" }],
+]
+
+# Development against the sibling checkout. Stripped from published metadata, so
+# the wheel keeps the deepreefmap>=1.1,<2 pin. PyApp's `uv pip install` also
+# ignores this and resolves the library from its index.
+[tool.uv.sources]
+deepreefmap = { path = "../deepreefmap", editable = true }
+torch = [
+  { index = "pytorch-cu126", extra = "cu126" },
+  { index = "pytorch-cu130", extra = "cu130" },
+  { index = "pytorch-rocm", extra = "rocm" },
+]
+torchvision = [
+  { index = "pytorch-cu126", extra = "cu126" },
+  { index = "pytorch-cu130", extra = "cu130" },
+  { index = "pytorch-rocm", extra = "rocm" },
+]
+pytorch-triton-rocm = [
+  { index = "pytorch-rocm", extra = "rocm" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-rocm"
+url = "https://download.pytorch.org/whl/rocm6.4"
+explicit = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# importlib mode: category subfolders under tests/ need no __init__.py and
+# test basenames need not be globally unique.
+addopts = "--import-mode=importlib"
+
+[tool.ruff]
+target-version = "py310"
+extend-exclude = ["tests/e2e/_cache", "tests/e2e/_work"]
+
+[tool.mypy]
+python_version = "3.10"
+# Resolve deepreefmap from the sibling checkout; installed wheels ship py.typed.
+mypy_path = "../deepreefmap"
+
+# Use the library's types but leave checking its internals to its own repo.
+[[tool.mypy.overrides]]
+module = ["deepreefmap.*"]
+follow_imports = "silent"
+
+[[tool.mypy.overrides]]
+module = [
+  "pyvistaqt.*",
+  "vtk.*",
+  "psutil.*",
+]
+ignore_missing_imports = true
+
+# numpy 2.5 stubs use PEP 695 `type` statements, which mypy rejects under
+# python_version 3.10 (numpy <2.5 is what actually installs there). Skip the
+# stubs rather than pin numpy for the type checker's sake.
+[[tool.mypy.overrides]]
+module = ["numpy.*"]
+follow_imports = "skip"
+follow_imports_for_stubs = true
+ignore_missing_imports = true

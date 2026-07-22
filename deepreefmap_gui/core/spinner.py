@@ -6,7 +6,7 @@ from PySide6.QtCore import QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QAbstractButton
 
-from deepreefmap.gui.core.theme import BORDER, DISABLED_FG, ERROR, PRIMARY
+from deepreefmap_gui.core.theme import BORDER, DISABLED_FG, ERROR, PRIMARY
 
 _SIZE = 26
 _ARC_SPAN_DEG = 100

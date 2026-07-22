@@ -20,13 +20,13 @@ import pytest
     ],
 )
 def test_parse_timestamp_range(text, expected) -> None:
-    from deepreefmap.gui.form.batch import _parse_timestamp_range
+    from deepreefmap_gui.form.batch import _parse_timestamp_range
 
     assert _parse_timestamp_range(text) == expected
 
 
 def test_load_batch_csv_parses_rows(tmp_path) -> None:
-    from deepreefmap.gui.form.batch import _load_batch_csv
+    from deepreefmap_gui.form.batch import _load_batch_csv
 
     csv_path = tmp_path / "jobs.csv"
     csv_path.write_text(
@@ -48,7 +48,7 @@ def test_load_batch_csv_parses_rows(tmp_path) -> None:
 
 
 def test_load_batch_csv_case_insensitive_columns(tmp_path) -> None:
-    from deepreefmap.gui.form.batch import _load_batch_csv
+    from deepreefmap_gui.form.batch import _load_batch_csv
 
     csv_path = tmp_path / "jobs.csv"
     csv_path.write_text(
@@ -60,7 +60,7 @@ def test_load_batch_csv_case_insensitive_columns(tmp_path) -> None:
 
 
 def test_load_batch_csv_rejects_missing_columns(tmp_path) -> None:
-    from deepreefmap.gui.form.batch import _load_batch_csv
+    from deepreefmap_gui.form.batch import _load_batch_csv
 
     csv_path = tmp_path / "jobs.csv"
     csv_path.write_text("videos,timestamps\nx.mp4,0-10\n")
@@ -69,7 +69,7 @@ def test_load_batch_csv_rejects_missing_columns(tmp_path) -> None:
 
 
 def test_load_batch_csv_skips_blank_rows(tmp_path) -> None:
-    from deepreefmap.gui.form.batch import _load_batch_csv
+    from deepreefmap_gui.form.batch import _load_batch_csv
 
     csv_path = tmp_path / "jobs.csv"
     csv_path.write_text(
@@ -83,7 +83,7 @@ def test_load_batch_csv_skips_blank_rows(tmp_path) -> None:
 
 
 def test_load_batch_csv_rejects_excel(tmp_path) -> None:
-    from deepreefmap.gui.form.batch import _load_batch_csv
+    from deepreefmap_gui.form.batch import _load_batch_csv
 
     bogus = tmp_path / "jobs.xlsx"
     bogus.write_bytes(b"not actually excel")

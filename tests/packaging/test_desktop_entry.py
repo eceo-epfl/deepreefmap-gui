@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from deepreefmap.packaging import desktop_entry
+from deepreefmap_gui.packaging import desktop_entry
 
 
 @pytest.fixture
@@ -21,13 +21,13 @@ def test_install_writes_entry_and_icon(xdg_home, tmp_path) -> None:
 
     entry = desktop_entry.install_desktop_entry(binary)
 
-    assert entry == xdg_home / "applications" / "deepreefmap.desktop"
+    assert entry == xdg_home / "applications" / "deepreefmap-gui.desktop"
     content = entry.read_text()
     assert f"Exec={binary.resolve()}" in content
     assert "Terminal=false" in content
-    icon = xdg_home / "icons" / "hicolor" / "512x512" / "apps" / "deepreefmap.png"
+    icon = xdg_home / "icons" / "hicolor" / "512x512" / "apps" / "deepreefmap-gui.png"
     assert icon.exists()
-    assert "Icon=deepreefmap\n" in content
+    assert "Icon=deepreefmap-gui\n" in content
     assert desktop_entry.desktop_entry_installed()
 
 
@@ -39,9 +39,9 @@ def test_remove_cleans_up(xdg_home, tmp_path) -> None:
     desktop_entry.remove_desktop_entry()
 
     assert not desktop_entry.desktop_entry_installed()
-    assert not (xdg_home / "applications" / "deepreefmap.desktop").exists()
+    assert not (xdg_home / "applications" / "deepreefmap-gui.desktop").exists()
     assert not (
-        xdg_home / "icons" / "hicolor" / "512x512" / "apps" / "deepreefmap.png"
+        xdg_home / "icons" / "hicolor" / "512x512" / "apps" / "deepreefmap-gui.png"
     ).exists()
 
 

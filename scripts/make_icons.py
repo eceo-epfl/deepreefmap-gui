@@ -15,7 +15,7 @@ from pathlib import Path
 from PIL import Image
 
 REPO = Path(__file__).resolve().parent.parent
-SOURCE = REPO / "deepreefmap" / "resources" / "icon.png"
+SOURCE = REPO / "deepreefmap_gui" / "resources" / "icon.png"
 SIZES = [16, 24, 32, 48, 64, 128, 256]
 
 

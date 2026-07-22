@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from deepreefmap.gui.core.theme import OVERLAY_TEXT
+from deepreefmap_gui.core.theme import OVERLAY_TEXT
 
 
 class PickCard(QFrame):

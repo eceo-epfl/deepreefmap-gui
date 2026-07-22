@@ -35,7 +35,7 @@ def _tmp_output_root(qapp, tmp_path):
 @pytest.fixture(autouse=True)
 def _offline_tiles(qapp):
     """Map widgets must never fetch tiles during tests."""
-    from deepreefmap.gui.map.tile_cache import shared_tile_cache
+    from deepreefmap_gui.map.tile_cache import shared_tile_cache
 
     cache = shared_tile_cache()
     cache.network_enabled = False
@@ -53,7 +53,7 @@ def make_window(qapp):
 
     def _make():
         from deepreefmap.config.classes import load_classes
-        from deepreefmap.gui.app import DeepReefMapWindow
+        from deepreefmap_gui.app import DeepReefMapWindow
 
         return DeepReefMapWindow(load_classes(), None)
 

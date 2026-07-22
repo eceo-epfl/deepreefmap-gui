@@ -81,7 +81,7 @@ class LogView(QWidget):
         self._text = QPlainTextEdit()
         self._text.setReadOnly(True)
         self._text.setMaximumBlockCount(_MAX_LINES)
-        from deepreefmap.gui.core.fonts import MONO_FONT_FAMILY
+        from deepreefmap_gui.core.fonts import MONO_FONT_FAMILY
 
         font = QFont(MONO_FONT_FAMILY)
         font.setStyleHint(QFont.StyleHint.TypeWriter)
@@ -115,16 +115,16 @@ class LogView(QWidget):
 
 
 def install_qt_log_handler(level: int = logging.INFO) -> QtLogHandler:
-    """Attach a QtLogHandler to the `deepreefmap` logger and return it."""
+    """Attach a QtLogHandler to the library and app logger trees and return it."""
     handler = QtLogHandler()
     handler.setLevel(level)
-    root = logging.getLogger("deepreefmap")
-    # Replace any previously-installed Qt handler (hot reload during dev).
-    for existing in list(root.handlers):
-        if isinstance(existing, QtLogHandler):
-            root.removeHandler(existing)
-    root.addHandler(handler)
-    root.setLevel(min(root.level or level, level))
+    for root in (logging.getLogger("deepreefmap"), logging.getLogger("deepreefmap_gui")):
+        # Replace any previously-installed Qt handler (hot reload during dev).
+        for existing in list(root.handlers):
+            if isinstance(existing, QtLogHandler):
+                root.removeHandler(existing)
+        root.addHandler(handler)
+        root.setLevel(min(root.level or level, level))
     return handler
 
 
@@ -186,6 +186,7 @@ def open_run_log_file(run_dir: Path, level: int = logging.INFO) -> logging.FileH
     fh.setLevel(level)
     fh.setFormatter(logging.Formatter(_FMT, datefmt=_DATEFMT))
     logging.getLogger("deepreefmap").addHandler(fh)
+    logging.getLogger("deepreefmap_gui").addHandler(fh)
     return fh
 
 
@@ -193,6 +194,7 @@ def close_run_log_file(handler: logging.FileHandler | None) -> None:
     if handler is None:
         return
     logging.getLogger("deepreefmap").removeHandler(handler)
+    logging.getLogger("deepreefmap_gui").removeHandler(handler)
     try:
         handler.close()
     except Exception:

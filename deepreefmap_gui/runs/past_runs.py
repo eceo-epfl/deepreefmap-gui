@@ -5,8 +5,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from deepreefmap.gui.core.window_protocol import MixinBase
-from deepreefmap.gui.runs.run_cards import format_run_metadata_compact
+from deepreefmap_gui.core.window_protocol import MixinBase
+from deepreefmap_gui.runs.run_cards import format_run_metadata_compact
 
 logger = logging.getLogger(__name__)
 

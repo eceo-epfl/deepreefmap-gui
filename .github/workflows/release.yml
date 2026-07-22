@@ -26,32 +26,32 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            artifact: deepreefmap-linux-x64
+            artifact: deepreefmap-gui-linux-x64
             ext: ""
             filetype: ELF
             torch_variant: cu126
           - os: ubuntu-latest
-            artifact: deepreefmap-linux-x64-cu130
+            artifact: deepreefmap-gui-linux-x64-cu130
             ext: ""
             filetype: ELF
             torch_variant: cu130
           - os: ubuntu-latest
-            artifact: deepreefmap-linux-x64-rocm
+            artifact: deepreefmap-gui-linux-x64-rocm
             ext: ""
             filetype: ELF
             torch_variant: rocm
           - os: windows-latest
-            artifact: deepreefmap-windows-x64
+            artifact: deepreefmap-gui-windows-x64
             ext: ".exe"
             filetype: ""
             torch_variant: cu126
           - os: windows-latest
-            artifact: deepreefmap-windows-x64-cu130
+            artifact: deepreefmap-gui-windows-x64-cu130
             ext: ".exe"
             filetype: ""
             torch_variant: cu130
           - os: macos-latest
-            artifact: deepreefmap-macos-arm64
+            artifact: deepreefmap-gui-macos-arm64
             ext: ""
             filetype: Mach-O
             torch_variant: default
@@ -59,10 +59,6 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
-        with:
-          # The build vendors LoGeR's `loger` package from this submodule into
-          # the wheel (see pyproject [tool.setuptools.packages.find]).
-          submodules: recursive
 
       # On tag builds the artifact is labelled from the tag, but PyApp embeds the
       # wheel version from pyproject — fail fast if they disagree so a release can't
@@ -146,7 +142,7 @@ jobs:
         shell: pwsh
         run: |
           # dist/icon.ico is produced by build.ps1 when it embeds the exe icon.
-          $setupName = "${{ matrix.artifact }}-${{ steps.label.outputs.value }}" -replace '^deepreefmap-', 'deepreefmap-setup-'
+          $setupName = "${{ matrix.artifact }}-${{ steps.label.outputs.value }}" -replace '^deepreefmap-gui-', 'deepreefmap-gui-setup-'
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
             /DBinaryPath="dist\${{ matrix.artifact }}-${{ steps.label.outputs.value }}.exe" `
             /DAppVersion="${{ steps.label.outputs.version }}" `
@@ -169,7 +165,7 @@ jobs:
           name: ${{ matrix.artifact }}-${{ steps.label.outputs.value }}
           path: |
             dist/${{ matrix.artifact }}-${{ steps.label.outputs.value }}${{ matrix.ext }}
-            dist/deepreefmap-setup-*-${{ steps.label.outputs.value }}.exe
+            dist/deepreefmap-gui-setup-*-${{ steps.label.outputs.value }}.exe
             dist/${{ matrix.artifact }}-${{ steps.label.outputs.value }}.dmg
           if-no-files-found: error
 
@@ -190,7 +186,7 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           path: dist
-          pattern: deepreefmap-*-${{ steps.label.outputs.value }}
+          pattern: deepreefmap-gui-*-${{ steps.label.outputs.value }}
           merge-multiple: true
 
       # Glob, not an explicit list: the download step above already filtered to
@@ -199,7 +195,7 @@ jobs:
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/deepreefmap-*-${{ steps.label.outputs.value }}*
+          files: dist/deepreefmap-gui-*-${{ steps.label.outputs.value }}*
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

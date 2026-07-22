@@ -15,8 +15,8 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-_ENTRY_NAME = "deepreefmap.desktop"
-_ICON_NAME = "deepreefmap.png"
+_ENTRY_NAME = "deepreefmap-gui.desktop"
+_ICON_NAME = "deepreefmap-gui.png"
 
 
 def _data_home() -> Path:
@@ -63,7 +63,7 @@ def install_desktop_entry(binary_path: str | os.PathLike[str]) -> Path:
     icon_dest.parent.mkdir(parents=True, exist_ok=True)
     from importlib import resources
 
-    icon_src = resources.files("deepreefmap.resources") / "icon.png"
+    icon_src = resources.files("deepreefmap_gui.resources") / "icon.png"
     icon_dest.write_bytes(icon_src.read_bytes())
 
     entry = _entry_path()
@@ -76,7 +76,7 @@ def install_desktop_entry(binary_path: str | os.PathLike[str]) -> Path:
         f"Exec={binary}\n"
         # Theme-name lookup against the hicolor icon installed above; KDE's
         # launcher does not reliably render absolute Icon= paths.
-        "Icon=deepreefmap\n"
+        "Icon=deepreefmap-gui\n"
         "Terminal=false\n"
         "Categories=Science;\n"
     )

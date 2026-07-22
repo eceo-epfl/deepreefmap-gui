@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 
-from deepreefmap.gui.core.window_protocol import MixinBase
+from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap.profiling.eta import (
     RunEtaEstimator,
     format_duration,
@@ -10,7 +10,7 @@ from deepreefmap.profiling.eta import (
     stage_for_phase,
     stage_label_for_phase,
 )
-from deepreefmap.gui.core.theme import PRIMARY
+from deepreefmap_gui.core.theme import PRIMARY
 
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
@@ -233,7 +233,7 @@ class ProgressBarsMixin(MixinBase):
     def _ensure_timing_popup(self):
         popup = getattr(self, "_timing_popup", None)
         if popup is None:
-            from deepreefmap.gui.runs.timing_popup import TimingPopup
+            from deepreefmap_gui.runs.timing_popup import TimingPopup
 
             popup = TimingPopup(self)
             self._timing_popup = popup

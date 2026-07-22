@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from deepreefmap.packaging import binary_swap
+from deepreefmap_gui.packaging import binary_swap
 
 _FAKE_VERSION = "9.9.9"
 _RELEASE_YML = Path(__file__).parents[2] / ".github" / "workflows" / "release.yml"
@@ -45,7 +45,7 @@ def _published_asset_names() -> set[str]:
         ext = entry.get("ext") or ""
         names.add(f"{artifact}-{_FAKE_VERSION}{ext}")
         if str(entry["os"]).startswith("windows"):
-            names.add(artifact.replace("deepreefmap-", "deepreefmap-setup-", 1) + f"-{_FAKE_VERSION}.exe")
+            names.add(artifact.replace("deepreefmap-gui-", "deepreefmap-gui-setup-", 1) + f"-{_FAKE_VERSION}.exe")
         if str(entry["os"]).startswith("macos"):
             names.add(f"{artifact}-{_FAKE_VERSION}.dmg")
     if not names:
@@ -84,8 +84,8 @@ def test_updater_requested_asset_is_published(platform, is_rocm, suffix, monkeyp
 def test_first_install_assets_are_published() -> None:
     published = _published_asset_names()
     for expected in (
-        f"deepreefmap-setup-windows-x64-{_FAKE_VERSION}.exe",
-        f"deepreefmap-setup-windows-x64-cu130-{_FAKE_VERSION}.exe",
-        f"deepreefmap-macos-arm64-{_FAKE_VERSION}.dmg",
+        f"deepreefmap-gui-setup-windows-x64-{_FAKE_VERSION}.exe",
+        f"deepreefmap-gui-setup-windows-x64-cu130-{_FAKE_VERSION}.exe",
+        f"deepreefmap-gui-macos-arm64-{_FAKE_VERSION}.dmg",
     ):
         assert expected in published, f"release.yml no longer attaches {expected}"

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from deepreefmap.gui.core.window_protocol import MixinBase
+from deepreefmap_gui.core.window_protocol import MixinBase
 
 import threading
 from typing import TYPE_CHECKING, cast
@@ -20,11 +20,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from deepreefmap.gui.models.hf_dialog import HfLoginDialog
-from deepreefmap.gui.core.theme import BORDER, CARD_BG, DANGER_BG, SUCCESS, TEXT_DIM, WARNING
+from deepreefmap_gui.models.hf_dialog import HfLoginDialog
+from deepreefmap_gui.core.theme import BORDER, CARD_BG, DANGER_BG, SUCCESS, TEXT_DIM, WARNING
 
 if TYPE_CHECKING:
-    from deepreefmap.gui.models.manager import ModelInfo
+    from deepreefmap_gui.models.manager import ModelInfo
 
 
 class ModelManagementMixin(MixinBase):
@@ -105,7 +105,7 @@ class ModelManagementMixin(MixinBase):
             btn.setToolTip("Open Models")
             btn.setStyleSheet("")
             return
-        from deepreefmap.gui.core.icons import check_icon, download_icon, lock_icon
+        from deepreefmap_gui.core.icons import check_icon, download_icon, lock_icon
 
         if cached:
             btn.setText("")
@@ -120,7 +120,7 @@ class ModelManagementMixin(MixinBase):
             )
             btn.setStyleSheet("")
         else:
-            from deepreefmap.gui.models.manager import ModelStatus, model_status
+            from deepreefmap_gui.models.manager import ModelStatus, model_status
 
             status, why = model_status(info)
             btn.setText("")
@@ -187,7 +187,7 @@ class ModelManagementMixin(MixinBase):
             )
 
     def _refresh_model_status(self) -> None:
-        from deepreefmap.gui.models.manager import all_known_models, check_hf_auth, is_model_cached
+        from deepreefmap_gui.models.manager import all_known_models, check_hf_auth, is_model_cached
 
         auth_user, can_gated = check_hf_auth()
         self._can_read_gated = can_gated
@@ -199,7 +199,7 @@ class ModelManagementMixin(MixinBase):
         self._discover_btn.setText("Checking…")
 
         def _work() -> None:
-            from deepreefmap.gui.models.manager import discover_models
+            from deepreefmap_gui.models.manager import discover_models
 
             names, error = discover_models()
             self._sig_discovery_done.emit(names, error)
@@ -357,7 +357,7 @@ class ModelManagementMixin(MixinBase):
         if not self._skip_seg_check.isChecked():
             seg = self._seg_combo.currentText()
             required.add(seg)
-            from deepreefmap.gui.models.manager import DPT_BACKBONE_MAP
+            from deepreefmap_gui.models.manager import DPT_BACKBONE_MAP
 
             backbone = DPT_BACKBONE_MAP.get(seg)
             if backbone:
@@ -370,7 +370,7 @@ class ModelManagementMixin(MixinBase):
         self._recompute_submit_state()
 
     def _make_action_widget(self, info, cached: bool, auth_user: str | None) -> QWidget:
-        from deepreefmap.gui.models.manager import model_available
+        from deepreefmap_gui.models.manager import model_available
 
         if not model_available(info):
             # Model needs an install extra that isn't present (LoGeR today).
@@ -397,7 +397,7 @@ class ModelManagementMixin(MixinBase):
         # download: config.json landed, weights or the custom loader did not).
         # Distinct from "never downloaded" so the row can prompt a repair
         # instead of a silent re-download that reads as "nothing happened".
-        from deepreefmap.gui.models.manager import ModelStatus, model_status
+        from deepreefmap_gui.models.manager import ModelStatus, model_status
 
         partial_reason = ""
         if not cached:
@@ -474,7 +474,7 @@ class ModelManagementMixin(MixinBase):
             self._status_label.setText("Logging out of Hugging Face...")
 
             def _do_logout() -> None:
-                from deepreefmap.gui.models.manager import hf_logout
+                from deepreefmap_gui.models.manager import hf_logout
 
                 try:
                     hf_logout()
@@ -496,7 +496,7 @@ class ModelManagementMixin(MixinBase):
         self._status_label.setText("Logging in to Hugging Face...")
 
         def _do_login() -> None:
-            from deepreefmap.gui.models.manager import hf_login
+            from deepreefmap_gui.models.manager import hf_login
 
             try:
                 user = hf_login(token)
@@ -535,7 +535,7 @@ class ModelManagementMixin(MixinBase):
         QTimer.singleShot(3000, _revert)
 
     def _execute_delete(self, model_name: str) -> None:
-        from deepreefmap.gui.models.manager import all_known_models, delete_model
+        from deepreefmap_gui.models.manager import all_known_models, delete_model
 
         info = next((m for m in all_known_models() if m.name == model_name), None)
         if info is None:
@@ -592,7 +592,7 @@ class ModelManagementMixin(MixinBase):
         threading.Thread(target=self._refresh_model_status, daemon=True).start()
 
     def _download_model(self, model_name: str) -> None:
-        from deepreefmap.gui.models.manager import (
+        from deepreefmap_gui.models.manager import (
             DownloadCancelled,
             all_known_models,
             prefetch_model,

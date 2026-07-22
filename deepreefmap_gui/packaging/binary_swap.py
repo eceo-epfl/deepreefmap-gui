@@ -66,17 +66,17 @@ def resolve_asset_name(platform: str | None = None) -> str:
     p = (platform or sys.platform).lower()
     if p.startswith("linux"):
         if _is_rocm_build():
-            return "deepreefmap-linux-x64-rocm"
-        return f"deepreefmap-linux-x64{_cuda_variant_suffix()}"
+            return "deepreefmap-gui-linux-x64-rocm"
+        return f"deepreefmap-gui-linux-x64{_cuda_variant_suffix()}"
     if p.startswith("win"):
-        return f"deepreefmap-windows-x64{_cuda_variant_suffix()}.exe"
+        return f"deepreefmap-gui-windows-x64{_cuda_variant_suffix()}.exe"
     if p.startswith("darwin"):
-        return "deepreefmap-macos-arm64"
+        return "deepreefmap-gui-macos-arm64"
     raise BinarySwapError(f"No binary asset is built for platform {p!r}")
 
 
 def match_asset_url(release: dict, asset_name: str) -> str | None:
-    # Release assets carry a version label (deepreefmap-linux-x64-1.2.0[.exe])
+    # Release assets carry a version label (deepreefmap-gui-linux-x64-1.2.0[.exe])
     # while resolve_asset_name yields the bare platform name, so accept both.
     candidates = {asset_name}
     tag = str(release.get("tag_name", "")).lstrip("v")
@@ -111,7 +111,7 @@ def download_to(
     chunk_size: int = 64 * 1024,
 ) -> None:
     dest_path.parent.mkdir(parents=True, exist_ok=True)
-    req = urllib.request.Request(url, headers={"User-Agent": "deepreefmap-updater"})
+    req = urllib.request.Request(url, headers={"User-Agent": "deepreefmap-gui-updater"})
     with urllib.request.urlopen(req) as resp:  # noqa: S310 (URL is our GH release metadata)
         total = int(resp.headers.get("Content-Length") or 0)
         done = 0
@@ -203,7 +203,7 @@ def _env_dir_for_prefix(prefix: str | os.PathLike[str]) -> Path:
 def prune_stale_envs(current_prefix: str | os.PathLike[str] | None = None) -> list[Path]:
     """Remove old version envs, keeping the running one plus one fallback.
 
-    PyApp lays envs out as ``.../pyapp/deepreefmap/<version>/python``, so the running
+    PyApp lays envs out as ``.../pyapp/deepreefmap-gui/<version>/python``, so the running
     env's siblings are past versions. Outside a PyApp env (a dev venv) only the
     legacy-marker cleanup happens.
     """

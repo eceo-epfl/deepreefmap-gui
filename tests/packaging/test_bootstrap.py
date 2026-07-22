@@ -14,8 +14,8 @@ import pytest
 
 
 def test_bootstrap_self_heals_then_reexecs_when_env_broken(monkeypatch, tmp_path) -> None:
-    import deepreefmap.bootstrap as bootstrap
-    from deepreefmap.packaging import binary_swap
+    import deepreefmap_gui.bootstrap as bootstrap
+    from deepreefmap_gui.packaging import binary_swap
 
     fake_binary = tmp_path / "deepreefmap"
     fake_binary.touch()  # pyapp_binary() only trusts PYAPP paths that exist
@@ -55,8 +55,8 @@ def _quiet_bootstrap(monkeypatch, tmp_path):
 
 
 def test_bootstrap_no_args_launches_gui(monkeypatch, tmp_path) -> None:
-    import deepreefmap.bootstrap as bootstrap
-    import deepreefmap.gui.app as gui_app
+    import deepreefmap_gui.bootstrap as bootstrap
+    import deepreefmap_gui.app as gui_app
 
     _quiet_bootstrap(monkeypatch, tmp_path)
     monkeypatch.setattr(sys, "argv", ["deepreefmap"])
@@ -67,9 +67,9 @@ def test_bootstrap_no_args_launches_gui(monkeypatch, tmp_path) -> None:
 
 
 def test_bootstrap_args_dispatch_to_cli(monkeypatch, tmp_path) -> None:
-    import deepreefmap.bootstrap as bootstrap
+    import deepreefmap_gui.bootstrap as bootstrap
     import deepreefmap.cli.main as cli_main
-    import deepreefmap.gui.app as gui_app
+    import deepreefmap_gui.app as gui_app
 
     _quiet_bootstrap(monkeypatch, tmp_path)
     monkeypatch.setattr(sys, "argv", ["deepreefmap", "list-models"])
@@ -83,7 +83,7 @@ def test_bootstrap_args_dispatch_to_cli(monkeypatch, tmp_path) -> None:
 
 
 def test_refresh_uninstall_display_version_noop_off_windows(monkeypatch) -> None:
-    import deepreefmap.bootstrap as bootstrap
+    import deepreefmap_gui.bootstrap as bootstrap
 
     # Must never raise on non-Windows or when the installer key is absent.
     bootstrap._refresh_uninstall_display_version()

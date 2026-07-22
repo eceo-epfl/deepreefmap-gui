@@ -1,22 +1,17 @@
 #!/usr/bin/env pwsh
 param(
     # Output name; CI passes the matrix artifact so cu130 doesn't overwrite the default.
-    [string]$OutputName = "deepreefmap-windows-x64.exe"
+    [string]$OutputName = "deepreefmap-gui-windows-x64.exe"
 )
 $ErrorActionPreference = "Stop"
 
-# Constants shared with build.sh (PyApp version, torch indexes, features).
+# Constants shared with build.sh (PyApp version, torch indexes).
 $cfg = @{}
 Get-Content (Join-Path $PSScriptRoot "build_config.env") | ForEach-Object {
     if ($_ -match '^\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)$') { $cfg[$Matches[1]] = $Matches[2] }
 }
 
 Remove-Item -Force -ErrorAction SilentlyContinue dist\*.whl, dist\*.tar.gz
-
-# The wheel vendors LoGeR's `loger` package from this submodule (see pyproject
-# [tool.setuptools.packages.find]); it must be populated before uv build.
-git submodule update --init --recursive
-if ($LASTEXITCODE -ne 0) { throw "git submodule update failed" }
 
 # CI passes DRM_BUILD_VERSION: the clean tag for releases, or `<ver>+g<sha>` for
 # branch builds. Stamping it into the wheel makes each binary key its own PyApp
@@ -39,11 +34,11 @@ if ($restorePyproject) {
 }
 if ($buildExit -ne 0) { throw "uv build failed" }
 
-$wheel = Get-ChildItem dist\deepreefmap-*-py3-none-any.whl | Select-Object -First 1
+$wheel = Get-ChildItem dist\deepreefmap_gui-*-py3-none-any.whl | Select-Object -First 1
 if (-not $wheel) { throw "wheel not found in dist/" }
 
 $wheelName = $wheel.Name
-$version = $wheelName -replace '^deepreefmap-', '' -replace '-py3-none-any\.whl$', ''
+$version = $wheelName -replace '^deepreefmap_gui-', '' -replace '-py3-none-any\.whl$', ''
 
 # Clone PyApp source and patch it so install output streams to the terminal
 # (stock PyApp pipes pip/uv output into a spinner and hides it; we want users
@@ -64,20 +59,18 @@ Copy-Item (Join-Path $PSScriptRoot "pyapp_process.rs") (Join-Path $pyappDir "src
 $wheelPath = $wheel.FullName
 $pyappRoot = Join-Path $env:TEMP "pyapp-builder"
 
-$env:PYAPP_PROJECT_NAME = "deepreefmap"
+$env:PYAPP_PROJECT_NAME = "deepreefmap-gui"
 $env:PYAPP_PROJECT_VERSION = $version
 $env:PYAPP_PROJECT_PATH = $wheelPath
-# Install loger + gopro extras into the bundled venv (PyApp appends [features] to the
-# embedded wheel). py-gpmf-parser (gopro) is marker-gated to linux/x86_64, so on
-# Windows it is simply skipped; loger pulls einops/roma/etc. for the LoGeR backend.
-# Map TORCH_VARIANT to its extra + index (table in build_config.env). The
-# --extra-index-url goes through PYAPP_PIP_EXTRA_ARGS so PyApp's first-run
-# `uv pip install` reaches the pinned wheel. unsafe-best-match lets uv fall back
-# to PyPI for packages the torch index also carries but only at stale versions
-# (eg. tqdm); the default first-index strategy fails resolution outright.
+# Map TORCH_VARIANT to its extra + index (table in build_config.env). The extra
+# chains to deepreefmap's exact +local torch pins; loger/gopro arrive through the
+# base deepreefmap[loger,gopro] dependency. The --extra-index-url goes through
+# PYAPP_PIP_EXTRA_ARGS so PyApp's first-run `uv pip install` reaches the pinned
+# wheel. unsafe-best-match lets uv fall back to PyPI for packages the torch index
+# also carries but only at stale versions (eg. tqdm); the default first-index
+# strategy fails resolution outright.
 $torchIndex = if ($env:TORCH_VARIANT) { $cfg["TORCH_INDEX_$($env:TORCH_VARIANT)"] } else { $null }
-$backend = if ($torchIndex) { ",$($env:TORCH_VARIANT)" } else { "" }
-$env:PYAPP_PROJECT_FEATURES = "$($cfg.BASE_FEATURES)$backend"
+$env:PYAPP_PROJECT_FEATURES = if ($torchIndex) { $env:TORCH_VARIANT } else { "" }
 $env:PYAPP_PIP_EXTRA_ARGS = if ($torchIndex) { "--extra-index-url $torchIndex --index-strategy unsafe-best-match" } else { "" }
 $env:PYAPP_EXEC_SPEC = $cfg.PYAPP_EXEC_SPEC
 $env:PYAPP_PYTHON_VERSION = $cfg.PYAPP_PYTHON_VERSION

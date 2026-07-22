@@ -7,9 +7,9 @@ from pathlib import Path
 
 from PySide6.QtGui import QColor
 
-from deepreefmap.gui.core.window_protocol import MixinBase
-from deepreefmap.gui.core.theme import UPDATE
-from deepreefmap.packaging.releases import (
+from deepreefmap_gui.core.window_protocol import MixinBase
+from deepreefmap_gui.core.theme import UPDATE
+from deepreefmap_gui.packaging.releases import (
     current_version,
     fetch_releases,
     newer_releases,
@@ -116,7 +116,7 @@ class VersionCheckMixin(MixinBase):
             self._populate_update_versions()
 
     def _refresh_desktop_entry_button(self) -> None:
-        from deepreefmap.packaging.desktop_entry import desktop_entry_installed
+        from deepreefmap_gui.packaging.desktop_entry import desktop_entry_installed
 
         if desktop_entry_installed():
             self._desktop_entry_btn.setText("Remove from applications menu")
@@ -124,7 +124,7 @@ class VersionCheckMixin(MixinBase):
             self._desktop_entry_btn.setText("Add to applications menu")
 
     def _on_toggle_desktop_entry(self) -> None:
-        from deepreefmap.packaging.desktop_entry import (
+        from deepreefmap_gui.packaging.desktop_entry import (
             desktop_entry_installed,
             install_desktop_entry,
             remove_desktop_entry,
@@ -143,7 +143,7 @@ class VersionCheckMixin(MixinBase):
         self._refresh_desktop_entry_button()
 
     def _on_update(self) -> None:
-        from deepreefmap.gui.update.dialog import UpdateProgressDialog
+        from deepreefmap_gui.update.dialog import UpdateProgressDialog
 
         pyapp_bin = pyapp_binary_path()
         if pyapp_bin is None:

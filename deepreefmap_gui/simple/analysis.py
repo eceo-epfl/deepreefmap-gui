@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from deepreefmap.gui.core.window_protocol import MixinBase
+from deepreefmap_gui.core.window_protocol import MixinBase
 
 import logging
 import uuid
@@ -27,9 +27,9 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QColor
 
 from deepreefmap.config.classes import COVER_LEVELS
-from deepreefmap.gui.map.overlays import OverlayTransect
-from deepreefmap.gui.map.widget import SlippyMapWidget
-from deepreefmap.gui.simple.charts import GroupedBarChart, pass_color
+from deepreefmap_gui.map.overlays import OverlayTransect
+from deepreefmap_gui.map.widget import SlippyMapWidget
+from deepreefmap_gui.simple.charts import GroupedBarChart, pass_color
 from deepreefmap.survey.analysis import (
     assemble_transect_covers,
     cover_labels,

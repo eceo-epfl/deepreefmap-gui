@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from deepreefmap.gui.core.window_protocol import MixinBase
+from deepreefmap_gui.core.window_protocol import MixinBase
 
 import logging
 import threading
@@ -36,14 +36,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from deepreefmap.gui.system.log_view import LogView, install_qt_log_handler
-from deepreefmap.gui.runs.progress import (
+from deepreefmap_gui.system.log_view import LogView, install_qt_log_handler
+from deepreefmap_gui.runs.progress import (
     _LOAD_PHASES,
     _RECON_PHASES,
     ProgressModel,
 )
-from deepreefmap.packaging.releases import current_version, pyapp_binary_path
-from deepreefmap.gui.core.theme import (
+from deepreefmap_gui.packaging.releases import current_version, pyapp_binary_path
+from deepreefmap_gui.core.theme import (
     BAR_HEIGHT,
     BLOCK,
     BORDER,
@@ -60,10 +60,10 @@ from deepreefmap.gui.core.theme import (
     WARN_TEXT,
     bar_qss,
 )
-from deepreefmap.gui.core.spinner import SpinnerStopButton
-from deepreefmap.gui.form.time_edit import TimeSecondsEdit
-from deepreefmap.gui.runs.sunburst import SunburstWidget
-from deepreefmap.gui.runs.timing_popup import HoverColumn
+from deepreefmap_gui.core.spinner import SpinnerStopButton
+from deepreefmap_gui.form.time_edit import TimeSecondsEdit
+from deepreefmap_gui.runs.sunburst import SunburstWidget
+from deepreefmap_gui.runs.timing_popup import HoverColumn
 
 logger = logging.getLogger(__name__)
 
@@ -216,7 +216,7 @@ class FormPanelMixin(MixinBase):
         models_layout = QVBoxLayout(self._models_tab)
         models_layout.setContentsMargins(4, 6, 4, 4)
         models_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        from deepreefmap.gui.system.panel import build_system_tab
+        from deepreefmap_gui.system.panel import build_system_tab
 
         # The System tab hosts the gauges/benchmark first, with the updates section
         # appended below into the same layout.
@@ -260,7 +260,7 @@ class FormPanelMixin(MixinBase):
         # initialisation code can reference them before the toolbar is laid out.
         # "+" icon button on the far left of the top bar clears the loaded run
         # in both modes.
-        from deepreefmap.gui.core.icons import plus_icon
+        from deepreefmap_gui.core.icons import plus_icon
 
         self._new_run_btn = QPushButton()
         self._new_run_btn.setIcon(plus_icon(20))
@@ -434,7 +434,7 @@ class FormPanelMixin(MixinBase):
         label_row.setContentsMargins(0, 0, 0, 0)
         label_row.setSpacing(4)
         label_row.addWidget(QLabel("Output root"))
-        from deepreefmap.gui.core.icons import arrow_right_icon
+        from deepreefmap_gui.core.icons import arrow_right_icon
 
         root_open_btn = QPushButton()
         root_open_btn.setIcon(arrow_right_icon(18))
@@ -822,7 +822,7 @@ class FormPanelMixin(MixinBase):
         # Transport controls live at the bottom-right of the window, next to the
         # progress bar they drive. Play shows in SETUP (advanced only), pause and
         # the animated stop-spinner while a run is in flight.
-        from deepreefmap.gui.core.icons import pause_icon, play_icon
+        from deepreefmap_gui.core.icons import pause_icon, play_icon
 
         self._start_btn = QPushButton()
         self._start_btn.setIcon(play_icon(_TRANSPORT_ICON))
@@ -1160,7 +1160,7 @@ class FormPanelMixin(MixinBase):
         # installers; on Linux the bare binary registers itself on demand. The
         # entry points at the current binary path, which the in-app updater
         # swaps in place, so it survives updates and rollbacks.
-        from deepreefmap.packaging.desktop_entry import desktop_entry_supported
+        from deepreefmap_gui.packaging.desktop_entry import desktop_entry_supported
 
         self._desktop_entry_btn = QPushButton()
         self._desktop_entry_btn.clicked.connect(self._on_toggle_desktop_entry)
@@ -1489,7 +1489,7 @@ class FormPanelMixin(MixinBase):
         if self._skip_seg_check.isChecked():
             self._gated_warning.setVisible(False)
             return
-        from deepreefmap.gui.models.manager import DPT_BACKBONE_MAP
+        from deepreefmap_gui.models.manager import DPT_BACKBONE_MAP
 
         backbone_name = DPT_BACKBONE_MAP.get(seg_name)
         if not backbone_name:
@@ -1632,7 +1632,7 @@ class FormPanelMixin(MixinBase):
 
     def _open_scrub_dialog(self) -> None:
         """Preview the video and write the scrubbed range into the spinboxes."""
-        from deepreefmap.gui.form.video_scrub import VideoScrubDialog
+        from deepreefmap_gui.form.video_scrub import VideoScrubDialog
 
         path = self._video_input.text().strip()
         if not path or not Path(path).exists() or self._video_duration_s is None:

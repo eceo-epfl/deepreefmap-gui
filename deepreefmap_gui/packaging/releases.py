@@ -8,7 +8,7 @@ import os
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_GH_REPO = "eceo-epfl/deepreefmap"
+_DEFAULT_GH_REPO = "eceo-epfl/deepreefmap-gui"
 
 
 def gh_releases_url() -> str:
@@ -27,7 +27,7 @@ def pyapp_binary_path() -> str | None:
     """Running PyApp binary path for update controls, honouring the test mock."""
     if os.environ.get("DEEPREEFMAP_MOCK_PYAPP"):
         return "/tmp/mock-pyapp"
-    from deepreefmap.packaging.binary_swap import pyapp_binary
+    from deepreefmap_gui.packaging.binary_swap import pyapp_binary
 
     return pyapp_binary()
 
@@ -63,7 +63,7 @@ def fetch_releases(timeout: float = 8.0) -> list[dict] | None:
     """
     import urllib.request
 
-    from deepreefmap.packaging.binary_swap import BinarySwapError, match_asset_url, resolve_asset_name
+    from deepreefmap_gui.packaging.binary_swap import BinarySwapError, match_asset_url, resolve_asset_name
 
     mock = os.environ.get("DEEPREEFMAP_MOCK_VERSIONS")
     if mock is not None:
@@ -76,12 +76,12 @@ def fetch_releases(timeout: float = 8.0) -> list[dict] | None:
                 "draft": False,
                 "assets": [
                     {
-                        "name": "deepreefmap-linux-x64",
-                        "browser_download_url": f"https://example.invalid/v{v}/deepreefmap-linux-x64",
+                        "name": "deepreefmap-gui-linux-x64",
+                        "browser_download_url": f"https://example.invalid/v{v}/deepreefmap-gui-linux-x64",
                     },
                     {
-                        "name": "deepreefmap-windows-x64.exe",
-                        "browser_download_url": f"https://example.invalid/v{v}/deepreefmap-windows-x64.exe",
+                        "name": "deepreefmap-gui-windows-x64.exe",
+                        "browser_download_url": f"https://example.invalid/v{v}/deepreefmap-gui-windows-x64.exe",
                     },
                 ],
             })
@@ -158,6 +158,6 @@ def current_version() -> str:
     import importlib.metadata
 
     try:
-        return importlib.metadata.version("deepreefmap")
+        return importlib.metadata.version("deepreefmap-gui")
     except importlib.metadata.PackageNotFoundError:
         return "0.0.0"

@@ -10,7 +10,7 @@ def test_overlay_has_reset_button_and_r_shortcut_triggers_view_reset(qapp) -> No
     from PySide6.QtGui import QKeySequence, QShortcut
 
     from deepreefmap.config.classes import load_classes
-    from deepreefmap.gui.app import DeepReefMapWindow
+    from deepreefmap_gui.app import DeepReefMapWindow
 
     cc = load_classes()
     window = DeepReefMapWindow(cc, None)
@@ -40,7 +40,7 @@ def test_overlay_has_reset_button_and_r_shortcut_triggers_view_reset(qapp) -> No
 def test_legend_overlay_reorder_places_rows(qapp) -> None:
     from PySide6.QtWidgets import QWidget
 
-    from deepreefmap.gui.viewer.legend import LegendOverlay
+    from deepreefmap_gui.viewer.legend import LegendOverlay
 
     parent = QWidget()
     ov = LegendOverlay(parent)
@@ -102,7 +102,7 @@ def test_master_checkbox_select_deselect_and_partial(qapp) -> None:
     from PySide6.QtCore import Qt
 
     from deepreefmap.config.classes import load_classes
-    from deepreefmap.gui.app import DeepReefMapWindow
+    from deepreefmap_gui.app import DeepReefMapWindow
 
     cc = load_classes()
     window = DeepReefMapWindow(cc, None)

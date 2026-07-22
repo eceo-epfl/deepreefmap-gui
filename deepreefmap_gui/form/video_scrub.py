@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from deepreefmap.gui.core.theme import BORDER, CARD_BG, PREVIEW_BG, PRIMARY, PRIMARY_DARK, SLIDER_HANDLE
+from deepreefmap_gui.core.theme import BORDER, CARD_BG, PREVIEW_BG, PRIMARY, PRIMARY_DARK, SLIDER_HANDLE
 
 # 10 ms ticks: fine enough to trim by eye, coarse enough for int slider ranges.
 _TICKS_PER_S = 100

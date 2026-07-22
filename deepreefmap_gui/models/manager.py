@@ -238,7 +238,7 @@ def discover_models() -> tuple[list[str], str | None]:
     try:
         from huggingface_hub import HfApi
 
-        from deepreefmap.gui.models.families import synthesize_model_info
+        from deepreefmap_gui.models.families import synthesize_model_info
         from deepreefmap.segmentation.registry import register_segmentation_model
 
         repos = HfApi().list_models(author="EPFL-ECEO")

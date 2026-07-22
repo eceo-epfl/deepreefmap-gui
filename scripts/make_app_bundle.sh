@@ -18,13 +18,13 @@ STAGE=$(mktemp -d)
 APP="$STAGE/DeepReefMap.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
-cp "$BINARY" "$APP/Contents/MacOS/deepreefmap"
-chmod +x "$APP/Contents/MacOS/deepreefmap"
+cp "$BINARY" "$APP/Contents/MacOS/deepreefmap-gui"
+chmod +x "$APP/Contents/MacOS/deepreefmap-gui"
 
 # Icon: PNG -> iconset -> icns (sips/iconutil ship with macOS).
 ICONSET=$(mktemp -d)/icon.iconset
 mkdir -p "$ICONSET"
-SRC_PNG="deepreefmap/resources/icon.png"
+SRC_PNG="deepreefmap_gui/resources/icon.png"
 for size in 16 32 64 128 256 512; do
   sips -z "$size" "$size" "$SRC_PNG" --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
   sips -z "$((size * 2))" "$((size * 2))" "$SRC_PNG" \
@@ -41,13 +41,13 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key>
-    <string>ch.epfl.eceo.deepreefmap</string>
+    <string>ch.epfl.eceo.deepreefmap-gui</string>
     <key>CFBundleName</key>
     <string>DeepReefMap</string>
     <key>CFBundleDisplayName</key>
     <string>DeepReefMap</string>
     <key>CFBundleExecutable</key>
-    <string>deepreefmap</string>
+    <string>deepreefmap-gui</string>
     <key>CFBundleIconFile</key>
     <string>icon</string>
     <key>CFBundlePackageType</key>

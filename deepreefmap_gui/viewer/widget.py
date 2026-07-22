@@ -30,13 +30,13 @@ from PySide6.QtWidgets import (
 )
 
 from deepreefmap.pointcloud.final_cloud_index import FinalCloudIndex, build_final_cloud_index
-from deepreefmap.gui.viewer.live_frame_cloud import (
+from deepreefmap.pointcloud.live_frame_cloud import (
     LiveFrameCloudCache,
     build_enabled_label_lut,
     mask_points_by_enabled_lut,
 )
-from deepreefmap.gui.viewer.legend import LegendOverlay
-from deepreefmap.gui.core.theme import (
+from deepreefmap_gui.viewer.legend import LegendOverlay
+from deepreefmap_gui.core.theme import (
     BORDER,
     CARD_BG,
     GROOVE,
@@ -47,8 +47,8 @@ from deepreefmap.gui.core.theme import (
     SLIDER_HANDLE,
     TEXT_SECONDARY,
 )
-from deepreefmap.gui.viewer.picking import ViewerPickingMixin
-from deepreefmap.gui.viewer.render import (
+from deepreefmap_gui.viewer.picking import ViewerPickingMixin
+from deepreefmap_gui.viewer.render import (
     _build_frustum_lines,
     _colorize_depth,
     _colorize_seg,

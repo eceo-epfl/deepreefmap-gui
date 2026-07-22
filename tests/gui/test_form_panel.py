@@ -25,7 +25,7 @@ def test_loger_options_collected_from_form(window) -> None:
 def test_form_defaults_to_vit_b_and_loger_star(qapp) -> None:
     pytest.importorskip("torch", reason="torch not loadable on this machine")
     from deepreefmap.config.classes import load_classes
-    from deepreefmap.gui.app import DeepReefMapWindow
+    from deepreefmap_gui.app import DeepReefMapWindow
     from deepreefmap.mapping.registry import loger_available
 
     window = DeepReefMapWindow(load_classes(), None)
@@ -47,7 +47,7 @@ def test_loger_panel_visibility_follows_backend(window) -> None:
 
 
 def test_time_edit_parses_clamps_and_reverts(qapp) -> None:
-    from deepreefmap.gui.form.time_edit import TimeSecondsEdit
+    from deepreefmap_gui.form.time_edit import TimeSecondsEdit
 
     edit = TimeSecondsEdit()
     edit.setText("12.5")

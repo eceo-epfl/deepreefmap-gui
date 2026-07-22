@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from deepreefmap.gui.runs.progress import (
+from deepreefmap_gui.runs.progress import (
     _MAPPING_SUBPHASE_SPANS,
     _RECON_PHASES,
     _STAGE_MESSAGE_TO_PHASE,

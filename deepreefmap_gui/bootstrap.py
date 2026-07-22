@@ -65,7 +65,7 @@ def _refresh_uninstall_display_version() -> None:
         import importlib.metadata
         import winreg
 
-        version = importlib.metadata.version("deepreefmap")
+        version = importlib.metadata.version("deepreefmap-gui")
         with winreg.OpenKey(
             winreg.HKEY_CURRENT_USER, _UNINSTALL_KEY, 0, winreg.KEY_SET_VALUE
         ) as key:
@@ -82,7 +82,7 @@ def main() -> None:
         _attach_parent_console()
     _ensure_stdio_streams()
 
-    from deepreefmap.packaging.binary_swap import (
+    from deepreefmap_gui.packaging.binary_swap import (
         cleanup_stale_backups,
         env_is_healthy,
         prune_stale_envs,
@@ -115,7 +115,7 @@ def main() -> None:
         app(args)
         return
 
-    from deepreefmap.gui.app import launch
+    from deepreefmap_gui.app import launch
 
     launch()
 

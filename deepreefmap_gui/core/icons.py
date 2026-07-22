@@ -5,7 +5,7 @@ from __future__ import annotations
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 
-from deepreefmap.gui.core.theme import SUCCESS, WARNING
+from deepreefmap_gui.core.theme import SUCCESS, WARNING
 
 
 def _px(size: int = 24, bg: QColor | None = None) -> tuple[QPixmap, QPainter]:

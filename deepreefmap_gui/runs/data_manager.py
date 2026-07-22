@@ -30,9 +30,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from deepreefmap.gui.core.theme import TEXT_SECONDARY
-from deepreefmap.gui.core.window_protocol import MixinBase
-from deepreefmap.gui.runs.run_cards import (
+from deepreefmap_gui.core.theme import TEXT_SECONDARY
+from deepreefmap_gui.core.window_protocol import MixinBase
+from deepreefmap_gui.runs.run_cards import (
     RUN_META_ROLE,
     RunCardDelegate,
     build_run_card_meta,

@@ -1,0 +1,45 @@
+# Python environment and build artifacts
+.venv/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Runtime outputs
+out/
+out_*/
+
+# End-to-end update harness caches
+tests/e2e/_cache/
+tests/e2e/_work/
+
+# Local editor/system files
+.DS_Store
+.vscode/
+
+# Large model/checkpoint artifacts
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.safetensors
+
+# Large binary/data artifacts
+*.npy
+*.npz
+*.pkl
+
+# Common large compressed outputs
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+
+*.tmp

@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QStyleOptionViewItem,
 )
 
-from deepreefmap.gui.core.theme import BANNER_TEXT, CARD_BG
+from deepreefmap_gui.core.theme import BANNER_TEXT, CARD_BG
 from deepreefmap.profiling.eta import format_duration
 from deepreefmap.survey.catalogue import run_duration_s
 

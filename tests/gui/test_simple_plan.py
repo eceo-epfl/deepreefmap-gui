@@ -118,7 +118,7 @@ def test_copy_endpoint_puts_latlon_on_clipboard(plan_window, monkeypatch):
         def clipboard():
             return _Clipboard()
 
-    monkeypatch.setattr("deepreefmap.gui.simple.plan.QGuiApplication", _App)
+    monkeypatch.setattr("deepreefmap_gui.simple.plan.QGuiApplication", _App)
     w = plan_window
     w._tr_start_coord.setText("-17.500000, 177.100000")
     w._copy_endpoint("start")
@@ -196,7 +196,7 @@ def test_import_csv_skips_existing(plan_window, tmp_path, monkeypatch):
     csv_path = tmp_path / "in.csv"
     save_transects_csv(csv_path, [existing, make_transect("T2")])
     monkeypatch.setattr(
-        "deepreefmap.gui.simple.plan.QFileDialog.getOpenFileName",
+        "deepreefmap_gui.simple.plan.QFileDialog.getOpenFileName",
         staticmethod(lambda *a, **k: (str(csv_path), "")),
     )
     w._on_transects_import()
@@ -210,7 +210,7 @@ def test_export_csv_round_trip(plan_window, tmp_path, monkeypatch):
     w._survey_store().add_transect(make_transect())
     out_path = tmp_path / "out.csv"
     monkeypatch.setattr(
-        "deepreefmap.gui.simple.plan.QFileDialog.getSaveFileName",
+        "deepreefmap_gui.simple.plan.QFileDialog.getSaveFileName",
         staticmethod(lambda *a, **k: (str(out_path), "")),
     )
     w._on_transects_export()

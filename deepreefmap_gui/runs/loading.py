@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from deepreefmap.gui.core.window_protocol import MixinBase
+from deepreefmap_gui.core.window_protocol import MixinBase
 
 import logging
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from deepreefmap.gui.system.log_view import close_run_log_file, open_run_log_file
-from deepreefmap.gui.runs.progress import _LOAD_STAGE_TO_PHASE, _STAGE_MESSAGE_TO_PHASE
+from deepreefmap_gui.system.log_view import close_run_log_file, open_run_log_file
+from deepreefmap_gui.runs.progress import _LOAD_STAGE_TO_PHASE, _STAGE_MESSAGE_TO_PHASE
 
 if TYPE_CHECKING:
     from deepreefmap.pipeline.run_loader import LoadedRun
@@ -232,7 +232,7 @@ class RunLoadingMixin(MixinBase):
     def _on_pause_toggled(self, paused: bool) -> None:
         if not hasattr(self, "_pause_event") or self._pause_event is None:
             return
-        from deepreefmap.gui.core.icons import pause_icon, play_icon
+        from deepreefmap_gui.core.icons import pause_icon, play_icon
 
         if paused:
             self._pause_event.clear()

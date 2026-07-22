@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from deepreefmap.gui.core.window_protocol import MixinBase
+from deepreefmap_gui.core.window_protocol import MixinBase
 
 import logging
 import sqlite3
@@ -29,8 +29,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from deepreefmap.gui.core.theme import WARN_BG, WARN_BORDER, WARN_TEXT
-from deepreefmap.gui.form.video_scrub import VideoScrubDialog
+from deepreefmap_gui.core.theme import WARN_BG, WARN_BORDER, WARN_TEXT
+from deepreefmap_gui.form.video_scrub import VideoScrubDialog
 from deepreefmap.pipeline.artifacts import ReconstructionCancelled
 from deepreefmap.survey.models import (
     PASS_DIRECTIONS,
@@ -171,7 +171,7 @@ class SimpleBatchMixin(MixinBase):
 
     def _on_edit_run_settings(self) -> None:
         """Open the real run form in a dialog and adopt whatever comes back."""
-        from deepreefmap.gui.simple.settings_dialog import RunSettingsDialog
+        from deepreefmap_gui.simple.settings_dialog import RunSettingsDialog
 
         if self._survey_worker_running:
             self._status_label.setText("Wait for the current batch to finish.")
@@ -410,7 +410,7 @@ class SimpleBatchMixin(MixinBase):
     def _survey_missing_models(self) -> list[str]:
         if self._survey_preset is None:
             return []
-        from deepreefmap.gui.models.manager import ALL_MODELS, DPT_BACKBONE_MAP, is_model_cached
+        from deepreefmap_gui.models.manager import ALL_MODELS, DPT_BACKBONE_MAP, is_model_cached
 
         required = {self._survey_preset["mapping_name"]}
         if not self._survey_preset["skip_segmentation"]:

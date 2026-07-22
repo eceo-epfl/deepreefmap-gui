@@ -6,7 +6,7 @@ way the dialog closes.
 
 import pytest
 
-from deepreefmap.gui.simple.settings_dialog import RunSettingsDialog
+from deepreefmap_gui.simple.settings_dialog import RunSettingsDialog
 
 
 @pytest.fixture

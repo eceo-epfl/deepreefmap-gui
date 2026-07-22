@@ -58,7 +58,7 @@ def _fake_winreg(opened: list[str], values: dict[str, str]) -> SimpleNamespace:
 
 
 def test_uninstall_key_matches_installer_app_id(monkeypatch) -> None:
-    import deepreefmap.bootstrap as bootstrap
+    import deepreefmap_gui.bootstrap as bootstrap
 
     opened: list[str] = []
     values: dict[str, str] = {}
@@ -70,4 +70,4 @@ def test_uninstall_key_matches_installer_app_id(monkeypatch) -> None:
     app_id = _installer_app_id()
     expected = rf"Software\Microsoft\Windows\CurrentVersion\Uninstall\{app_id}_is1"
     assert opened == [expected], "bootstrap.py writes to a key the installer never makes"
-    assert values["DisplayVersion"] == importlib.metadata.version("deepreefmap")
+    assert values["DisplayVersion"] == importlib.metadata.version("deepreefmap-gui")

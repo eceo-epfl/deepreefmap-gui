@@ -9,7 +9,7 @@ def test_apply_theme_sets_dark_palette(qapp) -> None:
     # the global stylesheet wraps in an empty-named QStyleSheetStyle proxy).
     from PySide6.QtGui import QPalette
 
-    from deepreefmap.gui.core.theme import apply_theme
+    from deepreefmap_gui.core.theme import apply_theme
 
     prev_style = qapp.style().objectName()
     prev_palette = QPalette(qapp.palette())
@@ -30,7 +30,7 @@ def test_apply_theme_sets_dark_palette(qapp) -> None:
 def test_theme_semantic_constants_are_valid_hex() -> None:
     from PySide6.QtGui import QColor
 
-    from deepreefmap.gui.core import theme
+    from deepreefmap_gui.core import theme
 
     for name in ("SUCCESS", "WARNING", "ERROR", "PRIMARY", "LINK", "UPDATE", "DANGER_BG"):
         assert QColor(getattr(theme, name)).isValid()

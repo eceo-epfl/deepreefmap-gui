@@ -21,7 +21,7 @@
 # --interactive serves a fake GitHub releases endpoint instead of asserting:
 # launch the printed command in another shell and drive the Updates tab as a
 # user would. Binaries persist under /tmp/drm-update-test for fast re-runs;
-# --asset overrides the served name (e.g. deepreefmap-linux-x64-rocm).
+# --asset overrides the served name (e.g. deepreefmap-gui-linux-x64-rocm).
 set -euo pipefail
 
 old_version=1.1.0
@@ -40,9 +40,9 @@ work=$(mktemp -d)
 data_dir="$work/data"
 
 case "$(uname -s)" in
-    Linux)                os_kind=linux;   ext="";     src_bin=deepreefmap-linux-x64 ;;
-    Darwin)               os_kind=darwin;  ext="";     src_bin=deepreefmap-macos-arm64 ;;
-    MINGW*|MSYS*|CYGWIN*) os_kind=windows; ext=".exe"; src_bin=deepreefmap-windows-x64.exe ;;
+    Linux)                os_kind=linux;   ext="";     src_bin=deepreefmap-gui-linux-x64 ;;
+    Darwin)               os_kind=darwin;  ext="";     src_bin=deepreefmap-gui-macos-arm64 ;;
+    MINGW*|MSYS*|CYGWIN*) os_kind=windows; ext=".exe"; src_bin=deepreefmap-gui-windows-x64.exe ;;
     *) echo "unsupported OS: $(uname -s)" >&2; exit 2 ;;
 esac
 
@@ -96,7 +96,7 @@ swap_binary() {
 import sys
 from pathlib import Path
 
-from deepreefmap.packaging.binary_swap import perform_update
+from deepreefmap_gui.packaging.binary_swap import perform_update
 
 binary, asset, port, version = sys.argv[1:5]
 release = {
@@ -144,7 +144,7 @@ Also served: an asset-less v1.0.0. Tick "Show older versions (rollback)" and
 confirm it is NOT listed.
 Watch the environments (one before, two mid-update, one after the relaunch):
 
-    ls ${data_dir}/pyapp/deepreefmap/*/
+    ls ${data_dir}/pyapp/deepreefmap-gui/*/
 
 Ctrl-C here to stop the server.
 ============================================================================
@@ -188,9 +188,9 @@ esac
 echo "==> Provisioning + smoke-checking the old binary"
 py "$bin_old" -c '
 import importlib
-importlib.import_module("deepreefmap.bootstrap")  # the exec spec target
-importlib.import_module("deepreefmap.gui.app")     # what bootstrap launches
-from deepreefmap.packaging.binary_swap import env_is_healthy
+importlib.import_module("deepreefmap_gui.bootstrap")  # the exec spec target
+importlib.import_module("deepreefmap_gui.app")     # what bootstrap launches
+from deepreefmap_gui.packaging.binary_swap import env_is_healthy
 assert env_is_healthy(), "fresh environment reported unhealthy"
 print("  smoke ok")
 '
@@ -199,7 +199,7 @@ echo "  old env: $env_old"
 [ -d "$env_old" ] || { echo "old env missing: $env_old" >&2; exit 1; }
 
 # The served asset must match what the running binary requests.
-asset=$(py "$bin_old" -c 'from deepreefmap.packaging.binary_swap import resolve_asset_name; print(resolve_asset_name())')
+asset=$(py "$bin_old" -c 'from deepreefmap_gui.packaging.binary_swap import resolve_asset_name; print(resolve_asset_name())')
 serve="$work/serve"; mkdir -p "$serve"
 cp "$bin_new" "$serve/$asset"
 
@@ -234,7 +234,7 @@ mkdir -p "$env_stale/python"
 touch -d '2000-01-01' "$env_stale" 2>/dev/null || touch -t 200001010000 "$env_stale"
 
 echo "==> Relaunching the new binary: provision + prune"
-py "$bin_old" -c 'import deepreefmap; from deepreefmap.packaging.binary_swap import prune_stale_envs; print("  pruned:", prune_stale_envs())'
+py "$bin_old" -c 'import deepreefmap; from deepreefmap_gui.packaging.binary_swap import prune_stale_envs; print("  pruned:", prune_stale_envs())'
 env_new=$(posix "$(py "$bin_old" -c 'import os, sys; print(os.path.dirname(sys.prefix))')")
 echo "  new env: $env_new"
 
@@ -259,7 +259,7 @@ if [ "$os_kind" = darwin ]; then
     app="$work/DeepReefMap.app"
     cp -R "$mnt/DeepReefMap.app" "$app"
     hdiutil detach "$mnt" >/dev/null
-    inner="$app/Contents/MacOS/deepreefmap"
+    inner="$app/Contents/MacOS/deepreefmap-gui"
 
     before=$(shasum "$inner" | awk '{print $1}')
     swap_binary "$inner"
@@ -268,7 +268,7 @@ if [ "$os_kind" = darwin ]; then
 
     py "$inner" -c '
 import deepreefmap
-from deepreefmap.packaging.binary_swap import env_is_healthy
+from deepreefmap_gui.packaging.binary_swap import env_is_healthy
 assert env_is_healthy(), "swapped .app environment reported unhealthy"
 print("  .app inner binary relaunches after swap")
 '

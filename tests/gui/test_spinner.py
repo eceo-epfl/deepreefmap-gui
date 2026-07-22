@@ -14,7 +14,7 @@ def _isolate_run_history(tmp_path, monkeypatch):
 
 
 def test_spinner_timer_tracks_visibility(qapp) -> None:
-    from deepreefmap.gui.core.spinner import SpinnerStopButton
+    from deepreefmap_gui.core.spinner import SpinnerStopButton
 
     btn = SpinnerStopButton()
     assert not btn._timer.isActive()
@@ -25,7 +25,7 @@ def test_spinner_timer_tracks_visibility(qapp) -> None:
 
 
 def test_spinner_stopping_disables_button(qapp) -> None:
-    from deepreefmap.gui.core.spinner import SpinnerStopButton
+    from deepreefmap_gui.core.spinner import SpinnerStopButton
 
     btn = SpinnerStopButton()
     assert btn.isEnabled()
@@ -37,7 +37,7 @@ def test_spinner_stopping_disables_button(qapp) -> None:
 
 
 def test_spinner_emits_clicked(qapp) -> None:
-    from deepreefmap.gui.core.spinner import SpinnerStopButton
+    from deepreefmap_gui.core.spinner import SpinnerStopButton
 
     fired = []
     btn = SpinnerStopButton()
@@ -54,7 +54,7 @@ def _plain(html: str) -> str:
 
 
 def test_status_ticker_appends_elapsed_and_keeps_base(make_window, monkeypatch) -> None:
-    import deepreefmap.gui.runs.progress as progress_mod
+    import deepreefmap_gui.runs.progress as progress_mod
 
     window = make_window()
     window._begin_progress(window._recon_model)
@@ -73,7 +73,7 @@ def test_status_ticker_appends_elapsed_and_keeps_base(make_window, monkeypatch) 
 
 
 def test_status_ticker_resets_per_stage(make_window, monkeypatch) -> None:
-    import deepreefmap.gui.runs.progress as progress_mod
+    import deepreefmap_gui.runs.progress as progress_mod
 
     window = make_window()
     window._begin_progress(window._recon_model)
@@ -168,7 +168,7 @@ def test_simple_mode_never_shows_a_start_button(make_window) -> None:
 
 
 def test_bars_carry_no_text_and_overall_estimate_is_visible(make_window, monkeypatch, tmp_path) -> None:
-    import deepreefmap.gui.runs.progress as progress_mod
+    import deepreefmap_gui.runs.progress as progress_mod
 
     # Isolate the profile so the total slot's first-run state is deterministic.
     monkeypatch.setenv("DEEPREEFMAP_RUN_TIMINGS", str(tmp_path / "none.json"))
@@ -191,7 +191,7 @@ def test_bars_carry_no_text_and_overall_estimate_is_visible(make_window, monkeyp
 
 
 def test_first_run_popup_hides_future_estimates_but_shows_measured(make_window, monkeypatch, tmp_path) -> None:
-    import deepreefmap.gui.runs.progress as progress_mod
+    import deepreefmap_gui.runs.progress as progress_mod
     from PySide6.QtCore import QPointF
 
     # Isolate the timing profile so the host machine's real history can't leak in.
@@ -211,7 +211,7 @@ def test_first_run_popup_hides_future_estimates_but_shows_measured(make_window, 
 
 
 def test_hover_popup_builds_rows_from_estimator(make_window, monkeypatch) -> None:
-    import deepreefmap.gui.runs.progress as progress_mod
+    import deepreefmap_gui.runs.progress as progress_mod
     from PySide6.QtCore import QPointF
 
     window = make_window()
@@ -257,7 +257,7 @@ def test_status_and_transport_live_in_the_bottom_bar(window) -> None:
 
 
 def test_spinner_honours_a_larger_size(qapp) -> None:
-    from deepreefmap.gui.core.spinner import SpinnerStopButton
+    from deepreefmap_gui.core.spinner import SpinnerStopButton
 
     assert SpinnerStopButton(size=40).width() == 40
     assert SpinnerStopButton().width() == 26

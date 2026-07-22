@@ -6,7 +6,7 @@ the ortho builder's own defaults, which differ from the run's settings.
 
 from __future__ import annotations
 
-from deepreefmap.gui.runs.loading import _manifest_grid_bins, _manifest_transect_crop
+from deepreefmap_gui.runs.loading import _manifest_grid_bins, _manifest_transect_crop
 
 
 def test_grid_bins_come_from_the_manifest() -> None:

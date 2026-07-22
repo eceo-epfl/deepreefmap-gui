@@ -1,6 +1,6 @@
 import pytest
 
-from deepreefmap.gui.map.tile_math import clamp_zoom, deg2tile, fit_zoom, tile2deg
+from deepreefmap_gui.map.tile_math import clamp_zoom, deg2tile, fit_zoom, tile2deg
 
 
 def test_origin_is_tile_grid_center():

@@ -20,23 +20,23 @@ from PySide6.QtWidgets import (
 )
 
 from deepreefmap.config.classes import ClassConfig
-from deepreefmap.gui.core.theme import BANNER_BG, BANNER_BORDER, BANNER_TEXT
-from deepreefmap.gui.form.batch import BatchMixin
-from deepreefmap.gui.form.panel import FormPanelMixin
-from deepreefmap.gui.models.management import ModelManagementMixin
-from deepreefmap.gui.runs.data_manager import DataManagerMixin
-from deepreefmap.gui.runs.past_runs import PastRunsMixin
-from deepreefmap.gui.runs.progress_panel import ProgressPanel
-from deepreefmap.gui.runs.results import ResultsMixin
-from deepreefmap.gui.runs.loading import RunLoadingMixin
-from deepreefmap.gui.simple.analysis import SimpleAnalysisMixin
-from deepreefmap.gui.simple.batch import SimpleBatchMixin
-from deepreefmap.gui.simple.mode import UiModeMixin
-from deepreefmap.gui.simple.plan import SimplePlanMixin
-from deepreefmap.gui.system.panel import SystemPanelMixin
-from deepreefmap.gui.viewer.controls import ViewerControlsMixin
-from deepreefmap.gui.runs.progress import ProgressBarsMixin
-from deepreefmap.gui.update.version import VersionCheckMixin
+from deepreefmap_gui.core.theme import BANNER_BG, BANNER_BORDER, BANNER_TEXT
+from deepreefmap_gui.form.batch import BatchMixin
+from deepreefmap_gui.form.panel import FormPanelMixin
+from deepreefmap_gui.models.management import ModelManagementMixin
+from deepreefmap_gui.runs.data_manager import DataManagerMixin
+from deepreefmap_gui.runs.past_runs import PastRunsMixin
+from deepreefmap_gui.runs.progress_panel import ProgressPanel
+from deepreefmap_gui.runs.results import ResultsMixin
+from deepreefmap_gui.runs.loading import RunLoadingMixin
+from deepreefmap_gui.simple.analysis import SimpleAnalysisMixin
+from deepreefmap_gui.simple.batch import SimpleBatchMixin
+from deepreefmap_gui.simple.mode import UiModeMixin
+from deepreefmap_gui.simple.plan import SimplePlanMixin
+from deepreefmap_gui.system.panel import SystemPanelMixin
+from deepreefmap_gui.viewer.controls import ViewerControlsMixin
+from deepreefmap_gui.runs.progress import ProgressBarsMixin
+from deepreefmap_gui.update.version import VersionCheckMixin
 
 logger = logging.getLogger(__name__)
 
@@ -120,7 +120,7 @@ class DeepReefMapWindow(
         # width.
         self.setMinimumSize(720, 480)
 
-        from deepreefmap.gui.viewer.widget import QtPointCloudViewer
+        from deepreefmap_gui.viewer.widget import QtPointCloudViewer
 
         self._viewer = QtPointCloudViewer(
             class_colors=classes_config.id_to_color,
@@ -228,7 +228,7 @@ def launch(classes_path: Path | None = None, view_run_dir: Path | None = None) -
     )
     # After basicConfig: the root StreamHandler keeps the real stderr, so
     # redirected writes can't loop back through it.
-    from deepreefmap.gui.system.log_view import redirect_std_streams_to_logging
+    from deepreefmap_gui.system.log_view import redirect_std_streams_to_logging
 
     redirect_std_streams_to_logging()
     if os.environ.get("WAYLAND_DISPLAY") and not os.environ.get("QT_QPA_PLATFORM"):
@@ -244,13 +244,13 @@ def launch(classes_path: Path | None = None, view_run_dir: Path | None = None) -
     QApplication.setApplicationName("DeepReefMap")
     QApplication.setApplicationDisplayName("DeepReefMap")
     qt_app = cast(QApplication, QApplication.instance() or QApplication(sys.argv))
-    from deepreefmap.gui.core.fonts import apply_app_fonts
-    from deepreefmap.gui.core.theme import apply_theme
+    from deepreefmap_gui.core.fonts import apply_app_fonts
+    from deepreefmap_gui.core.theme import apply_theme
 
     apply_app_fonts(qt_app)
     apply_theme(qt_app)
     from importlib import resources
-    icon_path = resources.files("deepreefmap.resources").joinpath("icon.png")
+    icon_path = resources.files("deepreefmap_gui.resources").joinpath("icon.png")
     qt_app.setWindowIcon(QIcon(str(icon_path)))
     classes_config = load_classes(classes_path)
     window = DeepReefMapWindow(classes_config, classes_path)

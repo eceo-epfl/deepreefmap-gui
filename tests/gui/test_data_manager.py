@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from deepreefmap.gui.runs.run_cards import RUN_META_ROLE
+from deepreefmap_gui.runs.run_cards import RUN_META_ROLE
 from deepreefmap.survey.catalogue import UNASSIGNED_TITLE
 from deepreefmap.survey.models import RunRecord, Transect, TransectPass, VideoAsset
 from deepreefmap.survey.models.convert import survey_manifest_block
@@ -132,7 +132,7 @@ def test_rename_updates_manifest_and_card(tmp_path, make_window, monkeypatch):
     window = make_window()
     window._data_run_list.setCurrentRow(0)
     monkeypatch.setattr(
-        "deepreefmap.gui.runs.data_manager.QInputDialog.getText",
+        "deepreefmap_gui.runs.data_manager.QInputDialog.getText",
         staticmethod(lambda *a, **k: ("reef north", True)),
     )
     window._on_data_rename_clicked()
@@ -149,7 +149,7 @@ def test_delete_removes_run_after_confirmation(tmp_path, make_window, monkeypatc
     window = make_window()
     window._data_run_list.setCurrentRow(0)
     monkeypatch.setattr(
-        "deepreefmap.gui.runs.data_manager.QMessageBox.question",
+        "deepreefmap_gui.runs.data_manager.QMessageBox.question",
         staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes),
     )
     window._on_data_delete_clicked()
@@ -165,7 +165,7 @@ def test_delete_refuses_open_run(tmp_path, make_window, monkeypatch):
     window._data_run_list.setCurrentRow(0)
     warnings = []
     monkeypatch.setattr(
-        "deepreefmap.gui.runs.data_manager.QMessageBox.information",
+        "deepreefmap_gui.runs.data_manager.QMessageBox.information",
         staticmethod(lambda *a, **k: warnings.append(a)),
     )
     window._on_data_delete_clicked()

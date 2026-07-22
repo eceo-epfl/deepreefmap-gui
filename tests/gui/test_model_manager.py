@@ -11,8 +11,8 @@ import json
 
 import pytest
 
-from deepreefmap.gui.models.families import synthesize_model_info
-from deepreefmap.gui.models.manager import (
+from deepreefmap_gui.models.families import synthesize_model_info
+from deepreefmap_gui.models.manager import (
     ALL_MODELS,
     ModelInfo,
     model_available,
@@ -30,7 +30,7 @@ from deepreefmap.segmentation.segformer import SegformerWrapper
 
 
 def test_model_list_has_all_expected_models() -> None:
-    from deepreefmap.gui.models.manager import ALL_MODELS
+    from deepreefmap_gui.models.manager import ALL_MODELS
 
     names = {m.name for m in ALL_MODELS}
     assert "segformer-b2" in names
@@ -46,14 +46,14 @@ def test_model_list_has_all_expected_models() -> None:
     ],
 )
 def test_model_gated_flag(name, gated) -> None:
-    from deepreefmap.gui.models.manager import ALL_MODELS
+    from deepreefmap_gui.models.manager import ALL_MODELS
 
     info = next(m for m in ALL_MODELS if m.name == name)
     assert info.gated is gated
 
 
 def test_cache_detection_returns_false_for_nonexistent() -> None:
-    from deepreefmap.gui.models.manager import ModelInfo, is_model_cached
+    from deepreefmap_gui.models.manager import ModelInfo, is_model_cached
 
     fake = ModelInfo(
         name="fake",
@@ -66,7 +66,7 @@ def test_cache_detection_returns_false_for_nonexistent() -> None:
 
 
 def test_dinov3_dpt_entries_include_facebook_backbone() -> None:
-    from deepreefmap.gui.models.manager import ALL_MODELS
+    from deepreefmap_gui.models.manager import ALL_MODELS
 
     expected = {
         "coralscapes-vit-s-dpt": "facebook/dinov3-vits16-pretrain-lvd1689m",
@@ -82,7 +82,7 @@ def test_dinov3_dpt_entries_include_facebook_backbone() -> None:
 
 
 def test_loger_entries_materialise_into_ckpts_dir() -> None:
-    from deepreefmap.gui.models.manager import MAPPING_MODELS
+    from deepreefmap_gui.models.manager import MAPPING_MODELS
     from deepreefmap.mapping.registry import _LOGER_CKPTS
 
     by_name = {m.name: m for m in MAPPING_MODELS}
@@ -120,8 +120,8 @@ def _write_snapshot(cache_root, repo_id, files):
 
 
 def test_is_model_cached_requires_materialised_destinations(tmp_path, monkeypatch) -> None:
-    from deepreefmap.gui.models import manager as model_manager
-    from deepreefmap.gui.models.manager import ModelInfo, is_model_cached
+    from deepreefmap_gui.models import manager as model_manager
+    from deepreefmap_gui.models.manager import ModelInfo, is_model_cached
 
     fake_cache = tmp_path / "hf"
     monkeypatch.setattr(model_manager, "_HF_CACHE_ROOT", fake_cache)
@@ -145,8 +145,8 @@ def test_is_model_cached_requires_materialised_destinations(tmp_path, monkeypatc
 def test_config_only_snapshot_reads_as_partial(tmp_path, monkeypatch) -> None:
     """A DPT head with only config.json (the crash-in-the-field state) must not
     read as cached: the custom loader named in config.json is missing."""
-    from deepreefmap.gui.models import manager as model_manager
-    from deepreefmap.gui.models.manager import ModelInfo, ModelStatus, is_model_cached, model_status
+    from deepreefmap_gui.models import manager as model_manager
+    from deepreefmap_gui.models.manager import ModelInfo, ModelStatus, is_model_cached, model_status
 
     fake_cache = tmp_path / "hf"
     monkeypatch.setattr(model_manager, "_HF_CACHE_ROOT", fake_cache)
@@ -182,8 +182,8 @@ def test_config_only_snapshot_reads_as_partial(tmp_path, monkeypatch) -> None:
 
 def test_metadata_only_snapshot_reads_as_absent(tmp_path, monkeypatch) -> None:
     """A stub with only README/LICENSE is 'not downloaded', not a repair case."""
-    from deepreefmap.gui.models import manager as model_manager
-    from deepreefmap.gui.models.manager import ModelInfo, ModelStatus, model_status
+    from deepreefmap_gui.models import manager as model_manager
+    from deepreefmap_gui.models.manager import ModelInfo, ModelStatus, model_status
 
     fake_cache = tmp_path / "hf"
     monkeypatch.setattr(model_manager, "_HF_CACHE_ROOT", fake_cache)
@@ -199,8 +199,8 @@ def test_metadata_only_snapshot_reads_as_absent(tmp_path, monkeypatch) -> None:
 
 
 def test_prefetch_refuses_when_disk_is_low(tmp_path, monkeypatch) -> None:
-    from deepreefmap.gui.models import manager as model_manager
-    from deepreefmap.gui.models.manager import (
+    from deepreefmap_gui.models import manager as model_manager
+    from deepreefmap_gui.models.manager import (
         InsufficientDiskSpace,
         ModelInfo,
         prefetch_model,
