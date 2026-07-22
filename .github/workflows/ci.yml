@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+# deepreefmap is pinned in pyproject.toml as a git direct reference (@<sha>), so
+# the built wheel and PyApp binary resolve it from GitHub. For local dev and CI,
+# [tool.uv.sources] overrides that to an editable ../deepreefmap checkout (this
+# also keeps the torch index routing that `uv sync --no-sources` would discard).
+# So CI checks the library out as a sibling at the SAME pinned commit. Keep
+# DEEPREEFMAP_REF matching the git pin in pyproject.toml `dependencies`.
+env:
+  DEEPREEFMAP_REPO: eceo-epfl/deepreefmap
+  DEEPREEFMAP_REF: gui-support
+  QT_QPA_PLATFORM: offscreen
+
+jobs:
+  test:
+    name: pytest + ruff (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - name: Check out gui repository
+        uses: actions/checkout@v6
+        with:
+          path: deepreefmap-gui
+
+      - name: Check out deepreefmap library (sibling path source)
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.DEEPREEFMAP_REPO }}
+          ref: ${{ env.DEEPREEFMAP_REF }}
+          path: deepreefmap
+          # loger runtime is not exercised by the gui suite and its extra is
+          # pure-pip, so the vendored LoGeR submodule is not needed here.
+          submodules: false
+          # A public library resolves with the default token; if it is private,
+          # add a DEEPREEFMAP_TOKEN secret (read-scoped PAT or deploy key).
+          token: ${{ secrets.DEEPREEFMAP_TOKEN || github.token }}
+
+      - name: Set up build environment
+        uses: ./deepreefmap-gui/.github/actions/setup-build
+        with:
+          qt-libs: "true"
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install project (dev extra)
+        working-directory: deepreefmap-gui
+        run: uv sync --python ${{ matrix.python-version }} --extra dev
+
+      - name: Lint (ruff)
+        working-directory: deepreefmap-gui
+        run: uv run --python ${{ matrix.python-version }} ruff check deepreefmap_gui tests
+
+      - name: Test (pytest)
+        working-directory: deepreefmap-gui
+        run: uv run --python ${{ matrix.python-version }} pytest -q
+
+  typecheck:
+    name: mypy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out gui repository
+        uses: actions/checkout@v6
+        with:
+          path: deepreefmap-gui
+
+      - name: Check out deepreefmap library (sibling path source)
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.DEEPREEFMAP_REPO }}
+          ref: ${{ env.DEEPREEFMAP_REF }}
+          path: deepreefmap
+          submodules: false
+          token: ${{ secrets.DEEPREEFMAP_TOKEN || github.token }}
+
+      - name: Set up build environment
+        uses: ./deepreefmap-gui/.github/actions/setup-build
+        with:
+          qt-libs: "true"
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install project (dev extra)
+        working-directory: deepreefmap-gui
+        run: uv sync --python 3.12 --extra dev
+
+      - name: Type check (mypy)
+        working-directory: deepreefmap-gui
+        run: uv run --python 3.12 mypy deepreefmap_gui
