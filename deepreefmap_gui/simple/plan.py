@@ -17,7 +17,6 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QGridLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -26,13 +25,15 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QSplitter,
+    QStackedWidget,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
-from deepreefmap_gui.core.icons import crosshair_icon
-from deepreefmap_gui.core.theme import PRIMARY
+from deepreefmap_gui.core.icons import copy_icon, crosshair_icon
+from deepreefmap_gui.core.theme import BORDER, GUTTER, PRIMARY, RADIUS, TEXT_MUTED
+from deepreefmap_gui.core.widgets import EmptyState, section_card
 from deepreefmap_gui.map.overlays import OverlayTransect
 from deepreefmap_gui.map.widget import SlippyMapWidget
 from deepreefmap_gui.survey.models import Transect, haversine_m
@@ -44,6 +45,20 @@ from deepreefmap_gui.survey.models.importers import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _framed(inner: QWidget) -> QWidget:
+    """Put a hairline and rounded corners around a widget that paints its own
+    content, so the map stops bleeding into the page background."""
+    frame = QWidget()
+    frame.setObjectName("mapFrame")
+    frame.setStyleSheet(
+        f"QWidget#mapFrame {{ border: 1px solid {BORDER}; border-radius: {RADIUS}px; }}"
+    )
+    layout = QVBoxLayout(frame)
+    layout.setContentsMargins(1, 1, 1, 1)
+    layout.addWidget(inner)
+    return frame
 
 
 class NotesEdit(QPlainTextEdit):
@@ -80,6 +95,7 @@ class SimplePlanMixin(MixinBase):
         transect, or none at all, is fixed where the transects are.
         """
         page = QSplitter(Qt.Orientation.Horizontal)
+        page.setHandleWidth(GUTTER)
 
         map_pane = QWidget()
         map_layout = QVBoxLayout(map_pane)
@@ -88,19 +104,31 @@ class SimplePlanMixin(MixinBase):
         self._plan_map.map_clicked.connect(self._on_plan_map_clicked)
         self._plan_map.transect_clicked.connect(self._on_plan_map_transect_clicked)
         self._plan_map.transect_endpoint_moved.connect(self._on_plan_endpoint_moved)
-        map_layout.addWidget(self._plan_map, 1)
+        map_layout.addWidget(_framed(self._plan_map), 1)
 
         side_pane = QWidget()
         layout = QVBoxLayout(side_pane)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(GUTTER)
 
-        transects_group = QGroupBox("Transects")
-        group_layout = QVBoxLayout(transects_group)
+        transects_group, group_layout = section_card("Transects")
         self._transect_list = QListWidget()
         self._transect_list.currentItemChanged.connect(lambda *_: self._on_transect_selected())
-        group_layout.addWidget(self._transect_list)
+        # The empty state stands in for the list until there is something in it,
+        # so a fresh install says how to get started instead of showing a void.
+        self._transect_stack = QStackedWidget()
+        self._transect_stack.addWidget(self._transect_list)
+        self._transect_stack.addWidget(
+            EmptyState(
+                "No transects yet",
+                "Add one with New, or Import… a CSV or GPX file.",
+            )
+        )
+        group_layout.addWidget(self._transect_stack)
         buttons = QHBoxLayout()
+        buttons.setSpacing(6)
         new_btn = QPushButton("New")
+        new_btn.setProperty("cta", "true")
         new_btn.clicked.connect(self._on_transect_new)
         delete_btn = QPushButton("Delete")
         delete_btn.clicked.connect(self._on_transect_delete)
@@ -108,13 +136,22 @@ class SimplePlanMixin(MixinBase):
         import_btn.clicked.connect(self._on_transects_import)
         export_btn = QPushButton("Export CSV")
         export_btn.clicked.connect(self._on_transects_export)
-        for btn in (new_btn, delete_btn, import_btn, export_btn):
-            buttons.addWidget(btn)
+        # Creating and deleting a transect is a different kind of act from
+        # moving the whole set in and out of a file, so the two groups separate.
+        buttons.addWidget(new_btn)
+        buttons.addWidget(delete_btn)
+        buttons.addStretch(1)
+        buttons.addWidget(import_btn)
+        buttons.addWidget(export_btn)
         group_layout.addLayout(buttons)
         layout.addWidget(transects_group)
 
-        details = QGroupBox("Details")
-        grid = QGridLayout(details)
+        details, details_layout = section_card("Details")
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(6)
+        details_layout.addLayout(grid)
         grid.addWidget(QLabel("Name"), 0, 0)
         self._tr_name_input = QLineEdit()
         grid.addWidget(self._tr_name_input, 0, 1, 1, 3)
@@ -166,6 +203,7 @@ class SimplePlanMixin(MixinBase):
 
         self._tr_geodesic_label = QLabel("")
         self._tr_geodesic_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self._tr_geodesic_label.setStyleSheet(f"color: {TEXT_MUTED};")
         grid.addWidget(self._tr_geodesic_label, 6, 0, 1, 4)
         layout.addWidget(details)
         layout.addStretch(1)
@@ -188,6 +226,7 @@ class SimplePlanMixin(MixinBase):
         side_pane.setMinimumWidth(340)
 
         split = QSplitter(Qt.Orientation.Vertical)
+        split.setHandleWidth(GUTTER)
         split.addWidget(page)
         split.addWidget(self._build_simple_data_host())
         split.setStretchFactor(0, 3)
@@ -224,6 +263,7 @@ class SimplePlanMixin(MixinBase):
         self._transect_list.blockSignals(False)
         if selected_row >= 0:
             self._transect_list.setCurrentRow(selected_row)
+        self._transect_stack.setCurrentIndex(0 if self._transect_list.count() else 1)
         self._refresh_plan_map()
 
     def _draft_label(self) -> str | None:
@@ -471,14 +511,18 @@ class SimplePlanMixin(MixinBase):
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(2)
         pick = QToolButton()
-        pick.setText("⌖")
+        pick.setIcon(crosshair_icon(16))
+        pick.setFixedSize(26, 26)
+        pick.setProperty("pad", "none")
         pick.setCheckable(True)
         pick.setToolTip(
             f"Click the map to set the {which} point. "
             "Drag the selected transect's endpoints to adjust them."
         )
         copy = QToolButton()
-        copy.setText("⎘")
+        copy.setIcon(copy_icon(16))
+        copy.setFixedSize(26, 26)
+        copy.setProperty("pad", "none")
         copy.setToolTip(f"Copy the {which} coordinates.")
         copy.clicked.connect(lambda _=False, w=which: self._copy_endpoint(w))
         row.addWidget(pick)

@@ -14,6 +14,7 @@ from deepreefmap_gui.map.overlays import (
     OverlayTransect,
     segment_distance_px,
 )
+from deepreefmap_gui.core.theme import BORDER, PREVIEW_BG
 from deepreefmap_gui.map.tile_cache import TileCache, shared_tile_cache
 from deepreefmap_gui.map.tile_math import TILE_SIZE, clamp_zoom, deg2tile, fit_zoom, tile2deg
 
@@ -99,7 +100,7 @@ class SlippyMapWidget(QWidget):
 
     def paintEvent(self, event: QPaintEvent) -> None:
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor(42, 45, 48))
+        painter.fillRect(self.rect(), QColor(PREVIEW_BG))
         self._paint_tiles(painter)
         self._paint_transects(painter)
         self._paint_attribution(painter)
@@ -112,7 +113,7 @@ class SlippyMapWidget(QWidget):
         last_x = math.floor(cx + half_w / TILE_SIZE)
         first_y = math.floor(cy - half_h / TILE_SIZE)
         last_y = math.floor(cy + half_h / TILE_SIZE)
-        grid_pen = QPen(QColor(70, 74, 78))
+        grid_pen = QPen(QColor(BORDER))
         for tx in range(first_x, last_x + 1):
             for ty in range(first_y, last_y + 1):
                 left = half_w + (tx - cx) * TILE_SIZE

@@ -47,10 +47,15 @@ from deepreefmap_gui.core.theme import (
     BAR_HEIGHT,
     BLOCK,
     BORDER,
+    BUTTON,
     CARD_BG,
+    GUTTER,
     LINK,
+    PAGE_MARGIN,
     PREVIEW_BG,
     PRIMARY,
+    RADIUS_SM,
+    SURFACE_HI,
     TEXT_DIM,
     TEXT_MUTED,
     TEXT_SECONDARY,
@@ -266,6 +271,7 @@ class FormPanelMixin(MixinBase):
         self._new_run_btn.setIcon(plus_icon(20))
         self._new_run_btn.setToolTip("Clear the loaded run")
         self._new_run_btn.setFixedSize(28, 28)
+        self._new_run_btn.setProperty("pad", "none")
         self._new_run_btn.clicked.connect(self._on_new_reconstruction)
 
         # Log toggle button, checkable so the pressed state mirrors panel
@@ -273,7 +279,7 @@ class FormPanelMixin(MixinBase):
         self._log_toggle_btn = QPushButton("Log")
         self._log_toggle_btn.setToolTip("Show or hide the live log panel")
         self._log_toggle_btn.setCheckable(True)
-        self._log_toggle_btn.setFixedHeight(24)
+        self._log_toggle_btn.setFixedHeight(28)
         self._log_toggle_btn.toggled.connect(self._set_log_panel_visible)
 
         self._warnings_label_running = QLabel("")
@@ -828,9 +834,11 @@ class FormPanelMixin(MixinBase):
         self._start_btn.setIcon(play_icon(_TRANSPORT_ICON))
         self._start_btn.setToolTip("Start reconstruction")
         self._start_btn.setFixedSize(_TRANSPORT_SIZE, _TRANSPORT_SIZE)
+        self._start_btn.setProperty("pad", "none")
         self._start_btn.clicked.connect(self._on_submit)
 
         self._pause_btn = QPushButton()
+        self._pause_btn.setProperty("pad", "none")
         self._pause_btn.setIcon(pause_icon(_TRANSPORT_ICON))
         self._pause_btn.setToolTip(
             "Pause at the next safe checkpoint. Long mapping passes may take "
@@ -1176,10 +1184,16 @@ class FormPanelMixin(MixinBase):
 
     def _build_top_bar(self) -> QWidget:
         bar = QWidget()
-        bar.setStyleSheet(f"QWidget {{ background-color: {CARD_BG}; }} ")
+        # The hairline on the inner edge is what makes the darker work area
+        # between the two bars read as recessed rather than as more chrome.
+        bar.setStyleSheet(
+            f"QWidget {{ background-color: {CARD_BG}; }}"
+            f" QWidget#topBar {{ border-bottom: 1px solid {BORDER}; }}"
+        )
+        bar.setObjectName("topBar")
         h = QHBoxLayout(bar)
-        h.setContentsMargins(8, 6, 8, 6)
-        h.setSpacing(8)
+        h.setContentsMargins(PAGE_MARGIN, 6, PAGE_MARGIN, 6)
+        h.setSpacing(GUTTER)
 
         # The "+" reset is the leftmost element and shows in both modes; the
         # 3D preview toggle lives on the viewer itself (wired in app.py).
@@ -1221,7 +1235,11 @@ class FormPanelMixin(MixinBase):
         """
         bar = QWidget()
         self._bottom_bar = bar
-        bar.setStyleSheet(f"QWidget {{ background-color: {CARD_BG}; }} ")
+        bar.setObjectName("bottomBar")
+        bar.setStyleSheet(
+            f"QWidget {{ background-color: {CARD_BG}; }}"
+            f" QWidget#bottomBar {{ border-top: 1px solid {BORDER}; }}"
+        )
         outer = QVBoxLayout(bar)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
@@ -1236,8 +1254,8 @@ class FormPanelMixin(MixinBase):
         outer.addWidget(self._bottom_progress_bar)
 
         row = QHBoxLayout()
-        row.setContentsMargins(8, 4, 8, 4)
-        row.setSpacing(8)
+        row.setContentsMargins(PAGE_MARGIN, 4, PAGE_MARGIN, 4)
+        row.setSpacing(GUTTER)
         self._status_label.setStyleSheet(f"color: {TEXT_SECONDARY};")
         row.addWidget(self._status_label, 1)
         self._eta_total_label.setVisible(False)
@@ -1261,7 +1279,13 @@ class FormPanelMixin(MixinBase):
         close_btn = QPushButton("×")
         close_btn.setFixedSize(20, 20)
         close_btn.setToolTip("Hide log panel")
-        close_btn.setStyleSheet("QPushButton { font-size: 14px; font-weight: bold; }")
+        close_btn.setProperty("pad", "none")
+        close_btn.setStyleSheet(
+            "QPushButton { font-size: 14px; font-weight: bold; padding: 0;"
+            f" border: 1px solid {BORDER}; border-radius: {RADIUS_SM}px;"
+            f" background: {BUTTON}; }}"
+            f" QPushButton:hover {{ background: {SURFACE_HI}; }}"
+        )
         close_btn.clicked.connect(lambda: self._set_log_panel_visible(False))
         header_row.addWidget(close_btn)
         layout.addLayout(header_row)

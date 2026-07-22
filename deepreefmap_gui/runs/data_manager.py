@@ -30,7 +30,18 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from deepreefmap_gui.core.theme import TEXT_SECONDARY
+from deepreefmap_gui.core.theme import (
+    BORDER,
+    BUTTON,
+    PRIMARY,
+    RADIUS_SM,
+    SURFACE_HI,
+    TEXT_MUTED,
+    TEXT_SECONDARY,
+    WINDOW,
+    WINDOW_TEXT,
+)
+from deepreefmap_gui.core.widgets import section_card
 from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.runs.run_cards import (
     RUN_META_ROLE,
@@ -50,6 +61,26 @@ logger = logging.getLogger(__name__)
 _FACETS = (("runs", "Runs"), ("transects", "Transects"), ("videos", "Videos"))
 
 _GROUP_KEY_ROLE = Qt.ItemDataRole.UserRole
+
+
+def _facet_qss(*, first: bool, last: bool) -> str:
+    """One segment of the joined facet switch; only the outer corners round."""
+    corners = ""
+    if first:
+        corners += f"border-top-left-radius: {RADIUS_SM}px;"
+        corners += f"border-bottom-left-radius: {RADIUS_SM}px;"
+    else:
+        corners += "border-left: none;"
+    if last:
+        corners += f"border-top-right-radius: {RADIUS_SM}px;"
+        corners += f"border-bottom-right-radius: {RADIUS_SM}px;"
+    return (
+        f"QToolButton {{ border: 1px solid {BORDER}; border-radius: 0; {corners}"
+        f" padding: 4px 8px; background: {BUTTON}; color: {TEXT_MUTED}; }}"
+        f" QToolButton:hover {{ background: {SURFACE_HI}; color: {WINDOW_TEXT}; }}"
+        f" QToolButton:checked {{ background: {PRIMARY}; color: {WINDOW};"
+        " font-weight: 600; }"
+    )
 
 
 class DataManagerMixin(MixinBase):
@@ -76,14 +107,19 @@ class DataManagerMixin(MixinBase):
         rail_layout.setContentsMargins(0, 0, 0, 0)
         rail_layout.setSpacing(6)
         facet_row = QHBoxLayout()
-        facet_row.setSpacing(4)
+        facet_row.setSpacing(0)
         group = QButtonGroup(rail)
         group.setExclusive(True)
         self._data_facet_buttons: dict[str, QToolButton] = {}
-        for name, title in _FACETS:
+        for index, (name, title) in enumerate(_FACETS):
             btn = QToolButton()
             btn.setText(title)
             btn.setCheckable(True)
+            # One joined control, so it reads as three views of the same data
+            # rather than three unrelated buttons.
+            btn.setStyleSheet(
+                _facet_qss(first=index == 0, last=index == len(_FACETS) - 1)
+            )
             group.addButton(btn)
             facet_row.addWidget(btn)
             btn.toggled.connect(
@@ -149,10 +185,14 @@ class DataManagerMixin(MixinBase):
         return panel
 
     def _build_simple_data_host(self) -> QWidget:
+        # Carded in simple mode so the run browser reads as a section of the
+        # Plan step; in advanced it keeps its own tab and needs no frame.
+        card, layout = section_card("Data")
         self._data_host_simple = QWidget()
         host_layout = QVBoxLayout(self._data_host_simple)
         host_layout.setContentsMargins(0, 0, 0, 0)
-        return self._data_host_simple
+        layout.addWidget(self._data_host_simple, 1)
+        return card
 
     def _host_data_panel(self, simple: bool) -> None:
         """Move the single Data panel into whichever mode is showing."""

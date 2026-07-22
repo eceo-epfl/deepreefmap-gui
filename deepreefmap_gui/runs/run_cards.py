@@ -14,7 +14,16 @@ from PySide6.QtWidgets import (
     QStyleOptionViewItem,
 )
 
-from deepreefmap_gui.core.theme import BANNER_TEXT, CARD_BG
+from deepreefmap_gui.core.theme import (
+    BANNER_TEXT,
+    CARD_BG,
+    SELECTION_BG,
+    SURFACE_HI,
+    TEXT_DIM,
+    TEXT_MUTED,
+    TEXT_SECONDARY,
+    WINDOW_TEXT,
+)
 from deepreefmap_gui.profiling.eta import format_duration
 from deepreefmap_gui.survey.catalogue import run_duration_s
 
@@ -384,9 +393,9 @@ class RunCardDelegate(QStyledItemDelegate):
         hovered = bool(option.state & QStyle.StateFlag.State_MouseOver)
         selected = bool(option.state & QStyle.StateFlag.State_Selected)
         if selected:
-            painter.fillRect(option.rect, QColor("#4a7fb0"))
+            painter.fillRect(option.rect, QColor(SELECTION_BG))
         elif hovered:
-            painter.fillRect(option.rect, QColor("#3a5f8a"))
+            painter.fillRect(option.rect, QColor(SURFACE_HI))
         else:
             painter.fillRect(option.rect, QColor(CARD_BG))
 
@@ -401,7 +410,7 @@ class RunCardDelegate(QStyledItemDelegate):
         # Title.
         title_font = self._title_font(base)
         painter.setFont(title_font)
-        painter.setPen(QColor("white" if (hovered or selected) else "#e8eef5"))
+        painter.setPen(QColor("white" if (hovered or selected) else WINDOW_TEXT))
         title = meta.get("title", "")
         title_fm = painter.fontMetrics()
         title_w = title_fm.horizontalAdvance(title)
@@ -413,7 +422,7 @@ class RunCardDelegate(QStyledItemDelegate):
         if slug:
             slug_font = self._slug_font(base)
             painter.setFont(slug_font)
-            painter.setPen(QColor("#c5d0db" if (hovered or selected) else "#8aa0b8"))
+            painter.setPen(QColor(TEXT_SECONDARY if (hovered or selected) else TEXT_MUTED))
             slug_fm = painter.fontMetrics()
             slug_x = r.left() + title_w + int(layout["title_h"] * 0.4)
             slug_max_w = r.right() - slug_x
@@ -427,7 +436,7 @@ class RunCardDelegate(QStyledItemDelegate):
         if facts_text:
             cursor_y += gap
             painter.setFont(self._facts_font(base))
-            painter.setPen(QColor("#dfe6ee" if (hovered or selected) else "#c0cad6"))
+            painter.setPen(QColor(WINDOW_TEXT if (hovered or selected) else TEXT_SECONDARY))
             facts_rect = type(r)(r.left(), cursor_y, r.width(), layout["facts_h"])
             painter.drawText(
                 facts_rect,
@@ -441,7 +450,7 @@ class RunCardDelegate(QStyledItemDelegate):
         if video:
             cursor_y += gap
             painter.setFont(self._video_font(base))
-            painter.setPen(QColor("#b5c2d0" if (hovered or selected) else "#7a8a99"))
+            painter.setPen(QColor(TEXT_MUTED if (hovered or selected) else TEXT_DIM))
             video_fm = painter.fontMetrics()
             elided = video_fm.elidedText(video, Qt.TextElideMode.ElideMiddle, r.width())
             painter.drawText(r.left(), cursor_y + video_fm.ascent(), elided)

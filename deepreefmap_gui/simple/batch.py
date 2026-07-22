@@ -23,13 +23,22 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
-from deepreefmap_gui.core.theme import WARN_BG, WARN_BORDER, WARN_TEXT
+from deepreefmap_gui.core.theme import (
+    GUTTER,
+    RADIUS_SM,
+    TEXT_MUTED,
+    WARN_BG,
+    WARN_BORDER,
+    WARN_TEXT,
+)
+from deepreefmap_gui.core.widgets import EmptyState, StatusPillDelegate, section_card
 from deepreefmap_gui.form.video_scrub import VideoScrubDialog
 from deepreefmap.pipeline.artifacts import ReconstructionCancelled
 from deepreefmap_gui.survey.models import (
@@ -54,13 +63,20 @@ def _mmss(seconds: float) -> str:
 
 
 def _style_transect_combo(combo: QComboBox, *, assigned: bool) -> None:
-    """Unassigned rows must look wrong from across the room."""
+    """Unassigned rows must look wrong from across the room.
+
+    A per-widget stylesheet replaces the global QComboBox rule outright, so the
+    warning variant restates the padding and radius it displaces.
+    """
     if assigned:
         combo.setStyleSheet("")
     else:
         combo.setStyleSheet(
             f"QComboBox {{ background-color: {WARN_BG}; color: {WARN_TEXT};"
-            f" border: 1px solid {WARN_BORDER}; }}"
+            f" border: 1px solid {WARN_BORDER}; border-radius: {RADIUS_SM}px;"
+            " padding: 4px 8px; }"
+            " QComboBox::drop-down { subcontrol-origin: padding;"
+            " subcontrol-position: center right; border: none; width: 20px; }"
         )
 
 
@@ -119,55 +135,105 @@ class SimpleBatchMixin(MixinBase):
             self._survey_preset = None
             logger.warning("Preset unavailable: %s", exc)
 
-        header = QHBoxLayout()
-        header.addWidget(QLabel("Batch"))
+        layout.setSpacing(GUTTER)
+
+        # Batch identity and the settings every pass in it will run under, as
+        # one block: they answer the same question, "what is about to happen".
+        header_card, header_layout = section_card()
+        name_row = QHBoxLayout()
+        name_row.setSpacing(6)
+        name_row.addWidget(QLabel("Batch"))
         self._survey_batch_name = QLineEdit(datetime.now().strftime("%Y-%m-%d"))
-        header.addWidget(self._survey_batch_name, 1)
+        name_row.addWidget(self._survey_batch_name, 1)
         new_batch_btn = QPushButton("New")
         new_batch_btn.setToolTip("Start a fresh batch; the current one stays in the database.")
         new_batch_btn.clicked.connect(self._on_survey_new_batch)
-        header.addWidget(new_batch_btn)
-        layout.addLayout(header)
+        name_row.addWidget(new_batch_btn)
+        header_layout.addLayout(name_row)
 
         preset_row = QHBoxLayout()
+        preset_row.setSpacing(6)
         self._survey_preset_label = QLabel(self._survey_preset_summary())
         self._survey_preset_label.setWordWrap(True)
+        self._survey_preset_label.setStyleSheet(f"color: {TEXT_MUTED};")
         preset_row.addWidget(self._survey_preset_label, 1)
         self._survey_settings_btn = QPushButton("Edit settings…")
+        self._survey_settings_btn.setProperty("quiet", "true")
         self._survey_settings_btn.setToolTip("Change any run setting for this batch.")
         self._survey_settings_btn.clicked.connect(self._on_edit_run_settings)
         preset_row.addWidget(self._survey_settings_btn)
-        layout.addLayout(preset_row)
+        header_layout.addLayout(preset_row)
+        layout.addWidget(header_card)
 
         self._survey_pass_table = QTableWidget(0, 5)
         self._survey_pass_table.setHorizontalHeaderLabels(
             ["Video", "Transect", "Direction", "Trim", "Status"]
         )
         self._survey_pass_table.verticalHeader().setVisible(False)
+        self._survey_pass_table.verticalHeader().setDefaultSectionSize(34)
+        self._survey_pass_table.setShowGrid(False)
         self._survey_pass_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._survey_pass_table.setItemDelegateForColumn(_COL_STATUS, StatusPillDelegate(self))
+        self._survey_pass_table.itemSelectionChanged.connect(self._recompute_row_actions)
         h_header = self._survey_pass_table.horizontalHeader()
+        h_header.setDefaultAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
         h_header.setSectionResizeMode(_COL_VIDEO, QHeaderView.ResizeMode.Stretch)
-        layout.addWidget(self._survey_pass_table, 1)
+        # The video name stretches; the rest hold widgets that must not clip, so
+        # they get widths that fit a transect name and a status pill.
+        for column, width in (
+            (_COL_TRANSECT, 170),
+            (_COL_DIRECTION, 120),
+            (_COL_TRIM, 110),
+            (_COL_STATUS, 110),
+        ):
+            self._survey_pass_table.setColumnWidth(column, width)
+
+        self._survey_table_stack = QStackedWidget()
+        self._survey_table_stack.addWidget(self._survey_pass_table)
+        self._survey_table_stack.addWidget(
+            EmptyState(
+                "No videos in this batch",
+                "Add videos… to queue the passes you want processed.",
+            )
+        )
+        passes_card, passes_layout = section_card("Passes")
+        passes_layout.addWidget(self._survey_table_stack, 1)
+        layout.addWidget(passes_card, 1)
 
         row_buttons = QHBoxLayout()
+        row_buttons.setSpacing(6)
         add_btn = QPushButton("Add videos…")
         add_btn.clicked.connect(self._on_survey_add_videos)
-        split_btn = QPushButton("Split pass")
-        split_btn.setToolTip("Duplicate the selected row for another pass in the same video.")
-        split_btn.clicked.connect(self._on_survey_split_pass)
-        remove_btn = QPushButton("Remove pass")
-        remove_btn.clicked.connect(self._on_survey_remove_pass)
-        for btn in (add_btn, split_btn, remove_btn):
+        self._survey_split_btn = QPushButton("Split pass")
+        self._survey_split_btn.setToolTip(
+            "Duplicate the selected row for another pass in the same video."
+        )
+        self._survey_split_btn.clicked.connect(self._on_survey_split_pass)
+        self._survey_remove_btn = QPushButton("Remove pass")
+        self._survey_remove_btn.setToolTip("Drop the selected pass from this batch.")
+        self._survey_remove_btn.clicked.connect(self._on_survey_remove_pass)
+        for btn in (add_btn, self._survey_split_btn, self._survey_remove_btn):
             row_buttons.addWidget(btn)
         row_buttons.addStretch(1)
         layout.addLayout(row_buttons)
+        self._recompute_row_actions()
 
         # The run button is the Run step's forward action, so the wizard footer
         # hosts it rather than this page. Stopping is the bottom bar's job.
         self._survey_start_btn = QPushButton("Next: Process")
+        self._survey_start_btn.setProperty("cta", "true")
         self._survey_start_btn.setEnabled(False)
         self._survey_start_btn.clicked.connect(self._on_survey_start)
         return page
+
+    def _recompute_row_actions(self) -> None:
+        """Split and remove act on a selected row, so they say when there isn't one."""
+        selected = 0 <= self._survey_pass_table.currentRow() < len(self._survey_rows)
+        for btn in (self._survey_split_btn, self._survey_remove_btn):
+            btn.setEnabled(selected)
+        self._survey_table_stack.setCurrentIndex(0 if self._survey_rows else 1)
 
     def _on_edit_run_settings(self) -> None:
         """Open the real run form in a dialog and adopt whatever comes back."""
@@ -288,6 +354,9 @@ class SimpleBatchMixin(MixinBase):
         table.setCellWidget(index, _COL_DIRECTION, direction_combo)
 
         trim_btn = QPushButton(f"{_mmss(row.begin_s)}-{_mmss(row.end_s)}")
+        # Quiet: this is an editable cell you can click, not a form action.
+        trim_btn.setProperty("quiet", "true")
+        trim_btn.setToolTip("Click to trim the section of this video the pass covers.")
         trim_btn.clicked.connect(partial(self._on_survey_row_trim, row, trim_btn))
         table.setCellWidget(index, _COL_TRIM, trim_btn)
 
@@ -435,6 +504,9 @@ class SimpleBatchMixin(MixinBase):
         return remaining
 
     def _recompute_survey_start(self) -> None:
+        # Every row mutation lands here, so the row actions and the empty state
+        # follow the table from one place.
+        self._recompute_row_actions()
         if self._survey_worker_running:
             self._survey_start_btn.setEnabled(False)
             return

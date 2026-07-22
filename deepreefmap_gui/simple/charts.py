@@ -8,6 +8,8 @@ from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QPainter, QPaintEvent
 from PySide6.QtWidgets import QWidget
 
+from deepreefmap_gui.core.theme import TEXT_MUTED
+
 
 def pass_color(direction: str, index: int) -> QColor:
     """Forward passes in teal shades, reverse in orange, darkening per pass."""
@@ -38,8 +40,12 @@ class GroupedBarChart(QWidget):
         grid_color = QColor(text_color)
         grid_color.setAlpha(50)
         if not self._labels or not self._series:
-            painter.setPen(text_color)
-            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "No completed passes yet.")
+            painter.setPen(QColor(TEXT_MUTED))
+            painter.drawText(
+                self.rect(),
+                Qt.AlignmentFlag.AlignCenter,
+                "No completed passes yet",
+            )
             return
 
         margin_left, margin_right, margin_top, margin_bottom = 44, 8, 26, 70

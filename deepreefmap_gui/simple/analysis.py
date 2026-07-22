@@ -18,11 +18,15 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QPushButton,
     QSplitter,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
+
+from deepreefmap_gui.core.theme import GUTTER, TEXT_MUTED
+from deepreefmap_gui.core.widgets import EmptyState, section_card
 
 from PySide6.QtGui import QColor
 
@@ -66,27 +70,39 @@ class SimpleAnalysisMixin(MixinBase):
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(GUTTER)
 
         top = QSplitter(Qt.Orientation.Horizontal)
+        top.setHandleWidth(GUTTER)
+        map_card, map_layout = section_card("Where")
         self._analysis_map = SlippyMapWidget()
         self._analysis_map.setMinimumHeight(200)
         self._analysis_map.transect_clicked.connect(self._on_analysis_map_transect_clicked)
-        top.addWidget(self._analysis_map)
+        map_layout.addWidget(self._analysis_map, 1)
+        top.addWidget(map_card)
 
-        chart_pane = QWidget()
-        chart_layout = QVBoxLayout(chart_pane)
-        chart_layout.setContentsMargins(0, 0, 0, 0)
+        chart_card, chart_layout = section_card()
         selector = QHBoxLayout()
+        selector.setSpacing(6)
         selector.addWidget(QLabel("Transect"))
         self._analysis_transect_combo = QComboBox()
         self._analysis_transect_combo.currentIndexChanged.connect(
             lambda *_: self._refresh_survey_analysis()
         )
         selector.addWidget(self._analysis_transect_combo, 1)
-        selector.addWidget(QLabel("Level"))
+        # "Detail" rather than "Level": the combo picks how finely the classes
+        # are grouped, which the old label said nothing about.
+        detail_label = QLabel("Detail")
+        detail_tip = (
+            "How finely classes are grouped in the chart and the stats: "
+            "fine is every class on its own, coarse is broad groups."
+        )
+        detail_label.setToolTip(detail_tip)
+        selector.addWidget(detail_label)
         self._analysis_level_combo = QComboBox()
         self._analysis_level_combo.addItems(list(COVER_LEVELS))
         self._analysis_level_combo.setCurrentText("intermediate")
+        self._analysis_level_combo.setToolTip(detail_tip)
         self._analysis_level_combo.currentTextChanged.connect(
             lambda *_: self._refresh_survey_analysis()
         )
@@ -94,36 +110,75 @@ class SimpleAnalysisMixin(MixinBase):
         chart_layout.addLayout(selector)
         self._analysis_chart = GroupedBarChart()
         chart_layout.addWidget(self._analysis_chart, 1)
-        top.addWidget(chart_pane)
+        top.addWidget(chart_card)
         top.setStretchFactor(0, 1)
         top.setStretchFactor(1, 2)
+        # Explicit sizes: left to itself the splitter gives the map whatever the
+        # chart's size hint leaves over, which is a sliver too narrow to read.
+        map_card.setMinimumWidth(280)
+        top.setSizes([420, 840])
         layout.addWidget(top, 3)
 
-        bottom = QHBoxLayout()
+        bottom = QSplitter(Qt.Orientation.Horizontal)
+        bottom.setHandleWidth(GUTTER)
+        stats_card, stats_layout = section_card("Repeatability by class")
         self._analysis_stats_table = QTableWidget(0, 5)
         self._analysis_stats_table.setHorizontalHeaderLabels(
             ["Class", "Mean", "Std", "CV", "Range"]
         )
         self._analysis_stats_table.verticalHeader().setVisible(False)
+        self._analysis_stats_table.setShowGrid(False)
         self._analysis_stats_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        bottom.addWidget(self._analysis_stats_table, 2)
-        self._analysis_runs_list = QListWidget()
-        self._analysis_runs_list.setToolTip("Double-click a run to open it in the viewer.")
-        self._analysis_runs_list.itemDoubleClicked.connect(self._on_analysis_run_opened)
-        bottom.addWidget(self._analysis_runs_list, 1)
-        layout.addLayout(bottom, 2)
+        self._analysis_stats_stack = QStackedWidget()
+        self._analysis_stats_stack.addWidget(self._analysis_stats_table)
+        self._analysis_stats_stack.addWidget(
+            EmptyState(
+                "No repeatability yet",
+                "Process at least two passes of this transect to compare them.",
+            )
+        )
+        stats_layout.addWidget(self._analysis_stats_stack, 1)
 
         self._analysis_repro_label = QLabel("")
         self._analysis_repro_label.setWordWrap(True)
-        layout.addWidget(self._analysis_repro_label)
+        self._analysis_repro_label.setStyleSheet(f"color: {TEXT_MUTED};")
+        self._analysis_repro_label.setVisible(False)
+        stats_layout.addWidget(self._analysis_repro_label)
+        bottom.addWidget(stats_card)
+
+        runs_card, runs_layout = section_card("Runs")
+        self._analysis_runs_list = QListWidget()
+        self._analysis_runs_list.setToolTip("Double-click a run to open it in the viewer.")
+        self._analysis_runs_list.itemDoubleClicked.connect(self._on_analysis_run_opened)
+        self._analysis_runs_stack = QStackedWidget()
+        self._analysis_runs_stack.addWidget(self._analysis_runs_list)
+        self._analysis_runs_stack.addWidget(
+            EmptyState("No runs for this transect", "Process a pass on the Run step.")
+        )
+        runs_layout.addWidget(self._analysis_runs_stack, 1)
+        bottom.addWidget(runs_card)
+        bottom.setStretchFactor(0, 2)
+        bottom.setStretchFactor(1, 1)
+        layout.addWidget(bottom, 2)
 
         export_row = QHBoxLayout()
-        export_btn = QPushButton("Export repeatability CSV")
-        export_btn.clicked.connect(self._on_analysis_export_csv)
-        export_row.addWidget(export_btn)
+        self._analysis_export_btn = QPushButton("Export repeatability CSV")
+        self._analysis_export_btn.clicked.connect(self._on_analysis_export_csv)
+        export_row.addWidget(self._analysis_export_btn)
         export_row.addStretch(1)
         layout.addLayout(export_row)
+        self._update_analysis_export_button()
         return page
+
+    def _update_analysis_export_button(self) -> None:
+        """Say up front that there is nothing to export, rather than after the click."""
+        ready = bool(self._analysis_covers)
+        self._analysis_export_btn.setEnabled(ready)
+        self._analysis_export_btn.setToolTip(
+            "Write mean, standard deviation, CV and range per class to a CSV."
+            if ready
+            else "Nothing to export yet: this transect has no completed passes."
+        )
 
     def _analysis_transect_id(self) -> uuid.UUID | None:
         data = self._analysis_transect_combo.currentData()
@@ -149,6 +204,7 @@ class SimpleAnalysisMixin(MixinBase):
             self._analysis_stats_table.setRowCount(0)
             self._analysis_repro_label.setText("")
             self._analysis_runs_list.clear()
+            self._refresh_analysis_empty_states()
             return
 
         out_root = Path(self._out_root_input.text()).expanduser()
@@ -172,6 +228,17 @@ class SimpleAnalysisMixin(MixinBase):
         self._fill_analysis_stats(covers)
         self._fill_analysis_repro(covers)
         self._fill_analysis_runs(store, out_root, transect_id)
+        self._refresh_analysis_empty_states()
+
+    def _refresh_analysis_empty_states(self) -> None:
+        """Show each pane's placeholder while it has nothing to say."""
+        self._analysis_stats_stack.setCurrentIndex(
+            0 if self._analysis_stats_table.rowCount() else 1
+        )
+        self._analysis_runs_stack.setCurrentIndex(
+            0 if self._analysis_runs_list.count() else 1
+        )
+        self._update_analysis_export_button()
 
     def _refresh_analysis_map(self, store, selected_id: uuid.UUID | None) -> None:
         overlays = []
@@ -244,6 +311,7 @@ class SimpleAnalysisMixin(MixinBase):
 
     def _fill_analysis_repro(self, covers: list) -> None:
         groups = reproducibility_groups(covers)
+        self._analysis_repro_label.setVisible(bool(groups))
         if not groups:
             self._analysis_repro_label.setText("")
             return
@@ -276,7 +344,6 @@ class SimpleAnalysisMixin(MixinBase):
     def _on_analysis_export_csv(self) -> None:
         covers = self._analysis_covers
         if not covers:
-            self._status_label.setText("Nothing to export yet.")
             return
         name = self._analysis_transect_combo.currentText() or "transect"
         path_str, _ = QFileDialog.getSaveFileName(

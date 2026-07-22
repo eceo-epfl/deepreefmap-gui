@@ -3,9 +3,16 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPen, QPixmap
 
-from deepreefmap_gui.core.theme import SUCCESS, WARNING
+from deepreefmap_gui.core.theme import (
+    BORDER_STRONG,
+    PRIMARY,
+    SUCCESS,
+    TEXT_DIM,
+    WARNING,
+    WINDOW,
+)
 
 
 def _px(size: int = 24, bg: QColor | None = None) -> tuple[QPixmap, QPainter]:
@@ -162,6 +169,71 @@ def download_icon(size: int = 16, color: QColor | None = None) -> QIcon:
     p.drawLine(QPointF(cx + a, bot - a), QPointF(cx, bot))
     base_y = size * 0.82
     p.drawLine(QPointF(size * 0.22, base_y), QPointF(size * 0.78, base_y))
+    p.end()
+    return QIcon(pm)
+
+
+def copy_icon(size: int = 16, color: QColor | None = None) -> QIcon:
+    """Two offset sheets, the usual shorthand for copy-to-clipboard."""
+    c = color or QColor(230, 230, 230)
+    pm, p = _px(size)
+    pen = QPen(c, 1.4)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    p.setPen(pen)
+    w = size * 0.42
+    h = size * 0.52
+    p.drawRoundedRect(QRectF(size * 0.20, size * 0.16, w, h), 1.5, 1.5)
+    p.drawRoundedRect(QRectF(size * 0.38, size * 0.32, w, h), 1.5, 1.5)
+    p.end()
+    return QIcon(pm)
+
+
+# Where a step sits relative to the one you are on.
+STEP_STATES = ("done", "current", "upcoming")
+
+
+def step_badge_icon(number: int, state: str, size: int = 20) -> QIcon:
+    """Numbered disc for the wizard stepper.
+
+    Done steps carry a tick rather than their number, so a glance at the header
+    says how far through the survey you are without reading the labels.
+    """
+    if state not in STEP_STATES:
+        raise ValueError(f"Unknown step state: {state!r}")
+    pm, p = _px(size)
+    cx, cy = size / 2, size / 2
+    r = size * 0.42
+
+    if state == "current":
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(PRIMARY))
+        p.drawEllipse(QPointF(cx, cy), r, r)
+        fg = QColor(WINDOW)
+    elif state == "done":
+        p.setPen(QPen(QColor(SUCCESS), 1.4))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawEllipse(QPointF(cx, cy), r, r)
+        fg = QColor(SUCCESS)
+    else:
+        p.setPen(QPen(QColor(BORDER_STRONG), 1.2))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawEllipse(QPointF(cx, cy), r, r)
+        fg = QColor(TEXT_DIM)
+
+    if state == "done":
+        pen = QPen(fg, 1.8)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        p.setPen(pen)
+        p.drawLine(QPointF(size * 0.30, cy), QPointF(size * 0.44, size * 0.66))
+        p.drawLine(QPointF(size * 0.44, size * 0.66), QPointF(size * 0.71, size * 0.34))
+    else:
+        f = QFont()
+        f.setPixelSize(max(8, int(size * 0.52)))
+        f.setBold(True)
+        p.setFont(f)
+        p.setPen(fg)
+        p.drawText(QRectF(0, 0, size, size), Qt.AlignmentFlag.AlignCenter, str(number))
     p.end()
     return QIcon(pm)
 

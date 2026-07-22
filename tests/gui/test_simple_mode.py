@@ -74,8 +74,10 @@ def test_simple_mode_creates_survey_db_under_root(window):
 
 def test_wizard_has_three_numbered_steps(window):
     assert list(window._simple_nav_buttons) == ["plan", "run", "analyse"]
-    assert window._simple_nav_buttons["plan"].text() == "1. Plan"
-    assert window._simple_nav_buttons["analyse"].text() == "3. Analyse"
+    assert window._simple_nav_buttons["plan"].text() == "Plan"
+    assert window._simple_nav_buttons["analyse"].text() == "Analyse"
+    # The step number lives in the badge icon beside the label.
+    assert not window._simple_nav_buttons["plan"].icon().isNull()
 
 
 def test_next_and_back_walk_the_steps(window):

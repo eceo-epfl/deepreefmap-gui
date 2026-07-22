@@ -9,14 +9,15 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtWidgets import (
     QAbstractButton,
     QButtonGroup,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFrame,
     QHBoxLayout,
-    QLabel,
     QLineEdit,
     QPushButton,
     QSpinBox,
@@ -26,12 +27,18 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from deepreefmap_gui.core.icons import step_badge_icon
 from deepreefmap_gui.core.theme import (
     BORDER,
     BUTTON,
+    CARD_BG,
     DISABLED_FG,
+    GUTTER,
+    PAGE_MARGIN,
     PRIMARY,
-    TEXT_DIM,
+    RADIUS_SM,
+    SURFACE_HI,
+    TEXT_MUTED,
     WINDOW,
     WINDOW_TEXT,
 )
@@ -48,11 +55,17 @@ UI_MODE_ORDER = ("simple", "advanced")
 # The wizard: plan your transects, run your videos, look at the results.
 WIZARD_STEPS = ("plan", "run", "analyse")
 
+_STEP_BADGE_PX = 20
+
+# The numbered badge carries the emphasis, so the label itself stays at body
+# weight and only the current step is filled.
 _STEP_QSS = (
-    "QToolButton { font-size: 15px; font-weight: bold; padding: 6px 20px;"
-    " border: none; border-radius: 4px; }"
+    "QToolButton { font-weight: 600; padding: 5px 14px 5px 8px;"
+    f" border: 1px solid transparent; border-radius: {RADIUS_SM}px;"
+    f" background: transparent; color: {TEXT_MUTED}; }}"
+    f" QToolButton:hover {{ background: {SURFACE_HI}; color: {WINDOW_TEXT}; }}"
     f" QToolButton:checked {{ background: {PRIMARY}; color: {WINDOW}; }}"
-    f" QToolButton:disabled {{ color: {DISABLED_FG}; }}"
+    f" QToolButton:disabled {{ color: {DISABLED_FG}; background: transparent; }}"
 )
 
 
@@ -70,9 +83,20 @@ def _segment_qss(*, first: bool) -> str:
     return (
         f"QToolButton {{ border: 1px solid {BORDER}; border-radius: 0; {corners}"
         f" padding: 4px 14px; background: {BUTTON}; color: {WINDOW_TEXT}; }}"
+        f" QToolButton:hover {{ background: {SURFACE_HI}; }}"
         f" QToolButton:checked {{ background: {PRIMARY}; color: {WINDOW};"
         f" font-weight: bold; }}"
     )
+
+
+def _step_connector() -> QFrame:
+    """Hairline joining two step badges, in place of an arrow glyph."""
+    line = QFrame()
+    line.setFrameShape(QFrame.Shape.HLine)
+    line.setFixedWidth(24)
+    line.setFixedHeight(1)
+    line.setStyleSheet(f"background-color: {BORDER}; border: none;")
+    return line
 
 # Preset key -> run-form widget attribute, one entry per settings widget. Simple
 # mode can edit the whole run form, so the preset snapshots all of it. Per-run
@@ -267,12 +291,24 @@ class UiModeMixin(MixinBase):
 
     def _build_simple_shell(self) -> QWidget:
         """Simple mode as a three step wizard: numbered steps you can click as
-        breadcrumbs, over a stack of pages that each end in a Back/Next footer."""
+        breadcrumbs, over a stack of pages that each end in a Back/Next footer.
+
+        The steps sit in their own band so the header reads as chrome above the
+        page rather than as one more row of controls inside it.
+        """
         shell = QWidget()
         layout = QVBoxLayout(shell)
-        layout.setContentsMargins(8, 8, 8, 8)
-        nav = QHBoxLayout()
-        nav.setSpacing(6)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        header = QWidget()
+        header.setStyleSheet(
+            f"background-color: {CARD_BG}; border-bottom: 1px solid {BORDER};"
+        )
+        nav = QHBoxLayout(header)
+        nav.setContentsMargins(PAGE_MARGIN, 8, PAGE_MARGIN, 8)
+        nav.setSpacing(4)
+
         self._simple_stack = QStackedWidget()
         self._simple_nav_buttons = {}
         self._wizard_back_buttons = {}
@@ -286,23 +322,50 @@ class UiModeMixin(MixinBase):
         }
         for number, name in enumerate(WIZARD_STEPS, start=1):
             btn = QToolButton()
-            btn.setText(f"{number}. {name.capitalize()}")
+            btn.setText(name.capitalize())
             btn.setCheckable(True)
             btn.setStyleSheet(_STEP_QSS)
+            btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            btn.setIconSize(QSize(_STEP_BADGE_PX, _STEP_BADGE_PX))
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
             group.addButton(btn)
             nav.addWidget(btn)
             if number < len(WIZARD_STEPS):
-                arrow = QLabel("→")
-                arrow.setStyleSheet(f"color: {TEXT_DIM}; font-size: 15px;")
-                nav.addWidget(arrow)
+                nav.addWidget(_step_connector())
             index = self._simple_stack.addWidget(self._wrap_wizard_page(name, pages[name]))
             btn.toggled.connect(partial(self._on_simple_nav_toggled, index))
             self._simple_nav_buttons[name] = btn
         nav.addStretch(1)
-        layout.addLayout(nav)
-        layout.addWidget(self._simple_stack, 1)
+        layout.addWidget(header)
+
+        body = QWidget()
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(PAGE_MARGIN, PAGE_MARGIN, PAGE_MARGIN, PAGE_MARGIN)
+        body_layout.setSpacing(GUTTER)
+        body_layout.addWidget(self._simple_stack, 1)
+        layout.addWidget(body, 1)
+
         self._simple_nav_buttons["plan"].setChecked(True)
+        self._refresh_step_badges()
         return shell
+
+    def _refresh_step_badges(self) -> None:
+        """Steps before the live one read as done, the rest as still to come."""
+        current = 0
+        for index, name in enumerate(WIZARD_STEPS):
+            if self._simple_nav_buttons[name].isChecked():
+                current = index
+                break
+        for index, name in enumerate(WIZARD_STEPS):
+            if index < current:
+                state = "done"
+            elif index == current:
+                state = "current"
+            else:
+                state = "upcoming"
+            self._simple_nav_buttons[name].setIcon(
+                step_badge_icon(index + 1, state, _STEP_BADGE_PX)
+            )
 
     def _wrap_wizard_page(self, name: str, page: QWidget) -> QWidget:
         container = QWidget()
@@ -323,6 +386,7 @@ class UiModeMixin(MixinBase):
         index = WIZARD_STEPS.index(name)
         if index > 0:
             back = QPushButton("← Back")
+            back.setProperty("quiet", "true")
             back.clicked.connect(partial(self._go_to_step, WIZARD_STEPS[index - 1]))
             self._wizard_back_buttons[name] = back
             row.addWidget(back)
@@ -332,6 +396,7 @@ class UiModeMixin(MixinBase):
         elif index < len(WIZARD_STEPS) - 1:
             nxt = WIZARD_STEPS[index + 1]
             button = QPushButton(f"Next: {nxt.capitalize()} →")
+            button.setProperty("cta", "true")
             button.clicked.connect(partial(self._go_to_step, nxt))
             self._wizard_next_buttons[name] = button
             row.addWidget(button)
@@ -351,6 +416,7 @@ class UiModeMixin(MixinBase):
     def _on_simple_nav_toggled(self, index: int, checked: bool) -> None:
         if checked:
             self._simple_stack.setCurrentIndex(index)
+            self._refresh_step_badges()
 
     def _set_simple_section(self, name: str) -> None:
         self._simple_nav_buttons[name].setChecked(True)
