@@ -305,7 +305,7 @@ class ResultsMixin(MixinBase):
         if not chosen:
             return
         try:
-            from deepreefmap.postproc.reports import save_cover_csv_levels
+            from deepreefmap_gui.cover import save_cover_csv_levels
 
             written = save_cover_csv_levels(Path(chosen), cover, self._run_classes_config())
             names = ", ".join(p.name for p in written.values())

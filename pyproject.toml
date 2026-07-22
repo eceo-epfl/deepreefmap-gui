@@ -30,6 +30,10 @@ dependencies = [
   "psutil>=5.9",
   # Survey preset files (survey/preset.py).
   "pyyaml>=6.0.2",
+  # Zarr scene-file cache for fast run reloads (io/scene_file.py). Formerly a
+  # library dependency; moved here with the scene-file code.
+  "zarr>=2.18,<3",
+  "numcodecs>=0.12,<0.16",
 ]
 
 [project.optional-dependencies]
@@ -123,6 +127,8 @@ module = [
   "pyvistaqt.*",
   "vtk.*",
   "psutil.*",
+  "zarr.*",
+  "numcodecs.*",
 ]
 ignore_missing_imports = true
 

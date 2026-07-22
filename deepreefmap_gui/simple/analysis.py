@@ -30,7 +30,7 @@ from deepreefmap_gui.core.widgets import EmptyState, section_card
 
 from PySide6.QtGui import QColor
 
-from deepreefmap.config.classes import COVER_LEVELS
+from deepreefmap_gui.cover import COVER_LEVELS
 from deepreefmap_gui.map.overlays import OverlayTransect
 from deepreefmap_gui.map.widget import SlippyMapWidget
 from deepreefmap_gui.simple.charts import GroupedBarChart, pass_color

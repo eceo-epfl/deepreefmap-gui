@@ -1,0 +1,78 @@
+"""Seed a fresh run dir from a matching prior run's preprocess/mapping cache.
+
+Every GUI run gets its own timestamped output directory, so the library's
+always-on resume cache never hits on its own. This links (or copies) the cached
+frames/labels/masks plus the preprocess and mapping sidecars from the newest
+sibling whose preprocess key matches, letting the orchestrator resume.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import shutil
+from pathlib import Path
+
+from deepreefmap.pipeline.resume import (
+    CACHE_DIR_NAME,
+    STAGE_MAPPING,
+    STAGE_PREPROCESS,
+    _sidecar_path,
+    read_sidecar,
+)
+
+logger = logging.getLogger(__name__)
+
+_SEED_DIRS = ("frames", "labels", "masks")
+
+
+def _link_or_copy(src: Path, dst: Path) -> None:
+    try:
+        os.link(src, dst)
+    except OSError:  # cross-device, or a filesystem without hard links
+        shutil.copy2(src, dst)
+
+
+def seed_run_dir_from_match(output_dir: Path, search_root: Path, prep_key: str) -> Path | None:
+    """Seed a fresh run dir from the newest sibling with a matching preprocess key."""
+    if read_sidecar(output_dir, STAGE_PREPROCESS) is not None:
+        return None
+    try:
+        candidates = [d for d in search_root.iterdir() if d.is_dir() and d != output_dir]
+    except OSError:
+        return None
+    matches = []
+    for cand in candidates:
+        sidecar = read_sidecar(cand, STAGE_PREPROCESS)
+        if sidecar is None or sidecar.get("key") != prep_key:
+            continue
+        if not (cand / "frames").is_dir():
+            continue
+        matches.append((_sidecar_path(cand, STAGE_PREPROCESS).stat().st_mtime, cand))
+    if not matches:
+        return None
+    _, source = max(matches)
+    try:
+        for dirname in _SEED_DIRS:
+            src_dir = source / dirname
+            if not src_dir.is_dir():
+                continue
+            dst_dir = output_dir / dirname
+            dst_dir.mkdir(parents=True, exist_ok=True)
+            for f in src_dir.iterdir():
+                if f.is_file():
+                    _link_or_copy(f, dst_dir / f.name)
+        (output_dir / CACHE_DIR_NAME).mkdir(parents=True, exist_ok=True)
+        _link_or_copy(_sidecar_path(source, STAGE_PREPROCESS), _sidecar_path(output_dir, STAGE_PREPROCESS))
+        # The mapping key embeds backend/options/gravity and the orchestrator
+        # validates it on load, so carrying the cache across is free.
+        mapping_npz = source / "mapping_outputs.npz"
+        if mapping_npz.is_file() and read_sidecar(source, STAGE_MAPPING) is not None:
+            _link_or_copy(mapping_npz, output_dir / "mapping_outputs.npz")
+            _link_or_copy(_sidecar_path(source, STAGE_MAPPING), _sidecar_path(output_dir, STAGE_MAPPING))
+    except OSError:
+        # Half-seeded dirs are safe: load_prepared_frames treats incomplete
+        # artifacts as a miss and the orchestrator recomputes.
+        logger.warning("Cache seeding from %s failed midway", source, exc_info=True)
+        return None
+    return source

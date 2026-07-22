@@ -36,7 +36,7 @@ if TYPE_CHECKING:
     )
 
     from deepreefmap.config.classes import ClassConfig
-    from deepreefmap.io.scene_file import SceneFrameAccessor
+    from deepreefmap_gui.io.scene_file import SceneFrameAccessor
     from deepreefmap_gui.system.log_view import LogView
     from deepreefmap_gui.runs.progress import ProgressModel
     from deepreefmap_gui.viewer.pick_tooltip import PickCard

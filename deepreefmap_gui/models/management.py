@@ -378,7 +378,7 @@ class ModelManagementMixin(MixinBase):
             container = QWidget()
             hb = QHBoxLayout(container)
             hb.setContentsMargins(0, 0, 0, 0)
-            from deepreefmap.mapping.registry import LOGER_INSTALL_HINT
+            from deepreefmap_gui.models.loger_hint import LOGER_INSTALL_HINT
 
             label = QLabel(f'<span style="color:{TEXT_DIM}">install required</span>')
             label.setToolTip(LOGER_INSTALL_HINT)

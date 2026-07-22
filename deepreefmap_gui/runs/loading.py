@@ -11,8 +11,9 @@ from deepreefmap_gui.system.log_view import close_run_log_file, open_run_log_fil
 from deepreefmap_gui.runs.progress import _LOAD_STAGE_TO_PHASE, _STAGE_MESSAGE_TO_PHASE
 
 if TYPE_CHECKING:
-    from deepreefmap.pipeline.run_loader import LoadedRun
     from deepreefmap.postproc.ortho_outputs import TransectCropParams
+
+    from deepreefmap_gui.runs.loaded_run import GuiLoadedRun
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,8 @@ class RunLoadingMixin(MixinBase):
         try:
             from deepreefmap.pipeline import resume as resume_mod
 
+            from deepreefmap_gui.runs.seeding import seed_run_dir_from_match
+
             prep_key = resume_mod.preprocess_key(
                 video_paths=[video_path],
                 fps=self._fps_spin.value(),
@@ -77,7 +80,7 @@ class RunLoadingMixin(MixinBase):
                 processing_width=self._proc_width_spin.value(),
                 processing_height=self._proc_height_spin.value(),
             )
-            seeded = resume_mod.seed_run_dir_from_match(out_dir, out_dir.parent, prep_key)
+            seeded = seed_run_dir_from_match(out_dir, out_dir.parent, prep_key)
         except Exception:
             logger.warning("Cache seeding failed; running from scratch", exc_info=True)
             return
@@ -294,12 +297,12 @@ class RunLoadingMixin(MixinBase):
 
     def _load_run_worker(self, run_dir: Path) -> None:
         try:
-            from deepreefmap.pipeline.run_loader import load_cached_run
+            from deepreefmap_gui.runs.loaded_run import load_run
 
-            def _cb(stage: str, cur: int, tot: int) -> None:
-                self._sig_load_progress.emit(stage, cur, tot)
-
-            result = load_cached_run(run_dir, progress_cb=_cb)
+            # The library loader and scene-file reader no longer emit per-step
+            # progress, so the load shows the indeterminate bar set in
+            # _auto_load_run rather than a staged breakdown.
+            result = load_run(run_dir)
             self._sig_run_loaded.emit(result, str(run_dir), "")
         except Exception as exc:
             logger.exception("Failed to load cached run")
@@ -335,7 +338,7 @@ class RunLoadingMixin(MixinBase):
         phase_key = _LOAD_STAGE_TO_PHASE.get(stage, stage)
         self._apply_progress(phase_key, label, current=cur, total=tot)
 
-    def _apply_loaded_run(self, result: LoadedRun | None, run_dir_str: str, error: str) -> None:
+    def _apply_loaded_run(self, result: GuiLoadedRun | None, run_dir_str: str, error: str) -> None:
         import time as _time
         from deepreefmap.pipeline.run_loader import GEOMETRY_ONLY_MODE
 

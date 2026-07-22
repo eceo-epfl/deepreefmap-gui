@@ -1,0 +1,121 @@
+# Class group taxonomy for benthic cover roll-up (fine -> intermediate -> coarse).
+# Keyed by segmentation class id. `fine` is the class name itself (from the
+# classes YAML); only intermediate/coarse groupings live here.
+
+1:
+  intermediate: "seagrass"
+  coarse: "seagrass"
+2:
+  intermediate: "trash"
+  coarse: "trash"
+3:
+  intermediate: "coral dead"
+  coarse: "coral dead"
+4:
+  intermediate: "coral bleached"
+  coarse: "coral bleached"
+5:
+  intermediate: "sand"
+  coarse: "sand"
+6:
+  intermediate: "coral alive"
+  coarse: "coral alive"
+7:
+  intermediate: "human"
+  coarse: "human"
+8:
+  intermediate: "transect tools"
+  coarse: "transect tools"
+9:
+  intermediate: "fish"
+  coarse: "fish"
+10:
+  intermediate: "algae covered substrate"
+  coarse: "algae covered substrate"
+11:
+  intermediate: "other animal"
+  coarse: "other animal"
+12:
+  intermediate: "hard substrate"
+  coarse: "hard substrate"
+13:
+  intermediate: "background"
+  coarse: "background"
+14:
+  intermediate: "dark"
+  coarse: "dark"
+15:
+  intermediate: "transect line"
+  coarse: "transect line"
+16:
+  intermediate: "massive/meandering bleached"
+  coarse: "coral bleached"
+17:
+  intermediate: "massive/meandering alive"
+  coarse: "coral alive"
+18:
+  intermediate: "rubble"
+  coarse: "hard substrate"
+19:
+  intermediate: "branching bleached"
+  coarse: "coral bleached"
+20:
+  intermediate: "branching dead"
+  coarse: "coral dead"
+21:
+  intermediate: "millepora"
+  coarse: "coral alive"
+22:
+  intermediate: "branching alive"
+  coarse: "coral alive"
+23:
+  intermediate: "massive/meandering dead"
+  coarse: "coral dead"
+24:
+  intermediate: "clam"
+  coarse: "other animal"
+25:
+  intermediate: "coral alive"
+  coarse: "coral alive"
+26:
+  intermediate: "other animal"
+  coarse: "other animal"
+27:
+  intermediate: "coral alive"
+  coarse: "coral alive"
+28:
+  intermediate: "coral alive"
+  coarse: "coral alive"
+29:
+  intermediate: "other animal"
+  coarse: "other animal"
+30:
+  intermediate: "other animal"
+  coarse: "other animal"
+31:
+  intermediate: "coral alive"
+  coarse: "coral alive"
+32:
+  intermediate: "coral dead"
+  coarse: "coral dead"
+33:
+  intermediate: "massive/meandering bleached"
+  coarse: "coral bleached"
+34:
+  intermediate: "coral alive"
+  coarse: "coral alive"
+35:
+  intermediate: "other animal"
+  coarse: "other animal"
+36:
+  intermediate: "massive/meandering alive"
+  coarse: "coral alive"
+37:
+  intermediate: "massive/meandering dead"
+  coarse: "coral dead"
+38:
+  intermediate: "other animal"
+  coarse: "other animal"
+39:
+  intermediate: "other animal"
+  coarse: "other animal"

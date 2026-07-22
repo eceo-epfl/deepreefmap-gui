@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from deepreefmap_gui.simple.batch import _COL_STATUS, _COL_TRANSECT
@@ -111,6 +113,9 @@ def test_run_batch_records_success_and_links_manifest(
 
     def fake_run(**kwargs):
         calls.append(kwargs)
+        # instrumented_reconstruction folds the run name + survey block into the
+        # manifest after the run, so give it one to fold into.
+        (kwargs["output_dir"] / "run_manifest.json").write_text(json.dumps({"mode": "semantic"}))
 
     monkeypatch.setattr("deepreefmap.pipeline.orchestrator.run_reconstruction", fake_run)
     add_video(batch_window, tmp_path, monkeypatch)
@@ -121,13 +126,18 @@ def test_run_batch_records_success_and_links_manifest(
 
     assert len(calls) == 1
     kwargs = calls[0]
-    assert kwargs["viewer"] is batch_window._viewer
+    # instrumented_reconstruction wraps the viewer in a stage-marking proxy.
+    assert kwargs["viewer"]._inner is batch_window._viewer
     assert kwargs["fps"] == 5
     assert kwargs["begin_s"] == 0.0
     assert kwargs["end_s"] == 60.0
     assert kwargs["transect_length"] == 50.0
     assert kwargs["output_dir"].parent == tmp_path
-    survey = kwargs["manifest_extra"]["survey"]
+    # run_name and the survey block are no longer passed to run_reconstruction;
+    # they land in the manifest instrumented_reconstruction writes afterward.
+    manifest = json.loads((kwargs["output_dir"] / "run_manifest.json").read_text())
+    assert manifest["name"] == kwargs["output_dir"].name
+    survey = manifest["survey"]
     assert survey["transect"]["name"] == "T1"
     assert survey["pass"]["direction"] == "forward"
     runs = batch_window._survey_store().list_runs()

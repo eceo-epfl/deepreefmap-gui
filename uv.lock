@@ -583,8 +583,6 @@ dependencies = [
     { name = "huggingface-hub" },
     { name = "imageio", extra = ["ffmpeg"] },
     { name = "imohash" },
-    { name = "numcodecs", version = "0.13.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-15-deepreefmap-gui-cu126' and extra == 'extra-15-deepreefmap-gui-cu130') or (extra == 'extra-15-deepreefmap-gui-cu126' and extra == 'extra-15-deepreefmap-gui-rocm') or (extra == 'extra-15-deepreefmap-gui-cu130' and extra == 'extra-15-deepreefmap-gui-rocm')" },
-    { name = "numcodecs", version = "0.15.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-15-deepreefmap-gui-cu126' and extra == 'extra-15-deepreefmap-gui-cu130') or (extra == 'extra-15-deepreefmap-gui-cu126' and extra == 'extra-15-deepreefmap-gui-rocm') or (extra == 'extra-15-deepreefmap-gui-cu130' and extra == 'extra-15-deepreefmap-gui-rocm')" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-15-deepreefmap-gui-cu126' and extra == 'extra-15-deepreefmap-gui-cu130') or (extra == 'extra-15-deepreefmap-gui-cu126' and extra == 'extra-15-deepreefmap-gui-rocm') or (extra == 'extra-15-deepreefmap-gui-cu130' and extra == 'extra-15-deepreefmap-gui-rocm')" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*' or (extra == 'extra-15-deepreefmap-gui-cu126' and extra == 'extra-15-deepreefmap-gui-cu130') or (extra == 'extra-15-deepreefmap-gui-cu126' and extra == 'extra-15-deepreefmap-gui-rocm') or (extra == 'extra-15-deepreefmap-gui-cu130' and extra == 'extra-15-deepreefmap-gui-rocm')" },
     { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-15-deepreefmap-gui-cu126' and extra == 'extra-15-deepreefmap-gui-cu130') or (extra == 'extra-15-deepreefmap-gui-cu126' and extra == 'extra-15-deepreefmap-gui-rocm') or (extra == 'extra-15-deepreefmap-gui-cu130' and extra == 'extra-15-deepreefmap-gui-rocm')" },
@@ -607,8 +605,6 @@ dependencies = [
     { name = "transformers" },
     { name = "typer" },
     { name = "viser" },
-    { name = "zarr", version = "2.18.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-15-deepreefmap-gui-cu126' and extra == 'extra-15-deepreefmap-gui-cu130') or (extra == 'extra-15-deepreefmap-gui-cu126' and extra == 'extra-15-deepreefmap-gui-rocm') or (extra == 'extra-15-deepreefmap-gui-cu130' and extra == 'extra-15-deepreefmap-gui-rocm')" },
-    { name = "zarr", version = "2.18.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-15-deepreefmap-gui-cu126' and extra == 'extra-15-deepreefmap-gui-cu130') or (extra == 'extra-15-deepreefmap-gui-cu126' and extra == 'extra-15-deepreefmap-gui-rocm') or (extra == 'extra-15-deepreefmap-gui-cu130' and extra == 'extra-15-deepreefmap-gui-rocm')" },
 ]
 
 [package.optional-dependencies]
@@ -632,7 +628,6 @@ requires-dist = [
     { name = "imohash", specifier = ">=1.1.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=2.0.0" },
     { name = "natsort", marker = "extra == 'loger'", specifier = ">=8.4.0" },
-    { name = "numcodecs", specifier = ">=0.12,<0.16" },
     { name = "numpy", specifier = ">=1.26.0" },
     { name = "open3d", specifier = ">=0.18.0" },
     { name = "opencv-python", specifier = ">=4.10.0.84" },
@@ -662,7 +657,6 @@ requires-dist = [
     { name = "types-tqdm", marker = "extra == 'dev'" },
     { name = "viser", specifier = ">=1.0.27" },
     { name = "wandb", marker = "extra == 'train'", specifier = ">=0.20.0" },
-    { name = "zarr", specifier = ">=2.18,<3" },
 ]
 provides-extras = ["loger", "gopro", "train", "cu126", "cu130", "rocm", "dev"]
 
@@ -672,11 +666,15 @@ version = "1.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "deepreefmap", extra = ["gopro", "loger"] },
+    { name = "numcodecs", version = "0.13.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-15-deepreefmap-gui-cu126' and extra == 'extra-15-deepreefmap-gui-cu130') or (extra == 'extra-15-deepreefmap-gui-cu126' and extra == 'extra-15-deepreefmap-gui-rocm') or (extra == 'extra-15-deepreefmap-gui-cu130' and extra == 'extra-15-deepreefmap-gui-rocm')" },
+    { name = "numcodecs", version = "0.15.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-15-deepreefmap-gui-cu126' and extra == 'extra-15-deepreefmap-gui-cu130') or (extra == 'extra-15-deepreefmap-gui-cu126' and extra == 'extra-15-deepreefmap-gui-rocm') or (extra == 'extra-15-deepreefmap-gui-cu130' and extra == 'extra-15-deepreefmap-gui-rocm')" },
     { name = "psutil" },
     { name = "pyside6" },
     { name = "pyvista" },
     { name = "pyvistaqt" },
     { name = "pyyaml" },
+    { name = "zarr", version = "2.18.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-15-deepreefmap-gui-cu126' and extra == 'extra-15-deepreefmap-gui-cu130') or (extra == 'extra-15-deepreefmap-gui-cu126' and extra == 'extra-15-deepreefmap-gui-rocm') or (extra == 'extra-15-deepreefmap-gui-cu130' and extra == 'extra-15-deepreefmap-gui-rocm')" },
+    { name = "zarr", version = "2.18.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-15-deepreefmap-gui-cu126' and extra == 'extra-15-deepreefmap-gui-cu130') or (extra == 'extra-15-deepreefmap-gui-cu126' and extra == 'extra-15-deepreefmap-gui-rocm') or (extra == 'extra-15-deepreefmap-gui-cu130' and extra == 'extra-15-deepreefmap-gui-rocm')" },
 ]
 
 [package.optional-dependencies]
@@ -705,6 +703,7 @@ rocm = [
 requires-dist = [
     { name = "deepreefmap", extras = ["loger", "gopro"], editable = "../deepreefmap" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=2.0.0" },
+    { name = "numcodecs", specifier = ">=0.12,<0.16" },
     { name = "psutil", specifier = ">=5.9" },
     { name = "pyside6", specifier = ">=6.7,<7" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.4.0" },
@@ -721,6 +720,7 @@ requires-dist = [
     { name = "torchvision", marker = "extra == 'rocm'", specifier = "==0.24.1+rocm6.4", index = "https://download.pytorch.org/whl/rocm6.4", conflict = { package = "deepreefmap-gui", extra = "rocm" } },
     { name = "types-pyyaml", marker = "extra == 'dev'" },
     { name = "types-tqdm", marker = "extra == 'dev'" },
+    { name = "zarr", specifier = ">=2.18,<3" },
 ]
 provides-extras = ["cu126", "cu130", "rocm", "dev"]
 

@@ -8,7 +8,7 @@ from PySide6.QtGui import QColor, QFont, QPainter, QPaintEvent, QPen, QPixmap
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from deepreefmap.config.classes import ClassConfig
-from deepreefmap.postproc.benthic_cover import aggregate_cover
+from deepreefmap_gui.cover import aggregate_cover, group_color_for_name, group_name_for_id
 
 
 _FINE_RING_OUTER = 1.00
@@ -126,7 +126,7 @@ class SunburstWidget(QWidget):
             name: tuple(
                 cls.id
                 for cls in classes_config.classes
-                if classes_config.group_name_for_id(cls.id, "coarse") == name
+                if group_name_for_id(classes_config, cls.id, "coarse") == name
             )
             for name in grouped
         }
@@ -134,7 +134,7 @@ class SunburstWidget(QWidget):
             (
                 name,
                 float(payload["fraction"]),
-                classes_config.group_color_for_name(name, "coarse"),
+                group_color_for_name(classes_config, name, "coarse"),
                 group_members.get(name, ()),
             )
             for name, payload in grouped.items()

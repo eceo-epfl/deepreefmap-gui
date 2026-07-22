@@ -369,7 +369,9 @@ class FormPanelMixin(MixinBase):
     def _build_model_selection_group(
         self, setup_layout: QVBoxLayout, seg_models: list[str], map_backends: list[str]
     ) -> None:
-        from deepreefmap.mapping.registry import LOGER_INSTALL_HINT, loger_available
+        from deepreefmap.mapping.registry import loger_available
+
+        from deepreefmap_gui.models.loger_hint import LOGER_INSTALL_HINT
 
         models_group = QGroupBox("Models")
         mg = QVBoxLayout(models_group)
