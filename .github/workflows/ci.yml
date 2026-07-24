@@ -14,14 +14,9 @@ permissions:
   contents: read
 
 # deepreefmap is pinned in pyproject.toml as a git direct reference (@<sha>), so
-# the built wheel and PyApp binary resolve it from GitHub. For local dev and CI,
-# [tool.uv.sources] overrides that to an editable ../deepreefmap checkout (this
-# also keeps the torch index routing that `uv sync --no-sources` would discard).
-# So CI checks the library out as a sibling at the SAME pinned commit. Keep
-# DEEPREEFMAP_REF matching the git pin in pyproject.toml `dependencies`.
+# `uv sync` here, the built wheel, and the PyApp binary all resolve it from GitHub
+# at that commit. The library repo is public, so no token is needed to fetch it.
 env:
-  DEEPREEFMAP_REPO: eceo-epfl/deepreefmap
-  DEEPREEFMAP_REF: gui-support
   QT_QPA_PLATFORM: offscreen
 
 jobs:
@@ -38,19 +33,6 @@ jobs:
         uses: actions/checkout@v6
         with:
           path: deepreefmap-gui
-
-      - name: Check out deepreefmap library (sibling path source)
-        uses: actions/checkout@v6
-        with:
-          repository: ${{ env.DEEPREEFMAP_REPO }}
-          ref: ${{ env.DEEPREEFMAP_REF }}
-          path: deepreefmap
-          # loger runtime is not exercised by the gui suite and its extra is
-          # pure-pip, so the vendored LoGeR submodule is not needed here.
-          submodules: false
-          # A public library resolves with the default token; if it is private,
-          # add a DEEPREEFMAP_TOKEN secret (read-scoped PAT or deploy key).
-          token: ${{ secrets.DEEPREEFMAP_TOKEN || github.token }}
 
       - name: Set up build environment
         uses: ./deepreefmap-gui/.github/actions/setup-build
@@ -80,15 +62,6 @@ jobs:
         uses: actions/checkout@v6
         with:
           path: deepreefmap-gui
-
-      - name: Check out deepreefmap library (sibling path source)
-        uses: actions/checkout@v6
-        with:
-          repository: ${{ env.DEEPREEFMAP_REPO }}
-          ref: ${{ env.DEEPREEFMAP_REF }}
-          path: deepreefmap
-          submodules: false
-          token: ${{ secrets.DEEPREEFMAP_TOKEN || github.token }}
 
       - name: Set up build environment
         uses: ./deepreefmap-gui/.github/actions/setup-build

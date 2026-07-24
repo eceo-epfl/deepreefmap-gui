@@ -21,12 +21,14 @@ classifiers = [
 ]
 dependencies = [
   # loger/gopro match the features the packaged binary ships (scripts/build_config.env
-  # in the library previously listed them as BASE_FEATURES). Pinned to a git commit
-  # on eceo-epfl/deepreefmap (not PyPI): this direct reference is written into the
-  # built wheel's Requires-Dist, so the PyApp binary's first-run install resolves the
-  # library from GitHub at that commit. [tool.uv.sources] overrides it to the local
-  # editable checkout for development.
-  "deepreefmap[loger,gopro] @ git+https://github.com/eceo-epfl/deepreefmap.git@6faf929a127c29ccad6c8c9c1064dcedef509231",
+  # in the library previously listed them as BASE_FEATURES). Pinned to a git commit on
+  # the gui-support branch of eceo-epfl/deepreefmap (not PyPI). This direct reference is
+  # what dev, CI, and the built wheel's Requires-Dist all resolve, so the PyApp binary's
+  # first-run install pulls the library from GitHub at that commit. gui-support is the
+  # library-only lineage; the deepreefmap-gui branch is the pre-split monolith this
+  # package was extracted from (it still nests the whole app under deepreefmap/gui/), so
+  # never pin to it.
+  "deepreefmap[loger,gopro] @ git+https://github.com/eceo-epfl/deepreefmap.git@786dad18aa12db7501b95508c322032b4e36bffe",
   "PySide6>=6.7,<7",
   "pyvista>=0.44",
   "pyvistaqt>=0.11",
@@ -72,11 +74,9 @@ conflicts = [
   [{ extra = "cu126" }, { extra = "cu130" }, { extra = "rocm" }],
 ]
 
-# Development against the sibling checkout. Stripped from published metadata, so
-# the wheel keeps the git pin from `dependencies` and PyApp's `uv pip install`
-# resolves the library from GitHub at that commit.
+# Route torch and torchvision to the matching PyTorch wheel index per GPU extra.
+# Stripped from published metadata, so the wheel keeps the plain version pins.
 [tool.uv.sources]
-deepreefmap = { path = "../deepreefmap", editable = true }
 torch = [
   { index = "pytorch-cu126", extra = "cu126" },
   { index = "pytorch-cu130", extra = "cu130" },
@@ -118,8 +118,6 @@ extend-exclude = ["tests/e2e/_cache", "tests/e2e/_work"]
 
 [tool.mypy]
 python_version = "3.10"
-# Resolve deepreefmap from the sibling checkout; installed wheels ship py.typed.
-mypy_path = "../deepreefmap"
 
 # Use the library's types but leave checking its internals to its own repo.
 [[tool.mypy.overrides]]

@@ -1,12 +1,12 @@
 # DeepReefMap GUI
 
-**Native desktop application for [deepreefmap](https://github.com/EPFL-ECEO/deepreefmap), rapid 3D semantic mapping of coral reefs.**
+**Native desktop app for [deepreefmap](https://github.com/eceo-epfl/deepreefmap): rapid 3D semantic mapping of coral reefs.**
 
-A PySide6 application with a VTK point cloud viewer, live reconstruction progress, survey planning on a map, batch processing, model management, and in-app updates. All reconstruction happens in the deepreefmap library; this repository is the interface.
+A PySide6 application with a VTK point cloud viewer, live reconstruction progress, survey planning, batch processing, model management, and in-app updates. All reconstruction runs in the deepreefmap library; this repository is the interface.
 
 ## Install
 
-CI builds packages for every release. Grab yours from the [releases page](https://github.com/eceo-epfl/deepreefmap-gui/releases).
+Grab the latest build for your platform from the [releases page](https://github.com/eceo-epfl/deepreefmap-gui/releases).
 
 | Platform | File | Variants |
 |---|---|---|
@@ -14,37 +14,25 @@ CI builds packages for every release. Grab yours from the [releases page](https:
 | macOS (Apple Silicon) | `deepreefmap-gui-macos-arm64-<version>.dmg` | |
 | Linux | `deepreefmap-gui-linux-x64-<version>` | `-cu130` for RTX 50-series, `-rocm` for AMD |
 
-On Windows, run the installer. It installs per-user (no admin needed) and adds a Start Menu entry plus an uninstaller. Uninstalling keeps your outputs in `Documents\DeepReefMap` and asks before deleting downloaded models.
-
-On macOS, open the dmg and drag DeepReefMap to Applications. The app is not signed yet, so the first launch needs System Settings > Privacy & Security > "Open Anyway".
-
-On Linux, `chmod +x` the binary and run it. Use "Add to applications menu" in the Updates tab to register it in your launcher.
-
-The first launch installs a private Python environment (several GB, takes a few minutes). After that, install newer versions or roll back from the Updates tab; the binary is swapped in place, so shortcuts keep working. The plain binaries on the release page are what the updater downloads, and also run standalone without the installer. The installed binary exposes the full deepreefmap CLI (ie. `deepreefmap-gui.exe reconstruct --help`).
+On macOS the app is unsigned, so the first launch needs System Settings > Privacy & Security > "Open Anyway". On Linux, `chmod +x` the binary and run it. The first launch installs a private Python environment (several GB); after that, update or roll back from the Updates tab.
 
 ## Development
 
-The dev dependency on deepreefmap is an editable path source, so keep a checkout of [deepreefmap](https://github.com/EPFL-ECEO/deepreefmap) at `../deepreefmap`.
+deepreefmap resolves from the git commit pinned in `pyproject.toml`, so no separate checkout is needed.
 
 ```bash
 uv sync --extra dev
 uv run deepreefmap-gui
 ```
 
-GPU variants:
+GPU variants: `--extra cu126` (up to RTX 40-series), `--extra cu130` (RTX 50-series), `--extra rocm` (AMD, Linux only).
 
-```bash
-uv sync --extra cu126   # NVIDIA, up to RTX 40-series
-uv sync --extra cu130   # RTX 50-series (Blackwell)
-uv sync --extra rocm    # AMD, Linux only
-```
-
-Run the tests with `uv run pytest`.
+Run the tests with `uv run pytest`. The viewer tests need a real OpenGL context; if they crash under the `offscreen` Qt platform, use `xvfb-run -a uv run pytest`.
 
 ## Build
 
-`scripts/build.sh` (Linux/macOS) and `scripts/build.ps1` (Windows) wrap `uv build` and [PyApp](https://github.com/ofek/pyapp) to produce a self-provisioning binary. Shared settings live in `scripts/build_config.env`; `scripts/make_app_bundle.sh` produces the macOS app bundle and dmg.
+`scripts/build.sh` (Linux/macOS) and `scripts/build.ps1` (Windows) wrap `uv build` and [PyApp](https://github.com/ofek/pyapp) into a self-provisioning binary. Shared settings live in `scripts/build_config.env`.
 
 ## License
 
-Apache-2.0. Qt bindings are provided by PySide6 under the LGPL; bundled fonts and other third-party components are listed in `THIRD_PARTY_NOTICES.md`.
+Apache-2.0. Qt bindings via PySide6 (LGPL); bundled fonts and third-party components are listed in `THIRD_PARTY_NOTICES.md`.

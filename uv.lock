@@ -578,7 +578,7 @@ wheels = [
 [[package]]
 name = "deepreefmap"
 version = "1.1.0"
-source = { editable = "../deepreefmap" }
+source = { git = "https://github.com/eceo-epfl/deepreefmap.git?rev=786dad18aa12db7501b95508c322032b4e36bffe#786dad18aa12db7501b95508c322032b4e36bffe" }
 dependencies = [
     { name = "huggingface-hub" },
     { name = "imageio", extra = ["ffmpeg"] },
@@ -618,47 +618,6 @@ loger = [
     { name = "roma" },
     { name = "safetensors" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "accelerate", marker = "extra == 'loger'", specifier = ">=0.30.0" },
-    { name = "einops", marker = "extra == 'loger'", specifier = ">=0.7.0" },
-    { name = "huggingface-hub", specifier = ">=1.14.0" },
-    { name = "imageio", extras = ["ffmpeg"], specifier = ">=2.37.3" },
-    { name = "imohash", specifier = ">=1.1.0" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=2.0.0" },
-    { name = "natsort", marker = "extra == 'loger'", specifier = ">=8.4.0" },
-    { name = "numpy", specifier = ">=1.26.0" },
-    { name = "open3d", specifier = ">=0.18.0" },
-    { name = "opencv-python", specifier = ">=4.10.0.84" },
-    { name = "platformdirs", specifier = ">=4" },
-    { name = "py-gpmf-parser", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'gopro'", specifier = ">=0.1.1,<0.2.0" },
-    { name = "pycolmap", specifier = ">=4.0.4,<5.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.4.0" },
-    { name = "pytorch-triton-rocm", marker = "extra == 'rocm'", specifier = ">=3.0", index = "https://download.pytorch.org/whl/rocm6.4", conflict = { package = "deepreefmap", extra = "rocm" } },
-    { name = "pyyaml", specifier = ">=6.0.2" },
-    { name = "roma", marker = "extra == 'loger'", specifier = ">=1.5.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.12.0" },
-    { name = "safetensors", marker = "extra == 'loger'", specifier = ">=0.4.0" },
-    { name = "scikit-learn", specifier = ">=1.5.0" },
-    { name = "tensorboard", marker = "extra == 'train'", specifier = ">=2.18.0" },
-    { name = "torch", specifier = ">=2.7,<3" },
-    { name = "torch", marker = "extra == 'cu126'", specifier = "==2.12.1+cu126", index = "https://download.pytorch.org/whl/cu126", conflict = { package = "deepreefmap", extra = "cu126" } },
-    { name = "torch", marker = "extra == 'cu130'", specifier = "==2.12.1+cu130", index = "https://download.pytorch.org/whl/cu130", conflict = { package = "deepreefmap", extra = "cu130" } },
-    { name = "torch", marker = "extra == 'rocm'", specifier = "==2.9.1+rocm6.4", index = "https://download.pytorch.org/whl/rocm6.4", conflict = { package = "deepreefmap", extra = "rocm" } },
-    { name = "torchvision", specifier = ">=0.22,<1" },
-    { name = "torchvision", marker = "extra == 'cu126'", specifier = "==0.27.1+cu126", index = "https://download.pytorch.org/whl/cu126", conflict = { package = "deepreefmap", extra = "cu126" } },
-    { name = "torchvision", marker = "extra == 'cu130'", specifier = "==0.27.1+cu130", index = "https://download.pytorch.org/whl/cu130", conflict = { package = "deepreefmap", extra = "cu130" } },
-    { name = "torchvision", marker = "extra == 'rocm'", specifier = "==0.24.1+rocm6.4", index = "https://download.pytorch.org/whl/rocm6.4", conflict = { package = "deepreefmap", extra = "rocm" } },
-    { name = "tqdm", specifier = ">=4.67.3" },
-    { name = "transformers", specifier = ">=5.8.0" },
-    { name = "typer", specifier = ">=0.25.1" },
-    { name = "types-pyyaml", marker = "extra == 'dev'" },
-    { name = "types-tqdm", marker = "extra == 'dev'" },
-    { name = "viser", specifier = ">=1.0.27" },
-    { name = "wandb", marker = "extra == 'train'", specifier = ">=0.20.0" },
-]
-provides-extras = ["loger", "gopro", "train", "cu126", "cu130", "rocm", "dev"]
 
 [[package]]
 name = "deepreefmap-gui"
@@ -701,7 +660,7 @@ rocm = [
 
 [package.metadata]
 requires-dist = [
-    { name = "deepreefmap", extras = ["loger", "gopro"], editable = "../deepreefmap" },
+    { name = "deepreefmap", extras = ["loger", "gopro"], git = "https://github.com/eceo-epfl/deepreefmap.git?rev=786dad18aa12db7501b95508c322032b4e36bffe" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=2.0.0" },
     { name = "numcodecs", specifier = ">=0.12,<0.16" },
     { name = "psutil", specifier = ">=5.9" },
