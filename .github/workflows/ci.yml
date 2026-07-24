@@ -31,11 +31,9 @@ jobs:
     steps:
       - name: Check out gui repository
         uses: actions/checkout@v6
-        with:
-          path: deepreefmap-gui
 
       - name: Set up build environment
-        uses: ./deepreefmap-gui/.github/actions/setup-build
+        uses: ./.github/actions/setup-build
         with:
           qt-libs: "true"
 
@@ -43,15 +41,12 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
 
       - name: Install project (dev extra)
-        working-directory: deepreefmap-gui
         run: uv sync --python ${{ matrix.python-version }} --extra dev
 
       - name: Lint (ruff)
-        working-directory: deepreefmap-gui
         run: uv run --python ${{ matrix.python-version }} ruff check deepreefmap_gui tests
 
       - name: Test (pytest)
-        working-directory: deepreefmap-gui
         run: uv run --python ${{ matrix.python-version }} pytest -q
 
   typecheck:
@@ -60,11 +55,9 @@ jobs:
     steps:
       - name: Check out gui repository
         uses: actions/checkout@v6
-        with:
-          path: deepreefmap-gui
 
       - name: Set up build environment
-        uses: ./deepreefmap-gui/.github/actions/setup-build
+        uses: ./.github/actions/setup-build
         with:
           qt-libs: "true"
 
@@ -72,9 +65,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install project (dev extra)
-        working-directory: deepreefmap-gui
         run: uv sync --python 3.12 --extra dev
 
       - name: Type check (mypy)
-        working-directory: deepreefmap-gui
         run: uv run --python 3.12 mypy deepreefmap_gui
