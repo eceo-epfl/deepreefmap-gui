@@ -428,3 +428,241 @@ def test_perform_update_provisions_after_swap(tmp_path, monkeypatch) -> None:
     )
     binary_swap.perform_update({"tag_name": "v9.9.9"}, tmp_path / "bin", "9.9.9")
     assert calls == ["download", "replace", "provision"]
+
+
+# --- a download that does not finish ------------------------------------
+#
+# The updater replaces the program the user is running. "Verifying download"
+# used to be a log line with nothing behind it, so a transfer cut short by a
+# dropped wifi link was installed as the binary and the app stopped launching.
+
+
+def _serve_once(handler_cls):
+    """Start a one-shot HTTP server and return its port; caller closes it."""
+    server = HTTPServer(("127.0.0.1", 0), handler_cls)
+    threading.Thread(target=server.handle_request, daemon=True).start()
+    return server, server.server_address[1]
+
+
+def _truncating_handler(payload, declared):
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Length", str(declared))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *args):
+            pass
+
+    return Handler
+
+
+def test_a_short_download_is_refused_and_leaves_nothing_behind(tmp_path) -> None:
+    server, port = _serve_once(_truncating_handler(b"x" * 500, declared=5000))
+    dest = tmp_path / "bin"
+    try:
+        with pytest.raises(binary_swap.BinarySwapError, match="500 bytes but the server said 5000"):
+            binary_swap.download_to(f"http://127.0.0.1:{port}/bin", dest)
+    finally:
+        server.server_close()
+
+    assert not dest.exists()
+    assert list(tmp_path.iterdir()) == [], "a .part file was left for the next run to find"
+
+
+def test_a_download_contradicting_the_release_metadata_is_refused(tmp_path) -> None:
+    """Content-Length and the payload agree, so only the size GitHub recorded
+    for the asset -- fetched from a different host -- catches this."""
+    payload = b"y" * 800
+    server, port = _serve_once(_truncating_handler(payload, declared=len(payload)))
+    dest = tmp_path / "bin"
+    try:
+        with pytest.raises(binary_swap.BinarySwapError, match="release metadata said 4096"):
+            binary_swap.download_to(f"http://127.0.0.1:{port}/bin", dest, expected_size=4096)
+    finally:
+        server.server_close()
+
+    assert not dest.exists()
+
+
+def test_a_complete_download_lands_at_the_destination(tmp_path) -> None:
+    payload = b"z" * 2048
+    server, port = _serve_once(_truncating_handler(payload, declared=len(payload)))
+    dest = tmp_path / "bin"
+    try:
+        binary_swap.download_to(
+            f"http://127.0.0.1:{port}/bin", dest, expected_size=len(payload)
+        )
+    finally:
+        server.server_close()
+
+    assert dest.read_bytes() == payload
+    assert [p.name for p in tmp_path.iterdir()] == ["bin"]
+
+
+def test_download_bounds_how_long_it_will_wait(monkeypatch, tmp_path) -> None:
+    """An unbounded urlopen hangs the update dialog with no way out."""
+    seen: dict = {}
+
+    def fake_urlopen(_req, timeout=None):
+        seen["timeout"] = timeout
+        raise OSError("no route to host")
+
+    monkeypatch.setattr(binary_swap.urllib.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(OSError, match="no route"):
+        binary_swap.download_to("http://example/bin", tmp_path / "bin")
+
+    assert seen["timeout"] and seen["timeout"] > 0
+
+
+def test_perform_update_keeps_the_old_binary_when_the_download_is_short(tmp_path) -> None:
+    server, port = _serve_once(_truncating_handler(b"PARTIAL", declared=9999))
+    asset = binary_swap.resolve_asset_name()
+    release = {
+        "tag_name": "v1.1.0",
+        "assets": [{"name": asset, "browser_download_url": f"http://127.0.0.1:{port}/bin", "size": 9999}],
+    }
+    target = tmp_path / "deepreefmap"
+    target.write_bytes(b"OLD-BINARY")
+
+    try:
+        with pytest.raises(binary_swap.BinarySwapError):
+            binary_swap.perform_update(release, target, "1.1.0")
+    finally:
+        server.server_close()
+
+    assert target.read_bytes() == b"OLD-BINARY"
+    assert [p.name for p in tmp_path.iterdir()] == ["deepreefmap"]
+
+
+def test_perform_update_checks_the_size_the_release_records(tmp_path) -> None:
+    payload = b"NEW-BINARY-BYTES"
+    server, port = _serve_once(_truncating_handler(payload, declared=len(payload)))
+    asset = binary_swap.resolve_asset_name()
+    release = {
+        "tag_name": "v1.1.0",
+        "assets": [
+            {
+                "name": asset,
+                "browser_download_url": f"http://127.0.0.1:{port}/bin",
+                "size": len(payload),
+            }
+        ],
+    }
+    target = tmp_path / "deepreefmap"
+    target.write_bytes(b"OLD-BINARY")
+    lines: list[str] = []
+
+    try:
+        binary_swap.perform_update(release, target, "1.1.0", line_cb=lines.append)
+    finally:
+        server.server_close()
+
+    assert target.read_bytes() == payload
+    assert any("matching the size recorded" in line for line in lines)
+
+
+def test_the_log_does_not_claim_a_check_the_release_cannot_support(tmp_path) -> None:
+    """A release without an asset size still updates, but must not report that
+    anything was matched."""
+    payload = b"NEW-BINARY-BYTES"
+    server, port = _serve_once(_truncating_handler(payload, declared=len(payload)))
+    asset = binary_swap.resolve_asset_name()
+    release = {
+        "tag_name": "v1.1.0",
+        "assets": [{"name": asset, "browser_download_url": f"http://127.0.0.1:{port}/bin"}],
+    }
+    target = tmp_path / "deepreefmap"
+    target.write_bytes(b"OLD-BINARY")
+    lines: list[str] = []
+
+    try:
+        binary_swap.perform_update(release, target, "1.1.0", line_cb=lines.append)
+    finally:
+        server.server_close()
+
+    assert target.read_bytes() == payload
+    assert any("no size to check it against" in line for line in lines)
+    assert not any("matching the size recorded" in line for line in lines)
+
+
+def test_declared_asset_size_reads_the_matched_asset() -> None:
+    release = {
+        "tag_name": "v1.2.0",
+        "assets": [
+            {"name": "deepreefmap-gui-linux-x64-1.2.0", "browser_download_url": "https://x/a", "size": 4321},
+            {"name": "deepreefmap-gui-windows-x64-1.2.0.exe", "browser_download_url": "https://x/b", "size": 8765},
+        ],
+    }
+    assert binary_swap.declared_asset_size(release, "deepreefmap-gui-linux-x64") == 4321
+    assert binary_swap.declared_asset_size(release, "deepreefmap-gui-windows-x64.exe") == 8765
+    assert binary_swap.declared_asset_size(release, "deepreefmap-gui-macos-arm64") is None
+
+
+def test_declared_asset_size_is_none_when_the_release_omits_it() -> None:
+    release = {"tag_name": "v1.2.0", "assets": [{"name": "a", "browser_download_url": "https://x/a"}]}
+    assert binary_swap.declared_asset_size(release, "a") is None
+
+
+# --- the Windows swap, which is not atomic ------------------------------
+#
+# Windows cannot overwrite a running .exe, so the old binary is renamed aside
+# before the new one is renamed in. Between those two steps the installation has
+# no binary, and the second rename is the one antivirus is most likely to block.
+
+
+@pytest.fixture
+def windows_swap(monkeypatch, tmp_path):
+    monkeypatch.setattr(binary_swap.sys, "platform", "win32")
+    target = tmp_path / "deepreefmap.exe"
+    target.write_bytes(b"OLD-BINARY")
+    src = tmp_path / "deepreefmap.exe.new"
+    src.write_bytes(b"NEW-BINARY")
+    return target, src
+
+
+def _fail_the_move_into_place(monkeypatch, target, *, and_the_restore=False):
+    """Let the move-aside succeed and the move-in fail, as a lock on the new file would."""
+    real_rename = os.rename
+
+    def rename(a, b):
+        if Path(b) == target and (and_the_restore or not str(a).endswith(".old")):
+            raise OSError("Access is denied")
+        real_rename(a, b)
+
+    monkeypatch.setattr(os, "rename", rename)
+
+
+def test_a_blocked_swap_puts_the_old_binary_back(windows_swap, monkeypatch) -> None:
+    target, src = windows_swap
+    _fail_the_move_into_place(monkeypatch, target)
+
+    with pytest.raises(binary_swap.BinarySwapError, match="Could not move the new binary"):
+        binary_swap.replace_binary(target, src)
+
+    assert target.read_bytes() == b"OLD-BINARY", "the installation was left with no binary"
+    assert not target.with_suffix(".exe.old").exists()
+
+
+def test_a_swap_that_cannot_be_undone_says_where_the_old_binary_is(
+    windows_swap, monkeypatch
+) -> None:
+    target, src = windows_swap
+    _fail_the_move_into_place(monkeypatch, target, and_the_restore=True)
+
+    with pytest.raises(binary_swap.BinarySwapError, match=r"could not be restored.*\.old"):
+        binary_swap.replace_binary(target, src)
+
+    assert target.with_suffix(".exe.old").read_bytes() == b"OLD-BINARY"
+
+
+def test_the_windows_swap_still_works_when_nothing_blocks_it(windows_swap) -> None:
+    target, src = windows_swap
+
+    binary_swap.replace_binary(target, src)
+
+    assert target.read_bytes() == b"NEW-BINARY"
+    assert target.with_suffix(".exe.old").read_bytes() == b"OLD-BINARY"
+    assert not src.exists()

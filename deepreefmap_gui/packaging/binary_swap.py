@@ -75,7 +75,8 @@ def resolve_asset_name(platform: str | None = None) -> str:
     raise BinarySwapError(f"No binary asset is built for platform {p!r}")
 
 
-def match_asset_url(release: dict, asset_name: str) -> str | None:
+def match_asset(release: dict, asset_name: str) -> dict | None:
+    """This platform's downloadable asset in a release, or None."""
     # Release assets carry a version label (deepreefmap-gui-linux-x64-1.2.0[.exe])
     # while resolve_asset_name yields the bare platform name, so accept both.
     candidates = {asset_name}
@@ -87,11 +88,26 @@ def match_asset_url(release: dict, asset_name: str) -> str | None:
         else:
             candidates.add(f"{asset_name}-{tag}")
     for asset in release.get("assets", []):
-        if asset.get("name") in candidates:
-            url = asset.get("browser_download_url")
-            if url:
-                return str(url)
+        if asset.get("name") in candidates and asset.get("browser_download_url"):
+            return dict(asset)
     return None
+
+
+def match_asset_url(release: dict, asset_name: str) -> str | None:
+    asset = match_asset(release, asset_name)
+    return str(asset["browser_download_url"]) if asset is not None else None
+
+
+def declared_asset_size(release: dict, asset_name: str) -> int | None:
+    """Byte count GitHub records for the asset, or None if the release omits it.
+
+    Worth checking against separately from Content-Length: this figure comes from
+    api.github.com while the bytes come from the release CDN, so the two disagree
+    when a transfer is truncated or a proxy substitutes a response.
+    """
+    asset = match_asset(release, asset_name)
+    size = asset.get("size") if asset is not None else None
+    return int(size) if size else None
 
 
 def find_asset_url(release: dict, asset_name: str) -> str:
@@ -104,26 +120,54 @@ def find_asset_url(release: dict, asset_name: str) -> str:
     return url
 
 
+# Bounds each socket operation. Without one, a laptop that drops off the network
+# mid-download (or lands behind a captive portal) blocks on the read forever, with
+# a frozen progress bar and no way to cancel.
+_DOWNLOAD_TIMEOUT_S = 60.0
+
+
 def download_to(
     url: str,
     dest_path: Path,
     progress_cb: Callable[[int, int], None] | None = None,
     chunk_size: int = 64 * 1024,
+    *,
+    expected_size: int | None = None,
+    timeout: float = _DOWNLOAD_TIMEOUT_S,
 ) -> None:
+    """Download `url` to `dest_path`, or leave nothing at `dest_path` at all.
+
+    The bytes accumulate in a sibling ``.part`` file and are moved into place only
+    once the transfer is known to be complete, so a truncated download can never
+    be handed to replace_binary and installed as the running program.
+    """
     dest_path.parent.mkdir(parents=True, exist_ok=True)
+    part = dest_path.with_name(dest_path.name + ".part")
     req = urllib.request.Request(url, headers={"User-Agent": "deepreefmap-gui-updater"})
-    with urllib.request.urlopen(req) as resp:  # noqa: S310 (URL is our GH release metadata)
-        total = int(resp.headers.get("Content-Length") or 0)
-        done = 0
-        with dest_path.open("wb") as f:
-            while True:
-                chunk = resp.read(chunk_size)
-                if not chunk:
-                    break
-                f.write(chunk)
-                done += len(chunk)
-                if progress_cb is not None:
-                    progress_cb(done, total)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (URL is our GH release metadata)
+            declared = int(resp.headers.get("Content-Length") or 0)
+            total = declared or expected_size or 0
+            done = 0
+            with part.open("wb") as f:
+                while True:
+                    chunk = resp.read(chunk_size)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    done += len(chunk)
+                    if progress_cb is not None:
+                        progress_cb(done, total)
+        for source, size in (("the server", declared), ("the release metadata", expected_size)):
+            if size and done != size:
+                raise BinarySwapError(
+                    f"Downloaded {done} bytes but {source} said {size}. "
+                    "The transfer was interrupted or altered; try again."
+                )
+        os.replace(part, dest_path)
+    except BaseException:
+        part.unlink(missing_ok=True)
+        raise
 
 
 def replace_binary(target_path: Path, src_path: Path) -> None:
@@ -136,9 +180,28 @@ def replace_binary(target_path: Path, src_path: Path) -> None:
                 backup.unlink()
             except OSError:
                 logger.debug("Could not remove stale backup %s", backup, exc_info=True)
+        moved_aside = False
         if target_path.exists():
             os.rename(target_path, backup)
-        os.rename(src_path, target_path)
+            moved_aside = True
+        try:
+            os.rename(src_path, target_path)
+        except OSError as exc:
+            # Windows cannot overwrite a running .exe, which is why the old one is
+            # moved aside first. If this second rename then fails -- antivirus
+            # holding the new file open, a full volume -- the install is left with
+            # no binary at all unless the backup goes back.
+            if moved_aside:
+                try:
+                    os.rename(backup, target_path)
+                except OSError:
+                    raise BinarySwapError(
+                        f"Update failed and {target_path} could not be restored. "
+                        f"The previous binary is at {backup}; rename it back to recover."
+                    ) from exc
+            raise BinarySwapError(
+                f"Could not move the new binary into place: {exc}"
+            ) from exc
     else:
         os.chmod(src_path, 0o755)
         os.rename(src_path, target_path)
@@ -293,12 +356,17 @@ def perform_update(
     asset_name = resolve_asset_name()
     log(f"Looking up {asset_name} in release {release.get('tag_name')}…")
     url = find_asset_url(release, asset_name)
+    expected_size = declared_asset_size(release, asset_name)
     log(f"Downloading {url}")
     staged = binary_path.with_name(binary_path.name + ".new")
     if staged.exists():
         staged.unlink()
-    download_to(url, staged, progress_cb=progress_cb)
-    log(f"Verifying download ({staged.stat().st_size} bytes)…")
+    download_to(url, staged, progress_cb=progress_cb, expected_size=expected_size)
+    size = staged.stat().st_size
+    if expected_size:
+        log(f"Downloaded {size} bytes, matching the size recorded for the release.")
+    else:
+        log(f"Downloaded {size} bytes; the release records no size to check it against.")
     log(f"Replacing binary at {binary_path}")
     replace_binary(binary_path, staged)
     log("Preparing the new version's environment…")
