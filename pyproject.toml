@@ -30,6 +30,10 @@ dependencies = [
   # never pin to it.
   "deepreefmap[loger,gopro] @ git+https://github.com/eceo-epfl/deepreefmap.git@786dad18aa12db7501b95508c322032b4e36bffe",
   "PySide6>=6.7,<7",
+  # The app also imports vtkmodules.* directly (viewer/picking.py,
+  # viewer/widget.py) and relies on the vtk that pyvista hard-pins. Deliberately
+  # not declared separately: an independent constraint could only conflict with
+  # pyvista's, never improve on it.
   "pyvista>=0.44",
   "pyvistaqt>=0.11",
   # System probe (RAM/VRAM/CPU sampling) in profiling/system_probe.py.
@@ -40,6 +44,25 @@ dependencies = [
   # library dependency; moved here with the scene-file code.
   "zarr>=2.18,<3",
   "numcodecs>=0.12,<0.16",
+  # Imported at module level by this package, so an ImportError here is a startup
+  # crash rather than a degraded feature. All of these also arrive transitively
+  # (via deepreefmap or its extras) today; declaring them means a change upstream
+  # breaks resolution at install time instead of at runtime on a field laptop.
+  # tests/test_dependency_closure.py enforces that this list stays complete.
+  #   platformdirs  paths.py, imported by nearly every module
+  #   numpy         io/scene_file.py, viewer/*, runs/loaded_run.py
+  #   opencv-python form/video_scrub.py; matches what deepreefmap[gopro] resolves
+  #   huggingface-hub  models/manager.py — cache scan, auth and delete are ours
+  "platformdirs>=4.0",
+  "numpy>=1.26",
+  "opencv-python>=4.9",
+  "huggingface-hub>=0.30",
+  # Function-level imports, but small and universal enough that relying on a
+  # transitive path is not worth it: packaging drives the update version
+  # ordering (packaging/releases.py), tqdm the download progress shim
+  # (models/manager.py). Note [dev] already declares types-tqdm.
+  "packaging>=23",
+  "tqdm>=4.66",
 ]
 
 [project.optional-dependencies]
