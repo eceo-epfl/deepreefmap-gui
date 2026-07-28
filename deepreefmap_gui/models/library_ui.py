@@ -177,7 +177,7 @@ class ModelLibraryMixin(MixinBase):
         if dlg is None or dlg.wasCanceled():
             return
         total = max(total, 1)
-        verb = "Exporting" if phase == "export" else "Importing"
+        verb = {"export": "Exporting", "verify": "Verifying"}.get(phase, "Importing")
         dlg.setLabelText(
             f"{verb} models… {current / 1024**2:.0f} / {total / 1024**2:.0f} MB"
         )

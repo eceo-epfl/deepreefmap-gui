@@ -27,6 +27,7 @@ import io
 import json
 import logging
 import os
+import posixpath
 import shutil
 import tarfile
 from collections.abc import Callable, Iterator
@@ -42,7 +43,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# (phase, current_bytes, total_bytes); phase is "export" or "import".
+# (phase, current_bytes, total_bytes); phase is "export", "verify" or "import".
 ProgressCallback = Callable[[str, int, int], None]
 
 PACK_DIR_NAME = "DeepReefMap-model-pack"
@@ -192,12 +193,88 @@ def build_pack_manifest(
     }
 
 
+def _tar_repo_sha256(
+    tar: tarfile.TarFile,
+    index: dict[str, tarfile.TarInfo],
+    repo_dirname: str,
+    commit: str,
+    on_bytes: Callable[[int], None],
+) -> str:
+    """Recompute a repo's content hash from tar members, mirroring
+    _repo_content_sha256: snapshot files in relpath order, symlinks resolved to
+    the blob member they reference."""
+    snap_prefix = f"{CACHE_PREFIX}/{repo_dirname}/snapshots/{commit}/"
+    entries = sorted(
+        (m for m in index.values() if m.name.startswith(snap_prefix) and not m.isdir()),
+        key=lambda m: m.name[len(snap_prefix):],
+    )
+    h = hashlib.sha256()
+    for m in entries:
+        h.update(m.name[len(snap_prefix):].encode())
+        if m.issym():
+            blob_name = posixpath.normpath(
+                posixpath.join(posixpath.dirname(m.name), m.linkname)
+            )
+            source = index.get(blob_name)
+            if source is None:
+                raise PackChecksumError(
+                    f"{m.name} points at {blob_name}, which is missing from the pack."
+                )
+        else:
+            source = m
+        stream = tar.extractfile(source)
+        if stream is None:
+            raise PackChecksumError(f"Could not read {source.name} back from the pack.")
+        with stream:
+            for chunk in iter(lambda: stream.read(_CHUNK), b""):
+                h.update(chunk)
+                on_bytes(len(chunk))
+    return h.hexdigest()
+
+
+def _verify_written_tar(
+    tar_path: Path, manifest: dict, progress_cb: ProgressCallback | None
+) -> None:
+    """Read models.tar back from the destination and check every repo's content
+    against the manifest hashes, so a bad write (failing USB stick, full or
+    size-limited filesystem, transfer corruption) is caught at export time
+    rather than at import time in the field."""
+    total = int(manifest.get("total_size_bytes", 0)) or 1
+    done = 0
+
+    def on_bytes(n: int) -> None:
+        nonlocal done
+        done += n
+        if progress_cb is not None:
+            progress_cb("verify", min(done, total), total)
+
+    with tarfile.open(tar_path, "r") as tar:
+        index = {m.name: m for m in tar.getmembers()}
+        for r in manifest.get("repos", []):
+            expected = r.get("sha256")
+            commit = r.get("commit")
+            if not expected or not commit:
+                continue
+            dirname = "models--" + r["repo_id"].replace("/", "--")
+            actual = _tar_repo_sha256(tar, index, dirname, commit, on_bytes)
+            if actual != expected:
+                raise PackChecksumError(
+                    f"Write verification failed for {r['repo_id']}: what landed on "
+                    "the destination does not match the source cache. The drive may "
+                    "be failing or unable to hold a file this large."
+                )
+
+
 def export_model_pack(
     models: list[ModelInfo],
     dest_dir: str | Path,
     progress_cb: ProgressCallback | None = None,
 ) -> Path:
-    """Write a model pack for the given (already-cached) models into dest_dir."""
+    """Write a model pack for the given (already-cached) models into dest_dir.
+
+    The written tar is read back and verified against the manifest hashes before
+    the manifest.json sidecar appears, so the sidecar doubles as the "export
+    completed and verified" marker. Any failure removes the partial tar."""
     not_cached = [m.name for m in models if not manager.is_model_cached(m)]
     if not_cached:
         raise PackError(
@@ -225,19 +302,31 @@ def export_model_pack(
             progress_cb("export", min(written, total), total)
         return tarinfo
 
-    with tarfile.open(tar_path, "w") as tar:
-        # Manifest as the first member too, so a stray sidecar loss is recoverable.
-        info = tarfile.TarInfo(MANIFEST_NAME)
-        info.size = len(manifest_bytes)
-        tar.addfile(info, io.BytesIO(manifest_bytes))
-        for rexp in repo_exports.values():
-            tar.add(
-                rexp.repo_dir,
-                arcname=f"{CACHE_PREFIX}/{rexp.repo_dir.name}",
-                filter=_progress_filter,
-            )
+    # A stale sidecar must never sit next to a tar it doesn't describe.
+    sidecar = pack_dir / MANIFEST_NAME
+    sidecar.unlink(missing_ok=True)
+    try:
+        with tarfile.open(tar_path, "w") as tar:
+            # Manifest as the first member too, so a stray sidecar loss is recoverable.
+            info = tarfile.TarInfo(MANIFEST_NAME)
+            info.size = len(manifest_bytes)
+            tar.addfile(info, io.BytesIO(manifest_bytes))
+            for rexp in repo_exports.values():
+                tar.add(
+                    rexp.repo_dir,
+                    arcname=f"{CACHE_PREFIX}/{rexp.repo_dir.name}",
+                    filter=_progress_filter,
+                )
+        _verify_written_tar(tar_path, manifest, progress_cb)
+    except BaseException:
+        tar_path.unlink(missing_ok=True)
+        try:
+            pack_dir.rmdir()
+        except OSError:
+            pass
+        raise
 
-    (pack_dir / MANIFEST_NAME).write_text(json.dumps(manifest, indent=2))
+    sidecar.write_text(json.dumps(manifest, indent=2))
     if progress_cb is not None:
         progress_cb("export", total, total)
     logger.info("Exported %d repo(s) to %s", len(repo_exports), pack_dir)

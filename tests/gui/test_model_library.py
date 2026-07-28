@@ -137,6 +137,38 @@ def test_manifest_schema_and_checksums(tmp_path, monkeypatch):
     assert library._repo_content_sha256("fake/seg") == repo["sha256"]
 
 
+def test_export_verifies_written_tar(tmp_path, monkeypatch):
+    cache = tmp_path / "hf"
+    monkeypatch.setattr(manager, "_HF_CACHE_ROOT", cache)
+    _write_cache_repo(cache, "fake/seg", {"config.json": "{}", "model.safetensors": b"weights"})
+
+    phases: list[str] = []
+    pack = library.export_model_pack(
+        [_seg_info()], tmp_path / "usb", progress_cb=lambda ph, _c, _t: phases.append(ph)
+    )
+    assert "export" in phases and "verify" in phases
+
+    # Corrupt a blob inside the written tar; re-verification must catch it.
+    tar_path = pack / library.TAR_NAME
+    tar_path.write_bytes(tar_path.read_bytes().replace(b"weights", b"weightz"))
+    manifest = library.read_pack_manifest(pack)
+    with pytest.raises(library.PackChecksumError):
+        library._verify_written_tar(tar_path, manifest, None)
+
+
+def test_export_failure_leaves_no_partial_pack(tmp_path, monkeypatch):
+    cache = tmp_path / "hf"
+    monkeypatch.setattr(manager, "_HF_CACHE_ROOT", cache)
+    _write_cache_repo(cache, "fake/seg", {"config.json": "{}", "model.safetensors": b"weights"})
+
+    def _fail_mid_write(_phase, _cur, _tot):
+        raise OSError(27, "File too large")
+
+    with pytest.raises(OSError):
+        library.export_model_pack([_seg_info()], tmp_path / "usb", progress_cb=_fail_mid_write)
+    assert not (tmp_path / "usb" / library.PACK_DIR_NAME).exists()
+
+
 def test_import_symlink_fallback_copies(tmp_path, monkeypatch):
     src_cache = tmp_path / "src_hf"
     monkeypatch.setattr(manager, "_HF_CACHE_ROOT", src_cache)
