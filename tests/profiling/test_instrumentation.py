@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from deepreefmap_gui.profiling.instrumentation import (
     RunInstrumentation,
     apply_manifest_timings,
@@ -59,3 +61,24 @@ def test_apply_manifest_timings_folds_measurements_into_manifest(tmp_path: Path)
 def test_apply_manifest_timings_without_manifest_returns_none(tmp_path: Path) -> None:
     instr = SimpleNamespace()
     assert apply_manifest_timings(tmp_path, instr) is None
+
+
+def test_a_failed_manifest_rewrite_leaves_the_run_loadable(tmp_path: Path, monkeypatch) -> None:
+    """Expected behaviour: folding timings in is an update to the file that makes
+    the finished run loadable at all, so a failure costs the timings, not the run.
+    """
+    manifest_path = tmp_path / "run_manifest.json"
+    manifest_path.write_text(json.dumps({"mode": "semantic", "frames_processed": 120}))
+    instr = SimpleNamespace(
+        stage_durations=lambda: {"mapping": 30.0},
+        stage_peaks=dict,
+        total_seconds=lambda: 40.0,
+        system_profile={},
+    )
+    monkeypatch.setattr("os.replace", lambda *a, **k: (_ for _ in ()).throw(OSError()))
+
+    with pytest.raises(OSError):
+        apply_manifest_timings(tmp_path, instr)
+
+    assert json.loads(manifest_path.read_text()) == {"mode": "semantic", "frames_processed": 120}
+    assert [p.name for p in tmp_path.iterdir()] == ["run_manifest.json"]

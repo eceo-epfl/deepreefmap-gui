@@ -9,6 +9,7 @@ from typing import Any
 
 import yaml
 
+from deepreefmap_gui.io.atomic import atomic_write_text
 from deepreefmap_gui.paths import survey_preset_path
 
 PRESET_SCHEMA_VERSION = 2
@@ -77,11 +78,8 @@ def save_user_preset(preset: dict[str, Any]) -> Path:
     if missing:
         raise ValueError(f"Survey preset is missing keys: {', '.join(sorted(missing))}")
     path = survey_preset_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
     text = yaml.safe_dump({"schema_version": PRESET_SCHEMA_VERSION, **preset}, sort_keys=False)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text)
-    os.replace(tmp, path)
+    atomic_write_text(path, text)
     return path
 
 

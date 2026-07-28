@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import statistics
 from pathlib import Path
 
+from deepreefmap_gui.io.atomic import atomic_write_json
 from deepreefmap_gui.paths import run_timings_path as timings_path
 from deepreefmap_gui.profiling.eta import STAGES
 
@@ -189,10 +191,31 @@ def distinct_model_combinations(rows: list[dict]) -> list[tuple[str, str]]:
 
 
 def _load_all(path: Path) -> dict[str, list[dict]]:
+    """Stored profile, or an empty one if there is nothing readable to load.
+
+    A file that cannot be parsed is moved aside rather than silently overwritten
+    by the next record_run, so the machine keeps its evidence of whatever went
+    wrong. The single quarantine slot is deliberate: repeated corruption should
+    not fill the config directory with copies.
+    """
     try:
-        return json.loads(path.read_text())
-    except (OSError, ValueError):
+        raw = path.read_text()
+    except OSError:
         return {}
+    try:
+        loaded = json.loads(raw)
+    except ValueError:
+        loaded = None
+    if isinstance(loaded, dict):
+        return loaded
+    quarantine = path.with_name(path.name + ".corrupt")
+    try:
+        os.replace(path, quarantine)
+    except OSError:
+        logger.warning("Run timing profile at %s is unreadable", path, exc_info=True)
+    else:
+        logger.warning("Run timing profile at %s was unreadable; moved to %s", path, quarantine)
+    return {}
 
 
 def load_priors(key: str, path: Path | None = None) -> dict[str, float]:
@@ -240,8 +263,7 @@ def record_run(
     all_runs.setdefault(key, []).append(entry)
     all_runs[key] = all_runs[key][-_MAX_RUNS_PER_KEY:]
     try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(json.dumps(all_runs, indent=2))
+        atomic_write_json(target, all_runs)
     except OSError:
         logger.warning("Could not write run timing profile to %s", target, exc_info=True)
 

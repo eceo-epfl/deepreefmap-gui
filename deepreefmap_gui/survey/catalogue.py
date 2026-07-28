@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import shutil
 import uuid
 from collections.abc import Iterable
@@ -18,6 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from deepreefmap_gui.io.atomic import atomic_write_json
 from deepreefmap_gui.survey.models.run_record import RunRecord
 from deepreefmap_gui.survey.models.transect import Transect
 from deepreefmap_gui.survey.models.transect_pass import TransectPass
@@ -322,9 +322,7 @@ def rename_run(run_dir: Path, new_name: str) -> dict:
     manifest_path = run_dir / "run_manifest.json"
     manifest = json.loads(manifest_path.read_text())
     manifest["name"] = new_name.strip()
-    tmp = manifest_path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(manifest, indent=2))
-    os.replace(tmp, manifest_path)
+    atomic_write_json(manifest_path, manifest)
     return manifest
 
 

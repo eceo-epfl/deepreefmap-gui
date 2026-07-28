@@ -263,3 +263,71 @@ def test_distinct_combinations_empty() -> None:
 
 def test_distinct_combinations_missing_params_become_none_pair() -> None:
     assert distinct_model_combinations([{"params": {}}]) == [(None, None)]
+
+
+# --- surviving a truncated or corrupt profile ---------------------------
+#
+# The profile backs both the ETA priors and the pre-run memory check, and it is
+# rewritten in full on every run. A parse failure used to be indistinguishable
+# from "no file yet", so the next recorded run replaced the accumulated history
+# with a single entry.
+
+
+def _write_and_corrupt(path, keys) -> None:
+    for key in keys:
+        record_run(key, {"mapping": 1.0}, frames=10, points=100, path=path)
+    path.write_text('{"' + keys[0] + '": [{"stage_dura')
+
+
+def test_a_truncated_profile_is_moved_aside_not_overwritten(tmp_path) -> None:
+    path = tmp_path / "run_timings.json"
+    _write_and_corrupt(path, ["alpha", "beta"])
+
+    record_run("gamma", {"mapping": 2.0}, frames=20, points=200, path=path)
+
+    quarantined = path.with_name(path.name + ".corrupt")
+    assert quarantined.read_text() == '{"alpha": [{"stage_dura'
+    assert list(load_priors("gamma", path=path)) == ["mapping"]
+
+
+def test_repeated_corruption_reuses_one_quarantine_slot(tmp_path) -> None:
+    path = tmp_path / "run_timings.json"
+    for text in ("first corruption", "second corruption"):
+        path.write_text(text)
+        record_run("alpha", {"mapping": 1.0}, frames=10, points=100, path=path)
+
+    corrupt = [p.name for p in tmp_path.iterdir() if p.name.endswith(".corrupt")]
+    assert corrupt == ["run_timings.json.corrupt"]
+    assert (tmp_path / "run_timings.json.corrupt").read_text() == "second corruption"
+
+
+def test_a_profile_holding_the_wrong_json_type_is_quarantined(tmp_path) -> None:
+    """Valid JSON, wrong shape: a list would make every .get() call blow up
+    somewhere further from the cause."""
+    path = tmp_path / "run_timings.json"
+    path.write_text("[]")
+
+    assert load_expected_points("alpha", path=path) is None
+    assert path.with_name(path.name + ".corrupt").read_text() == "[]"
+
+
+def test_an_absent_profile_is_not_quarantined(tmp_path) -> None:
+    """First launch on a new machine: nothing to read, nothing wrong."""
+    path = tmp_path / "run_timings.json"
+
+    assert load_priors("alpha", path=path) == {}
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_failed_write_records_nothing_rather_than_a_partial_profile(tmp_path, monkeypatch) -> None:
+    """All-or-nothing: the run being recorded is lost, but the history it was
+    appending to is not."""
+    path = tmp_path / "run_timings.json"
+    record_run("alpha", {"mapping": 1.0}, frames=10, points=100, path=path)
+    monkeypatch.setattr("os.replace", lambda *a, **k: (_ for _ in ()).throw(OSError()))
+
+    record_run("beta", {"mapping": 2.0}, frames=20, points=200, path=path)
+
+    assert list(load_priors("alpha", path=path)) == ["mapping"]
+    assert load_priors("beta", path=path) == {}
+    assert [p.name for p in tmp_path.iterdir()] == ["run_timings.json"]

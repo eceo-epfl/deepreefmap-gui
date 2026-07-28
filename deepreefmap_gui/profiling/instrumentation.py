@@ -92,6 +92,8 @@ def apply_manifest_timings(
     """
     import json
 
+    from deepreefmap_gui.io.atomic import atomic_write_json
+
     manifest_path = output_dir / "run_manifest.json"
     if not manifest_path.exists():
         return None
@@ -106,7 +108,9 @@ def apply_manifest_timings(
     manifest["stage_peaks"] = instr.stage_peaks()
     manifest["run_duration_s"] = instr.total_seconds()
     manifest["system_profile"] = instr.system_profile
-    manifest_path.write_text(json.dumps(manifest, indent=2))
+    # Atomic: this rewrites the manifest the run just produced, and a truncated
+    # one makes the finished run unloadable rather than merely untimed.
+    atomic_write_json(manifest_path, manifest)
     return manifest
 
 
