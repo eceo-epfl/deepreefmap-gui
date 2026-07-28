@@ -1435,7 +1435,9 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         self._notify_status("set_stage", stage=stage, status=status, message=message)
 
     @Slot(str, int, object, object, object)
-    def _on_update_progress(self, stage: str, current: int, total: object, message: object, frame_index: object) -> None:
+    def _on_update_progress(
+        self, stage: str, current: int, total: object, message: object, frame_index: object
+    ) -> None:
         if stage == "preprocess" and frame_index is not None and self._output_dir is not None:
             self._show_live_preprocess_frame(int(cast("SupportsInt", frame_index)))
         self._notify_status("update_progress", stage=stage, current=current, total=total, message=message)

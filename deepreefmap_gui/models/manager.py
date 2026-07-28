@@ -473,16 +473,30 @@ def materialise_model(info: ModelInfo) -> None:
     _materialise_files(info, {info.hf_repos[0]: source})
 
 
+class _NullWriter:
+    """Swallows tqdm's bar output.
+
+    tqdm only needs write/flush from its `file`. Previously this was an open
+    handle on os.devnull that nothing ever closed, so every download that passed
+    a progress callback leaked a file descriptor for the life of the process.
+    """
+
+    def write(self, _text: str) -> int:
+        return 0
+
+    def flush(self) -> None:
+        return None
+
+
 def _make_silent_tqdm(callback: ProgressCallback) -> type:
     from tqdm.auto import tqdm as base_tqdm
 
-    # Open lazily so the file descriptor lifetime spans the download.
-    devnull = open(os.devnull, "w")
+    sink = _NullWriter()
 
     class _SignalTqdm(base_tqdm):
         def __init__(self, *args, **kwargs):
             kwargs.pop("name", None)
-            kwargs["file"] = devnull
+            kwargs["file"] = sink
             kwargs["leave"] = False
             self._track_bytes = kwargs.get("unit") == "B"
             self._last_pct = -1

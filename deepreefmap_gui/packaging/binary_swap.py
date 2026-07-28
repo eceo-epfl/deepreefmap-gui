@@ -173,10 +173,10 @@ def env_is_healthy(purelib: str | os.PathLike[str] | None = None) -> bool:
     for pkg in ("torch", "PySide6"):
         if not (base / pkg).is_dir():
             return False
+    # A present-but-empty torch/lib is the signature of a half-finished install.
     torch_lib = base / "torch" / "lib"
-    if torch_lib.is_dir() and not any(torch_lib.iterdir()):
-        return False
-    return True
+    torch_lib_is_empty = torch_lib.is_dir() and not any(torch_lib.iterdir())
+    return not torch_lib_is_empty
 
 
 def self_restore(binary_path: str | os.PathLike[str]) -> bool:

@@ -283,11 +283,14 @@ class RunLoadingMixin(MixinBase):
         end = float(self._end_spin.value())
         begin_arg: float | None = begin if begin > 0.0 else None
         end_arg: float | None = end if end > 0.0 else None
-        if end_arg is not None and self._video_duration_s is not None:
-            # A full-length end drops to None so the orchestrator skips clamping and
-            # trusts ffmpeg.
-            if abs(end_arg - self._video_duration_s) < 1e-3:
-                end_arg = None
+        # A full-length end drops to None so the orchestrator skips clamping and
+        # trusts ffmpeg.
+        if (
+            end_arg is not None
+            and self._video_duration_s is not None
+            and abs(end_arg - self._video_duration_s) < 1e-3
+        ):
+            end_arg = None
         return begin_arg, end_arg
 
     def _estimate_frame_count(self, fps: int) -> int | None:

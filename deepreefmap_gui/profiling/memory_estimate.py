@@ -154,13 +154,18 @@ def preflight_check(profile: SystemProfile, est: MemoryEstimate) -> Verdict:
         message = f"~{need} needed, {pct:.0f}% of {cap_word}. Comfortable."
 
     # Discrete-GPU VRAM: a shortfall is recoverable, so at most warn.
-    if profile.gpu.kind == GPU_CUDA and est.vram_bytes and profile.gpu.free_vram_bytes is not None:
-        if est.vram_bytes > profile.gpu.free_vram_bytes and level == "ok":
-            level, risk = "warn", "low"
-            message = (
-                f"~{format_bytes(est.vram_bytes)} VRAM needed, over "
-                f"{format_bytes(profile.gpu.free_vram_bytes)} free on the GPU. "
-                f"May hit a VRAM out-of-memory error. Lower the resolution or window size."
-            )
+    if (
+        profile.gpu.kind == GPU_CUDA
+        and est.vram_bytes
+        and profile.gpu.free_vram_bytes is not None
+        and est.vram_bytes > profile.gpu.free_vram_bytes
+        and level == "ok"
+    ):
+        level, risk = "warn", "low"
+        message = (
+            f"~{format_bytes(est.vram_bytes)} VRAM needed, over "
+            f"{format_bytes(profile.gpu.free_vram_bytes)} free on the GPU. "
+            "May hit a VRAM out-of-memory error. Lower the resolution or window size."
+        )
 
     return Verdict(level, risk, ram_need, budget, headroom, pct, message)

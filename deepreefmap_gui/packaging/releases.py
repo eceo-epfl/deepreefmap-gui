@@ -62,7 +62,7 @@ def fetch_releases(timeout: float = 8.0) -> list[dict] | None:
                     },
                 ],
             })
-        return records if records else None
+        return records or None
     try:
         req = urllib.request.Request(gh_releases_url(), headers={"Accept": "application/vnd.github+json"})
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -84,7 +84,7 @@ def fetch_releases(timeout: float = 8.0) -> list[dict] | None:
 
 def release_version(record: dict) -> str:
     tag = str(record.get("tag_name", ""))
-    return tag[1:] if tag.startswith("v") else tag
+    return tag.removeprefix("v")
 
 
 def parse_version(value: str):

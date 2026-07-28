@@ -40,7 +40,7 @@ def fit_zoom(
     usable_w = max(1, width_px - 2 * padding_px)
     usable_h = max(1, height_px - 2 * padding_px)
     for zoom in range(MAX_ZOOM, MIN_ZOOM - 1, -1):
-        xs, ys = zip(*(deg2tile(lat, lon, zoom) for lat, lon in points))
+        xs, ys = zip(*(deg2tile(lat, lon, zoom) for lat, lon in points), strict=True)
         span_w = (max(xs) - min(xs)) * TILE_SIZE
         span_h = (max(ys) - min(ys)) * TILE_SIZE
         if span_w <= usable_w and span_h <= usable_h:

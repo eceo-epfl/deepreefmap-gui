@@ -345,9 +345,8 @@ def _slice_at_angle(slices: Sequence[_Slice], angle_deg: float) -> _Slice | None
         if lo < hi:
             if lo <= angle_deg < hi:
                 return slc
-        else:
-            if angle_deg >= lo or angle_deg < hi:
-                return slc
+        elif angle_deg >= lo or angle_deg < hi:
+            return slc
     return None
 
 

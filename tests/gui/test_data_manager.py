@@ -71,7 +71,7 @@ def test_open_routes_through_auto_load(tmp_path, make_window, monkeypatch):
     run_dir = write_run(root, "run_a")
     window = make_window()
     loaded = []
-    monkeypatch.setattr(window, "_auto_load_run", lambda path: loaded.append(path))
+    monkeypatch.setattr(window, "_auto_load_run", loaded.append)
     window._data_run_list.setCurrentRow(0)
     window._on_data_open_clicked()
     assert loaded == [run_dir]

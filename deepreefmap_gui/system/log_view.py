@@ -154,7 +154,7 @@ class _StreamToLogger(io.TextIOBase):
     def _emit(self, line: str) -> None:
         # Keep the final \r segment only, matching what a terminal would show
         # after in-place redraws.
-        line = line.split("\r")[-1]
+        line = line.rsplit("\r", maxsplit=1)[-1]
         if line.strip():
             self._logger.log(self._level, line)
 

@@ -226,7 +226,10 @@ def _tar_repo_sha256(
         if stream is None:
             raise PackChecksumError(f"Could not read {source.name} back from the pack.")
         with stream:
-            for chunk in iter(lambda: stream.read(_CHUNK), b""):
+            # B023: the lambda closes over `stream`, but it is consumed by the
+            # iter() on the same line, inside this iteration's `with`. The late
+            # binding the rule warns about cannot be observed here.
+            for chunk in iter(lambda: stream.read(_CHUNK), b""):  # noqa: B023
                 h.update(chunk)
                 on_bytes(len(chunk))
     return h.hexdigest()

@@ -167,12 +167,18 @@ class ModelManagementMixin(MixinBase):
         # changes the dropdown mid-download, _update_models_button_status
         # re-renders the affected button to whatever state its new model is in.
         out: list[QPushButton] = []
-        if hasattr(self, "_seg_combo") and hasattr(self, "_seg_status_btn"):
-            if self._seg_combo.currentText() == model_name:
-                out.append(self._seg_status_btn)
-        if hasattr(self, "_map_combo") and hasattr(self, "_map_status_btn"):
-            if self._map_combo.currentText() == model_name:
-                out.append(self._map_status_btn)
+        if (
+            hasattr(self, "_seg_combo")
+            and hasattr(self, "_seg_status_btn")
+            and self._seg_combo.currentText() == model_name
+        ):
+            out.append(self._seg_status_btn)
+        if (
+            hasattr(self, "_map_combo")
+            and hasattr(self, "_map_status_btn")
+            and self._map_combo.currentText() == model_name
+        ):
+            out.append(self._map_status_btn)
         return out
 
     def _update_models_button_status(self) -> None:
@@ -312,8 +318,7 @@ class ModelManagementMixin(MixinBase):
             key=lambda s: (s[0].name in required, s[0].release_date or ""),
             reverse=True,
         )
-        grid_row = 0
-        for info, cached in ordered_states:
+        for grid_row, (info, cached) in enumerate(ordered_states):
             # Name on line one, size/date/REQUIRED on a wrapped second line.
             # Keeping the metadata off the name line shrinks the row's minimum
             # width so the action button never gets clipped in a narrow sidebar.
@@ -348,7 +353,6 @@ class ModelManagementMixin(MixinBase):
             self._models_grid.addWidget(action, grid_row, 1)
             self._model_rows[info.name] = name_label
             self._model_actions[info.name] = action
-            grid_row += 1
 
         self._recompute_submit_state()
 

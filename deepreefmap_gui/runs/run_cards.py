@@ -261,7 +261,7 @@ def format_run_metadata_compact(
         ("Created", "run_timestamp", format_timestamp),
     ):
         v = manifest.get(key)
-        if v is not None and v != "" and v != []:
+        if v is not None and v not in ("", []):
             facts.append(
                 f'<span style="color:#8aa0b8">{label}:</span>&nbsp;'
                 f'<span style="color:{BANNER_TEXT}">{fmt(v)}</span>'

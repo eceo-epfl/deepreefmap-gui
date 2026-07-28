@@ -505,9 +505,8 @@ class SimplePlanMixin(MixinBase):
 
     def _refresh_plan_map(self, fit: bool = False) -> None:
         selected = self._transect_form_id
-        overlays = []
-        for transect in self._survey_store().list_transects():
-            overlays.append(OverlayTransect(
+        overlays = [
+            OverlayTransect(
                 id=str(transect.id),
                 start=(transect.start_lat, transect.start_lon),
                 end=(transect.end_lat, transect.end_lon),
@@ -515,7 +514,9 @@ class SimplePlanMixin(MixinBase):
                 selected=transect.id == selected,
                 label=transect.name,
                 tooltip=f"<b>{transect.name}</b><br>Click to edit this transect",
-            ))
+            )
+            for transect in self._survey_store().list_transects()
+        ]
         # An unsaved transect previews as soon as both endpoints are filled.
         if selected is None:
             try:

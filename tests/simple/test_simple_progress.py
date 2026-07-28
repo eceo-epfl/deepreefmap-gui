@@ -17,14 +17,14 @@ from deepreefmap_gui.simple.progress import (
 
 
 def gate(**overrides):
-    kwargs = dict(
-        pass_count=1,
-        unassigned=0,
-        remaining=1,
-        failed=0,
-        has_preset=True,
-        missing_models=[],
-    )
+    kwargs = {
+        "pass_count": 1,
+        "unassigned": 0,
+        "remaining": 1,
+        "failed": 0,
+        "has_preset": True,
+        "missing_models": [],
+    }
     kwargs.update(overrides)
     return run_gate(**kwargs)
 

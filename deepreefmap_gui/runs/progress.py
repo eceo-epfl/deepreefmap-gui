@@ -40,8 +40,7 @@ class ProgressModel:
             if tot > 0:
                 frac = max(0.0, min(1.0, float(cur) / float(tot)))
                 new_pct = 100.0 * frac
-                if new_pct > self._percents[key]:
-                    self._percents[key] = new_pct
+                self._percents[key] = max(self._percents[key], new_pct)
         return self.total_percent()
 
     def total_percent(self) -> int:
@@ -200,7 +199,7 @@ _LOAD_STAGE_TO_PHASE: dict[str, str] = {
     "cloud_replacing_select": "cloud_replace",
     "cloud_voxelizing": "cloud_voxel",
     "geometry": "cloud_build",
-    **{stage: "scene_save" for stage in _SCENE_SAVE_STAGES},
+    **dict.fromkeys(_SCENE_SAVE_STAGES, "scene_save"),
 }
 
 

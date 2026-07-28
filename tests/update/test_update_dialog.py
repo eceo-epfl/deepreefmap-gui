@@ -190,10 +190,10 @@ def test_a_blank_line_does_not_wipe_the_status(dialog) -> None:
 
 def test_relaunch_starts_the_new_binary_and_quits(dialog, monkeypatch) -> None:
     spawned: list[list[str]] = []
-    monkeypatch.setattr(update_dialog.subprocess, "Popen", lambda cmd: spawned.append(cmd))
+    monkeypatch.setattr(update_dialog.subprocess, "Popen", spawned.append)
     quits: list[bool] = []
     monkeypatch.setattr(
-        update_dialog.QApplication, "instance", staticmethod(lambda: type("A", (), {"quit": lambda _s: quits.append(True)})())
+        update_dialog.QApplication, "instance", staticmethod(type("A", (), {"quit": lambda _s: quits.append(True)}))
     )
 
     dialog._on_relaunch()

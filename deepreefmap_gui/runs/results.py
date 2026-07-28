@@ -325,7 +325,7 @@ class ResultsMixin(MixinBase):
         try:
             import shutil
 
-            base = path[:-4] if path.endswith(".zip") else path
+            base = path.removesuffix(".zip")
             archive_path = shutil.make_archive(
                 base_name=base,
                 format="zip",

@@ -69,7 +69,7 @@ def test_slices_tile_the_full_circle_clockwise_from_noon():
     assert all(s.span_deg < 0 for s in slices)
     assert sum(s.span_deg for s in slices) == pytest.approx(-360.0)
     # Each slice starts where the previous one ended.
-    for prev, nxt in zip(slices, slices[1:]):
+    for prev, nxt in zip(slices, slices[1:], strict=False):  # pairwise: the tail is shorter by one
         assert nxt.start_deg == pytest.approx(prev.start_deg + prev.span_deg)
 
 
@@ -114,7 +114,7 @@ def test_hit_test_handles_the_slice_that_wraps_past_zero():
 
 def test_hit_test_covers_every_angle_of_a_full_ring():
     slices = _angles_from_items(_items(0.3, 0.3, 0.4))
-    for degrees in range(0, 360):
+    for degrees in range(360):
         assert _slice_at_angle(slices, float(degrees)) is not None
 
 

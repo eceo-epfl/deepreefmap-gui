@@ -91,10 +91,9 @@ def main() -> None:
     )
 
     binary = pyapp_binary()
-    if binary and not os.environ.get(_HEAL_GUARD) and not env_is_healthy():
-        if self_restore(binary):
-            os.environ[_HEAL_GUARD] = "1"
-            os.execv(binary, [binary, *sys.argv[1:]])
+    if binary and not os.environ.get(_HEAL_GUARD) and not env_is_healthy() and self_restore(binary):
+        os.environ[_HEAL_GUARD] = "1"
+        os.execv(binary, [binary, *sys.argv[1:]])
         # Restore failed: fall through so launch surfaces the real error.
 
     if binary:

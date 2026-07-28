@@ -74,7 +74,7 @@ def test_bootstrap_args_dispatch_to_cli(monkeypatch, tmp_path) -> None:
     _quiet_bootstrap(monkeypatch, tmp_path)
     monkeypatch.setattr(sys, "argv", ["deepreefmap", "list-models"])
     cli_calls = []
-    monkeypatch.setattr(cli_main, "app", lambda args: cli_calls.append(args))
+    monkeypatch.setattr(cli_main, "app", cli_calls.append)
     monkeypatch.setattr(
         gui_app, "launch", lambda: pytest.fail("GUI must not launch for CLI args")
     )

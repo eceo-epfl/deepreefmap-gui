@@ -15,7 +15,7 @@ from _factories import make_transect, make_video
 
 
 def make_pass(transect, video, **overrides):
-    values = dict(transect_id=transect.id, video_id=video.id, begin_s=0.0, end_s=60.0)
+    values = {"transect_id": transect.id, "video_id": video.id, "begin_s": 0.0, "end_s": 60.0}
     values.update(overrides)
     return TransectPass(**values)
 

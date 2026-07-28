@@ -12,6 +12,7 @@ import importlib.metadata
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing_extensions import Self
 
 _INSTALLER_ISS = Path(__file__).parents[2] / "scripts" / "installer.iss"
 
@@ -29,7 +30,7 @@ class _FakeKey:
     def __init__(self, values: dict[str, str]) -> None:
         self.values = values
 
-    def __enter__(self) -> _FakeKey:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *exc: object) -> None:

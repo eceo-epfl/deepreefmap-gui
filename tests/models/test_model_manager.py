@@ -309,3 +309,28 @@ def test_register_discovered_dedups_against_catalogue() -> None:
     assert register_discovered(duplicate) is False
 
 
+
+
+def test_silent_tqdm_reports_percent_without_opening_a_file() -> None:
+    """The progress shim used to hold an unclosed handle on os.devnull.
+
+    Expected behaviour: tqdm's output is swallowed by an in-process sink, so a
+    download that reports progress costs no file descriptor.
+    """
+    import psutil
+
+    from deepreefmap_gui.models.manager import _make_silent_tqdm
+
+    seen: list[tuple[int, int]] = []
+    proc = psutil.Process()
+    before = proc.num_fds() if hasattr(proc, "num_fds") else None
+
+    tqdm_class = _make_silent_tqdm(lambda current, total: seen.append((current, total)))
+    for _ in range(5):
+        with tqdm_class(total=100, unit="B") as bar:
+            bar.update(50)
+            bar.update(50)
+
+    assert seen and seen[-1] == (100, 100)
+    if before is not None:
+        assert proc.num_fds() == before

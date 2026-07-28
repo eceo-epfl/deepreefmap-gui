@@ -13,7 +13,7 @@ def batch_window(simple_window, tmp_path, monkeypatch):
     window = simple_window
     window._survey_store().add_transect(make_transect())
     window._refresh_survey_batch_tab()
-    monkeypatch.setattr(window, "_survey_missing_models", lambda: [])
+    monkeypatch.setattr(window, "_survey_missing_models", list)
     return window
 
 

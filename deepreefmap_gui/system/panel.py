@@ -298,7 +298,8 @@ class SystemPanelMixin(MixinBase):
             util = sample_utilisation()
         except Exception:
             return
-        self._set_gauge("ram", util.ram_percent, f"{format_bytes(util.ram_used_bytes)} / {format_bytes(util.ram_total_bytes)}")
+        ram_text = f"{format_bytes(util.ram_used_bytes)} / {format_bytes(util.ram_total_bytes)}"
+        self._set_gauge("ram", util.ram_percent, ram_text)
         self._set_gauge("cpu", util.cpu_percent, f"{util.cpu_percent:.0f}%")
         if util.swap_percent is not None:
             self._set_gauge(

@@ -41,7 +41,7 @@ class PastRunsMixin(MixinBase):
         self._set_ortho_sources(None, None, None)
         from datetime import datetime
 
-        self._run_name_input.setText(datetime.now().strftime("%Y%m%d-%H%M%S"))
+        self._run_name_input.setText(datetime.now().strftime("%Y%m%d-%H%M%S"))  # noqa: DTZ005 (local time is intended: this is a user-facing default name)
         if getattr(self, "_ui_mode", "advanced") == "simple":
             self._status_label.setText("Workspace cleared.")
         else:

@@ -144,7 +144,7 @@ class SimpleBatchMixin(MixinBase):
         name_row = QHBoxLayout()
         name_row.setSpacing(6)
         name_row.addWidget(QLabel("Batch"))
-        self._survey_batch_name = QLineEdit(datetime.now().strftime("%Y-%m-%d"))
+        self._survey_batch_name = QLineEdit(datetime.now().strftime("%Y-%m-%d"))  # noqa: DTZ005 (local time is intended: this is a user-facing default name)
         name_row.addWidget(self._survey_batch_name, 1)
         new_batch_btn = QPushButton("New")
         new_batch_btn.setToolTip("Start a fresh batch; the current one stays in the database.")
@@ -308,7 +308,7 @@ class SimpleBatchMixin(MixinBase):
 
     def _ensure_survey_batch(self) -> SurveyBatch:
         if self._survey_batch is None:
-            name = self._survey_batch_name.text().strip() or datetime.now().strftime("%Y-%m-%d")
+            name = self._survey_batch_name.text().strip() or datetime.now().strftime("%Y-%m-%d")  # noqa: DTZ005 (local time is intended: this is a user-facing default name)
             batch = SurveyBatch(name=name)
             self._survey_store().add_batch(batch)
             self._survey_batch = batch
@@ -318,7 +318,7 @@ class SimpleBatchMixin(MixinBase):
         self._survey_batch = None
         self._survey_rows = []
         self._survey_pass_table.setRowCount(0)
-        self._survey_batch_name.setText(datetime.now().strftime("%Y-%m-%d"))
+        self._survey_batch_name.setText(datetime.now().strftime("%Y-%m-%d"))  # noqa: DTZ005 (local time is intended: this is a user-facing default name)
         self._recompute_survey_start()
 
     def _refresh_survey_batch_tab(self) -> None:
@@ -615,7 +615,7 @@ class SimpleBatchMixin(MixinBase):
             return
         store = self._survey_store()
         batch = self._ensure_survey_batch()
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")  # noqa: DTZ005 (local time is intended: this is a user-facing default name)
         jobs = []
         for number, row in enumerate(self._survey_remaining_rows(), start=1):
             assert row.pass_id is not None

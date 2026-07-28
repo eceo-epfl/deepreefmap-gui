@@ -160,7 +160,48 @@ filterwarnings = [
 
 [tool.ruff]
 target-version = "py310"
+# 120 rather than ruff's 88: at 88 this codebase reports 434 long lines, at 120
+# it reports 5. Qt call sites and the QSS f-strings are naturally wide, and
+# reflowing them to 88 would be churn without a readability gain.
+line-length = 120
 extend-exclude = ["tests/e2e/_cache", "tests/e2e/_work"]
+
+[tool.ruff.lint]
+# Beyond ruff's default (F + a little pycodestyle). Chosen by measuring the whole
+# tree: these were either already clean or a handful of real fixes away, so they
+# lock in behaviour rather than schedule a refactor.
+extend-select = [
+  "E4", "E7", "E9", "W", "E501",
+  "A",       # builtin shadowing
+  "ASYNC", "EXE", "FA", "INT", "SLOT", "TID", "YTT", "PYI",
+  "B",       # bugbear: mutable defaults, loop-variable capture in closures
+  "C4",      # comprehension rewrites
+  "COM818",  # bare trailing comma creates a tuple by accident
+  "DTZ",     # naive datetimes: the survey store and manifests disagree today
+  "ERA",     # commented-out code
+  "FURB", "G", "ISC", "LOG", "PERF", "PIE", "Q", "RET", "SIM",
+  "T20",     # stray print()
+  "PLW", "PLC0207", "PLR1714", "PLR1730", "PLR5501",
+]
+# RUF100 (unused noqa) is deliberately NOT here yet. It only knows about enabled
+# rules, so turning it on before N and S would delete the `# noqa: N802 (Qt
+# override)` and `# noqa: S310` comments this codebase already carries — real
+# documentation, removed for being unenforced. It belongs with the exception
+# sweep, alongside N, S110, S112 and S310.
+extend-ignore = [
+  # Suppressing an exception is sometimes right and sometimes a hidden bug; that
+  # call needs a human, so it is being made per-site rather than by autofix.
+  "SIM105",
+  # if/else -> ternary. Frequently less readable at this line length.
+  "SIM108",
+  # try/except inside a loop is how per-item failures are isolated here, which
+  # is a correctness choice, not an oversight.
+  "PERF203",
+]
+
+# INP001 is deliberately absent: tests/ has no __init__.py by design (see the
+# --import-mode=importlib note under [tool.pytest.ini_options]), and enabling it
+# would flag all 62 test modules for following the documented layout.
 
 [tool.mypy]
 python_version = "3.10"

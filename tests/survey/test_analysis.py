@@ -40,7 +40,8 @@ def seed_run(store, out_root, transect, run_dir_name, fractions, *,
     run_dir = out_root / run_dir_name
     run_dir.mkdir(parents=True)
     classes = {}
-    for cls, fraction in zip(classes_config.classes, fractions):
+    # strict=False on purpose: `fractions` covers only the leading classes.
+    for cls, fraction in zip(classes_config.classes, fractions, strict=False):
         classes[str(cls.id)] = {"name": cls.name, "count": fraction * 100, "fraction": fraction}
     (run_dir / "benthic_cover.json").write_text(
         json.dumps({"classes": classes, "denominator": 100.0})

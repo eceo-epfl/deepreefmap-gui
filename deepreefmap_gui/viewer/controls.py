@@ -80,7 +80,10 @@ class ViewerControlsMixin(MixinBase):
             self._viewer.apply_geometry_state(
                 timeline_t=self._frame_slider.value(),
                 point_size=self._point_size_spin.value(),
-                frustums_visible=getattr(self, "_ov_frustum_btn", None) is not None and self._ov_frustum_btn.isChecked(),
+                frustums_visible=(
+                    getattr(self, "_ov_frustum_btn", None) is not None
+                    and self._ov_frustum_btn.isChecked()
+                ),
             )
             if getattr(self, "_follow_camera_check", None) and self._follow_camera_check.isChecked():
                 self._snap_camera_to_current_frame()
@@ -625,7 +628,7 @@ class ViewerControlsMixin(MixinBase):
         self._viewer.pick_mode_changed.connect(_on_viewer_pick_mode_changed)
         reset_btn.clicked.connect(_on_reset_clicked)
 
-        QShortcut(QKeySequence("P"), self).activated.connect(lambda: btn.toggle())
+        QShortcut(QKeySequence("P"), self).activated.connect(btn.toggle)
         QShortcut(QKeySequence("R"), self).activated.connect(_on_reset_clicked)
         QShortcut(QKeySequence(Qt.Key.Key_Escape), self).activated.connect(
             lambda: btn.setChecked(False) if btn.isChecked() else None

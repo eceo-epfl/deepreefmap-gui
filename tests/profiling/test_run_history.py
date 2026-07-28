@@ -153,7 +153,8 @@ def test_group_recorded_runs_medians_repeat_configs(tmp_path) -> None:
     params = {"fps": 5, "mapping_backend": "loger_star", "segmentation_model": "seg",
               "processing_width": 1376, "processing_height": 768}
     profile = {"total_ram_bytes": 32_000_000_000, "gpu": {"name": "RTX"}}
-    for ram, dur in zip((28_000_000_000, 30_000_000_000, 32_000_000_000), (600.0, 900.0, 1200.0)):
+    rams = (28_000_000_000, 30_000_000_000, 32_000_000_000)
+    for ram, dur in zip(rams, (600.0, 900.0, 1200.0), strict=True):
         record_run(
             key, {"preprocess": dur / 2, "mapping": dur / 2}, frames=1890, points=1, params=params,
             stage_peaks={"mapping": {"ram_bytes": ram, "vram_bytes": 8_000_000_000, "swap_bytes": 0}},

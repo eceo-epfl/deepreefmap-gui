@@ -119,7 +119,7 @@ class ModelLibraryMixin(MixinBase):
                 pack = library.export_model_pack(
                     models,
                     dest,
-                    progress_cb=lambda ph, cur, tot: self._sig_pack_progress.emit(ph, cur, tot),
+                    progress_cb=self._sig_pack_progress.emit,
                 )
                 self._sig_pack_done.emit(True, f"Exported model pack to {pack}")
             except Exception as exc:
@@ -157,7 +157,7 @@ class ModelLibraryMixin(MixinBase):
             try:
                 result = library.import_model_pack(
                     pack_dir,
-                    progress_cb=lambda ph, cur, tot: self._sig_pack_progress.emit(ph, cur, tot),
+                    progress_cb=self._sig_pack_progress.emit,
                 )
                 parts: list[str] = []
                 if result.imported:

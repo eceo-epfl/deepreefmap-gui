@@ -425,7 +425,7 @@ class FormPanelMixin(MixinBase):
         run_name_col = QVBoxLayout(self._run_name_widget)
         run_name_col.setContentsMargins(0, 0, 0, 0)
         run_name_col.addWidget(QLabel("Run name"))
-        self._run_name_input = QLineEdit(datetime.now().strftime("%Y%m%d-%H%M%S"))
+        self._run_name_input = QLineEdit(datetime.now().strftime("%Y%m%d-%H%M%S"))  # noqa: DTZ005 (local time is intended: this is a user-facing default name)
         self._run_name_input.setPlaceholderText("Friendly name (e.g. barrier-reef-2026-05-20)")
         run_name_col.addWidget(self._run_name_input)
         og.addWidget(self._run_name_widget)
@@ -629,7 +629,9 @@ class FormPanelMixin(MixinBase):
         self._rr_est_frames_spin = QSpinBox()
         self._rr_est_frames_spin.setRange(1, 200)
         self._rr_est_frames_spin.setValue(30)
-        self._rr_est_frames_spin.setToolTip("Number of leading depth maps used to estimate the default replacement radius.")
+        self._rr_est_frames_spin.setToolTip(
+            "Number of leading depth maps used to estimate the default replacement radius."
+        )
         adv_layout.addWidget(self._rr_est_frames_spin)
         adv_layout.addWidget(QLabel("Replacement radius override (m), 0 = auto"))
         self._rr_override_spin = QDoubleSpinBox()
@@ -1553,8 +1555,7 @@ class FormPanelMixin(MixinBase):
         for name in (seg_name, backbone_name):
             entry = states.get(name)
             if entry and not entry[1]:
-                for repo in entry[0].hf_repos:
-                    missing_repos.append(repo)
+                missing_repos.extend(entry[0].hf_repos)
         if not missing_repos:
             self._gated_warning.setVisible(False)
             return
@@ -1725,7 +1726,7 @@ class FormPanelMixin(MixinBase):
         from datetime import datetime
 
         cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", name.strip())
-        return cleaned.strip("._-") or datetime.now().strftime("%Y%m%d-%H%M%S")
+        return cleaned.strip("._-") or datetime.now().strftime("%Y%m%d-%H%M%S")  # noqa: DTZ005 (local time is intended: this is a user-facing default name)
 
     def _effective_run_dir(self) -> Path:
         root = Path(self._out_root_input.text()).expanduser()

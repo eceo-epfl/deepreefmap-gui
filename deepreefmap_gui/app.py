@@ -94,7 +94,10 @@ class DeepReefMapWindow(
         self._sig_model_status_done.connect(self._apply_model_status)
         self._sig_pipeline_error.connect(self._on_pipeline_error)
         self._sig_pipeline_cancelled.connect(self._on_pipeline_cancelled)
-        self._sig_status_text.connect(lambda t: self._status_label.setText(t))
+        # The lambda is load-bearing, not noise: _status_label is built later, by
+        # _build_form_panel(). Binding self._status_label.setText here would
+        # resolve the attribute at connect time and raise AttributeError.
+        self._sig_status_text.connect(lambda t: self._status_label.setText(t))  # noqa: PLW0108
         self._sig_hf_auth_done.connect(self._on_hf_auth_done)
         self._sig_download_progress.connect(self._on_download_progress)
         self._sig_pack_progress.connect(self._on_pack_progress)
