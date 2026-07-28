@@ -164,32 +164,3 @@ def preflight_check(profile: SystemProfile, est: MemoryEstimate) -> Verdict:
             )
 
     return Verdict(level, risk, ram_need, budget, headroom, pct, message)
-
-
-@dataclass(frozen=True)
-class Risk:
-    """Crash-risk banding of a run's peak RAM against a machine's total RAM."""
-
-    band: str  # "safe" | "moderate" | "high" | "severe"
-    label: str  # short human phrase
-    percent: float  # peak as a percent of total RAM
-    color: str  # hex for the UI
-
-
-# Bands on committed memory (RAM + swap) as a share of physical RAM: the kernel
-# reclaims and (on Linux) OOM-kills as usage nears 100%.
-def memory_risk(
-    peak_ram_bytes: int, total_ram_bytes: int, total_swap_bytes: int = 0, peak_swap_bytes: int = 0
-) -> Risk:
-    """Band a measured peak against total RAM, counting swap as secondary RAM."""
-    committed = peak_ram_bytes + peak_swap_bytes
-    pct = 100.0 * committed / total_ram_bytes if total_ram_bytes else 0.0
-    if total_ram_bytes and committed > total_ram_bytes + total_swap_bytes:
-        return Risk("severe", "Exceeds RAM + swap", pct, "#e05050")
-    if total_ram_bytes and committed > total_ram_bytes:
-        return Risk("severe", f"In swap (+{format_bytes(committed - total_ram_bytes)})", pct, "#e05050")
-    if pct >= 90.0:
-        return Risk("high", "Near RAM limit", pct, "#e07030")
-    if pct >= 75.0:
-        return Risk("moderate", "Moderate", pct, "#e0a030")
-    return Risk("safe", "Comfortable", pct, "#4caf7d")

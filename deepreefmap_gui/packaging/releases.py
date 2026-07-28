@@ -32,29 +32,6 @@ def pyapp_binary_path() -> str | None:
     return pyapp_binary()
 
 
-def fetch_release_versions(timeout: float = 8.0) -> list[str] | None:
-    import urllib.request
-
-    mock = os.environ.get("DEEPREEFMAP_MOCK_VERSIONS")
-    if mock is not None:
-        return [v.strip() for v in mock.split(",") if v.strip()]
-    try:
-        req = urllib.request.Request(gh_releases_url(), headers={"Accept": "application/vnd.github+json"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            releases = json.load(resp)
-        versions = []
-        for rel in releases:
-            tag = rel.get("tag_name", "")
-            if tag.startswith("v"):
-                tag = tag[1:]
-            if tag and not rel.get("draft"):
-                versions.append(tag)
-        return versions if versions else None
-    except Exception as exc:
-        logger.warning("Failed to fetch releases from GitHub: %s", exc)
-        return None
-
-
 def fetch_releases(timeout: float = 8.0) -> list[dict] | None:
     """Raw release records (with `assets`) for binary swap.
 

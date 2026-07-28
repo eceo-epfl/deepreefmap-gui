@@ -1,13 +1,14 @@
 import pytest
+import yaml
 
 from deepreefmap_gui.survey.preset import (
     PRESET_KEYS,
+    _bundled_defaults,
+    _bundled_text,
     load_survey_preset,
     parse_preset,
     save_user_preset,
 )
-
-from deepreefmap_gui.survey.preset import _bundled_defaults
 
 SAMPLE = {
     **_bundled_defaults(),
@@ -18,10 +19,19 @@ SAMPLE = {
     "skip_segmentation": True,
 }
 
-VALID = "schema_version: 2\n" + "\n".join(
-    f"{key}: {value!r}" if isinstance(value, str) else f"{key}: {value}"
-    for key, value in _bundled_defaults().items()
-)
+
+def preset_yaml(**overrides) -> str:
+    """The shipped preset text, with keys overridden.
+
+    Serialised by yaml.safe_dump rather than by hand: an f-string renders None as
+    the bare token `None`, which YAML reads back as the *string* "None", so the
+    two nullable size keys silently round-tripped as strings.
+    """
+    data = {**_bundled_defaults(), **overrides}
+    return yaml.safe_dump({"schema_version": 2, **data}, sort_keys=False)
+
+
+VALID = _bundled_text()
 
 # What a machine that last ran the seven-key schema still has on disk.
 V1_FILE = """
@@ -36,18 +46,25 @@ skip_segmentation: false
 """
 
 
-def test_bundled_preset_loads(monkeypatch):
-    monkeypatch.delenv("DEEPREEFMAP_SURVEY_PRESET", raising=False)
+def test_bundled_preset_loads():
+    """No user copy and no env override: the shipped defaults are what load.
+
+    The autouse fixture in conftest.py is what makes "no user copy" true; without
+    it this reads the developer's real ~/.local/share/deepreefmap preset.
+    """
     preset = load_survey_preset()
     assert set(preset) == PRESET_KEYS
     assert isinstance(preset["fps"], int)
+    assert preset == _bundled_defaults()
 
 
 def test_env_override_wins(tmp_path, monkeypatch):
     override = tmp_path / "preset.yaml"
-    override.write_text(VALID.replace("fps: 5", "fps: 3"))
+    override.write_text(preset_yaml(fps=3))
     monkeypatch.setenv("DEEPREEFMAP_SURVEY_PRESET", str(override))
     assert load_survey_preset()["fps"] == 3
+
+
 
 
 def test_parse_rejects_wrong_schema_version():
@@ -72,7 +89,10 @@ def test_v1_file_upgrades_keeping_its_own_choices():
     assert preset["fps"] == 3
     assert preset["mapping_name"] == "scsfmlearner"
     assert preset["enable_tsdf"] is True
-    assert preset["grid_bins"] == _bundled_defaults()["grid_bins"]
+    # grid_bins postdates schema 1, so it arrives from the shipped defaults.
+    # Pinned as a literal: comparing to _bundled_defaults() would also pass if
+    # the shipped file were empty.
+    assert preset["grid_bins"] == 2000
 
 
 def test_upgraded_v1_file_saves_back_as_v2(tmp_path, monkeypatch):

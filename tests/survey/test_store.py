@@ -5,40 +5,11 @@ import uuid
 
 import pytest
 
-from deepreefmap_gui.survey.models import RunRecord, SurveyBatch, Transect, TransectPass, VideoAsset
+from deepreefmap_gui.survey.models import RunRecord, SurveyBatch, TransectPass
 from deepreefmap_gui.survey.models.convert import survey_manifest_block
 from deepreefmap_gui.survey.store import SurveyStore
 
-
-@pytest.fixture
-def store(tmp_path):
-    return SurveyStore(tmp_path / "survey.db")
-
-
-def make_transect(name="T1"):
-    return Transect(
-        name=name,
-        start_lat=-17.5,
-        start_lon=177.1,
-        end_lat=-17.5005,
-        end_lon=177.1005,
-        length_m=50.0,
-    )
-
-
-def make_video(content_hash="ab" * 16):
-    return VideoAsset(file_name="GX010001.MP4", path="/data/GX010001.MP4", hash=content_hash)
-
-
-def seed_pass(store, direction="forward"):
-    transect, video = make_transect(), make_video()
-    store.add_transect(transect)
-    store.upsert_video(video)
-    pass_ = TransectPass(
-        transect_id=transect.id, video_id=video.id, begin_s=0.0, end_s=60.0, direction=direction
-    )
-    store.add_pass(pass_)
-    return transect, video, pass_
+from _factories import make_transect, make_video, seed_pass
 
 
 def test_transect_crud_round_trip(store):
@@ -248,3 +219,93 @@ def test_worker_thread_writes_are_visible(store):
     thread.join()
     assert not errors
     assert [r.status for r in store.runs_for_pass(pass_.id)] == ["succeeded"]
+
+
+@pytest.mark.parametrize(
+    "corruption, why",
+    [
+        ({"transect": {"id": "not-a-uuid"}}, "unparseable id"),
+        ({"transect": None}, "null section"),
+        ({"pass": {"direction": "sideways"}}, "invalid enum"),
+        ({"pass": {"begin_s": "soon"}}, "wrong type"),
+        ({"transect": {"start_lat": 999.0}}, "out-of-range coordinate"),
+    ],
+)
+def test_rebuild_skips_a_corrupt_survey_block_without_losing_the_rest(
+    store, tmp_path, corruption, why
+):
+    """Scenario: one run dir's manifest was hand-edited or half-written.
+
+    Expected behaviour: that run is skipped and the others still restore. The
+    module docstring calls the database rebuildable from disk, and the broad
+    except in rebuild_from_scan is the whole of that promise.
+    """
+    transect, video, pass_ = seed_pass(store)
+    good = RunRecord(pass_id=pass_.id, run_dir_name="good")
+    bad = RunRecord(pass_id=pass_.id, run_dir_name="bad")
+    store.add_run(good)
+    store.add_run(bad)
+
+    out_root = tmp_path / "out"
+    block = survey_manifest_block(good, pass_, transect, None)
+    write_manifest(out_root, "good", block)
+
+    broken = json.loads(json.dumps(block))
+    for section, patch in corruption.items():
+        if patch is None:
+            broken[section] = None
+        else:
+            broken[section].update(patch)
+    write_manifest(out_root, "bad", broken)
+
+    fresh = SurveyStore(tmp_path / "rebuilt.db")
+    report = fresh.rebuild_from_scan(out_root)
+
+    assert "bad" in report.skipped, f"a manifest with an {why} was accepted"
+    assert fresh.run_by_dir_name("good") is not None
+    assert fresh.run_by_dir_name("bad") is None
+
+
+def test_rebuild_skips_an_unreadable_manifest(store, tmp_path):
+    out_root = tmp_path / "out"
+    (out_root / "truncated").mkdir(parents=True)
+    (out_root / "truncated" / "run_manifest.json").write_text('{"survey": {')
+
+    report = SurveyStore(tmp_path / "rebuilt.db").rebuild_from_scan(out_root)
+    assert report.skipped == ["truncated"]
+
+
+def test_delete_pass_removes_it(store):
+    _transect, _video, pass_ = seed_pass(store)
+    assert len(store.list_passes()) == 1
+    store.delete_pass(pass_.id)
+    assert store.list_passes() == []
+    assert store.get_pass(pass_.id) is None
+
+
+def test_list_passes_combines_both_filters(store):
+    """Filtering by transect and batch at once is an AND, not the last one set."""
+    batch = SurveyBatch(name="Day 1")
+    store.add_batch(batch)
+    transect_a, video, pass_a = seed_pass(store)
+    transect_b = make_transect("T2")
+    store.add_transect(transect_b)
+    pass_b = TransectPass(
+        transect_id=transect_b.id, video_id=video.id, begin_s=0.0, end_s=60.0,
+        batch_id=batch.id,
+    )
+    store.add_pass(pass_b)
+
+    assert len(store.list_passes(transect_id=transect_b.id)) == 1
+    assert len(store.list_passes(batch_id=batch.id)) == 1
+    # T1 has no pass in this batch, so the AND is empty.
+    assert store.list_passes(transect_id=transect_a.id, batch_id=batch.id) == []
+    assert len(store.list_passes(transect_id=transect_b.id, batch_id=batch.id)) == 1
+
+
+def test_batches_are_readable_after_being_added(store):
+    batch = SurveyBatch(name="Day 1")
+    store.add_batch(batch)
+    assert store.get_batch(batch.id) == batch
+    assert [b.name for b in store.list_batches()] == ["Day 1"]
+    assert store.get_batch(uuid.uuid4()) is None

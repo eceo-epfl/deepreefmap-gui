@@ -2,25 +2,16 @@ import json
 
 import pytest
 
-from deepreefmap_gui.survey.models import RunRecord, Transect, TransectPass, VideoAsset
+from deepreefmap_gui.survey.models import RunRecord
+
+from _factories import seed_pass
 
 
 @pytest.fixture
-def analysis_window(window, tmp_path):
-    window._out_root_input.setText(str(tmp_path))
-    window._set_ui_mode("simple")
+def analysis_window(simple_window, tmp_path):
+    window = simple_window
     store = window._survey_store()
-    transect = Transect(
-        name="T1",
-        start_lat=-17.5,
-        start_lon=177.1,
-        end_lat=-17.5005,
-        end_lon=177.1005,
-    )
-    store.add_transect(transect)
-    video = store.upsert_video(VideoAsset(file_name="a.mp4", path="/a.mp4", hash="ab" * 16))
-    pass_ = TransectPass(transect_id=transect.id, video_id=video.id, begin_s=0.0, end_s=60.0)
-    store.add_pass(pass_)
+    _transect, _video, pass_ = seed_pass(store)
     run = RunRecord(pass_id=pass_.id, run_dir_name="t1__p01", status="succeeded")
     store.add_run(run)
     cls = window._classes_config.classes[0]

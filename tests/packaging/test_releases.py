@@ -1,8 +1,12 @@
 """GitHub release fetching, version filtering, and PyApp binary detection.
 
-Covers deepreefmap/packaging/releases.py: mock-env shortcuts, the GitHub
+Covers deepreefmap_gui/packaging/releases.py: mock-env shortcuts, the GitHub
 releases JSON parse (against a local HTTP server), upgrade/rollback selection,
 API-URL overrides, and pyapp_binary_path().
+
+Every network path is served by a local HTTPServer. Nothing here reaches the
+real api.github.com: a live call returns None on any failure, so it would pass
+offline for the wrong reason.
 """
 
 from __future__ import annotations
@@ -12,22 +16,6 @@ import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 import pytest
-
-
-def test_fetch_versions_mock_env(monkeypatch) -> None:
-    from deepreefmap_gui.packaging.releases import fetch_release_versions
-
-    monkeypatch.setenv("DEEPREEFMAP_MOCK_VERSIONS", "2.0.0,1.5.0,1.0.1")
-    versions = fetch_release_versions()
-    assert versions == ["2.0.0", "1.5.0", "1.0.1"]
-
-
-def test_fetch_versions_mock_empty(monkeypatch) -> None:
-    from deepreefmap_gui.packaging.releases import fetch_release_versions
-
-    monkeypatch.setenv("DEEPREEFMAP_MOCK_VERSIONS", "")
-    versions = fetch_release_versions()
-    assert versions == []
 
 
 @pytest.mark.parametrize(
@@ -55,54 +43,6 @@ def test_newer_releases_unparseable_current_falls_back_to_inequality() -> None:
     releases = [{"tag_name": "v1.0.0"}, {"tag_name": "v1.0.1"}]
     newer = newer_releases(releases, "dev")
     assert {r["tag_name"] for r in newer} == {"v1.0.0", "v1.0.1"}
-
-
-def test_fetch_versions_real_404(monkeypatch) -> None:
-    from deepreefmap_gui.packaging.releases import fetch_release_versions
-
-    monkeypatch.delenv("DEEPREEFMAP_MOCK_VERSIONS", raising=False)
-    monkeypatch.setenv("DEEPREEFMAP_GH_REPO", "nonexistent-org-xyz/nonexistent-repo-abc")
-    versions = fetch_release_versions(timeout=5.0)
-    assert versions is None
-
-
-def test_fetch_versions_parses_github_response(monkeypatch) -> None:
-    """Spin up a local HTTP server returning fake GitHub releases JSON."""
-    from deepreefmap_gui.packaging.releases import fetch_release_versions
-
-    monkeypatch.delenv("DEEPREEFMAP_MOCK_VERSIONS", raising=False)
-
-    releases = [
-        {"tag_name": "v2.0.0", "draft": False},
-        {"tag_name": "v1.5.0", "draft": False},
-        {"tag_name": "v1.0.0", "draft": True},
-    ]
-
-    class Handler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps(releases).encode())
-
-        def log_message(self, *args):
-            pass
-
-    server = HTTPServer(("127.0.0.1", 0), Handler)
-    port = server.server_address[1]
-    t = threading.Thread(target=server.handle_request, daemon=True)
-    t.start()
-
-    import deepreefmap_gui.packaging.releases as mod
-    orig = mod.gh_releases_url
-    mod.gh_releases_url = lambda: f"http://127.0.0.1:{port}/releases"
-    try:
-        versions = fetch_release_versions(timeout=5.0)
-    finally:
-        mod.gh_releases_url = orig
-        server.server_close()
-
-    assert versions == ["2.0.0", "1.5.0"]
 
 
 @pytest.mark.parametrize(

@@ -481,7 +481,7 @@ class ViewerPickingMixin(_ViewerPickingHost):
             line_actor.GetProperty().SetColor(*rgb)
             line_actor.GetProperty().SetLineWidth(width)
             line_actor.GetProperty().SetOpacity(opacity)
-            renderer.AddActor2D(line_actor)
+            renderer.AddViewProp(line_actor)
             self._pick_2d_actors.append(line_actor)
             # Cache the source so `update_pick_anchor` can move the line
             # without reallocating the actor each camera frame.
@@ -501,7 +501,7 @@ class ViewerPickingMixin(_ViewerPickingHost):
             ring_actor.GetProperty().SetColor(*rgb)
             ring_actor.GetProperty().SetLineWidth(width)
             ring_actor.GetProperty().SetOpacity(opacity)
-            renderer.AddActor2D(ring_actor)
+            renderer.AddViewProp(ring_actor)
             self._pick_2d_actors.append(ring_actor)
             self._pick_ring_sources.append(src)
 
@@ -519,7 +519,7 @@ class ViewerPickingMixin(_ViewerPickingHost):
             tick_actor.GetProperty().SetColor(*rgb)
             tick_actor.GetProperty().SetLineWidth(width)
             tick_actor.GetProperty().SetOpacity(opacity)
-            renderer.AddActor2D(tick_actor)
+            renderer.AddViewProp(tick_actor)
             self._pick_2d_actors.append(tick_actor)
             self._pick_tick_sources.append(
                 (tick_src, off1[0], off1[1], off2[0], off2[1])
@@ -568,7 +568,7 @@ class ViewerPickingMixin(_ViewerPickingHost):
         renderer = self._plotter.renderer
         for actor in self._pick_2d_actors:
             try:
-                renderer.RemoveActor2D(actor)
+                renderer.RemoveViewProp(actor)
             except Exception:
                 pass
         self._pick_2d_actors = []

@@ -4,16 +4,8 @@ The invariant every test guards: the form goes back to the sidebar, whatever
 way the dialog closes.
 """
 
-import pytest
 
 from deepreefmap_gui.simple.settings_dialog import RunSettingsDialog
-
-
-@pytest.fixture
-def simple_window(window, tmp_path):
-    window._out_root_input.setText(str(tmp_path))
-    window._set_ui_mode("simple")
-    return window
 
 
 def per_run_widgets(window):

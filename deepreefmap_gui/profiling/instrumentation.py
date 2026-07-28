@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+from deepreefmap_gui.profiling.eta import STAGE_MESSAGE_TO_PHASE, stage_for_phase
 from deepreefmap_gui.profiling.perf_sampler import ResourceSampler, peaks_from_marks
 
 # Coarse pipeline stages, in order, that the timing marks bracket. The GUI reads
@@ -19,6 +20,18 @@ STAGE_SPANS: tuple[tuple[str, str, str], ...] = (
     ("save", "end", "save_view"),
     ("end", "scene_end", "scene_save"),
 )
+
+# The mark that opens each coarse stage, so a stage can be marked by name rather
+# than by every caller knowing the mark vocabulary.
+_STAGE_BEGIN_MARK: dict[str, str] = {stage: begin for begin, _end, stage in STAGE_SPANS}
+
+# scene_save has no producer: the scene file is written by
+# runs/loaded_run.py::_generate_scene_file_async, on a detached daemon thread in
+# the cached-run *load* path, long after instrumented_reconstruction has already
+# written the manifest. Nothing emits its "Saving scene file" message either. The
+# span is kept because eta.py still reserves weight for that tail, but until the
+# save is threaded back through instrumentation it can never be measured.
+UNPRODUCIBLE_STAGES: frozenset[str] = frozenset({"scene_save"})
 
 
 def durations_from_marks(marks: dict[str, float]) -> dict[str, float]:
@@ -100,6 +113,11 @@ class _MarkingViewer:
 
     Records marks using the same names durations_from_marks expects; inner may be
     None (headless/batch), in which case viewer methods are no-ops.
+
+    The orchestrator names only four stages and reports everything inside
+    "outputs" by message, so the cloud/ortho/save boundaries are recovered from
+    the message through the same routing table the progress bars use. Marking on
+    the stage name alone left four of the seven STAGE_SPANS permanently empty.
     """
 
     _STAGE_TO_MARK = {"preprocess": "preprocess", "mapping": "mapping", "outputs": "cloud"}
@@ -108,18 +126,36 @@ class _MarkingViewer:
         self._inner = inner
         self._instr = instr
 
+    def _mark_once(self, name) -> None:
+        if name and name not in self._instr.marks:
+            self._instr.mark(name)
+
+    def _mark_for(self, stage, message) -> None:
+        """The begin-mark of whichever coarse stage this report belongs to.
+
+        Stage name first: an ortho message can be the first thing seen inside
+        "outputs", and marking ortho before cloud would give the cloud span a
+        negative width, which durations_from_marks then drops.
+        """
+        self._mark_once(self._STAGE_TO_MARK.get(stage))
+        phase = STAGE_MESSAGE_TO_PHASE.get(message or "")
+        coarse = stage_for_phase(phase) if phase else None
+        self._mark_once(_STAGE_BEGIN_MARK.get(coarse) if coarse else None)
+
     def start_run(self, run_label, output_dir):
         if self._inner is not None:
             self._inner.start_run(run_label, output_dir)
 
     def set_stage(self, stage, status, message=None):
-        m = self._STAGE_TO_MARK.get(stage)
-        if m and m not in self._instr.marks:
-            self._instr.mark(m)
+        self._mark_for(stage, message)
         if self._inner is not None:
             self._inner.set_stage(stage, status, message)
 
     def update_progress(self, *a, **k):
+        # The cloud loop reports through update_progress, not set_stage, so the
+        # message has to be inspected here too.
+        stage = a[0] if a else k.get("stage")
+        self._mark_for(stage, k.get("message"))
         if self._inner is not None:
             self._inner.update_progress(*a, **k)
 

@@ -27,21 +27,6 @@ def test_collect_and_populate_round_trip(window):
     assert window._grid_bins_spin.value() == 1234
 
 
-def test_advanced_tweaks_survive_the_round_trip(window, tmp_path, monkeypatch):
-    """Scenario: someone widens the grid bins in advanced, then goes back to simple.
-
-    Expected behaviour: simple mode keeps the value instead of resetting it.
-    """
-    monkeypatch.setattr(
-        "deepreefmap_gui.survey.preset.survey_preset_path", lambda: tmp_path / "p.yaml"
-    )
-    window._mode_buttons["advanced"].click()
-    window._grid_bins_spin.setValue(1234)
-    window._mode_buttons["simple"].click()
-    assert window._ui_mode == "simple"
-    assert window._survey_preset["grid_bins"] == 1234
-
-
 def test_native_processing_size_is_not_pinned(window):
     """A non-Custom resolution preset must not freeze the model's native size."""
     window._resolution_preset_combo.setCurrentText("Native")

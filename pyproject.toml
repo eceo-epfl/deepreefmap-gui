@@ -50,7 +50,17 @@ dependencies = [
 cu126 = ["torch==2.12.1+cu126", "torchvision==0.27.1+cu126"]
 cu130 = ["torch==2.12.1+cu130", "torchvision==0.27.1+cu130"]
 rocm = ["torch==2.9.1+rocm6.4", "torchvision==0.24.1+rocm6.4", "pytorch-triton-rocm>=3.0"]
-dev = ["pytest>=8.4.0", "ruff>=0.12.0", "mypy>=2.0.0", "types-tqdm", "types-PyYAML"]
+dev = [
+  "pytest>=8.4.0",
+  # Bounds a hung test: the suite drives Qt event loops and worker threads, and
+  # ci.yml would otherwise sit on GitHub's 6-hour job default.
+  "pytest-timeout>=2.3",
+  "pytest-cov>=5.0",
+  "ruff>=0.12.0",
+  "mypy>=2.0.0",
+  "types-tqdm",
+  "types-PyYAML",
+]
 
 [project.urls]
 Repository = "https://github.com/eceo-epfl/deepreefmap-gui"
@@ -110,7 +120,20 @@ explicit = true
 testpaths = ["tests"]
 # importlib mode: category subfolders under tests/ need no __init__.py and
 # test basenames need not be globally unique.
-addopts = "--import-mode=importlib"
+# -ra surfaces the skip reasons, which matters because the torch importorskip in
+# tests/gui/conftest.py silently gates most of the GUI suite.
+addopts = "--import-mode=importlib -ra --strict-markers --strict-config"
+# Puts tests/_factories.py on the path for the category subfolders that share it.
+pythonpath = ["tests"]
+timeout = 120
+# Scoped to our own package: VTK and numpy emit deprecations we don't control,
+# and drowning those would mean turning the filter off again.
+filterwarnings = [
+  "error::DeprecationWarning:deepreefmap_gui.*",
+  # zarr's ZipStore rewrites .zattrs as it fills each group, so every scene-file
+  # write reports duplicate zip entries. Inherent to the store, not our writes.
+  "ignore:Duplicate name:UserWarning:zipfile",
+]
 
 [tool.ruff]
 target-version = "py310"

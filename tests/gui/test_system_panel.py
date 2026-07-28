@@ -1,6 +1,13 @@
-"""System tab: gauges tick only while visible, benchmark fills from the probe."""
+"""System tab: gauges tick only while visible, benchmark fills from the probe.
+
+Colour assertions go through core.theme rather than hex literals, so a palette
+change moves the theme test and these together instead of failing here for a
+reason that has nothing to do with the panel.
+"""
 
 from __future__ import annotations
+
+from deepreefmap_gui.core.theme import BLOCK, UPDATE
 
 
 
@@ -17,23 +24,20 @@ def _recorded_runs_text(window) -> str:
     return " ".join(parts)
 
 
-def test_system_tab_is_registered(make_window) -> None:
-    window = make_window()
+def test_system_tab_is_registered(window) -> None:
     assert window._sidebar_tabs.tabText(window._TAB_SYSTEM) == "System"
 
 
-def test_gauge_timer_runs_only_on_the_system_tab(make_window) -> None:
-    window = make_window()
+def test_gauge_timer_runs_only_on_the_system_tab(window) -> None:
     window._on_sidebar_tab_changed(window._TAB_SYSTEM)
     assert window._sys_timer.isActive()
     window._on_sidebar_tab_changed(window._TAB_RUN)
     assert not window._sys_timer.isActive()
 
 
-def test_gauges_reflect_a_sampled_utilisation(make_window, monkeypatch) -> None:
+def test_gauges_reflect_a_sampled_utilisation(window, monkeypatch) -> None:
     import deepreefmap_gui.profiling.system_probe as probe
 
-    window = make_window()
     monkeypatch.setattr(
         probe, "sample_utilisation",
         lambda: probe.Utilisation(
@@ -54,10 +58,9 @@ def test_gauges_reflect_a_sampled_utilisation(make_window, monkeypatch) -> None:
     assert "2.0 GB" in swap_label.text()
 
 
-def test_machine_specs_line_reports_gpu_and_cores(make_window, monkeypatch) -> None:
+def test_machine_specs_line_reports_gpu_and_cores(window, monkeypatch) -> None:
     import deepreefmap_gui.profiling.system_probe as probe
 
-    window = make_window()
     monkeypatch.setattr(
         probe, "probe_system",
         lambda *a, **k: probe.SystemProfile(
@@ -86,10 +89,9 @@ def _low_ram_profile(probe):
     )
 
 
-def test_memory_warning_shows_inline_notice_and_icon(make_window, monkeypatch) -> None:
+def test_memory_warning_shows_inline_notice_and_icon(window, monkeypatch) -> None:
     import deepreefmap_gui.profiling.system_probe as probe
 
-    window = make_window()
     monkeypatch.setattr(probe, "probe_system", lambda *a, **k: _low_ram_profile(probe))
     window._video_duration_s = 378.0
     window._fps_spin.setValue(5)
@@ -100,18 +102,16 @@ def test_memory_warning_shows_inline_notice_and_icon(make_window, monkeypatch) -
     assert "<br>" in window._memory_warn_icon.toolTip()
 
 
-def test_memory_warning_hidden_without_a_video(make_window) -> None:
-    window = make_window()
+def test_memory_warning_hidden_without_a_video(window) -> None:
     window._video_duration_s = None  # no frame count is knowable yet
     window._update_memory_profile_warning()
     assert window._memory_notice.isHidden()
     assert window._memory_warn_icon.isHidden()
 
 
-def test_memory_icon_colour_tracks_warn_vs_block(make_window, monkeypatch) -> None:
+def test_memory_icon_colour_tracks_warn_vs_block(window, monkeypatch) -> None:
     import deepreefmap_gui.profiling.system_probe as probe
 
-    window = make_window()
     window._video_duration_s = 378.0
     window._fps_spin.setValue(5)
 
@@ -127,25 +127,23 @@ def test_memory_icon_colour_tracks_warn_vs_block(make_window, monkeypatch) -> No
     # Fits only with swap -> amber warn.
     monkeypatch.setattr(probe, "probe_system", lambda *a, **k: profile(20, 30))
     window._update_memory_profile_warning()
-    assert "#e0a030" in window._memory_warn_icon.text()
+    assert UPDATE in window._memory_warn_icon.text()
 
     # Exceeds RAM and swap -> red block. The icon colour must change, not just the text.
     monkeypatch.setattr(probe, "probe_system", lambda *a, **k: profile(6, 0))
     window._update_memory_profile_warning()
-    assert "#e05050" in window._memory_warn_icon.text()
+    assert BLOCK in window._memory_warn_icon.text()
 
 
-def test_memory_icon_click_opens_system_tab(make_window) -> None:
-    window = make_window()
+def test_memory_icon_click_opens_system_tab(window) -> None:
     window._sidebar_tabs.setCurrentIndex(window._TAB_RUN)
     window._memory_warn_icon.clicked.emit()
     assert window._sidebar_tabs.currentIndex() == window._TAB_SYSTEM
 
 
-def test_recorded_runs_summary_shows_peak_and_risk(make_window, monkeypatch) -> None:
+def test_recorded_runs_summary_shows_peak_and_risk(window, monkeypatch) -> None:
     import deepreefmap_gui.profiling.run_history as history
 
-    window = make_window()
     monkeypatch.setattr(
         history, "summarise_recorded_runs",
         lambda *a, **k: [{
@@ -170,13 +168,12 @@ def test_recorded_runs_summary_shows_peak_and_risk(make_window, monkeypatch) -> 
     # Swap predates capture on this run -> shown as "not recorded", not a fake 0%.
     assert "not recorded" in text
     # 30/32 GB = ~94% -> the RAM meter is coloured red, no separate text label.
-    assert "#e05050" in text
+    assert BLOCK in text
 
 
-def test_recorded_runs_summary_shows_swap_spill(make_window, monkeypatch) -> None:
+def test_recorded_runs_summary_shows_swap_spill(window, monkeypatch) -> None:
     import deepreefmap_gui.profiling.run_history as history
 
-    window = make_window()
     monkeypatch.setattr(
         history, "summarise_recorded_runs",
         lambda *a, **k: [{
@@ -195,16 +192,15 @@ def test_recorded_runs_summary_shows_swap_spill(make_window, monkeypatch) -> Non
     # Committed 39 GB > 32 GB RAM: the swap meter is populated and the tag is red.
     assert "swap" in text.lower()
     assert "not recorded" not in text
-    assert "#e05050" in text
+    assert BLOCK in text
     # The median wall-clock and its per-frame throughput are shown.
     assert "Time" in text
     assert "s/frame" in text
 
 
-def test_recorded_runs_group_shows_run_count(make_window, monkeypatch) -> None:
+def test_recorded_runs_group_shows_run_count(window, monkeypatch) -> None:
     import deepreefmap_gui.profiling.run_history as history
 
-    window = make_window()
     monkeypatch.setattr(
         history, "group_recorded_runs",
         lambda *a, **k: [{
@@ -221,10 +217,9 @@ def test_recorded_runs_group_shows_run_count(make_window, monkeypatch) -> None:
     assert "3 runs" in _recorded_runs_text(window)
 
 
-def test_recorded_runs_summary_empty_state(make_window, monkeypatch) -> None:
+def test_recorded_runs_summary_empty_state(window, monkeypatch) -> None:
     import deepreefmap_gui.profiling.run_history as history
 
-    window = make_window()
     monkeypatch.setattr(history, "group_recorded_runs", lambda *a, **k: [])
     window._refresh_recorded_runs()
     assert "None yet" in window._recorded_runs_caption.text()
@@ -272,10 +267,9 @@ def test_recorded_runs_filter_defaults_to_most_recent_combination(make_window, m
     assert "scsfmlearner" not in titles
 
 
-def test_recorded_runs_filter_all_shows_every_group_with_subtitle(make_window, monkeypatch) -> None:
+def test_recorded_runs_filter_all_shows_every_group_with_subtitle(window, monkeypatch) -> None:
     import deepreefmap_gui.profiling.run_history as history
 
-    window = make_window()
     monkeypatch.setattr(
         history, "group_recorded_runs",
         lambda *a, **k: [

@@ -9,8 +9,9 @@ from deepreefmap_gui.survey.analysis import (
     repeatability_stats,
     reproducibility_groups,
 )
-from deepreefmap_gui.survey.models import RunRecord, Transect, TransectPass, VideoAsset
-from deepreefmap_gui.survey.store import SurveyStore
+from deepreefmap_gui.survey.models import RunRecord, TransectPass
+
+from _factories import VIDEO_HASH, make_transect, make_video
 
 
 @pytest.fixture(scope="module")
@@ -18,31 +19,18 @@ def classes_config():
     return load_classes()
 
 
-@pytest.fixture
-def store(tmp_path):
-    return SurveyStore(tmp_path / "survey.db")
-
-
 def seed_transect(store):
-    transect = Transect(
-        name="T1",
-        start_lat=-17.5,
-        start_lon=177.1,
-        end_lat=-17.5005,
-        end_lon=177.1005,
-    )
+    transect = make_transect()
     store.add_transect(transect)
     return transect
 
 
 def seed_run(store, out_root, transect, run_dir_name, fractions, *,
-             content_hash="ab" * 16, begin_s=0.0, end_s=60.0, status="succeeded",
+             content_hash=VIDEO_HASH, begin_s=0.0, end_s=60.0, status="succeeded",
              classes_config=None):
     """One pass + run whose run dir holds a benthic_cover.json with the given
     fine-class fractions (mapped onto the first N configured classes)."""
-    video = store.upsert_video(
-        VideoAsset(file_name="a.mp4", path="/a.mp4", hash=content_hash)
-    )
+    video = store.upsert_video(make_video(content_hash))
     pass_ = TransectPass(
         transect_id=transect.id, video_id=video.id, begin_s=begin_s, end_s=end_s
     )
@@ -69,14 +57,14 @@ def test_assemble_reads_succeeded_runs_only(store, tmp_path, classes_config):
     covers = assemble_transect_covers(store, out_root, transect.id, classes_config, level="fine")
     assert len(covers) == 1
     assert covers[0].run_dir_name == "run_a"
-    assert covers[0].video_hash == "ab" * 16
+    assert covers[0].video_hash == VIDEO_HASH
     assert pytest.approx(sum(covers[0].cover.values())) == 0.8
 
 
 def test_missing_cover_file_is_skipped(store, tmp_path, classes_config):
     transect = seed_transect(store)
     out_root = tmp_path / "out"
-    _, run = seed_run(store, out_root, transect, "run_a", [0.3], classes_config=classes_config)
+    seed_run(store, out_root, transect, "run_a", [0.3], classes_config=classes_config)
     (out_root / "run_a" / "benthic_cover.json").unlink()
     covers = assemble_transect_covers(store, out_root, transect.id, classes_config)
     assert covers == []
@@ -93,7 +81,9 @@ def test_repeatability_stats_math(store, tmp_path, classes_config):
     assert stats["mean"] == pytest.approx(0.4)
     assert stats["std"] == pytest.approx(0.1414, abs=1e-3)
     assert stats["range"] == pytest.approx(0.2)
-    assert stats["cv"] == pytest.approx(stats["std"] / 0.4)
+    # Pinned, not re-derived from the returned std: cv = std / mean is the
+    # formula under test, so computing it here would assert nothing.
+    assert stats["cv"] == pytest.approx(0.353553, abs=1e-6)
 
 
 def test_reproducibility_groups_by_hash_and_trim(store, tmp_path, classes_config):

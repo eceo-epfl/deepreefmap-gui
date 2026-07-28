@@ -1,25 +1,9 @@
 import pytest
 
-from deepreefmap_gui.survey.models import Transect, TransectPass, VideoAsset
+from deepreefmap_gui.survey.models import TransectPass, VideoAsset
 from deepreefmap_gui.survey.models.exporters import save_transects_csv
 
-
-@pytest.fixture
-def plan_window(window, tmp_path):
-    window._out_root_input.setText(str(tmp_path))
-    window._set_ui_mode("simple")
-    return window
-
-
-def make_transect(name="T1"):
-    return Transect(
-        name=name,
-        start_lat=-17.5,
-        start_lon=177.1,
-        end_lat=-17.5005,
-        end_lon=177.1005,
-        length_m=50.0,
-    )
+from _factories import make_transect
 
 
 def type_coord(window, which, text):
@@ -29,8 +13,8 @@ def type_coord(window, which, text):
     window._on_coords_edited()
 
 
-def test_transect_autosaves_once_complete(plan_window):
-    w = plan_window
+def test_transect_autosaves_once_complete(simple_window):
+    w = simple_window
     w._tr_name_input.setText("T1")
     type_coord(w, "start", "-17.5 177.1")
     assert w._survey_store().list_transects() == []
@@ -49,10 +33,10 @@ def test_transect_autosaves_once_complete(plan_window):
     assert "50 m tape" in w._transect_list.item(0).text()
 
 
-def test_draft_row_tracks_typing_before_save(plan_window):
+def test_draft_row_tracks_typing_before_save(simple_window):
     from PySide6.QtCore import Qt
 
-    w = plan_window
+    w = simple_window
     w._refresh_transect_list()
     assert w._transect_list.count() == 0
     w._tr_name_input.setText("Nor")
@@ -66,9 +50,9 @@ def test_draft_row_tracks_typing_before_save(plan_window):
     assert w._survey_store().list_transects() == []
 
 
-def test_out_of_range_coordinate_is_reported(plan_window):
+def test_out_of_range_coordinate_is_reported(simple_window):
     """The range check that used to live on the Quick field still applies."""
-    w = plan_window
+    w = simple_window
     w._tr_name_input.setText("T1")
     type_coord(w, "start", "-17.5, 177.1")
     type_coord(w, "end", "95.0, 177.1")
@@ -77,16 +61,16 @@ def test_out_of_range_coordinate_is_reported(plan_window):
         w._form_coordinates()
 
 
-def test_garbage_coordinate_never_saves(plan_window):
-    w = plan_window
+def test_garbage_coordinate_never_saves(simple_window):
+    w = simple_window
     w._tr_name_input.setText("T1")
     type_coord(w, "start", "junk")
     type_coord(w, "end", "-17.5, 177.1")
     assert w._survey_store().list_transects() == []
 
 
-def test_map_buttons_set_endpoints_one_shot(plan_window):
-    w = plan_window
+def test_map_buttons_set_endpoints_one_shot(simple_window):
+    w = simple_window
     w._map_start_btn.setChecked(True)
     w._plan_map.map_clicked.emit(-17.5, 177.1)
     assert w._tr_start_coord.text() == "-17.500000, 177.100000"
@@ -97,8 +81,8 @@ def test_map_buttons_set_endpoints_one_shot(plan_window):
     assert not w._map_end_btn.isChecked()
 
 
-def test_map_buttons_are_mutually_exclusive(plan_window):
-    w = plan_window
+def test_map_buttons_are_mutually_exclusive(simple_window):
+    w = simple_window
     w._map_start_btn.setChecked(True)
     w._map_end_btn.setChecked(True)
     assert not w._map_start_btn.isChecked()
@@ -106,7 +90,7 @@ def test_map_buttons_are_mutually_exclusive(plan_window):
     assert not w._map_end_btn.isChecked()
 
 
-def test_copy_endpoint_puts_latlon_on_clipboard(plan_window, monkeypatch):
+def test_copy_endpoint_puts_latlon_on_clipboard(simple_window, monkeypatch):
     # Stubbed clipboard: the real X11 selection is shared with the desktop and
     # races with clipboard managers.
     captured = []
@@ -121,7 +105,7 @@ def test_copy_endpoint_puts_latlon_on_clipboard(plan_window, monkeypatch):
             return _Clipboard()
 
     monkeypatch.setattr("deepreefmap_gui.simple.plan.QGuiApplication", _App)
-    w = plan_window
+    w = simple_window
     w._tr_start_coord.setText("-17.500000, 177.100000")
     w._copy_endpoint("start")
     assert captured == ["-17.500000, 177.100000"]
@@ -129,15 +113,15 @@ def test_copy_endpoint_puts_latlon_on_clipboard(plan_window, monkeypatch):
     assert "No end point to copy" in w._status_label.text()
 
 
-def test_map_click_without_armed_button_is_ignored(plan_window):
-    w = plan_window
+def test_map_click_without_armed_button_is_ignored(simple_window):
+    w = simple_window
     w._plan_map.map_clicked.emit(-17.5, 177.1)
     assert w._tr_start_coord.text() == ""
     assert w._tr_end_coord.text() == ""
 
 
-def test_draft_line_appears_once_both_endpoints_set(plan_window):
-    w = plan_window
+def test_draft_line_appears_once_both_endpoints_set(simple_window):
+    w = simple_window
     w._map_start_btn.setChecked(True)
     w._plan_map.map_clicked.emit(-17.5, 177.1)
     assert not any(t.id == "draft" for t in w._plan_map._transects)
@@ -150,8 +134,8 @@ def test_draft_line_appears_once_both_endpoints_set(plan_window):
     assert len(w._plan_map._transects) == 1
 
 
-def test_duplicate_name_reports_and_keeps_one(plan_window):
-    w = plan_window
+def test_duplicate_name_reports_and_keeps_one(simple_window):
+    w = simple_window
     w._survey_store().add_transect(make_transect())
     w._tr_name_input.setText("T1")
     type_coord(w, "start", "-17.6 177.2")
@@ -161,8 +145,8 @@ def test_duplicate_name_reports_and_keeps_one(plan_window):
     assert len(w._survey_store().list_transects()) == 1
 
 
-def test_edit_selected_transect_updates_row(plan_window):
-    w = plan_window
+def test_edit_selected_transect_updates_row(simple_window):
+    w = simple_window
     w._survey_store().add_transect(make_transect())
     w._refresh_transect_list()
     w._transect_list.setCurrentRow(0)
@@ -174,8 +158,8 @@ def test_edit_selected_transect_updates_row(plan_window):
     assert stored[0].end_lat == -17.502
 
 
-def test_delete_with_passes_is_blocked(plan_window):
-    w = plan_window
+def test_delete_with_passes_is_blocked(simple_window):
+    w = simple_window
     store = w._survey_store()
     transect = make_transect()
     video = VideoAsset(file_name="a.mp4", path="/a.mp4", hash="cd" * 16)
@@ -191,8 +175,8 @@ def test_delete_with_passes_is_blocked(plan_window):
     assert len(store.list_transects()) == 1
 
 
-def test_import_csv_skips_existing(plan_window, tmp_path, monkeypatch):
-    w = plan_window
+def test_import_csv_skips_existing(simple_window, tmp_path, monkeypatch):
+    w = simple_window
     existing = make_transect()
     w._survey_store().add_transect(existing)
     csv_path = tmp_path / "in.csv"
@@ -207,8 +191,8 @@ def test_import_csv_skips_existing(plan_window, tmp_path, monkeypatch):
     assert [t.name for t in w._survey_store().list_transects()] == ["T1", "T2"]
 
 
-def test_export_csv_round_trip(plan_window, tmp_path, monkeypatch):
-    w = plan_window
+def test_export_csv_round_trip(simple_window, tmp_path, monkeypatch):
+    w = simple_window
     w._survey_store().add_transect(make_transect())
     out_path = tmp_path / "out.csv"
     monkeypatch.setattr(
@@ -219,12 +203,12 @@ def test_export_csv_round_trip(plan_window, tmp_path, monkeypatch):
     assert "T1" in out_path.read_text()
 
 
-def test_pick_both_walks_start_then_end(plan_window):
+def test_pick_both_walks_start_then_end(simple_window):
     """Scenario: a new transect drawn entirely on the map.
 
     Expected behaviour: one button, two clicks, then it disarms itself.
     """
-    w = plan_window
+    w = simple_window
     w._pick_both_btn.setChecked(True)
     assert w._plan_map._pick_mode
     w._plan_map.map_clicked.emit(-17.5, 177.1)
@@ -237,8 +221,8 @@ def test_pick_both_walks_start_then_end(plan_window):
     assert not w._plan_map._pick_mode
 
 
-def test_single_endpoint_pick_disarms_pick_both(plan_window):
-    w = plan_window
+def test_single_endpoint_pick_disarms_pick_both(simple_window):
+    w = simple_window
     w._pick_both_btn.setChecked(True)
     w._map_end_btn.setChecked(True)
     assert not w._pick_both_btn.isChecked()
@@ -248,8 +232,8 @@ def test_single_endpoint_pick_disarms_pick_both(plan_window):
     assert w._tr_start_coord.text() == ""
 
 
-def test_notes_round_trip_through_the_store(plan_window):
-    w = plan_window
+def test_notes_round_trip_through_the_store(simple_window):
+    w = simple_window
     w._tr_name_input.setText("T1")
     type_coord(w, "start", "-17.5, 177.1")
     type_coord(w, "end", "-17.5005, 177.1005")
@@ -263,8 +247,8 @@ def test_notes_round_trip_through_the_store(plan_window):
     assert w._tr_description.toPlainText() == "tape run W→E\nviz ~12 m"
 
 
-def test_selecting_a_transect_filters_the_browser(plan_window):
-    w = plan_window
+def test_selecting_a_transect_filters_the_browser(simple_window):
+    w = simple_window
     transect = make_transect()
     w._survey_store().add_transect(transect)
     w._refresh_transect_list()

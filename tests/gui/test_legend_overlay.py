@@ -2,18 +2,11 @@
 
 from __future__ import annotations
 
-import pytest
 
 
-def test_overlay_has_reset_button_and_r_shortcut_triggers_view_reset(qapp) -> None:
-    pytest.importorskip("torch", reason="torch not loadable on this machine")
+def test_overlay_has_reset_button_and_r_shortcut_triggers_view_reset(window) -> None:
     from PySide6.QtGui import QKeySequence, QShortcut
 
-    from deepreefmap.config.classes import load_classes
-    from deepreefmap_gui.app import DeepReefMapWindow
-
-    cc = load_classes()
-    window = DeepReefMapWindow(cc, None)
     assert window._reset_view_button is not None
     assert "Reset" in window._reset_view_button.text()
 
@@ -97,15 +90,9 @@ def test_pie_click_toggles_selection(window) -> None:
     assert window._enabled_class_set() == frozenset({cids[1]})
 
 
-def test_master_checkbox_select_deselect_and_partial(qapp) -> None:
-    pytest.importorskip("torch", reason="torch not loadable on this machine")
+def test_master_checkbox_select_deselect_and_partial(window) -> None:
     from PySide6.QtCore import Qt
 
-    from deepreefmap.config.classes import load_classes
-    from deepreefmap_gui.app import DeepReefMapWindow
-
-    cc = load_classes()
-    window = DeepReefMapWindow(cc, None)
     window._build_legend()
     present = frozenset(window._legend_toggles.keys())
     master = window._viewer.legend_overlay._master_check

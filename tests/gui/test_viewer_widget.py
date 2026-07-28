@@ -1,8 +1,10 @@
 """The pyvistaqt viewer widget and its pure-numpy render/pick helpers.
 
-Widget tests run offscreen; VTK-dependent ones are skipped when no OpenGL
-context is available. The helper tests (colourisation, frustum geometry,
-world-up estimation, pick-pixel selection) touch no Qt.
+Widget tests need a real QApplication and, for the VTK-backed paths, a working
+OpenGL context -- there is no skip for a missing one, so a headless box without
+GL errors here rather than skipping. README documents `xvfb-run` for that case.
+The helper tests (colourisation, frustum geometry, world-up estimation,
+pick-pixel selection) touch no Qt.
 """
 
 from __future__ import annotations
@@ -19,20 +21,38 @@ def test_viewer_widget_creates(qapp) -> None:
     assert not viewer.has_scene_data
 
 
+def _random_cloud(n=100):
+    rng = np.random.default_rng(0)
+    return rng.random((n, 3)).astype(np.float32), rng.integers(0, 255, (n, 3), dtype=np.uint8)
+
+
 def test_viewer_show_point_cloud(qapp) -> None:
     from deepreefmap_gui.viewer.widget import QtPointCloudViewer
 
     viewer = QtPointCloudViewer()
-    xyz = np.random.rand(100, 3).astype(np.float32)
-    rgb = np.random.randint(0, 255, (100, 3), dtype=np.uint8)
-    viewer.show_point_cloud(xyz, rgb)
+    viewer.show_point_cloud(*_random_cloud())
+
+    # show_point_cloud is the simple (non-timeline) path, so it adds an actor
+    # without establishing scene data.
+    assert viewer._simple_actor is not None
+    assert not viewer.has_scene_data
 
 
-def test_viewer_empty_cloud_noop(qapp) -> None:
+def test_viewer_empty_cloud_leaves_the_previous_one_alone(qapp) -> None:
+    """The empty-input guard returns before _clear_scene_data.
+
+    Asserted because the two are one line apart: reordering them would silently
+    wipe the displayed cloud whenever an empty update arrived.
+    """
     from deepreefmap_gui.viewer.widget import QtPointCloudViewer
 
     viewer = QtPointCloudViewer()
+    viewer.show_point_cloud(*_random_cloud())
+    shown = viewer._simple_actor
+
     viewer.show_point_cloud(np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.uint8))
+
+    assert viewer._simple_actor is shown
 
 
 

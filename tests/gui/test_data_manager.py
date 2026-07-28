@@ -3,49 +3,19 @@ from pathlib import Path
 
 from deepreefmap_gui.runs.run_cards import RUN_META_ROLE
 from deepreefmap_gui.survey.catalogue import UNASSIGNED_TITLE
-from deepreefmap_gui.survey.models import RunRecord, Transect, TransectPass, VideoAsset
-from deepreefmap_gui.survey.models.convert import survey_manifest_block
+from deepreefmap_gui.survey.models import Transect
 from deepreefmap_gui.survey.store import SurveyStore
 
-
-def write_run(root: Path, dir_name: str, **overrides) -> Path:
-    manifest = {
-        "name": None,
-        "mode": "semantic",
-        "input_videos": ["/data/GX010001.MP4"],
-        "video_hashes": ["ab" * 16],
-        "run_timestamp": "2026-07-01T10:00:00+00:00",
-        "begin_s": 0.0,
-        "end_s": 60.0,
-        "run_duration_s": 120.0,
-        "semantic_reference_points": 1_000_000,
-    }
-    manifest.update(overrides)
-    run_dir = root / dir_name
-    run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "run_manifest.json").write_text(json.dumps(manifest))
-    return run_dir
+from _factories import seed_survey_run, write_run
 
 
 def write_survey_run(root: Path, dir_name: str) -> Transect:
+    """Seed a survey run through a store the window will reopen at root/survey.db.
+
+    The window owns its own connection, so this one is closed before handing back.
+    """
     store = SurveyStore(root / "survey.db")
-    transect = Transect(
-        name="T1",
-        start_lat=-17.5,
-        start_lon=177.1,
-        end_lat=-17.5005,
-        end_lon=177.1005,
-        length_m=50.0,
-    )
-    store.add_transect(transect)
-    video = store.upsert_video(
-        VideoAsset(file_name="GX010001.MP4", path="/data/GX010001.MP4", hash="ab" * 16)
-    )
-    pass_ = TransectPass(transect_id=transect.id, video_id=video.id, begin_s=0.0, end_s=60.0)
-    store.add_pass(pass_)
-    run = RunRecord(pass_id=pass_.id, run_dir_name=dir_name, status="succeeded")
-    store.add_run(run)
-    write_run(root, dir_name, survey=survey_manifest_block(run, pass_, transect, None))
+    transect, _pass, _run = seed_survey_run(store, root, dir_name)
     store.close()
     return transect
 

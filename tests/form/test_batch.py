@@ -1,6 +1,6 @@
 """Batch job CSV parsing.
 
-Covers deepreefmap/gui/batch.py: the timestamp-range mini-parser and the CSV
+Covers deepreefmap_gui/form/batch.py: the timestamp-range mini-parser and the CSV
 loader (column detection, blank-row skipping, Excel rejection).
 """
 

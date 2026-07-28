@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
+from deepreefmap_gui.profiling.instrumentation import STAGE_SPANS
 from deepreefmap_gui.profiling.perf_sampler import ResourceSample, ResourceSampler, peaks_from_marks
 
-# Same span shape as instrumentation.py's STAGE_SPANS: (begin_mark, end_mark, stage).
-_SPANS = (
-    ("start", "preprocess", "startup"),
-    ("preprocess", "mapping", "preprocess"),
-    ("mapping", "cloud", "mapping"),
-)
+# The real spans, not a copy: a hand-written stand-in kept passing when the shape
+# of STAGE_SPANS changed under peaks_from_marks' actual callers. Trimmed to the
+# first three because the marks below only span that far.
+_SPANS = STAGE_SPANS[:3]
 
 
 def test_peaks_are_the_max_within_each_stage_window() -> None:
@@ -44,6 +43,9 @@ def test_vram_none_when_no_sample_reported_it() -> None:
 
 
 def test_sampler_collects_samples_then_stops(monkeypatch) -> None:
+    import threading
+    import time
+
     import deepreefmap_gui.profiling.system_probe as probe
 
     calls = {"n": 0}
@@ -55,12 +57,18 @@ def test_sampler_collects_samples_then_stops(monkeypatch) -> None:
     monkeypatch.setattr(probe, "sample_utilisation", fake_util)
     sampler = ResourceSampler(interval_s=0.01)
     sampler.start()
-    # Second start is a no-op (already running), must not spawn a second thread.
+    before = threading.active_count()
+    # Second start is a no-op (already running), so no second thread appears.
     sampler.start()
-    import time
+    assert threading.active_count() == before
 
-    time.sleep(0.1)
+    # Poll for the samples rather than sleeping a fixed span: a loaded runner can
+    # miss a 0.01s tick, and a fixed sleep turns that into a flake.
+    deadline = time.monotonic() + 5.0
+    while len(sampler.samples) < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
     sampler.stop()
+
     assert len(sampler.samples) >= 2
     assert sampler._thread is None
     # Samples are monotonically timestamped and carry the mocked figures.

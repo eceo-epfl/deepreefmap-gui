@@ -1,14 +1,51 @@
 """`profiling/eta.py` learns and projects per-stage timings keyed by stage name;
-`pipeline/instrumentation.py` is what emits those durations from a run's timing
+`profiling/instrumentation.py` is what emits those durations from a run's timing
 marks. The two key sets are written out independently and drift doesn't raise: a
 stage the estimator knows but instrumentation never times just has no history,
-so the ETA quietly degrades to weight-based projection. This pins them together.
+so the ETA quietly degrades to weight-based projection.
+
+Matching key sets is not enough on its own. The orchestrator names only four
+stages and distinguishes everything inside "outputs" by message, so a span can be
+declared, agree with eta.py, and still never be reachable because nothing emits
+the mark that opens it. That is how cloud/ortho/save_view went unmeasured. These
+tests pin both halves: the names agree, and every name has a live producer.
 """
 
 from __future__ import annotations
 
-from deepreefmap_gui.profiling.instrumentation import STAGE_SPANS
-from deepreefmap_gui.profiling.eta import STAGES
+import pytest
+
+from deepreefmap_gui.profiling.eta import STAGES, STAGE_MESSAGE_TO_PHASE, stage_for_phase
+from deepreefmap_gui.profiling.instrumentation import (
+    STAGE_SPANS,
+    UNPRODUCIBLE_STAGES,
+    _MarkingViewer,
+    durations_from_marks,
+)
+
+
+class _Clock:
+    """Monotonic stand-in so marks are ordered without depending on wall time."""
+
+    def __init__(self) -> None:
+        self.marks: dict[str, float] = {"start": 0.0}
+        self._t = 0.0
+
+    def mark(self, name: str) -> None:
+        self._t += 1.0
+        self.marks[name] = self._t
+
+
+# One report per coarse stage, in pipeline order, using the exact stage names and
+# message strings the library emits (verified against deepreefmap's orchestrator).
+_RUN_REPORTS: tuple[tuple[str, str | None], ...] = (
+    ("startup", "Loading camera + segmentation + mapping backends"),
+    ("preprocess", "Rectifying + segmenting + masking"),
+    ("mapping", "3D mapping pipeline in progress"),
+    ("outputs", "Building semantic cloud"),
+    ("outputs", "Computing PCA projection"),
+    ("outputs", "Saving ortho image"),
+)
 
 
 def test_timed_spans_match_eta_stages() -> None:
@@ -17,3 +54,56 @@ def test_timed_spans_match_eta_stages() -> None:
         "instrumentation.py STAGE_SPANS and eta.py STAGES disagree; a stage only "
         "one side names loses its history and falls back to a weight-based guess"
     )
+
+
+def test_every_message_routes_to_a_known_stage() -> None:
+    """A typo'd message key silently stops opening its stage."""
+    spans = {stage for _, _, stage in STAGE_SPANS}
+    for message, phase in STAGE_MESSAGE_TO_PHASE.items():
+        coarse = stage_for_phase(phase)
+        assert coarse in spans, f"{message!r} -> {phase!r} folds onto unknown stage {coarse!r}"
+
+
+def test_a_full_run_measures_every_producible_stage() -> None:
+    """Drive a real _MarkingViewer with the orchestrator's own call sequence.
+
+    Marking on the stage name alone left cloud, ortho and save_view permanently
+    empty, because the orchestrator reports all three as "outputs" and only the
+    message tells them apart.
+    """
+    clock = _Clock()
+    viewer = _MarkingViewer(None, clock)
+    for stage, message in _RUN_REPORTS:
+        viewer.set_stage(stage, "running", message)
+    viewer.mark_outputs_ready("/tmp/out", [])
+
+    measured = set(durations_from_marks(clock.marks))
+    expected = {stage for _, _, stage in STAGE_SPANS} - UNPRODUCIBLE_STAGES
+    assert measured == expected
+
+
+@pytest.mark.parametrize("stage", sorted(UNPRODUCIBLE_STAGES))
+def test_unproducible_stages_are_still_declared_by_eta(stage: str) -> None:
+    """Guard the documented exception rather than letting it rot silently.
+
+    scene_save is weighted by the estimator but written on a detached thread in
+    the load path, so it can never be timed. If it gains a producer, or the
+    estimator stops reserving weight for it, this should be revisited.
+    """
+    assert stage in {spec.key for spec in STAGES}
+
+
+def test_cloud_span_survives_an_ortho_first_report() -> None:
+    """A resumed run can report an ortho message before any plain cloud one.
+
+    Marking ortho before cloud would give the cloud span a negative width, which
+    durations_from_marks drops -- losing the stage rather than zeroing it.
+    """
+    clock = _Clock()
+    viewer = _MarkingViewer(None, clock)
+    viewer.set_stage("mapping", "completed", "Loaded from cache")
+    viewer.set_stage("outputs", "running", "Computing PCA projection")
+    viewer.set_stage("outputs", "running", "Saving ortho image")
+    viewer.mark_outputs_ready("/tmp/out", [])
+
+    assert "cloud" in durations_from_marks(clock.marks)

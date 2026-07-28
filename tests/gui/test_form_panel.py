@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 
 def test_loger_options_collected_from_form(window) -> None:
@@ -22,13 +21,9 @@ def test_loger_options_collected_from_form(window) -> None:
     assert window._collect_loger_options("loger_star")["model_path"] == "/tmp/custom.pt"
 
 
-def test_form_defaults_to_vit_b_and_loger_star(qapp) -> None:
-    pytest.importorskip("torch", reason="torch not loadable on this machine")
-    from deepreefmap.config.classes import load_classes
-    from deepreefmap_gui.app import DeepReefMapWindow
+def test_form_defaults_to_vit_b_and_loger_star(window) -> None:
     from deepreefmap.mapping.registry import loger_available
 
-    window = DeepReefMapWindow(load_classes(), None)
     assert window._seg_combo.currentText() == "coralscapes-vit-b-dpt"
     assert window._map_combo.currentText() == (
         "loger_star" if loger_available() else "scsfmlearner"

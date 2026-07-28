@@ -1,6 +1,6 @@
 """Bootstrap dispatch and env self-healing.
 
-Covers deepreefmap/bootstrap.py: routing to the GUI vs the CLI by argv,
+Covers deepreefmap_gui/bootstrap.py: routing to the GUI vs the CLI by argv,
 the Windows uninstall-key refresh no-op elsewhere, and the self-heal path that
 restores a broken env and re-execs the binary.
 """
@@ -82,8 +82,22 @@ def test_bootstrap_args_dispatch_to_cli(monkeypatch, tmp_path) -> None:
     assert cli_calls == [["list-models"]]
 
 
+class _Booby:
+    """Stands in for winreg and fails on any use."""
+
+    def __getattr__(self, name: str) -> object:
+        raise AssertionError(f"winreg.{name} must not be touched off Windows")
+
+
 def test_refresh_uninstall_display_version_noop_off_windows(monkeypatch) -> None:
+    """Off Windows it must return before reaching winreg, not merely not raise.
+
+    The registry write itself is driven on Linux by
+    tests/packaging/test_installer_registry_contract.py, which forces win32.
+    """
     import deepreefmap_gui.bootstrap as bootstrap
 
-    # Must never raise on non-Windows or when the installer key is absent.
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setitem(sys.modules, "winreg", _Booby())
+
     bootstrap._refresh_uninstall_display_version()

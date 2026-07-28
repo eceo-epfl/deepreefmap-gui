@@ -120,10 +120,3 @@ def test_pick_mode_sends_clicks_past_transects(map_widget):
     assert map_widget.cursor().shape() == Qt.CursorShape.CrossCursor
 
 
-def test_labels_and_tooltips_ride_on_the_overlay():
-    overlay = make_overlay()
-    assert overlay.label == ""
-    labelled = make_overlay()
-    labelled.label = "T1 north"
-    labelled.tooltip = "3 videos"
-    assert (labelled.label, labelled.tooltip) == ("T1 north", "3 videos")

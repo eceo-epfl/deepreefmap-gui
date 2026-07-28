@@ -1,28 +1,39 @@
 import json
+import time
 
 import pytest
 
 from deepreefmap_gui.simple.batch import _COL_STATUS, _COL_TRANSECT
-from deepreefmap_gui.survey.models import Transect
+
+from _factories import make_transect
 
 
 @pytest.fixture
-def batch_window(window, tmp_path, monkeypatch):
-    window._out_root_input.setText(str(tmp_path))
-    window._set_ui_mode("simple")
-    window._survey_store().add_transect(
-        Transect(
-            name="T1",
-            start_lat=-17.5,
-            start_lon=177.1,
-            end_lat=-17.5005,
-            end_lon=177.1005,
-            length_m=50.0,
-        )
-    )
+def batch_window(simple_window, tmp_path, monkeypatch):
+    window = simple_window
+    window._survey_store().add_transect(make_transect())
     window._refresh_survey_batch_tab()
-    monkeypatch.setattr(window, "_survey_missing_models", lambda: [], raising=False)
+    monkeypatch.setattr(window, "_survey_missing_models", lambda: [])
     return window
+
+
+def await_batch(window, qapp, timeout=10.0):
+    """Wait for the batch worker, then drain the signals it queued.
+
+    join(timeout=...) returns whether or not the thread finished, so an unchecked
+    join turns a hang into a confusing assertion failure further down. Draining
+    has to loop as well: each processEvents() pass delivers the queued
+    cross-thread signals, and a slot may queue more.
+    """
+    thread = window._pipeline_thread
+    thread.join(timeout=timeout)
+    assert not thread.is_alive(), f"batch worker still running after {timeout}s"
+
+    deadline = time.monotonic() + timeout
+    while window._survey_worker_running and time.monotonic() < deadline:
+        qapp.processEvents()
+    qapp.processEvents()
+    assert not window._survey_worker_running, "batch finished but the UI never caught up"
 
 
 def add_video(window, tmp_path, monkeypatch, name="GX010001.MP4"):
@@ -46,14 +57,7 @@ def assign_transect(window, row_index):
 
 def add_second_transect(window, name="T2"):
     window._survey_store().add_transect(
-        Transect(
-            name=name,
-            start_lat=-17.6,
-            start_lon=177.2,
-            end_lat=-17.6005,
-            end_lon=177.2005,
-            length_m=50.0,
-        )
+        make_transect(name, start_lat=-17.6, start_lon=177.2, end_lat=-17.6005, end_lon=177.2005)
     )
     window._refresh_survey_batch_tab()
 
@@ -121,8 +125,7 @@ def test_run_batch_records_success_and_links_manifest(
     add_video(batch_window, tmp_path, monkeypatch)
     assign_transect(batch_window, 0)
     batch_window._on_survey_start()
-    batch_window._pipeline_thread.join(timeout=10)
-    qapp.processEvents()
+    await_batch(batch_window, qapp)
 
     assert len(calls) == 1
     kwargs = calls[0]
@@ -159,8 +162,7 @@ def test_advanced_settings_reach_a_survey_run(batch_window, tmp_path, monkeypatc
     add_video(batch_window, tmp_path, monkeypatch)
     assign_transect(batch_window, 0)
     batch_window._on_survey_start()
-    batch_window._pipeline_thread.join(timeout=10)
-    qapp.processEvents()
+    await_batch(batch_window, qapp)
 
     assert calls[0]["grid_bins"] == 1234
     assert calls[0]["require_gravity_telemetry"] is True
@@ -177,8 +179,7 @@ def test_batch_stays_on_run_when_done(batch_window, tmp_path, monkeypatch, qapp)
     batch_window._on_survey_start()
     assert batch_window._app_mode == "RUNNING"
     assert batch_window._simple_stack.currentIndex() == 1
-    batch_window._pipeline_thread.join(timeout=10)
-    qapp.processEvents()
+    await_batch(batch_window, qapp)
     assert batch_window._app_mode == "SETUP"
     assert batch_window._simple_stack.currentIndex() == 1
     summary = batch_window._survey_summary_label
@@ -194,8 +195,7 @@ def test_failed_run_keeps_pass_remaining(batch_window, tmp_path, monkeypatch, qa
     add_video(batch_window, tmp_path, monkeypatch)
     assign_transect(batch_window, 0)
     batch_window._on_survey_start()
-    batch_window._pipeline_thread.join(timeout=10)
-    qapp.processEvents()
+    await_batch(batch_window, qapp)
 
     runs = batch_window._survey_store().list_runs()
     assert [r.status for r in runs] == ["failed"]
@@ -211,8 +211,7 @@ def test_remove_pass_with_runs_is_blocked(batch_window, tmp_path, monkeypatch, q
     add_video(batch_window, tmp_path, monkeypatch)
     assign_transect(batch_window, 0)
     batch_window._on_survey_start()
-    batch_window._pipeline_thread.join(timeout=10)
-    qapp.processEvents()
+    await_batch(batch_window, qapp)
     batch_window._survey_pass_table.setCurrentCell(0, 0)
     batch_window._on_survey_remove_pass()
     assert "cannot be removed" in batch_window._status_label.text()
@@ -245,8 +244,7 @@ def test_survey_run_can_be_paused_and_stopped(batch_window, tmp_path, monkeypatc
     add_video(batch_window, tmp_path, monkeypatch)
     assign_transect(batch_window, 0)
     batch_window._on_survey_start()
-    batch_window._pipeline_thread.join(timeout=10)
-    qapp.processEvents()
+    await_batch(batch_window, qapp)
 
     assert seen["pause_event"] is batch_window._pause_event
     assert seen["cancel_event"] is batch_window._survey_cancel_event
@@ -264,8 +262,7 @@ def test_pause_button_drives_the_survey_pause_event(batch_window, tmp_path, monk
     add_video(batch_window, tmp_path, monkeypatch)
     assign_transect(batch_window, 0)
     batch_window._on_survey_start()
-    batch_window._pipeline_thread.join(timeout=10)
-    qapp.processEvents()
+    await_batch(batch_window, qapp)
 
     batch_window._on_pause_toggled(True)
     assert not batch_window._pause_event.is_set()
@@ -294,7 +291,7 @@ def test_double_click_opens_the_run_that_succeeded(batch_window, tmp_path, monke
         (tmp_path / name).mkdir()
 
     opened = []
-    monkeypatch.setattr(batch_window, "_auto_load_run", opened.append, raising=False)
+    monkeypatch.setattr(batch_window, "_auto_load_run", opened.append)
     batch_window._on_survey_pass_activated(0, 0)
     assert opened == [tmp_path / "run_good"]
 
@@ -304,8 +301,8 @@ def test_double_click_is_refused_while_a_batch_runs(batch_window, tmp_path, monk
     add_video(batch_window, tmp_path, monkeypatch)
     assign_transect(batch_window, 0)
     opened = []
-    monkeypatch.setattr(batch_window, "_auto_load_run", opened.append, raising=False)
-    monkeypatch.setattr(batch_window, "_run_in_flight", lambda: True, raising=False)
+    monkeypatch.setattr(batch_window, "_auto_load_run", opened.append)
+    monkeypatch.setattr(batch_window, "_run_in_flight", lambda: True)
     batch_window._on_survey_pass_activated(0, 0)
     assert opened == []
     assert "Wait for the batch" in batch_window._status_label.text()
@@ -315,7 +312,7 @@ def test_unprocessed_row_says_so_rather_than_doing_nothing(batch_window, tmp_pat
     add_video(batch_window, tmp_path, monkeypatch)
     assign_transect(batch_window, 0)
     opened = []
-    monkeypatch.setattr(batch_window, "_auto_load_run", opened.append, raising=False)
+    monkeypatch.setattr(batch_window, "_auto_load_run", opened.append)
     batch_window._on_survey_pass_activated(0, 0)
     assert opened == []
     assert "no successful run" in batch_window._status_label.text()

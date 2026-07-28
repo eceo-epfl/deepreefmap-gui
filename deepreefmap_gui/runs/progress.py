@@ -187,35 +187,6 @@ _LOAD_STAGE_TO_PHASE: dict[str, str] = {
     "geometry": "cloud_build",
 }
 
-# Maps the per-stage `set_stage(stage, status, message)` text to a finer
-# phase key. Used so the "outputs" stage can drive distinct ortho_* phases
-# from the messages the orchestrator emits while building the ortho grid
-# and writing the final files.
-_STAGE_MESSAGE_TO_PHASE: dict[str, str] = {
-    "Aligning poses to world frame": "mapping_align",
-    "Saving depth + points for resume": "mapping_save",
-    "Mapping complete": "mapping_save",
-    "Concatenating point arrays": "cloud_concat",
-    "Applying replacement radius": "cloud_replace",
-    "Replacement radius: computing voxel keys": "cloud_replace",
-    "Replacement radius: sorting points": "cloud_replace",
-    "Replacement radius: selecting representatives": "cloud_replace",
-    "Reducing by voxel size": "cloud_voxel",
-    "Computing PCA projection": "ortho_pca",
-    "Sorting points into cells": "ortho_sort",
-    "Aggregating ortho grid": "ortho_aggregate",
-    "Computing benthic cover": "ortho_cover",
-    "Saving semantic cloud": "ortho_save",
-    "Saving TSDF cloud": "ortho_save",
-    "Saving ortho image": "ortho_save",
-    "Saving cover report": "ortho_save",
-    "Writing run manifest": "ortho_save",
-    "Saving outputs": "ortho_save",
-    "Saving scene file": "scene_save",
-    "Building geometry cloud": "outputs",
-    "Generating outputs": "outputs",
-}
-
 
 class ProgressBarsMixin(MixinBase):
     """DeepReefMapWindow methods that drive the per-step + unified progress bars."""

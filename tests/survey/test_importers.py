@@ -1,3 +1,4 @@
+import csv
 import uuid
 
 import pytest
@@ -111,3 +112,46 @@ def test_gpx_import_rejects_non_gpx(tmp_path):
     path.write_text("not xml at all")
     with pytest.raises(ValueError):
         import_transects_gpx(path)
+
+
+def test_repeatability_csv_carries_stats_then_one_column_per_pass(tmp_path):
+    """The analysis export: stats first, then the raw fraction behind each number.
+
+    Reviewers read this to see whether a wide range is one outlier pass or real
+    spread, so the per-pass columns have to line up with the covers in order.
+    """
+    from types import SimpleNamespace
+
+    from deepreefmap_gui.survey.models.exporters import save_repeatability_csv
+
+    covers = [
+        SimpleNamespace(run_dir_name="t1__p01", cover={"coral": 0.30, "sand": 0.70}),
+        SimpleNamespace(run_dir_name="t1__p02", cover={"coral": 0.50}),  # sand unmeasured
+    ]
+    stats = {"coral": {"mean": 0.4, "std": 0.1414, "cv": 0.3536, "range": 0.2}}
+
+    path = tmp_path / "repeatability.csv"
+    save_repeatability_csv(path, ["coral", "sand"], stats, covers)
+
+    rows = list(csv.DictReader(path.open()))
+    assert list(rows[0]) == ["class", "mean_fraction", "std", "cv", "range", "t1__p01", "t1__p02"]
+
+    coral = rows[0]
+    assert coral["class"] == "coral"
+    assert coral["mean_fraction"] == "0.400000"
+    assert coral["cv"] == "0.3536"          # cv is 4dp, the fractions are 6dp
+    assert (coral["t1__p01"], coral["t1__p02"]) == ("0.300000", "0.500000")
+
+    # A label with no stats entry and a pass that never saw it both read as zero
+    # rather than blank, so the column stays numeric.
+    sand = rows[1]
+    assert sand["mean_fraction"] == "0.000000"
+    assert (sand["t1__p01"], sand["t1__p02"]) == ("0.700000", "0.000000")
+
+
+def test_repeatability_csv_with_no_passes_still_writes_a_header(tmp_path):
+    from deepreefmap_gui.survey.models.exporters import save_repeatability_csv
+
+    path = tmp_path / "repeatability.csv"
+    save_repeatability_csv(path, [], {}, [])
+    assert path.read_text().strip() == "class,mean_fraction,std,cv,range"

@@ -23,6 +23,7 @@ jobs:
   test:
     name: pytest + ruff (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -46,8 +47,21 @@ jobs:
       - name: Lint (ruff)
         run: uv run --python ${{ matrix.python-version }} ruff check deepreefmap_gui tests
 
+      # DEEPREEFMAP_REQUIRE_TORCH turns the GUI suite's torch skip into a failure:
+      # torch is installed here, so a skip would mean most of the suite silently
+      # did not run.
       - name: Test (pytest)
+        env:
+          DEEPREEFMAP_REQUIRE_TORCH: "1"
         run: uv run --python ${{ matrix.python-version }} pytest -q
+
+      - name: Coverage
+        if: matrix.python-version == '3.12'
+        env:
+          DEEPREEFMAP_REQUIRE_TORCH: "1"
+        run: >
+          uv run --python 3.12 pytest -q
+          --cov=deepreefmap_gui --cov-report=term-missing:skip-covered
 
   typecheck:
     name: mypy

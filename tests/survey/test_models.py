@@ -2,7 +2,7 @@ import uuid
 
 import pytest
 
-from deepreefmap_gui.survey.models import RunRecord, SurveyBatch, Transect, TransectPass, VideoAsset
+from deepreefmap_gui.survey.models import RunRecord, SurveyBatch, TransectPass
 from deepreefmap_gui.survey.models.convert import (
     build_document,
     from_row,
@@ -11,25 +11,7 @@ from deepreefmap_gui.survey.models.convert import (
     to_row,
 )
 
-
-def make_transect(**overrides):
-    values = dict(
-        name="T1",
-        start_lat=-17.5,
-        start_lon=177.1,
-        end_lat=-17.5005,
-        end_lon=177.1005,
-        length_m=50.0,
-        depth_m=8.0,
-    )
-    values.update(overrides)
-    return Transect(**values)
-
-
-def make_video(**overrides):
-    values = dict(file_name="GX010001.MP4", path="/data/GX010001.MP4", hash="ab" * 16)
-    values.update(overrides)
-    return VideoAsset(**values)
+from _factories import make_transect, make_video
 
 
 def make_pass(transect, video, **overrides):
@@ -68,6 +50,19 @@ def test_pass_rejects_bad_trim_and_direction():
         make_pass(transect, video, begin_s=30.0, end_s=30.0)
     with pytest.raises(ValueError):
         make_pass(transect, video, direction="sideways")
+
+
+def test_pass_duration_is_the_trimmed_window():
+    """What the ETA and the repeatability stats divide by."""
+    transect, video = make_transect(), make_video()
+    assert make_pass(transect, video, begin_s=12.5, end_s=42.5).duration_s() == 30.0
+
+
+def test_batch_rejects_a_name_that_is_only_whitespace():
+    """Batches are addressed by name in the queue and in batch_out/<name>/."""
+    SurveyBatch(name=" Day 1 ")  # padding is fine, emptiness is not
+    with pytest.raises(ValueError):
+        SurveyBatch(name="   ")
 
 
 def test_run_record_rejects_unknown_status():

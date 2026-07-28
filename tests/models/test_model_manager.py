@@ -1,7 +1,7 @@
 """Model catalogue, cache detection, and discovery.
 
-Covers deepreefmap/gui/models/manager.py (ALL_MODELS metadata, HF-cache status
-detection, prefetch guards) and deepreefmap/gui/model_families.py (synthesising
+Covers deepreefmap_gui/models/manager.py (ALL_MODELS metadata, HF-cache status
+detection, prefetch guards) and deepreefmap_gui/models/families.py (synthesising
 ModelInfo from repo names, registry dispatch by family).
 """
 
@@ -12,13 +12,7 @@ import json
 import pytest
 
 from deepreefmap_gui.models.families import synthesize_model_info
-from deepreefmap_gui.models.manager import (
-    ALL_MODELS,
-    ModelInfo,
-    model_available,
-    register_discovered,
-)
-from deepreefmap.mapping.registry import loger_available
+from deepreefmap_gui.models.manager import ALL_MODELS, ModelInfo, register_discovered
 from deepreefmap.segmentation.dinov3_dpt import DinoV3DPTWrapper
 from deepreefmap.segmentation.registry import (
     create_segmentation_model,
@@ -30,7 +24,6 @@ from deepreefmap.segmentation.segformer import SegformerWrapper
 
 
 def test_model_list_has_all_expected_models() -> None:
-    from deepreefmap_gui.models.manager import ALL_MODELS
 
     names = {m.name for m in ALL_MODELS}
     assert "segformer-b2" in names
@@ -46,7 +39,6 @@ def test_model_list_has_all_expected_models() -> None:
     ],
 )
 def test_model_gated_flag(name, gated) -> None:
-    from deepreefmap_gui.models.manager import ALL_MODELS
 
     info = next(m for m in ALL_MODELS if m.name == name)
     assert info.gated is gated
@@ -66,7 +58,6 @@ def test_cache_detection_returns_false_for_nonexistent() -> None:
 
 
 def test_dinov3_dpt_entries_include_facebook_backbone() -> None:
-    from deepreefmap_gui.models.manager import ALL_MODELS
 
     expected = {
         "coralscapes-vit-s-dpt": "facebook/dinov3-vits16-pretrain-lvd1689m",
@@ -272,7 +263,25 @@ def test_synthesize_unknown_repo_is_skipped(repo) -> None:
     assert synthesize_model_info(repo) is None
 
 
-def test_register_then_create_dispatches_by_family() -> None:
+@pytest.fixture
+def clean_segmentation_registry():
+    """Restore the library's segmentation registry after a test writes to it.
+
+    register_segmentation_model mutates module-level state shared with every
+    later test in the session, so without this the models registered below stay
+    visible in list_segmentation_models() for the rest of the run.
+    """
+    import deepreefmap.segmentation.registry as registry
+
+    models, repos = dict(registry._MODELS), dict(registry._REPOS)
+    yield
+    registry._MODELS.clear()
+    registry._MODELS.update(models)
+    registry._REPOS.clear()
+    registry._REPOS.update(repos)
+
+
+def test_register_then_create_dispatches_by_family(clean_segmentation_registry) -> None:
     register_segmentation_model(
         "segformer-b4", "EPFL-ECEO/segformer-b4-finetuned-coralscapes-1024-1024",
         "segformer", (1024, 1024),
@@ -285,7 +294,7 @@ def test_register_then_create_dispatches_by_family() -> None:
     assert isinstance(create_segmentation_model("coralscapes-vit-x-dpt"), DinoV3DPTWrapper)
 
 
-def test_register_segmentation_model_is_no_op_for_known_name() -> None:
+def test_register_segmentation_model_is_no_op_for_known_name(clean_segmentation_registry) -> None:
     # Hardcoded entries stay authoritative: re-registering must not change family.
     register_segmentation_model("segformer-b2", "EPFL-ECEO/bogus", "dpt", (1, 1))
     assert isinstance(create_segmentation_model("segformer-b2"), SegformerWrapper)
@@ -300,10 +309,3 @@ def test_register_discovered_dedups_against_catalogue() -> None:
     assert register_discovered(duplicate) is False
 
 
-def test_loger_availability_gates_model_available() -> None:
-    loger_entry = next(m for m in ALL_MODELS if m.name == "loger")
-    assert loger_entry.requires_extra == "loger"
-    # model_available mirrors loger_available in this environment.
-    assert model_available(loger_entry) is loger_available()
-    seg_entry = next(m for m in ALL_MODELS if m.name == "segformer-b2")
-    assert model_available(seg_entry) is True

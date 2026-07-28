@@ -4,9 +4,10 @@ import pytest
 
 from deepreefmap_gui.survey import catalogue
 from deepreefmap_gui.survey.catalogue import UNASSIGNED_TITLE
-from deepreefmap_gui.survey.models import RunRecord, Transect, TransectPass, VideoAsset
-from deepreefmap_gui.survey.models.convert import survey_manifest_block
+from deepreefmap_gui.survey.models import RunRecord, TransectPass
 from deepreefmap_gui.survey.store import SurveyStore
+
+from _factories import make_transect, seed_survey_run, write_run
 
 
 @pytest.fixture
@@ -14,57 +15,6 @@ def out_root(tmp_path):
     root = tmp_path / "out"
     root.mkdir()
     return root
-
-
-@pytest.fixture
-def store(out_root):
-    return SurveyStore(out_root / "survey.db")
-
-
-def make_transect(name="T1"):
-    return Transect(
-        name=name,
-        start_lat=-17.5,
-        start_lon=177.1,
-        end_lat=-17.5005,
-        end_lon=177.1005,
-        length_m=50.0,
-    )
-
-
-def write_run(out_root, dir_name, **overrides):
-    manifest = {
-        "name": None,
-        "mode": "semantic",
-        "input_videos": ["/data/GX010001.MP4"],
-        "video_hashes": ["ab" * 16],
-        "run_timestamp": "2026-07-01T10:00:00+00:00",
-        "begin_s": 0.0,
-        "end_s": 60.0,
-        "run_duration_s": 120.0,
-        "semantic_reference_points": 1_000_000,
-    }
-    manifest.update(overrides)
-    run_dir = out_root / dir_name
-    run_dir.mkdir()
-    (run_dir / "run_manifest.json").write_text(json.dumps(manifest))
-    return run_dir
-
-
-def seed_survey_run(store, out_root, dir_name, transect=None):
-    transect = transect or make_transect()
-    if store.get_transect(transect.id) is None:
-        store.add_transect(transect)
-    video = store.upsert_video(
-        VideoAsset(file_name="GX010001.MP4", path="/data/GX010001.MP4", hash="ab" * 16)
-    )
-    pass_ = TransectPass(transect_id=transect.id, video_id=video.id, begin_s=0.0, end_s=60.0)
-    store.add_pass(pass_)
-    run = RunRecord(pass_id=pass_.id, run_dir_name=dir_name, status="succeeded")
-    store.add_run(run)
-    block = survey_manifest_block(run, pass_, transect, None)
-    write_run(out_root, dir_name, survey=block)
-    return transect, pass_, run
 
 
 def scan(out_root, store=None):
@@ -207,6 +157,20 @@ def test_assign_derives_window_from_frames_when_untrimmed(out_root, store):
     pass_ = store.list_passes(transect_id=target.id)[0]
     assert pass_.begin_s == 0.0
     assert pass_.end_s == pytest.approx(300.0)
+
+
+def test_assign_refuses_a_run_whose_time_range_cannot_be_recovered(out_root, store):
+    """Both the trim and the frame-count fallback are absent, so there is no
+    window to give the pass. Adopting it anyway would write begin == end, which
+    TransectPass rejects further down with a message naming neither run."""
+    write_run(out_root, "no_window", begin_s=None, end_s=None, frames_processed=None, fps=None)
+    target = make_transect("Target")
+    store.add_transect(target)
+
+    with pytest.raises(ValueError, match="no_window"):
+        catalogue.assign_to_transect(store, scan(out_root, store), target.id)
+
+    assert store.list_passes(transect_id=target.id) == []
 
 
 def test_assign_keeps_manifest_ids_so_rebuild_stays_idempotent(out_root, store):

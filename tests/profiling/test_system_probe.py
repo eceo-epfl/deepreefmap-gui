@@ -87,7 +87,9 @@ def test_utilisation_swap_percent() -> None:
 def test_sample_utilisation_reports_swap() -> None:
     u = sp.sample_utilisation()
     assert u.swap_total_bytes >= 0
-    assert 0 <= u.swap_used_bytes <= max(u.swap_total_bytes, u.swap_used_bytes)
+    # Used can never exceed the pool it comes from. (The previous bound compared
+    # used against max(total, used), which holds for any value.)
+    assert 0 <= u.swap_used_bytes <= u.swap_total_bytes
 
 
 def test_format_bytes() -> None:

@@ -252,12 +252,16 @@ def record_run_from_manifest(manifest: dict) -> None:
     if not durations:
         return
     try:
+        # `or 0` rather than a get() default: a manifest may carry an explicit
+        # null for a field it did not measure, and the default only covers an
+        # absent key. Getting this wrong loses the whole run's timings silently,
+        # because the failure is swallowed below.
         key = history_key(
-            str(manifest.get("mapping_backend", "")),
-            str(manifest.get("segmentation_model", "")),
-            int(manifest.get("processing_width", 0)),
-            int(manifest.get("processing_height", 0)),
-            int(manifest.get("fps", 0)),
+            str(manifest.get("mapping_backend") or ""),
+            str(manifest.get("segmentation_model") or ""),
+            int(manifest.get("processing_width") or 0),
+            int(manifest.get("processing_height") or 0),
+            int(manifest.get("fps") or 0),
         )
         params = {
             k: manifest.get(k)
@@ -270,7 +274,7 @@ def record_run_from_manifest(manifest: dict) -> None:
         record_run(
             key,
             {k: float(v) for k, v in durations.items()},
-            frames=int(manifest.get("frames_processed", 0)),
+            frames=int(manifest.get("frames_processed") or 0),
             points=manifest.get("metric_points"),
             params=params,
             stage_peaks=manifest.get("stage_peaks") or None,

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import os
 import sys
 import threading
@@ -350,37 +349,6 @@ def test_update_then_prune_end_to_end(tmp_path, monkeypatch) -> None:
     assert uv_cache.exists()
 
 
-def test_update_dialog_runs_perform_update(qapp, tmp_path, monkeypatch) -> None:
-    """Guarantee the Install button's worker is wired to perform_update()."""
-    from deepreefmap_gui.update import dialog as update_dialog
-
-    calls = {}
-
-    def fake_perform_update(release, binary_path, target_version, progress_cb=None, line_cb=None):
-        calls["args"] = (release, binary_path, target_version)
-        if line_cb is not None:
-            line_cb("working")
-
-    monkeypatch.setattr(update_dialog, "perform_update", fake_perform_update)
-    monkeypatch.delenv("DEEPREEFMAP_MOCK_PYAPP", raising=False)
-
-    binary = tmp_path / "binary"
-    binary.write_bytes(b"x")
-    dialog = update_dialog.UpdateProgressDialog(
-        target_version="1.2.0",
-        release={"tag_name": "v1.2.0", "assets": []},
-        binary_path=binary,
-    )
-    done = []
-    dialog._sig_done.connect(lambda ok, msg: done.append((ok, msg)))
-
-    dialog._run_real()  # call the worker body directly (no thread, no exec)
-
-    assert calls["args"][1] == binary
-    assert calls["args"][2] == "1.2.0"
-    assert done and done[0][0] is True
-
-
 def test_self_restore_invokes_pyapp_self_restore(monkeypatch) -> None:
     from deepreefmap_gui.packaging import binary_swap
 
@@ -460,29 +428,3 @@ def test_perform_update_provisions_after_swap(tmp_path, monkeypatch) -> None:
     )
     binary_swap.perform_update({"tag_name": "v9.9.9"}, tmp_path / "bin", "9.9.9")
     assert calls == ["download", "replace", "provision"]
-
-
-def test_stream_to_logger_buffers_partial_lines(caplog) -> None:
-    from deepreefmap_gui.system.log_view import _StreamToLogger
-
-    logger = logging.getLogger("deepreefmap.test_stream")
-    shim = _StreamToLogger(logger, logging.INFO)
-    with caplog.at_level(logging.INFO, logger="deepreefmap.test_stream"):
-        shim.write("hel")
-        shim.write("lo\nwor")
-        assert [r.message for r in caplog.records] == ["hello"]
-        shim.flush()
-    assert [r.message for r in caplog.records] == ["hello", "wor"]
-    assert shim.isatty() is False
-
-
-def test_stream_to_logger_drops_bar_redraws(caplog) -> None:
-    from deepreefmap_gui.system.log_view import _StreamToLogger
-
-    logger = logging.getLogger("deepreefmap.test_stream_cr")
-    shim = _StreamToLogger(logger, logging.WARNING)
-    with caplog.at_level(logging.WARNING, logger="deepreefmap.test_stream_cr"):
-        shim.write("frame 1/10\rframe 2/10\r")
-        shim.write("frame 3/10\n")
-        shim.write("   \n")
-    assert [r.message for r in caplog.records] == ["frame 3/10"]

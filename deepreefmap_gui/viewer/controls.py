@@ -11,10 +11,8 @@ from typing import TYPE_CHECKING, SupportsInt, cast
 
 
 from deepreefmap_gui.system.log_view import close_run_log_file
-from deepreefmap_gui.runs.progress import (
-    _SETUP_MESSAGE_TO_PHASE,
-    _STAGE_MESSAGE_TO_PHASE,
-)
+from deepreefmap_gui.profiling.eta import STAGE_MESSAGE_TO_PHASE as _STAGE_MESSAGE_TO_PHASE
+from deepreefmap_gui.runs.progress import _SETUP_MESSAGE_TO_PHASE
 from deepreefmap_gui.core.theme import BORDER, OVERLAY_TEXT, PRIMARY, TEXT_MUTED, TEXT_SECONDARY
 
 if TYPE_CHECKING:

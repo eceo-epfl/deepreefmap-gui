@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from deepreefmap_gui.system.log_view import close_run_log_file, open_run_log_file
-from deepreefmap_gui.runs.progress import _LOAD_STAGE_TO_PHASE, _STAGE_MESSAGE_TO_PHASE
+from deepreefmap_gui.profiling.eta import STAGE_MESSAGE_TO_PHASE as _STAGE_MESSAGE_TO_PHASE
+from deepreefmap_gui.runs.progress import _LOAD_STAGE_TO_PHASE
 
 if TYPE_CHECKING:
     from deepreefmap.postproc.ortho_outputs import TransectCropParams

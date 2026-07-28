@@ -40,12 +40,11 @@ def _isolate_qsettings():
     setDefaultFormat(IniFormat) does not flip QSettings(org, app) instances under
     PySide6, so redirect the NativeFormat path itself. On Windows that path is the
     registry, where setPath has no effect.
+
+    A missing PySide6 is raised, not swallowed: yielding without isolation would
+    let the rest of the session write to the developer's real config.
     """
-    try:
-        from PySide6.QtCore import QSettings
-    except ImportError:
-        yield
-        return
+    from PySide6.QtCore import QSettings
 
     tmp = tempfile.mkdtemp(prefix="deepreefmap-test-qsettings-")
     for fmt in (QSettings.Format.NativeFormat, QSettings.Format.IniFormat):
