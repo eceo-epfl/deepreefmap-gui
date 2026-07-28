@@ -398,6 +398,10 @@ def _extract_pack(
             elif m.issym():
                 continue
             elif m.isfile():
+                # Only directories, regular files and (in pass 2) symlinks are
+                # ever created. Device nodes, fifos and hard links fall through
+                # untouched; the cache contains none, and a pack that carries
+                # one fails the checksum rather than materialising it.
                 target.parent.mkdir(parents=True, exist_ok=True)
                 src = tar.extractfile(m)
                 if src is None:
@@ -419,11 +423,16 @@ def _extract_pack(
             target.parent.mkdir(parents=True, exist_ok=True)
             if target.exists() or target.is_symlink():
                 target.unlink()
+            # Where the link points is checked as well as where it sits. A pack
+            # can name a member innocuously and still aim its link anywhere on
+            # the importing machine, and _repo_content_sha256 opens whatever the
+            # snapshot resolves to. An absolute linkname discards target.parent
+            # here exactly as the OS would resolve it.
+            blob = (target.parent / m.linkname).resolve()
+            _ensure_within(dest_root, blob)
             try:
                 os.symlink(m.linkname, target)
             except (OSError, NotImplementedError):
-                blob = (target.parent / m.linkname).resolve()
-                _ensure_within(dest_root, blob)
                 shutil.copy2(blob, target)
     if progress_cb is not None:
         progress_cb("import", total, total)

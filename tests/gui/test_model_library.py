@@ -266,3 +266,117 @@ def test_export_with_no_cached_models_sets_status(window):
     window._last_model_states = []
     window._on_export_models()
     assert "No downloaded models" in window._status_label.text()
+
+
+# --- hostile packs ------------------------------------------------------
+#
+# A pack arrives from a colleague's USB stick, so its tar is untrusted input.
+# _ensure_within validates where each member is placed; these cover where a
+# member's link *points*, which the placement check cannot see.
+
+
+def _pack_with_member(tmp_path, member):
+    """A pack directory whose tar carries one crafted member alongside a real repo."""
+    src_cache = tmp_path / "src_hf"
+    _write_cache_repo(src_cache, "fake/seg", {"config.json": "{}"})
+    pack_dir = tmp_path / "usb" / library.PACK_DIR_NAME
+    pack_dir.mkdir(parents=True)
+    manifest = {"schema_version": 1, "total_size_bytes": 0, "models": [], "repos": []}
+    with tarfile.open(pack_dir / library.TAR_NAME, "w") as tar:
+        tar.add(
+            src_cache / "models--fake--seg",
+            arcname=f"{library.CACHE_PREFIX}/models--fake--seg",
+        )
+        tar.addfile(member)
+    (pack_dir / library.MANIFEST_NAME).write_text(json.dumps(manifest))
+    return pack_dir
+
+
+def _symlink_member(name, linkname):
+    member = tarfile.TarInfo(name)
+    member.type = tarfile.SYMTYPE
+    member.linkname = linkname
+    return member
+
+
+@pytest.mark.parametrize(
+    ("linkname", "what"),
+    [
+        ("../../../../../../etc/passwd", "a relative escape"),
+        ("/etc/passwd", "an absolute path"),
+        # Four levels up from snapshots/<commit>/ is the first that clears the
+        # cache root; three would land on a sibling repo, which is in-domain.
+        ("../../../../secret.txt", "the shallowest escape that clears the root"),
+    ],
+    ids=["relative", "absolute", "shallow"],
+)
+def test_import_refuses_a_symlink_pointing_outside_the_cache(
+    tmp_path, monkeypatch, linkname, what
+):
+    """Placing the link inside the cache is legal; aiming it out of the cache is
+    not. _repo_content_sha256 opens whatever a snapshot entry resolves to."""
+    assert what
+    pack = _pack_with_member(
+        tmp_path,
+        _symlink_member(
+            f"{library.CACHE_PREFIX}/models--fake--seg/snapshots/{'0' * 40}/escape", linkname
+        ),
+    )
+    dst_cache = tmp_path / "dst_hf"
+    monkeypatch.setattr(manager, "_HF_CACHE_ROOT", dst_cache)
+    monkeypatch.setattr(manager, "all_known_models", list)
+
+    with pytest.raises(library.PackSecurityError):
+        library.import_model_pack(pack)
+
+    assert not (dst_cache / "models--fake--seg" / "snapshots" / ("0" * 40) / "escape").is_symlink()
+
+
+def test_import_refuses_a_member_placed_outside_the_cache(tmp_path, monkeypatch):
+    member = tarfile.TarInfo(f"{library.CACHE_PREFIX}/../../evil.txt")
+    member.size = 0
+    pack = _pack_with_member(tmp_path, member)
+    monkeypatch.setattr(manager, "_HF_CACHE_ROOT", tmp_path / "dst_hf")
+    monkeypatch.setattr(manager, "all_known_models", list)
+
+    with pytest.raises(library.PackSecurityError):
+        library.import_model_pack(pack)
+
+    assert not (tmp_path / "evil.txt").exists()
+
+
+def test_import_accepts_the_relative_symlinks_a_real_cache_uses(tmp_path, monkeypatch):
+    """The guard must not reject the ../../blobs/<sha> links every snapshot is
+    made of, including those in a snapshot subdirectory."""
+    src_cache = tmp_path / "src_hf"
+    monkeypatch.setattr(manager, "_HF_CACHE_ROOT", src_cache)
+    _write_cache_repo(src_cache, "fake/seg", {"config.json": "{}", "nested/deep/weights.bin": b"w"})
+    info = _seg_info()
+    pack = library.export_model_pack([info], tmp_path / "usb")
+
+    dst_cache = tmp_path / "dst_hf"
+    monkeypatch.setattr(manager, "_HF_CACHE_ROOT", dst_cache)
+    monkeypatch.setattr(manager, "all_known_models", lambda: [info])
+
+    library.import_model_pack(pack)
+
+    assert is_model_cached(info) is True
+    assert (manager.snapshot_dir("fake/seg") / "nested" / "deep" / "weights.bin").read_bytes() == b"w"
+
+
+def test_the_symlink_fallback_also_refuses_to_copy_from_outside(tmp_path, monkeypatch):
+    """Where symlinks are unavailable the escape becomes a copy of the target
+    into the cache, which is the same disclosure by another route."""
+    pack = _pack_with_member(
+        tmp_path,
+        _symlink_member(
+            f"{library.CACHE_PREFIX}/models--fake--seg/snapshots/{'0' * 40}/escape",
+            "/etc/passwd",
+        ),
+    )
+    monkeypatch.setattr(manager, "_HF_CACHE_ROOT", tmp_path / "dst_hf")
+    monkeypatch.setattr(manager, "all_known_models", list)
+    monkeypatch.setattr(os, "symlink", lambda *_a, **_k: (_ for _ in ()).throw(OSError()))
+
+    with pytest.raises(library.PackSecurityError):
+        library.import_model_pack(pack)
