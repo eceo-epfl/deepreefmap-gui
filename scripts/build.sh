@@ -45,6 +45,8 @@ if [ ! -f "$PYAPP_DIR/Cargo.toml" ]; then
   git clone --depth=1 --branch "$PYAPP_VER" https://github.com/ofek/pyapp.git "$PYAPP_DIR"
 fi
 cp "$(dirname "$0")/pyapp_process.rs" "$PYAPP_DIR/src/process.rs"
+# Self-heal partial first-run installs: see scripts/pyapp_distribution.rs header.
+cp "$(dirname "$0")/pyapp_distribution.rs" "$PYAPP_DIR/src/distribution.rs"
 
 # Map TORCH_VARIANT to its extra + index (table in build_config.env). The extra
 # chains to deepreefmap's exact +local torch pins; loger/gopro arrive through the

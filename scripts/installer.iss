@@ -85,7 +85,9 @@ procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usUninstall then begin
     // The PyApp-provisioned Python environment for this app (all versions).
-    DelTree(ExpandConstant('{localappdata}\pyappdatadeepreefmap-gui'), True, True, True);
+    // Path mirrors PyApp's app::install_dir(): data_local_dir (%LOCALAPPDATA%)
+    // / "pyapp" / <project_name> / <distribution_id> / <version>.
+    DelTree(ExpandConstant('{localappdata}\pyapp\deepreefmap-gui'), True, True, True);
 
     if MsgBox('Also remove downloaded AI models (several GB, re-downloadable)?'
               + #13#10 + 'Reconstruction outputs in Documents\DeepReefMap are kept either way.',

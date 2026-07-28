@@ -55,6 +55,8 @@ if (-not (Test-Path (Join-Path $pyappDir "Cargo.toml"))) {
 }
 
 Copy-Item (Join-Path $PSScriptRoot "pyapp_process.rs") (Join-Path $pyappDir "src\process.rs") -Force
+# Self-heal partial first-run installs: see scripts/pyapp_distribution.rs header.
+Copy-Item (Join-Path $PSScriptRoot "pyapp_distribution.rs") (Join-Path $pyappDir "src\distribution.rs") -Force
 
 $wheelPath = $wheel.FullName
 $pyappRoot = Join-Path $env:TEMP "pyapp-builder"
