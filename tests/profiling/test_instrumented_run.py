@@ -14,7 +14,7 @@ import json
 import pytest
 
 from deepreefmap_gui.profiling.instrumentation import (
-    UNPRODUCIBLE_STAGES,
+    WRITER_DRIVEN_STAGES,
     RunInstrumentation,
     apply_manifest_timings,
     instrumented_reconstruction,
@@ -57,6 +57,12 @@ def _fake_run(**manifest_fields):
             **manifest_fields,
         }
         (output_dir / "run_manifest.json").write_text(json.dumps(manifest))
+        viewer.set_data(
+            frame_batch="frames",
+            mapping_result="mapping",
+            reference_cloud="cloud",
+            classes_config="classes",
+        )
         viewer.mark_outputs_ready(str(output_dir), [])
 
     return run
@@ -82,7 +88,100 @@ def test_a_run_folds_timings_and_name_into_the_manifest(out_dir, timings, monkey
     # The whole point: every stage the pipeline can report is timed.
     measured = set(manifest["stage_durations"])
     assert measured == {"startup", "preprocess", "mapping", "cloud", "ortho", "save_view"}
-    assert "scene_save" in UNPRODUCIBLE_STAGES and "scene_save" not in measured
+    assert "scene_save" in WRITER_DRIVEN_STAGES and "scene_save" not in measured
+
+
+def test_a_scene_writer_completes_the_stage_breakdown(out_dir, timings, monkeypatch) -> None:
+    """The last span, and the one the ETA reserves the most weight for.
+
+    Without a writer scene_save is never closed, so the estimator holds back a
+    share of every prediction for a stage that produces no history to learn from.
+    """
+    monkeypatch.setattr("deepreefmap.pipeline.orchestrator.run_reconstruction", _fake_run())
+    seen: list[tuple] = []
+
+    def writer(output_dir, data, manifest):
+        seen.append((output_dir, sorted(data), manifest))
+
+    instrumented_reconstruction(output_dir=out_dir, viewer=None, scene_writer=writer)
+
+    manifest = json.loads((out_dir / "run_manifest.json").read_text())
+    assert set(manifest["stage_durations"]) == {
+        "startup", "preprocess", "mapping", "cloud", "ortho", "save_view", "scene_save"
+    }
+    (_dir, payload, _manifest), = seen
+    assert _dir == out_dir
+    assert payload == ["classes_config", "frame_batch", "mapping_result", "reference_cloud"]
+
+
+def test_the_writer_is_handed_the_merged_manifest_not_the_pipeline_s(
+    out_dir, timings, monkeypatch
+) -> None:
+    """The scene file embeds this manifest and is read back in place of the one
+    on disk, so a scene written before the merge comes back with no run name and
+    no survey block -- the run would lose the transect it belongs to."""
+    monkeypatch.setattr("deepreefmap.pipeline.orchestrator.run_reconstruction", _fake_run())
+    handed: list[dict] = []
+
+    instrumented_reconstruction(
+        output_dir=out_dir,
+        run_name="reef north",
+        manifest_extra={"survey": {"pass": {"direction": "forward"}}},
+        viewer=None,
+        scene_writer=lambda _d, _data, manifest: handed.append(manifest),
+    )
+
+    (manifest,) = handed
+    assert manifest["name"] == "reef north"
+    assert manifest["survey"]["pass"]["direction"] == "forward"
+    assert manifest["mode"] == "semantic"
+
+
+def test_the_writer_reads_the_payload_the_run_produced_not_the_viewer_s(
+    out_dir, timings, monkeypatch
+) -> None:
+    """set_data reaches the viewer through a queued signal, so the viewer's copy
+    may not be indexed yet when the run ends. The proxy captures it inline."""
+    monkeypatch.setattr("deepreefmap.pipeline.orchestrator.run_reconstruction", _fake_run())
+    captured: dict = {}
+
+    class SlowViewer:
+        def __getattr__(self, name):
+            return lambda *a, **k: None
+
+    instrumented_reconstruction(
+        output_dir=out_dir,
+        viewer=SlowViewer(),
+        scene_writer=lambda _d, data, _m: captured.update(data),
+    )
+
+    assert captured["reference_cloud"] == "cloud"
+
+
+def test_a_failed_scene_write_does_not_fail_the_run(out_dir, timings, monkeypatch) -> None:
+    """The scene file is a cache. Losing it must not lose the run's outputs,
+    its manifest timings, or its history entry."""
+    monkeypatch.setattr("deepreefmap.pipeline.orchestrator.run_reconstruction", _fake_run())
+
+    def boom(_output_dir, _data, _manifest):
+        raise OSError("No space left on device")
+
+    instrumented_reconstruction(output_dir=out_dir, viewer=None, scene_writer=boom)
+
+    manifest = json.loads((out_dir / "run_manifest.json").read_text())
+    assert manifest["run_duration_s"] >= 0.0
+    # The span stays open rather than recording a bogus duration for a failed write.
+    assert "scene_save" not in manifest["stage_durations"]
+    assert json.loads(timings.read_text())
+
+
+def test_a_geometry_only_run_needs_no_writer(out_dir, timings, monkeypatch) -> None:
+    monkeypatch.setattr("deepreefmap.pipeline.orchestrator.run_reconstruction", _fake_run())
+
+    instrumented_reconstruction(output_dir=out_dir, viewer=None, scene_writer=None)
+
+    manifest = json.loads((out_dir / "run_manifest.json").read_text())
+    assert "scene_save" not in manifest["stage_durations"]
 
 
 def test_a_run_is_recorded_into_the_timing_profile(out_dir, timings, monkeypatch) -> None:
@@ -113,6 +212,7 @@ def test_the_viewer_proxy_forwards_everything_to_the_real_viewer(out_dir, timing
     assert seen.count("start_run") == 1
     assert seen.count("set_stage") == 5
     assert seen.count("update_progress") == 1
+    assert seen.count("set_data") == 1
     assert seen.count("mark_outputs_ready") == 1
 
 

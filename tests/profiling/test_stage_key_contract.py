@@ -18,7 +18,7 @@ import pytest
 from deepreefmap_gui.profiling.eta import STAGES, STAGE_MESSAGE_TO_PHASE, stage_for_phase
 from deepreefmap_gui.profiling.instrumentation import (
     STAGE_SPANS,
-    UNPRODUCIBLE_STAGES,
+    WRITER_DRIVEN_STAGES,
     _MarkingViewer,
     durations_from_marks,
 )
@@ -64,7 +64,7 @@ def test_every_message_routes_to_a_known_stage() -> None:
         assert coarse in spans, f"{message!r} -> {phase!r} folds onto unknown stage {coarse!r}"
 
 
-def test_a_full_run_measures_every_producible_stage() -> None:
+def test_a_full_run_measures_every_stage_the_orchestrator_drives() -> None:
     """Drive a real _MarkingViewer with the orchestrator's own call sequence.
 
     Marking on the stage name alone left cloud, ortho and save_view permanently
@@ -78,19 +78,32 @@ def test_a_full_run_measures_every_producible_stage() -> None:
     viewer.mark_outputs_ready("/tmp/out", [])
 
     measured = set(durations_from_marks(clock.marks))
-    expected = {stage for _, _, stage in STAGE_SPANS} - UNPRODUCIBLE_STAGES
+    expected = {stage for _, _, stage in STAGE_SPANS} - WRITER_DRIVEN_STAGES
     assert measured == expected
 
 
-@pytest.mark.parametrize("stage", sorted(UNPRODUCIBLE_STAGES))
-def test_unproducible_stages_are_still_declared_by_eta(stage: str) -> None:
-    """Guard the documented exception rather than letting it rot silently.
-
-    scene_save is weighted by the estimator but written on a detached thread in
-    the load path, so it can never be timed. If it gains a producer, or the
-    estimator stops reserving weight for it, this should be revisited.
-    """
+@pytest.mark.parametrize("stage", sorted(WRITER_DRIVEN_STAGES))
+def test_writer_driven_stages_are_declared_by_eta_too(stage: str) -> None:
+    """These are not orchestrator stages, so they are the ones most likely to be
+    dropped from one side. The estimator reserving weight for a stage nothing
+    times makes every prediction long by that share."""
     assert stage in {spec.key for spec in STAGES}
+
+
+def test_a_scene_write_closes_the_last_span() -> None:
+    """mark_outputs_ready opens scene_save; only the scene writer closes it.
+
+    instrumented_reconstruction places `scene_end` after its writer returns, so
+    a run given no writer leaves the span open rather than recording a zero.
+    """
+    clock = _Clock()
+    viewer = _MarkingViewer(None, clock)
+    viewer.mark_outputs_ready("/tmp/out", [])
+    assert "scene_save" not in durations_from_marks(clock.marks)
+
+    clock.mark("scene_end")
+
+    assert "scene_save" in durations_from_marks(clock.marks)
 
 
 def test_cloud_span_survives_an_ortho_first_report() -> None:

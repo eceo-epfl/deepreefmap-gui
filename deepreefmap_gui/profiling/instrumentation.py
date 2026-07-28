@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from pathlib import Path
+from typing import Callable
 
 from deepreefmap_gui.profiling.eta import STAGE_MESSAGE_TO_PHASE, stage_for_phase
 from deepreefmap_gui.profiling.perf_sampler import ResourceSampler, peaks_from_marks
+
+logger = logging.getLogger(__name__)
 
 # Coarse pipeline stages, in order, that the timing marks bracket. The GUI reads
 # these durations back to build a per-machine cost profile
@@ -25,13 +29,11 @@ STAGE_SPANS: tuple[tuple[str, str, str], ...] = (
 # than by every caller knowing the mark vocabulary.
 _STAGE_BEGIN_MARK: dict[str, str] = {stage: begin for begin, _end, stage in STAGE_SPANS}
 
-# scene_save has no producer: the scene file is written by
-# runs/loaded_run.py::_generate_scene_file_async, on a detached daemon thread in
-# the cached-run *load* path, long after instrumented_reconstruction has already
-# written the manifest. Nothing emits its "Saving scene file" message either. The
-# span is kept because eta.py still reserves weight for that tail, but until the
-# save is threaded back through instrumentation it can never be measured.
-UNPRODUCIBLE_STAGES: frozenset[str] = frozenset({"scene_save"})
+# scene_save is the only stage the orchestrator does not drive: the scene file is
+# written by the caller's `scene_writer` after run_reconstruction returns, because
+# it needs the manifest the run just wrote. A run given no writer (batch, headless)
+# measures the other six and leaves this one absent.
+WRITER_DRIVEN_STAGES: frozenset[str] = frozenset({"scene_save"})
 
 
 def durations_from_marks(marks: dict[str, float]) -> dict[str, float]:
@@ -125,6 +127,10 @@ class _MarkingViewer:
     def __init__(self, inner, instr):
         self._inner = inner
         self._instr = instr
+        # The set_data payload, captured on the pipeline thread. The viewer's own
+        # copy arrives through a queued signal and may not have been indexed yet
+        # when the run ends, so the scene writer reads it from here instead.
+        self.data: dict | None = None
 
     def _mark_once(self, name) -> None:
         if name and name not in self._instr.marks:
@@ -160,6 +166,7 @@ class _MarkingViewer:
             self._inner.update_progress(*a, **k)
 
     def set_data(self, **k):
+        self.data = k
         if self._inner is not None:
             self._inner.set_data(**k)
 
@@ -186,6 +193,7 @@ def instrumented_reconstruction(
     *,
     run_name: str | None = None,
     manifest_extra: dict | None = None,
+    scene_writer: "Callable[[Path, dict, dict], None] | None" = None,
     **kwargs,
 ) -> None:
     """run_reconstruction with stage timing + memory sampling, folded into the
@@ -193,7 +201,14 @@ def instrumented_reconstruction(
 
     ``run_name`` and ``manifest_extra`` are written to the manifest after the run
     (``run_reconstruction`` no longer accepts them). Stage marks are captured via
-    a viewer proxy since the orchestrator no longer emits ``on_mark`` callbacks."""
+    a viewer proxy since the orchestrator no longer emits ``on_mark`` callbacks.
+
+    ``scene_writer`` is called with the output dir, the run's ``set_data``
+    payload and the merged manifest once the pipeline is done, and is what makes
+    the scene_save span measurable. It runs inside the sampled window so its
+    memory peak is recorded too, and a failure is logged rather than raised: the
+    scene file is a cache, and losing it must not lose the run.
+    """
     from deepreefmap.pipeline.orchestrator import run_reconstruction
 
     from deepreefmap_gui.profiling.run_history import record_run_from_manifest
@@ -201,12 +216,29 @@ def instrumented_reconstruction(
     output_dir = Path(kwargs["output_dir"])
     instr = RunInstrumentation(output_dir)
     proxy = _MarkingViewer(kwargs.pop("viewer", None), instr)
+    manifest: dict | None = None
     try:
         run_reconstruction(viewer=proxy, **kwargs)
+        # Fold the run name, survey block and timings in before the scene file is
+        # written: the scene embeds the manifest and is read back in place of it,
+        # so a scene built from the raw pipeline manifest would come back missing
+        # the name the user gave the run and the survey block that files it.
+        manifest = apply_manifest_timings(
+            output_dir, instr, run_name=run_name, manifest_extra=manifest_extra
+        )
+        if scene_writer is not None and proxy.data is not None and manifest is not None:
+            try:
+                scene_writer(output_dir, proxy.data, manifest)
+            except Exception:
+                logger.warning("Scene file generation failed", exc_info=True)
+            else:
+                instr.mark("scene_end")
+                # Re-fold so the manifest on disk carries the scene_save duration
+                # and peak; the copy inside the scene file predates them.
+                manifest = apply_manifest_timings(
+                    output_dir, instr, run_name=run_name, manifest_extra=manifest_extra
+                )
     finally:
         instr.stop()
-    manifest = apply_manifest_timings(
-        output_dir, instr, run_name=run_name, manifest_extra=manifest_extra
-    )
     if manifest is not None:
         record_run_from_manifest(manifest)

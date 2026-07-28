@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from deepreefmap_gui.profiling.eta import RunEtaEstimator, stage_for_phase
 
 
@@ -194,6 +196,29 @@ def test_current_stage_remaining_is_measured_without_history() -> None:
     remaining = est.current_stage_remaining(now=25.0)
     assert remaining is not None
     assert 60.0 <= remaining <= 90.0
+
+
+def test_scene_save_is_estimated_from_its_own_rate_on_a_first_run() -> None:
+    """The scene write reports one tick per frame, and that is all the estimate
+    needs: no machine has history for it until a run has finished one.
+
+    Nothing reported this stage at all until the write moved into the run, so the
+    14% of predicted time reserved for it was never spent and never learned.
+    """
+    est = RunEtaEstimator(frames=0, priors={}, expected_points=None)
+    frames = 400
+    per_frame = 0.05
+
+    est.update("scene_save", current=0, total=frames, now=100.0)
+    # 8% is _MIN_FRAC_FOR_LIVE: below it the rate has not settled.
+    est.update("scene_save", current=40, total=frames, now=100.0 + 40 * per_frame)
+    early = est.current_stage_remaining(now=100.0 + 40 * per_frame)
+    est.update("scene_save", current=200, total=frames, now=100.0 + 200 * per_frame)
+    half = est.current_stage_remaining(now=100.0 + 200 * per_frame)
+
+    assert early is not None and half is not None
+    assert half < early
+    assert half == pytest.approx(200 * per_frame, abs=2.0)  # true remainder, 10s
 
 
 def test_visible_remaining_withheld_without_history() -> None:

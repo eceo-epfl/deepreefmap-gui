@@ -151,7 +151,22 @@ _LOAD_PHASES: list[tuple[str, float]] = [
     ("viewer_camera", 1.0),
     ("viewer_upload", 17.0),
     ("viewer_finalise", 1.0),
+    # Only runs made before the pipeline started writing its own scene file reach
+    # this; for those it is the last thing between "loaded" and idle, and it runs
+    # after the viewer is up rather than alongside it.
+    ("scene_save", 8.0),
 ]
+
+# Stages `save_scene_file` emits, all folded onto the one scene_save phase so the
+# write reads as a single continuous fill. `scene_frames` is the per-frame tick
+# that gives the bar (and the ETA's measured rate) its resolution.
+_SCENE_SAVE_STAGES: tuple[str, ...] = (
+    "scene_index",
+    "scene_meta",
+    "scene_frames",
+    "scene_fci",
+    "scene_done",
+)
 
 # Maps setup_progress messages from qt_viewer to phase keys.
 _SETUP_MESSAGE_TO_PHASE: dict[str, str] = {
@@ -185,6 +200,7 @@ _LOAD_STAGE_TO_PHASE: dict[str, str] = {
     "cloud_replacing_select": "cloud_replace",
     "cloud_voxelizing": "cloud_voxel",
     "geometry": "cloud_build",
+    **{stage: "scene_save" for stage in _SCENE_SAVE_STAGES},
 }
 
 

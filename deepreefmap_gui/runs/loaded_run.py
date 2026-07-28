@@ -12,7 +12,7 @@ import logging
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 import numpy as np
 
@@ -27,6 +27,7 @@ from deepreefmap.pipeline.run_loader import (
 from deepreefmap_gui.io.scene_file import (
     SCENE_FILE_SUFFIX,
     LazyFrameBatch,
+    ProgressCB,
     SceneFrameAccessor,
     find_scene_file,
     load_scene_file,
@@ -65,11 +66,16 @@ def load_run(
     run_dir: Path,
     *,
     point_filter_config: PointFilterConfig | None = None,
+    regenerate_scene_file: bool = True,
 ) -> GuiLoadedRun:
     """Load a completed reconstruction folder.
 
-    Prefers an up-to-date scene file, otherwise takes the library slow path and
-    regenerates the scene file in the background for next time.
+    Prefers an up-to-date scene file, otherwise takes the library slow path.
+
+    ``regenerate_scene_file`` starts the rebuild on a background thread before
+    returning. The GUI passes False and calls ``generate_scene_file_async``
+    itself once the viewer is up, so the write neither competes with the point
+    upload nor reports progress into the middle of the load's own bars.
     """
     run_dir = Path(run_dir)
 
@@ -96,11 +102,20 @@ def load_run(
     # --- Slow path (library loader) ---
     result = _wrap_loaded_run(load_cached_run(run_dir, point_filter_config=point_filter_config))
 
-    # Generate scene file in background for next time
-    if result.mode == SEMANTIC_MODE and len(result.reference_cloud) > 0:
-        _generate_scene_file_async(run_dir, result)
+    if regenerate_scene_file and scene_file_pending(result):
+        generate_scene_file_async(run_dir, result)
 
     return result
+
+
+def scene_file_pending(result: GuiLoadedRun) -> bool:
+    """Whether this run still owes a scene file. Geometry-only runs never do."""
+    return (
+        not result.from_scene_file
+        and result.mode == SEMANTIC_MODE
+        and result.reference_cloud is not None
+        and len(result.reference_cloud) > 0
+    )
 
 
 def _load_from_scene_file(scene_path: Path, run_dir: Path) -> GuiLoadedRun | None:
@@ -143,30 +158,101 @@ def _wrap_loaded_run(loaded) -> GuiLoadedRun:
     )
 
 
-def _generate_scene_file_async(run_dir: Path, result: GuiLoadedRun) -> None:
-    """Build and save a scene file on a daemon thread so the next load is fast."""
+def write_scene_file(
+    run_dir: Path,
+    *,
+    manifest: dict,
+    classes_config: ClassConfig,
+    mapping_result: MappingSequenceResult,
+    frame_batch: FrameBatch,
+    reference_cloud: SemanticPointCloud,
+    progress_cb: ProgressCB | None = None,
+) -> Path:
+    """Build the cloud index and write the run's scene file. Returns its path.
+
+    The index is rebuilt here rather than borrowed from the viewer: the viewer
+    builds its own on the GUI thread, and sharing one across the two would mean
+    synchronising a structure neither owns. The cost is one extra pass over the
+    cloud, which the caller reports as part of the scene_save stage.
+    """
+    from deepreefmap.pointcloud.final_cloud_index import build_final_cloud_index
+
+    if progress_cb is not None:
+        progress_cb("scene_index", 0, 1)
+    frame_order = [int(f.frame_index) for f in frame_batch.frames]
+    fci = build_final_cloud_index(reference_cloud, frame_order, classes_config.id_to_color)
+    if progress_cb is not None:
+        progress_cb("scene_index", 1, 1)
+
+    out = run_dir / scene_file_name(manifest, run_dir)
+    save_scene_file(
+        out,
+        manifest=manifest,
+        classes_config=classes_config,
+        mapping_result=mapping_result,
+        frame_batch=frame_batch,
+        final_cloud_index=fci,
+        run_dir=run_dir,
+        progress_cb=progress_cb,
+    )
+    return out
+
+
+def write_scene_file_from_run_data(
+    run_dir: Path, data: dict, manifest: dict, *, progress_cb: ProgressCB | None = None
+) -> Path | None:
+    """Write the scene file straight from a finished run's ``set_data`` payload.
+
+    ``manifest`` is the merged one, not the file on disk: the scene embeds it and
+    is read back in place of it, so it has to carry the run name and survey block.
+
+    Geometry-only runs carry no reference cloud and get no scene file.
+    """
+    cloud = data.get("reference_cloud")
+    if cloud is None or len(cloud) == 0:
+        return None
+    return write_scene_file(
+        run_dir,
+        manifest=manifest,
+        classes_config=data["classes_config"],
+        mapping_result=data["mapping_result"],
+        frame_batch=data["frame_batch"],
+        reference_cloud=cloud,
+        progress_cb=progress_cb,
+    )
+
+
+def generate_scene_file_async(
+    run_dir: Path,
+    result: GuiLoadedRun,
+    *,
+    progress_cb: ProgressCB | None = None,
+    on_done: Callable[[], None] | None = None,
+) -> threading.Thread:
+    """Rebuild a pre-existing run's scene file on a daemon thread.
+
+    Only reached by runs reconstructed before the pipeline started writing its
+    own scene file; a fresh run already has one by the time it is first opened.
+    """
 
     def _worker() -> None:
         try:
-            from deepreefmap.pointcloud.final_cloud_index import build_final_cloud_index
-
-            frame_order = [int(f.frame_index) for f in result.frame_batch.frames]
-            class_colors = result.classes_config.id_to_color
-            fci = build_final_cloud_index(result.reference_cloud, frame_order, class_colors)
-
-            fname = scene_file_name(result.manifest, run_dir)
-            out = run_dir / fname
-            save_scene_file(
-                out,
+            out = write_scene_file(
+                run_dir,
                 manifest=result.manifest,
                 classes_config=result.classes_config,
                 mapping_result=result.mapping_result,
                 frame_batch=result.frame_batch,  # type: ignore[arg-type]  # LazyFrameBatch is interface-compatible but not a FrameBatch subclass
-                final_cloud_index=fci,
-                run_dir=run_dir,
+                reference_cloud=result.reference_cloud,
+                progress_cb=progress_cb,
             )
             logger.info("Scene file generated for next load: %s", out)
         except Exception:
             logger.warning("Background scene file generation failed", exc_info=True)
+        finally:
+            if on_done is not None:
+                on_done()
 
-    threading.Thread(target=_worker, daemon=True).start()
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+    return thread

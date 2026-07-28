@@ -162,6 +162,7 @@ class RunLoadingMixin(MixinBase):
                 viewer=self._viewer,
                 cancel_event=cancel_event,
                 pause_event=pause_event,
+                scene_writer=self._write_scene_file,
                 **kwargs,
             )
         except ReconstructionCancelled:
@@ -172,6 +173,20 @@ class RunLoadingMixin(MixinBase):
             if len(msg) > 300:
                 msg = msg[:300] + "..."
             self._sig_pipeline_error.emit(msg)
+
+    def _write_scene_file(self, output_dir: Path, data: dict, manifest: dict) -> None:
+        """Write the finished run's scene file, reporting into the scene_save phase.
+
+        Runs on the pipeline thread inside instrumented_reconstruction, so the
+        stage is timed and its progress lands on the same bars the rest of the
+        run used. Doing it here rather than on the first load means a fresh run
+        opens by the fast path straight away.
+        """
+        from deepreefmap_gui.runs.loaded_run import write_scene_file_from_run_data
+
+        write_scene_file_from_run_data(
+            output_dir, data, manifest, progress_cb=self._sig_load_progress.emit
+        )
 
     def _on_pipeline_error(self, msg: str) -> None:
         self._status_label.setText(f"Failed: {msg}")
@@ -303,7 +318,11 @@ class RunLoadingMixin(MixinBase):
             # The library loader and scene-file reader no longer emit per-step
             # progress, so the load shows the indeterminate bar set in
             # _auto_load_run rather than a staged breakdown.
-            result = load_run(run_dir)
+            #
+            # The scene-file rebuild is deferred to _apply_loaded_run: started
+            # here it would run against the viewer's point upload and report into
+            # the middle of the load's own phases.
+            result = load_run(run_dir, regenerate_scene_file=False)
             self._sig_run_loaded.emit(result, str(run_dir), "")
         except Exception as exc:
             logger.exception("Failed to load cached run")
@@ -326,11 +345,38 @@ class RunLoadingMixin(MixinBase):
         "scene_classes": "Reading class config",
         "scene_cloud_index": "Reading point cloud index",
         "scene_mapping": "Reading mapping data",
-        "scene_meta": "Reading metadata",
-        "scene_frames": "Reading frames",
-        "scene_fci": "Reading cloud index",
-        "scene_done": "Scene file loaded",
+        # The write side. save_scene_file and load_scene_file use disjoint stage
+        # names, so these never collide with the "Reading …" labels above.
+        "scene_index": "Indexing cloud for scene file",
+        "scene_meta": "Writing scene metadata",
+        "scene_frames": "Writing frames to scene file",
+        "scene_fci": "Writing point cloud to scene file",
+        "scene_done": "Scene file written",
     }
+
+    def _start_deferred_scene_file(self, run_dir: Path, result: GuiLoadedRun) -> bool:
+        """Rebuild a missing scene file now the viewer is up. True if one started.
+
+        Runs made before the pipeline wrote its own scene file still need one.
+        The bars stay up for it: it is the last phase of _LOAD_PHASES, so the
+        fill carries straight on from "Finalising viewer" rather than resetting
+        and then jumping back to life.
+        """
+        from deepreefmap_gui.runs.loaded_run import generate_scene_file_async, scene_file_pending
+
+        if self._load_cancelled or not scene_file_pending(result):
+            return False
+        self._status_label.setText("Building scene file for faster reloads…")
+        generate_scene_file_async(
+            run_dir,
+            result,
+            progress_cb=self._sig_load_progress.emit,
+            on_done=self._sig_scene_file_done.emit,
+        )
+        return True
+
+    def _on_scene_file_done(self) -> None:
+        self._reset_progress_bars()
 
     def _on_load_progress(self, stage: str, cur: int, tot: int) -> None:
         if self._load_cancelled:
@@ -461,7 +507,8 @@ class RunLoadingMixin(MixinBase):
         logger.info("[timing] ortho build: %.3fs", _t6 - _t5)
 
         self._apply_progress("viewer_finalise", "Finalising viewer", 1, 1)
-        self._reset_progress_bars()
+        if not self._start_deferred_scene_file(run_dir, result):
+            self._reset_progress_bars()
 
         self._active_run_dir = run_dir
         self._active_run_manifest = result.manifest

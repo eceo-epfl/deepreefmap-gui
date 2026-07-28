@@ -303,6 +303,7 @@ if TYPE_CHECKING:
         _sig_pack_done = Signal(bool, str)
         _sig_run_loaded = Signal(object, str, str)
         _sig_load_progress = Signal(str, int, int)
+        _sig_scene_file_done = Signal()
         _sig_batch_progress = Signal(int, int, str)
         _sig_batch_done = Signal(int, int, str)
         _sig_qc_render_progress = Signal(int, int)
