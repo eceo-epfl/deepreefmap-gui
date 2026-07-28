@@ -1056,6 +1056,32 @@ class FormPanelMixin(MixinBase):
 
         self._models_layout.addWidget(_separator())
 
+        # Model library: reveal the cache folder, and export/import portable model
+        # packs so offline field laptops can be provisioned from a USB stick without
+        # re-downloading. Logic lives in models/library.py + models/library_ui.py.
+        lib_row = QHBoxLayout()
+        lib_row.setContentsMargins(0, 0, 0, 0)
+        lib_row.setSpacing(6)
+        open_lib_btn = QPushButton("Open model folder")
+        open_lib_btn.setToolTip("Open the folder where downloaded models are stored")
+        open_lib_btn.clicked.connect(self._open_model_library)
+        lib_row.addWidget(open_lib_btn)
+        self._export_models_btn = QPushButton("Export…")
+        self._export_models_btn.setToolTip(
+            "Copy downloaded models to a folder or USB drive as a portable pack"
+        )
+        self._export_models_btn.clicked.connect(self._on_export_models)
+        lib_row.addWidget(self._export_models_btn)
+        self._import_pack_btn = QPushButton("Import…")
+        self._import_pack_btn.setToolTip(
+            "Install models from a pack folder or USB drive (no internet needed)"
+        )
+        self._import_pack_btn.clicked.connect(self._on_import_model_pack)
+        lib_row.addWidget(self._import_pack_btn)
+        self._models_layout.addLayout(lib_row)
+
+        self._models_layout.addWidget(_separator())
+
         self._models_grid_host = QWidget()
         self._models_grid = QGridLayout(self._models_grid_host)
         self._models_grid.setContentsMargins(0, 4, 0, 0)
@@ -1081,6 +1107,7 @@ class FormPanelMixin(MixinBase):
         self._delete_armed: dict[str, QPushButton] = {}
         self._last_model_states: list = []
         self._download_errors: dict[str, str] = {}
+        self._pack_progress_dialog = None
 
         self._seg_combo.currentTextChanged.connect(self._on_required_models_changed)
         self._seg_combo.currentTextChanged.connect(self._on_seg_model_changed)

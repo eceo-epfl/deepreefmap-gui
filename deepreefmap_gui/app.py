@@ -24,6 +24,7 @@ from deepreefmap_gui.core.theme import BANNER_BG, BANNER_BORDER, BANNER_TEXT
 from deepreefmap_gui.form.batch import BatchMixin
 from deepreefmap_gui.form.panel import FormPanelMixin
 from deepreefmap_gui.models.management import ModelManagementMixin
+from deepreefmap_gui.models.library_ui import ModelLibraryMixin
 from deepreefmap_gui.runs.data_manager import DataManagerMixin
 from deepreefmap_gui.runs.past_runs import PastRunsMixin
 from deepreefmap_gui.runs.progress_panel import ProgressPanel
@@ -46,6 +47,7 @@ class DeepReefMapWindow(
     BatchMixin,
     DataManagerMixin,
     FormPanelMixin,
+    ModelLibraryMixin,
     ModelManagementMixin,
     PastRunsMixin,
     ProgressBarsMixin,
@@ -66,6 +68,8 @@ class DeepReefMapWindow(
     _sig_status_text = Signal(str)
     _sig_hf_auth_done = Signal(object, str)
     _sig_download_progress = Signal(str, int)
+    _sig_pack_progress = Signal(str, int, int)
+    _sig_pack_done = Signal(bool, str)
     _sig_run_loaded = Signal(object, str, str)
     _sig_load_progress = Signal(str, int, int)
     _sig_batch_progress = Signal(int, int, str)
@@ -92,6 +96,8 @@ class DeepReefMapWindow(
         self._sig_status_text.connect(lambda t: self._status_label.setText(t))
         self._sig_hf_auth_done.connect(self._on_hf_auth_done)
         self._sig_download_progress.connect(self._on_download_progress)
+        self._sig_pack_progress.connect(self._on_pack_progress)
+        self._sig_pack_done.connect(self._on_pack_done)
         self._sig_run_loaded.connect(self._apply_loaded_run)
         self._sig_load_progress.connect(self._on_load_progress)
         self._sig_batch_progress.connect(self._on_batch_progress)

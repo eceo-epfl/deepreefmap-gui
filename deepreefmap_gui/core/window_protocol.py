@@ -22,6 +22,7 @@ if TYPE_CHECKING:
         QLineEdit,
         QListWidget,
         QProgressBar,
+        QProgressDialog,
         QPushButton,
         QSlider,
         QSpinBox,
@@ -99,6 +100,8 @@ if TYPE_CHECKING:
         _delete_armed: dict[str, QPushButton]
         _model_actions: dict[str, QWidget]
         _model_rows: dict[str, QWidget]
+        _last_model_states: list
+        _pack_progress_dialog: QProgressDialog | None
         _run_warnings: list[str]
 
         # --- composite widgets / models ----------------------------------
@@ -144,7 +147,9 @@ if TYPE_CHECKING:
         _batch_btn: QPushButton
         _desktop_entry_btn: QPushButton
         _discover_btn: QPushButton
+        _export_models_btn: QPushButton
         _hf_auth_btn: QPushButton
+        _import_pack_btn: QPushButton
         _pause_btn: QPushButton
         _scrub_btn: QPushButton
         _spinner_stop: SpinnerStopButton
@@ -294,6 +299,8 @@ if TYPE_CHECKING:
         _sig_status_text = Signal(str)
         _sig_hf_auth_done = Signal(object, str)
         _sig_download_progress = Signal(str, int)
+        _sig_pack_progress = Signal(str, int, int)
+        _sig_pack_done = Signal(bool, str)
         _sig_run_loaded = Signal(object, str, str)
         _sig_load_progress = Signal(str, int, int)
         _sig_batch_progress = Signal(int, int, str)
@@ -417,6 +424,11 @@ if TYPE_CHECKING:
         def _on_follow_camera_changed(self) -> None: ...
         def _on_hf_auth_button(self) -> None: ...
         def _on_new_reconstruction(self) -> None: ...
+        def _open_model_library(self) -> None: ...
+        def _on_export_models(self) -> None: ...
+        def _on_import_model_pack(self) -> None: ...
+        def _on_pack_progress(self, phase: str, current: int, total: int) -> None: ...
+        def _on_pack_done(self, ok: bool, message: str) -> None: ...
         def _on_pause_toggled(self, paused: bool) -> None: ...
         def _on_play_fps_changed(self) -> None: ...
         def _on_play_toggled(self, playing: bool) -> None: ...

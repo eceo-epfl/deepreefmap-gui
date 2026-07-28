@@ -279,15 +279,43 @@ class ModelStatus(str, Enum):
 _WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pt", ".pth", ".ckpt")
 
 
-def _snapshot_dir(repo_id: str) -> Path | None:
-    """Resolve a repo's current snapshot dir from refs/main, never touching the network."""
+def repo_commit(repo_id: str) -> str | None:
+    """Current commit hash for a repo from refs/main, or None. Never hits the network."""
     ref = _hf_cache_dir(repo_id) / "refs" / "main"
     try:
-        commit = ref.read_text().strip()
+        return ref.read_text().strip()
     except OSError:
+        return None
+
+
+def _snapshot_dir(repo_id: str) -> Path | None:
+    """Resolve a repo's current snapshot dir from refs/main, never touching the network."""
+    commit = repo_commit(repo_id)
+    if commit is None:
         return None
     snap = _hf_cache_dir(repo_id) / "snapshots" / commit
     return snap if snap.is_dir() else None
+
+
+# Public accessors over the module-level cache roots and per-repo helpers. Code
+# outside this module (models/library.py) must go through these rather than
+# importing the globals: _HF_CACHE_ROOT / _LOGER_CKPTS are import-time snapshots
+# that tests monkeypatch on the module object, and reading them at call time is
+# what lets that monkeypatch (and a future HF_HOME relocation) take effect.
+def hf_cache_root() -> Path:
+    return _HF_CACHE_ROOT
+
+
+def loger_ckpts_root() -> Path:
+    return _LOGER_CKPTS
+
+
+def hf_cache_dir(repo_id: str) -> Path:
+    return _hf_cache_dir(repo_id)
+
+
+def snapshot_dir(repo_id: str) -> Path | None:
+    return _snapshot_dir(repo_id)
 
 
 def _verify_repo(repo_id: str) -> tuple[ModelStatus, str]:
@@ -426,6 +454,23 @@ def _materialise_files(info: ModelInfo, snapshot_roots: dict[str, Path]) -> None
             os.symlink(src, dest)
         except (OSError, NotImplementedError):
             shutil.copy2(src, dest)
+
+
+def materialise_model(info: ModelInfo) -> None:
+    """Rebuild a model's ``materialise_to`` targets from its cached snapshot.
+
+    Runs the same copy step as ``prefetch_model`` but sourced from the already-cached
+    snapshot, so an offline import can reconstitute LoGeR's fixed-path checkpoints
+    without touching the network. No-op for models without ``materialise_to``.
+    """
+    if not info.materialise_to:
+        return
+    source = _snapshot_dir(info.hf_repos[0])
+    if source is None:
+        raise FileNotFoundError(
+            f"Cannot materialise {info.name}: {info.hf_repos[0]} is not in the cache"
+        )
+    _materialise_files(info, {info.hf_repos[0]: source})
 
 
 def _make_silent_tqdm(callback: ProgressCallback) -> type:
