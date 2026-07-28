@@ -14,6 +14,8 @@ from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QFileDialog, QProgressDialog
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from deepreefmap.config.classes import ClassConfig
     from deepreefmap.pipeline.artifacts import SemanticPointCloud
     from deepreefmap.pointcloud.grid_ortho import OrthoGrid
@@ -369,6 +371,26 @@ class ResultsMixin(MixinBase):
             self._status_label.setText(f"Export failed: {exc}")
             logger.exception("Failed to save frame PNG")
 
+    # Handlers the in-flight QC export installed on the render signals. They close
+    # over that export's progress dialog and destination path, so they have to come
+    # off the signals when it finishes, when another export starts, and on window
+    # teardown -- otherwise a later render drives a dialog that Qt may already have
+    # destroyed with its parent.
+    _qc_render_handlers: tuple[Callable[[int, int], None], Callable[[bool, str], None]] | None = None
+
+    def _disconnect_qc_render_handlers(self) -> None:
+        """Take the current QC export's handlers off the render signals.
+
+        A no-op when no export has installed any. PySide6 warns on a disconnect
+        that matches nothing, so the pair is tracked rather than dropped blind.
+        """
+        handlers, self._qc_render_handlers = self._qc_render_handlers, None
+        if handlers is None:
+            return
+        on_progress, on_done = handlers
+        self._sig_qc_render_progress.disconnect(on_progress)
+        self._sig_qc_render_done.disconnect(on_done)
+
     def _on_export_qc_video(self) -> None:
         if self._active_run_dir is None or not Path(self._active_run_dir).exists():
             self._status_label.setText("Load a run before rendering the QC video.")
@@ -394,19 +416,25 @@ class ResultsMixin(MixinBase):
         def _on_progress(cur: int, total: int) -> None:
             self._sig_qc_render_progress.emit(int(cur), int(total))
 
+        def _on_qc_progress(cur: int, total: int) -> None:
+            progress.setMaximum(max(total, 1))
+            progress.setValue(cur)
+
         def _on_done(ok: bool, error: str) -> None:
+            self._disconnect_qc_render_handlers()
             progress.close()
             if ok:
                 self._status_label.setText(f"QC video saved to {path}")
             else:
                 self._status_label.setText(f"QC render failed: {error}")
 
-        def _on_qc_progress(cur: int, total: int) -> None:
-            progress.setMaximum(max(total, 1))
-            progress.setValue(cur)
-
+        # A previous export can still be rendering: its Cancel button only hides
+        # the dialog. Dropping its handlers here stops it reporting its own path
+        # over this one, and Qt discards any queued call it has already emitted.
+        self._disconnect_qc_render_handlers()
         self._sig_qc_render_progress.connect(_on_qc_progress)
         self._sig_qc_render_done.connect(_on_done)
+        self._qc_render_handlers = (_on_qc_progress, _on_done)
 
         def _worker() -> None:
             from deepreefmap.postproc.reports import render_offline_video
