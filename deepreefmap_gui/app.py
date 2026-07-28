@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QLabel,
     QMainWindow,
+    QMessageBox,
     QSplitter,
     QStackedWidget,
     QVBoxLayout,
@@ -226,6 +227,95 @@ class DeepReefMapWindow(
         # Apply the saved mode last: it flips the left stack and re-divides the
         # splitter, so everything above must exist first.
         self._init_ui_mode()
+
+    # --- teardown -----------------------------------------------------------
+
+    def _stop_window_timers(self) -> None:
+        """Stop the timers this window owns.
+
+        Qt destroys them with their parent, but destruction happens after the
+        close returns; a tick landing in between runs a slot against widgets
+        that are already going away.
+        """
+        for attr in (
+            "_playback_timer",
+            "_sys_timer",
+            "_status_tick_timer",
+            "_data_refresh_timer",
+        ):
+            timer = getattr(self, attr, None)
+            if timer is not None:
+                try:
+                    timer.stop()
+                except RuntimeError:
+                    logger.debug("Timer %s was already destroyed", attr, exc_info=True)
+
+    def _release_handles(self) -> None:
+        """Close what Qt's parent-child ownership does not cover.
+
+        Three handles are held by plain Python attributes rather than QObjects,
+        so nothing releases them when the window is destroyed. The scene archive
+        is the one that is visibly damaging: on Windows the open ZipStore keeps
+        the scene file locked, so the next launch cannot regenerate it.
+        """
+        accessor = getattr(self, "_scene_accessor", None)
+        if accessor is not None:
+            accessor.close()
+            self._scene_accessor = None
+
+        store = getattr(self, "_survey_store_obj", None)
+        if store is not None:
+            try:
+                store.close()
+            except Exception:
+                logger.debug("Survey store did not close cleanly", exc_info=True)
+            self._survey_store_obj = None
+
+        handler = getattr(self, "_run_log_file_handler", None)
+        if handler is not None:
+            from deepreefmap_gui.system.log_view import close_run_log_file
+
+            close_run_log_file(handler)
+            self._run_log_file_handler = None
+
+    def closeEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        # RunLoadingMixin._run_in_flight: a survey batch runs on _pipeline_thread
+        # too, so this one predicate covers both kinds of work.
+        if self._run_in_flight():
+            answer = QMessageBox.question(
+                self,
+                "Quit DeepReefMap",
+                "A reconstruction is still running. Quitting stops it and the "
+                "run will be incomplete.\n\nQuit anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                event.ignore()
+                return
+            # Signalled, not joined. The worker threads are daemons, and a join
+            # on a mid-pipeline reconstruction would freeze the UI for minutes
+            # at the point the user has just asked to leave. They are left to
+            # die with the process, which is why the warning is logged.
+            logger.warning("Quitting with a reconstruction in flight; it will be abandoned")
+
+        for attr in ("_cancel_event", "_survey_cancel_event"):
+            cancel = getattr(self, attr, None)
+            if cancel is not None:
+                cancel.set()
+        # Set, not cleared: a worker parked on the pause gate has to be released
+        # before it can observe the cancel it was just given.
+        pause = getattr(self, "_pause_event", None)
+        if pause is not None:
+            pause.set()
+
+        self._stop_window_timers()
+        # Before the handles go: these close over a QProgressDialog parented to
+        # this window, so a render still in flight would drive a widget Qt is
+        # about to destroy.
+        self._disconnect_qc_render_handlers()
+        self._release_handles()
+        super().closeEvent(event)
 
 
 
