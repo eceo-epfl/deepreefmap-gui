@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, SupportsInt, cast
 
@@ -232,6 +234,14 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         self._frustum_fid_to_idx: dict[int, int] = {}
         self._frustum_all_pts: list[np.ndarray] = []
         self._frustum_pts_per: int = 16
+
+        # Scene setup and the first paint run on the GUI thread and pump the
+        # event loop (_emit_setup) so the progress bars keep moving, which lets a
+        # queued "New reconstruction" click land in the middle of a loop over
+        # _class_actors. _scene_mutating marks those loops so _clear_scene_data
+        # defers instead of emptying the containers under them.
+        self._scene_mutating = False
+        self._pending_scene_clear = False
 
         self._final_index: FinalCloudIndex | None = None
         self._live_cache: LiveFrameCloudCache | None = None
@@ -596,57 +606,58 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         import pyvista as pv
 
         self._clear_scene_data()
-        self._seg_label.setVisible(True)
-        self._depth_label.setVisible(True)
-        plotter = self._ensure_plotter()
-        self._frame_batch = frame_batch
-        self._mapping_result = mapping_result
+        with self._scene_mutation():
+            self._seg_label.setVisible(True)
+            self._depth_label.setVisible(True)
+            plotter = self._ensure_plotter()
+            self._frame_batch = frame_batch
+            self._mapping_result = mapping_result
 
-        frame_order = [int(f.frame_index) for f in frame_batch.frames]
-        self._emit_setup("Indexing point cloud", 0, 0)
-        self._final_index = build_final_cloud_index(
-            reference_cloud, frame_order, self._class_colors,
-            progress=self._emit_setup,
-        )
-        self._live_cache = LiveFrameCloudCache(
-            frame_batch, mapping_result, self._final_index.frame_order,
-        )
-        self._max_label_id = max(
-            (max(self._class_colors.keys(), default=0)),
-            max(self._final_index.class_ids, default=0),
-        )
-
-        n_classes = len(self._final_index.class_ids)
-        for i, cid in enumerate(self._final_index.class_ids):
-            if i == 0 or (i & 0x3) == 0 or i == n_classes - 1:
-                self._emit_setup("Preparing class actors", i, n_classes)
-            empty = pv.PolyData(np.zeros((1, 3), dtype=np.float32))
-            empty["colors"] = np.zeros((1, 3), dtype=np.uint8)
-            actor = plotter.add_mesh(
-                empty, scalars="colors", rgb=True, point_size=2.0,
-                style="points", name=f"class_{cid}",
+            frame_order = [int(f.frame_index) for f in frame_batch.frames]
+            self._emit_setup("Indexing point cloud", 0, 0)
+            self._final_index = build_final_cloud_index(
+                reference_cloud, frame_order, self._class_colors,
+                progress=self._emit_setup,
             )
-            actor.SetVisibility(False)
-            self._class_actors[cid] = actor
-            self._class_polydata[cid] = empty
-        self._emit_setup("Preparing class actors", n_classes, n_classes)
+            self._live_cache = LiveFrameCloudCache(
+                frame_batch, mapping_result, self._final_index.frame_order,
+            )
+            self._max_label_id = max(
+                (max(self._class_colors.keys(), default=0)),
+                max(self._final_index.class_ids, default=0),
+            )
 
-        self._build_frustums(frame_batch, mapping_result)
+            n_classes = len(self._final_index.class_ids)
+            for i, cid in enumerate(self._final_index.class_ids):
+                if i == 0 or (i & 0x3) == 0 or i == n_classes - 1:
+                    self._emit_setup("Preparing class actors", i, n_classes)
+                empty = pv.PolyData(np.zeros((1, 3), dtype=np.float32))
+                empty["colors"] = np.zeros((1, 3), dtype=np.uint8)
+                actor = plotter.add_mesh(
+                    empty, scalars="colors", rgb=True, point_size=2.0,
+                    style="points", name=f"class_{cid}",
+                )
+                actor.SetVisibility(False)
+                self._class_actors[cid] = actor
+                self._class_polydata[cid] = empty
+            self._emit_setup("Preparing class actors", n_classes, n_classes)
 
-        if self._final_index.class_ids:
-            self._emit_setup("Fitting camera", 0, 0)
-            all_xyz = [
-                self._final_index.xyz_by_class[c]
-                for c in self._final_index.class_ids
-                if c in self._final_index.xyz_by_class
-            ]
-            if all_xyz:
-                combined = np.concatenate(all_xyz, axis=0)
-                if combined.shape[0] > 0:
-                    self._auto_fit_camera(combined)
+            self._build_frustums(frame_batch, mapping_result)
 
-        self._reveal_canvas()
-        self._notify_status("scene_loaded")
+            if self._final_index.class_ids:
+                self._emit_setup("Fitting camera", 0, 0)
+                all_xyz = [
+                    self._final_index.xyz_by_class[c]
+                    for c in self._final_index.class_ids
+                    if c in self._final_index.xyz_by_class
+                ]
+                if all_xyz:
+                    combined = np.concatenate(all_xyz, axis=0)
+                    if combined.shape[0] > 0:
+                        self._auto_fit_camera(combined)
+
+            self._reveal_canvas()
+            self._notify_status("scene_loaded")
 
     def load_scene_data_indexed(
         self,
@@ -659,52 +670,53 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         import pyvista as pv
 
         self._clear_scene_data()
-        self._seg_label.setVisible(True)
-        self._depth_label.setVisible(True)
-        plotter = self._ensure_plotter()
-        self._frame_batch = frame_batch
-        self._mapping_result = mapping_result
+        with self._scene_mutation():
+            self._seg_label.setVisible(True)
+            self._depth_label.setVisible(True)
+            plotter = self._ensure_plotter()
+            self._frame_batch = frame_batch
+            self._mapping_result = mapping_result
 
-        self._final_index = final_cloud_index
-        self._live_cache = LiveFrameCloudCache(
-            frame_batch, mapping_result, self._final_index.frame_order,
-        )
-        self._max_label_id = max(
-            (max(self._class_colors.keys(), default=0)),
-            max(self._final_index.class_ids, default=0),
-        )
-
-        n_classes = len(self._final_index.class_ids)
-        for i, cid in enumerate(self._final_index.class_ids):
-            if i == 0 or (i & 0x3) == 0 or i == n_classes - 1:
-                self._emit_setup("Preparing class actors", i, n_classes)
-            empty = pv.PolyData(np.zeros((1, 3), dtype=np.float32))
-            empty["colors"] = np.zeros((1, 3), dtype=np.uint8)
-            actor = plotter.add_mesh(
-                empty, scalars="colors", rgb=True, point_size=2.0,
-                style="points", name=f"class_{cid}",
+            self._final_index = final_cloud_index
+            self._live_cache = LiveFrameCloudCache(
+                frame_batch, mapping_result, self._final_index.frame_order,
             )
-            actor.SetVisibility(False)
-            self._class_actors[cid] = actor
-            self._class_polydata[cid] = empty
-        self._emit_setup("Preparing class actors", n_classes, n_classes)
+            self._max_label_id = max(
+                (max(self._class_colors.keys(), default=0)),
+                max(self._final_index.class_ids, default=0),
+            )
 
-        self._build_frustums(frame_batch, mapping_result)
+            n_classes = len(self._final_index.class_ids)
+            for i, cid in enumerate(self._final_index.class_ids):
+                if i == 0 or (i & 0x3) == 0 or i == n_classes - 1:
+                    self._emit_setup("Preparing class actors", i, n_classes)
+                empty = pv.PolyData(np.zeros((1, 3), dtype=np.float32))
+                empty["colors"] = np.zeros((1, 3), dtype=np.uint8)
+                actor = plotter.add_mesh(
+                    empty, scalars="colors", rgb=True, point_size=2.0,
+                    style="points", name=f"class_{cid}",
+                )
+                actor.SetVisibility(False)
+                self._class_actors[cid] = actor
+                self._class_polydata[cid] = empty
+            self._emit_setup("Preparing class actors", n_classes, n_classes)
 
-        if self._final_index.class_ids:
-            self._emit_setup("Fitting camera", 0, 0)
-            all_xyz = [
-                self._final_index.xyz_by_class[c]
-                for c in self._final_index.class_ids
-                if c in self._final_index.xyz_by_class
-            ]
-            if all_xyz:
-                combined = np.concatenate(all_xyz, axis=0)
-                if combined.shape[0] > 0:
-                    self._auto_fit_camera(combined)
+            self._build_frustums(frame_batch, mapping_result)
 
-        self._reveal_canvas()
-        self._notify_status("scene_loaded")
+            if self._final_index.class_ids:
+                self._emit_setup("Fitting camera", 0, 0)
+                all_xyz = [
+                    self._final_index.xyz_by_class[c]
+                    for c in self._final_index.class_ids
+                    if c in self._final_index.xyz_by_class
+                ]
+                if all_xyz:
+                    combined = np.concatenate(all_xyz, axis=0)
+                    if combined.shape[0] > 0:
+                        self._auto_fit_camera(combined)
+
+            self._reveal_canvas()
+            self._notify_status("scene_loaded")
 
     def load_geometry_scene(
         self,
@@ -719,29 +731,30 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         slider only moves the frustum highlight and image panel.
         """
         self._clear_scene_data()
-        self._seg_label.setVisible(False)
-        self._depth_label.setVisible(True)
-        plotter = self._ensure_plotter()
-        self._frame_batch = frame_batch
-        self._mapping_result = mapping_result
-        self._geometry_mode = True
-        self._geometry_frame_order = [int(f.frame_index) for f in frame_batch.frames]
-        self._geometry_xyz = np.asarray(geometry_xyz, dtype=np.float32)
+        with self._scene_mutation():
+            self._seg_label.setVisible(False)
+            self._depth_label.setVisible(True)
+            plotter = self._ensure_plotter()
+            self._frame_batch = frame_batch
+            self._mapping_result = mapping_result
+            self._geometry_mode = True
+            self._geometry_frame_order = [int(f.frame_index) for f in frame_batch.frames]
+            self._geometry_xyz = np.asarray(geometry_xyz, dtype=np.float32)
 
-        if self._geometry_xyz.shape[0] > 0:
-            pd = _make_point_polydata(self._geometry_xyz, geometry_rgb)
-            self._simple_actor = plotter.add_mesh(
-                pd, scalars="colors", rgb=True, point_size=2.0,
-                style="points", name="geometry_cloud",
-            )
+            if self._geometry_xyz.shape[0] > 0:
+                pd = _make_point_polydata(self._geometry_xyz, geometry_rgb)
+                self._simple_actor = plotter.add_mesh(
+                    pd, scalars="colors", rgb=True, point_size=2.0,
+                    style="points", name="geometry_cloud",
+                )
 
-        self._build_frustums(frame_batch, mapping_result)
+            self._build_frustums(frame_batch, mapping_result)
 
-        if self._geometry_xyz.shape[0] > 0:
-            self._auto_fit_camera(self._geometry_xyz)
+            if self._geometry_xyz.shape[0] > 0:
+                self._auto_fit_camera(self._geometry_xyz)
 
-        self._reveal_canvas()
-        self._notify_status("scene_loaded")
+            self._reveal_canvas()
+            self._notify_status("scene_loaded")
 
     def apply_geometry_state(
         self,
@@ -867,7 +880,28 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         self._frustum_all_pts = all_pts
         self._emit_setup("Building camera frustums", 1, 1)
 
+    @contextmanager
+    def _scene_mutation(self) -> Iterator[None]:
+        """Hold off _clear_scene_data for the duration of a block that pumps events.
+
+        The block still runs to completion on the stale scene; the clear is
+        applied on the way out, so the viewer ends up in the state the user asked
+        for without any container changing size mid-iteration.
+        """
+        outer = self._scene_mutating
+        self._scene_mutating = True
+        try:
+            yield
+        finally:
+            self._scene_mutating = outer
+            if not outer and self._pending_scene_clear:
+                self._pending_scene_clear = False
+                self._clear_scene_data()
+
     def _clear_scene_data(self) -> None:
+        if self._scene_mutating:
+            self._pending_scene_clear = True
+            return
         if self._plotter is not None:
             # Batch removals with `render=False` and do a single render at the
             # end. Per-actor rendering was the cause of the multi-second freeze
@@ -1088,24 +1122,25 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         # so the user sees the "Setting up viewer" stage advance instead of
         # freezing while every class' polydata is pushed to VTK.
         first_paint = self._last_t is None
-        self._update_live_cloud(t, enabled_classes, semantic_colors, min_conf, point_size)
-        self._update_class_clouds(
-            t, accumulate, enabled_classes, semantic_colors, min_conf, point_size,
-            report_progress=first_paint,
-        )
-        self._update_frustum_visibility(frustums_visible, t)
-        self._update_image_panel(t)
-        if first_paint:
-            self._emit_setup("Finalising viewer", 1, 1)
+        with self._scene_mutation():
+            self._update_live_cloud(t, enabled_classes, semantic_colors, min_conf, point_size)
+            self._update_class_clouds(
+                t, accumulate, enabled_classes, semantic_colors, min_conf, point_size,
+                report_progress=first_paint,
+            )
+            self._update_frustum_visibility(frustums_visible, t)
+            self._update_image_panel(t)
+            if first_paint:
+                self._emit_setup("Finalising viewer", 1, 1)
 
-        self._last_t = t
-        self._last_accumulate = accumulate
-        self._last_semantic = semantic_colors
-        self._last_enabled = enabled_classes
-        self._last_confidence = min_conf
-        self._last_point_size = point_size
+            self._last_t = t
+            self._last_accumulate = accumulate
+            self._last_semantic = semantic_colors
+            self._last_enabled = enabled_classes
+            self._last_confidence = min_conf
+            self._last_point_size = point_size
 
-        self._plotter.render()
+            self._plotter.render()
 
     def _update_live_cloud(
         self,
@@ -1178,11 +1213,18 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         report_progress: bool = False,
     ) -> None:
         fi = self._final_index
-        assert fi is not None
+        if fi is None:
+            return
         total_actors = len(self._class_actors) if report_progress else 0
-        for idx, (cid, actor) in enumerate(self._class_actors.items()):
+        # A snapshot, because _emit_setup pumps the event loop: a slot that
+        # loads or clears a scene would otherwise resize _class_actors here.
+        for idx, (cid, actor) in enumerate(list(self._class_actors.items())):
             if report_progress:
                 self._emit_setup("Uploading class points", idx, total_actors)
+                if self._final_index is not fi:
+                    # The scene was replaced during the pump; the remaining
+                    # actors and `fi` belong to different scenes.
+                    return
             if cid not in enabled_classes:
                 actor.SetVisibility(False)
                 continue

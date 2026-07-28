@@ -99,6 +99,117 @@ def test_geometry_scene_clears_back_to_empty(qapp) -> None:
     assert viewer.n_frames == 0
 
 
+CLASS_IDS = (1, 2, 3, 4)
+
+
+def _semantic_scene(viewer):
+    """Populate the viewer the way a finished load does: an index plus one actor per class."""
+    import pyvista as pv
+
+    from deepreefmap.pointcloud.final_cloud_index import FinalCloudIndex
+
+    xyz = np.zeros((2, 3), dtype=np.float32)
+    rgb = np.zeros((2, 3), dtype=np.uint8)
+    viewer._final_index = FinalCloudIndex(
+        frame_order=(0,),
+        class_ids=CLASS_IDS,
+        xyz_by_class=dict.fromkeys(CLASS_IDS, xyz),
+        rgb_by_class=dict.fromkeys(CLASS_IDS, rgb),
+        semrgb_by_class=dict.fromkeys(CLASS_IDS, rgb),
+        conf_by_class={},
+        prefix_end_by_class={c: np.array([2], dtype=np.int64) for c in CLASS_IDS},
+    )
+    viewer._ensure_plotter()
+    for cid in CLASS_IDS:
+        mesh = pv.PolyData(np.zeros((1, 3), dtype=np.float32))
+        mesh["colors"] = np.zeros((1, 3), dtype=np.uint8)
+        viewer._class_actors[cid] = viewer._plotter.add_mesh(
+            mesh, scalars="colors", rgb=True, style="points", name=f"class_{cid}"
+        )
+        viewer._class_polydata[cid] = mesh
+    return frozenset(CLASS_IDS)
+
+
+def _clear_from_the_event_pump(viewer):
+    """Arrange for a queued _clear_scene_data to be delivered inside a setup event.
+
+    Stands in for the "New reconstruction" click waiting in the event queue while
+    _emit_setup reaches _apply_progress(flush=True) and its processEvents.
+    """
+    from PySide6.QtCore import QObject, Qt, Signal
+    from PySide6.QtWidgets import QApplication
+
+    class _QueuedClick(QObject):
+        pressed = Signal()
+
+    click = _QueuedClick()
+    click.pressed.connect(viewer._clear_scene_data, Qt.ConnectionType.QueuedConnection)
+    click.actors_after_pump = []
+
+    def _on_status(event, **kwargs):
+        if event == "setup_progress" and not click.actors_after_pump:
+            click.pressed.emit()
+            QApplication.processEvents()
+            click.actors_after_pump.append(len(viewer._class_actors))
+
+    viewer.set_status_callback(_on_status)
+    return click
+
+
+def test_a_clear_during_the_class_upload_does_not_break_the_iteration(qapp) -> None:
+    """Expected behaviour: the per-class upload loop survives losing its actors.
+
+    _update_class_clouds pumps the event loop once per class, so any slot that
+    resets the viewer runs between two iterations of that loop.
+    """
+    from deepreefmap_gui.viewer.widget import QtPointCloudViewer
+
+    viewer = QtPointCloudViewer(class_colors=dict.fromkeys(CLASS_IDS, (255, 0, 0)))
+    enabled = _semantic_scene(viewer)
+    click = _clear_from_the_event_pump(viewer)
+
+    viewer._update_class_clouds(
+        0,
+        accumulate=True,
+        enabled_classes=enabled,
+        semantic_colors=False,
+        min_conf=0.0,
+        point_size=2.0,
+        report_progress=True,
+    )
+
+    assert click.actors_after_pump == [0]  # the clear really landed mid-loop
+    assert viewer._class_actors == {}
+    assert viewer._final_index is None
+
+
+def test_a_clear_during_the_first_paint_is_deferred_until_the_paint_ends(qapp) -> None:
+    """apply_state is the whole first paint, and it pumps events part-way through.
+
+    Running the clear at that moment would pull the actors and the index out from
+    under the rest of the paint, so it is held until the paint has finished.
+    """
+    from deepreefmap_gui.viewer.widget import QtPointCloudViewer
+
+    viewer = QtPointCloudViewer(class_colors=dict.fromkeys(CLASS_IDS, (255, 0, 0)))
+    enabled = _semantic_scene(viewer)
+    viewer._live_cache = object()  # only needs to be non-None; reads of it are guarded
+    click = _clear_from_the_event_pump(viewer)
+
+    viewer.apply_state(
+        timeline_t=0,
+        accumulate=True,
+        enabled_classes=enabled,
+        semantic_colors=False,
+        point_size=2.0,
+    )
+
+    assert click.actors_after_pump == [len(CLASS_IDS)]
+    assert viewer._class_actors == {}
+    assert viewer._final_index is None
+    assert viewer._last_t is None
+
+
 def test_colorize_seg_maps_classes() -> None:
     from deepreefmap_gui.viewer.render import _colorize_seg
 
