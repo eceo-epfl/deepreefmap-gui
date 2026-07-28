@@ -41,6 +41,20 @@ class InsufficientDiskSpace(RuntimeError):
 
 
 @dataclass
+class DeletionResult:
+    """What delete_model removed, and what it left behind for a sibling."""
+
+    revisions_removed: int
+    # repo id -> names of the installed models that still need it.
+    kept_repos: dict[str, list[str]]
+
+    def kept_summary(self) -> str:
+        """One phrase naming the models the kept repos were kept for."""
+        names = sorted({n for names in self.kept_repos.values() for n in names})
+        return ", ".join(names)
+
+
+@dataclass
 class ModelInfo:
     name: str
     kind: str
@@ -544,26 +558,57 @@ def hf_logout() -> None:
     logout()
 
 
-def delete_model(info: ModelInfo) -> int:
+def _installed_siblings(info: ModelInfo) -> list[ModelInfo]:
+    """Catalogue entries other than `info` that are currently installed."""
+    return [m for m in all_known_models() if m.name != info.name and is_model_cached(m)]
+
+
+def delete_model(info: ModelInfo) -> DeletionResult:
+    """Remove one model's cached files, keeping anything a sibling still needs.
+
+    Several entries deliberately share a repo: `loger` and `loger_star` are two
+    checkpoint folders inside one download, and each DINOv3 backbone is listed
+    both on its own and as the encoder a DPT head fetches at first use. Deleting
+    every revision of `info.hf_repos` would take an installed sibling's weights
+    with it, leaving that sibling reporting PARTIAL with nothing to explain why.
+    """
     from huggingface_hub import scan_cache_dir
 
+    # Resolved before anything is removed, so this entry's own deletions cannot
+    # change what the siblings report.
+    siblings = _installed_siblings(info)
+    kept_repos: dict[str, list[str]] = {}
+    for other in siblings:
+        for repo_id in info.hf_repos:
+            if repo_id in other.hf_repos:
+                kept_repos.setdefault(repo_id, []).append(other.name)
+    sibling_destinations = {d for other in siblings for d in other.materialise_to.values()}
+
     # Drop materialised symlinks/copies first; the HF cache scan below will
-    # leave those orphaned otherwise. Skip silently if the file is missing or
-    # shared with another entry that hasn't been deleted yet.
+    # leave those orphaned otherwise. Skip a destination an installed sibling
+    # also claims, and one that is already gone.
     for dest in info.materialise_to.values():
+        if dest in sibling_destinations:
+            continue
         try:
             if dest.is_symlink() or dest.exists():
                 dest.unlink()
         except FileNotFoundError:
             pass
 
-    cache = scan_cache_dir()
+    doomed = [r for r in info.hf_repos if r not in kept_repos]
+    if not doomed:
+        return DeletionResult(0, kept_repos)
+    # cache_dir explicitly: a bare scan_cache_dir() reads the import-time
+    # HF_HUB_CACHE constant, which is the one path in this module that would not
+    # follow hf_cache_root().
+    cache = scan_cache_dir(cache_dir=hf_cache_root())
     revisions: list[str] = []
     for repo in cache.repos:
-        if repo.repo_id in info.hf_repos:
+        if repo.repo_id in doomed:
             revisions.extend(rev.commit_hash for rev in repo.revisions)
     if not revisions:
-        return 0
+        return DeletionResult(0, kept_repos)
     strategy = cache.delete_revisions(*revisions)
     strategy.execute()
-    return len(revisions)
+    return DeletionResult(len(revisions), kept_repos)

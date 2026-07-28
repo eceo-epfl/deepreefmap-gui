@@ -548,11 +548,15 @@ class ModelManagementMixin(MixinBase):
 
         def _do_delete() -> None:
             try:
-                removed = delete_model(info)
-                if removed:
-                    self._sig_status_text.emit(f"Deleted cached files for {model_name}.")
+                result = delete_model(info)
+                if result.revisions_removed:
+                    message = f"Deleted cached files for {model_name}."
                 else:
-                    self._sig_status_text.emit(f"No cached revisions found for {model_name}.")
+                    message = f"No cached revisions found for {model_name}."
+                if result.kept_repos:
+                    # Otherwise a delete that frees nothing looks like a failure.
+                    message += f" Kept the files shared with {result.kept_summary()}."
+                self._sig_status_text.emit(message)
             except Exception as exc:
                 self._sig_status_text.emit(f"Delete failed: {str(exc)[:200]}")
             finally:

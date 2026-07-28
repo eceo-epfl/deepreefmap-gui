@@ -334,3 +334,142 @@ def test_silent_tqdm_reports_percent_without_opening_a_file() -> None:
     assert seen and seen[-1] == (100, 100)
     if before is not None:
         assert proc.num_fds() == before
+
+
+# --- deleting a model that shares its download ---------------------------
+#
+# Several catalogue entries point at one repo: loger and loger_star are two
+# checkpoint folders in a single 4.8 GB download, and each DINOv3 backbone is
+# listed both on its own and as the encoder a DPT head loads at first use.
+
+
+def _write_cache_repo_with_blobs(cache_root, repo_id, files):
+    """A cache repo with real blobs and snapshot symlinks, as scan_cache_dir expects.
+
+    The commit hash is derived from repo_id rather than fixed: delete_revisions
+    resolves a hash across the whole cache, so two repos sharing one would be
+    deleted together and which survives depends on scan order.
+    """
+    import hashlib
+    import os
+
+    repo_dir = cache_root / f"models--{repo_id.replace('/', '--')}"
+    commit = hashlib.sha1(repo_id.encode()).hexdigest()
+    (repo_dir / "refs").mkdir(parents=True, exist_ok=True)
+    (repo_dir / "refs" / "main").write_text(commit)
+    blobs = repo_dir / "blobs"
+    blobs.mkdir(parents=True, exist_ok=True)
+    snap = repo_dir / "snapshots" / commit
+    snap.mkdir(parents=True, exist_ok=True)
+    for rel, content in files.items():
+        data = content if isinstance(content, bytes) else content.encode()
+        blob = blobs / hashlib.sha256(data).hexdigest()
+        blob.write_bytes(data)
+        dest = snap / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        os.symlink(os.path.relpath(blob, dest.parent), dest)
+    return repo_dir
+
+
+@pytest.fixture
+def shared_repo_cache(tmp_path, monkeypatch):
+    """Two installed models backed by one repo, each materialising its own file."""
+    from deepreefmap_gui.models import manager as model_manager
+
+    cache = tmp_path / "hf"
+    monkeypatch.setattr(model_manager, "_HF_CACHE_ROOT", cache)
+    repo_dir = _write_cache_repo_with_blobs(
+        cache, "fake/shared", {"A/latest.pt": b"a-weights", "B/latest.pt": b"b-weights"}
+    )
+
+    def _entry(name, member):
+        dest = tmp_path / "ckpts" / name / "latest.pt"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"materialised")
+        return ModelInfo(
+            name=name,
+            kind="mapping",
+            hf_repos=["fake/shared"],
+            gated=False,
+            description="test",
+            materialise_to={member: dest},
+        )
+
+    first, second = _entry("first", "A/latest.pt"), _entry("second", "B/latest.pt")
+    monkeypatch.setattr(model_manager, "all_known_models", lambda: [first, second])
+    return model_manager, repo_dir, first, second
+
+
+def test_deleting_one_model_keeps_the_repo_its_sibling_needs(shared_repo_cache) -> None:
+    manager, repo_dir, first, second = shared_repo_cache
+    assert manager.is_model_cached(second)
+
+    result = manager.delete_model(first)
+
+    assert manager.is_model_cached(second), "sibling lost the weights it shares"
+    assert repo_dir.is_dir()
+    assert result.revisions_removed == 0
+    assert result.kept_repos == {"fake/shared": ["second"]}
+    assert result.kept_summary() == "second"
+
+
+def test_deleting_a_model_still_drops_its_own_materialised_file(shared_repo_cache) -> None:
+    """Keeping the shared repo must not keep the deleted entry looking installed."""
+    manager, _repo_dir, first, _second = shared_repo_cache
+
+    manager.delete_model(first)
+
+    assert not manager.is_model_cached(first)
+    assert not next(iter(first.materialise_to.values())).exists()
+
+
+def test_deleting_the_last_model_using_a_repo_removes_it(shared_repo_cache) -> None:
+    manager, repo_dir, first, second = shared_repo_cache
+
+    manager.delete_model(first)
+    result = manager.delete_model(second)
+
+    assert result.revisions_removed == 1
+    assert result.kept_repos == {}
+    assert not any(repo_dir.glob("snapshots/*/*"))
+
+
+def test_a_sibling_that_is_not_installed_does_not_pin_the_repo(shared_repo_cache) -> None:
+    """Listed in the catalogue is not the same as present on disk."""
+    manager, repo_dir, first, second = shared_repo_cache
+    next(iter(second.materialise_to.values())).unlink()
+    assert not manager.is_model_cached(second)
+
+    result = manager.delete_model(first)
+
+    assert result.revisions_removed == 1
+    assert result.kept_repos == {}
+    assert not any(repo_dir.glob("snapshots/*/*"))
+
+
+def test_a_materialised_file_two_entries_share_is_kept(tmp_path, monkeypatch) -> None:
+    """Discovered models are built at run time, so two entries can name the same
+    destination even though the shipped catalogue does not."""
+    from deepreefmap_gui.models import manager as model_manager
+
+    cache = tmp_path / "hf"
+    monkeypatch.setattr(model_manager, "_HF_CACHE_ROOT", cache)
+    _write_cache_repo_with_blobs(cache, "fake/one", {"latest.pt": b"w"})
+    _write_cache_repo_with_blobs(cache, "fake/two", {"latest.pt": b"w"})
+    dest = tmp_path / "ckpts" / "latest.pt"
+    dest.parent.mkdir(parents=True)
+    dest.write_bytes(b"materialised")
+
+    def _entry(name, repo):
+        return ModelInfo(
+            name=name, kind="mapping", hf_repos=[repo], gated=False,
+            description="test", materialise_to={"latest.pt": dest},
+        )
+
+    first, second = _entry("first", "fake/one"), _entry("second", "fake/two")
+    monkeypatch.setattr(model_manager, "all_known_models", lambda: [first, second])
+
+    model_manager.delete_model(first)
+
+    assert dest.exists()
+    assert model_manager.is_model_cached(second)
