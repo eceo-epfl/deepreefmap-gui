@@ -32,6 +32,12 @@ _TRANSFER_TIMEOUT_MS = 15_000
 _RETRY_BASE_S = 5.0
 _RETRY_MAX_S = 300.0
 
+# Nothing removed tiles once written, so the cache grew for the life of the
+# install. Pruning walks the tree, so it is amortised: only after enough new
+# tiles have landed to be worth the walk.
+_DISK_BUDGET_BYTES = 512 * 1024 * 1024
+_PRUNE_AFTER_BYTES = 16 * 1024 * 1024
+
 
 class TileCache(QObject):
     """Serves tiles from memory, then disk; missing tiles are fetched once.
@@ -50,6 +56,7 @@ class TileCache(QObject):
         # key -> (consecutive failures, monotonic time it may be tried again)
         self._failed: dict[tuple[int, int, int], tuple[int, float]] = {}
         self._network: QNetworkAccessManager | None = None
+        self._written_since_prune = 0
         self.network_enabled = True
 
     @property
@@ -131,8 +138,42 @@ class TileCache(QObject):
             disk_path.write_bytes(data)
         except OSError:
             logger.warning("Could not write tile cache at %s", disk_path, exc_info=True)
+        else:
+            self._written_since_prune += len(data)
+            if self._written_since_prune >= _PRUNE_AFTER_BYTES:
+                self._written_since_prune = 0
+                self._prune_disk_cache()
         self._remember(key, pixmap)
         self.tile_ready.emit(zoom, x, y)
+
+
+    def _prune_disk_cache(self) -> None:
+        """Drop the least recently written tiles until the cache fits its budget.
+
+        Oldest-first by mtime rather than by access: reading a tile does not
+        touch it, and mounting the cache with access times is not something this
+        can assume. A tile that falls out is re-fetched when next displayed.
+        """
+        root = tile_cache_dir() / self._layer.id
+        try:
+            tiles = [(p.stat().st_mtime, p.stat().st_size, p) for p in root.rglob("*.png")]
+        except OSError:
+            logger.warning("Could not read the tile cache at %s", root, exc_info=True)
+            return
+        total = sum(size for _, size, _ in tiles)
+        if total <= _DISK_BUDGET_BYTES:
+            return
+        removed = 0
+        for _, size, path in sorted(tiles):
+            if total <= _DISK_BUDGET_BYTES:
+                break
+            try:
+                path.unlink()
+            except OSError:
+                continue
+            total -= size
+            removed += 1
+        logger.info("Pruned %s tiles from %s, now %s bytes", removed, root, total)
 
 
 @lru_cache(maxsize=None)
