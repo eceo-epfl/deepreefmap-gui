@@ -127,6 +127,13 @@ class BatchMixin(MixinBase):
 
         self._set_form_enabled(False)
         self._batch_btn.setEnabled(False)
+        # Same transport controls a single run gets: start goes away so a second
+        # pipeline cannot be launched over this one, and stop/pause appear with
+        # events behind them for _on_stop_clicked to signal.
+        self._cancel_event = threading.Event()
+        self._pause_event = threading.Event()
+        self._pause_event.set()
+        self._begin_run_controls()
         self._status_label.setText(f"Batch starting: {len(jobs)} job(s)")
         self._progress_bar.setRange(0, len(jobs))
         self._progress_bar.setValue(0)
@@ -145,19 +152,30 @@ class BatchMixin(MixinBase):
         }
         self._pipeline_thread = threading.Thread(
             target=self._run_batch_worker,
-            args=(jobs, base_out, common),
+            args=(jobs, base_out, common, self._cancel_event, self._pause_event),
             daemon=True,
         )
         self._pipeline_thread.start()
 
     def _run_batch_worker(
-        self, jobs: list[_BatchJob], base_out: Path, common: dict
+        self,
+        jobs: list[_BatchJob],
+        base_out: Path,
+        common: dict,
+        cancel_event: threading.Event,
+        pause_event: threading.Event,
     ) -> None:
+        from deepreefmap.pipeline.artifacts import ReconstructionCancelled
         from deepreefmap_gui.profiling.instrumentation import instrumented_reconstruction
 
         ok = 0
         last_error = ""
         for idx, job in enumerate(jobs, start=1):
+            # Between jobs as well as inside one, so pausing does not let the
+            # next video start and stopping does not have to wait for it.
+            pause_event.wait()
+            if cancel_event.is_set():
+                break
             self._sig_batch_progress.emit(idx, len(jobs), job.name)
             video_path = Path(job.video).expanduser()
             if not video_path.exists():
@@ -176,9 +194,13 @@ class BatchMixin(MixinBase):
                     end_s=job.end_s,
                     run_name=job.name,
                     viewer=None,
+                    cancel_event=cancel_event,
+                    pause_event=pause_event,
                     **common,
                 )
                 ok += 1
+            except ReconstructionCancelled:
+                break
             except Exception as exc:
                 logger.exception("Batch job %s failed", job.name)
                 last_error = f"{job.name}: {exc}"
@@ -194,7 +216,13 @@ class BatchMixin(MixinBase):
     def _on_batch_done(self, ok: int, total: int, last_error: str) -> None:
         self._progress_bar.setValue(total)
         self._reset_progress_bars()
-        if ok == total:
+        # Read off the event rather than routing a flag through the signal: a
+        # stopped batch reports fewer jobs than it started, which on its own
+        # reads the same as a batch that failed most of them.
+        cancel = getattr(self, "_cancel_event", None)
+        if cancel is not None and cancel.is_set():
+            self._status_label.setText(f"Batch stopped: {ok}/{total} job(s) finished.")
+        elif ok == total:
             self._status_label.setText(f"Batch complete: {ok}/{total} job(s) succeeded.")
         elif last_error:
             self._status_label.setText(
@@ -204,4 +232,5 @@ class BatchMixin(MixinBase):
             self._status_label.setText(f"Batch finished: {ok}/{total} succeeded.")
         self._set_form_enabled(True)
         self._batch_btn.setEnabled(True)
+        self._end_run_controls()
         self._refresh_data_manager()
