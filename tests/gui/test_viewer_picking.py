@@ -257,18 +257,6 @@ def test_a_frustum_point_id_past_the_last_camera_does_not_report_a_frame(viewer)
     assert cleared
 
 
-def test_a_per_actor_frustum_reports_its_own_frame_id(viewer) -> None:
-    viewer._final_index = _index()
-    mesh = pv.PolyData(np.zeros((16, 3), dtype=np.float32))
-    viewer._frustum_actors = {42: viewer._plotter.add_mesh(mesh, style="points")}
-    frames: list[int] = []
-    viewer.frustum_picked.connect(frames.append)
-
-    viewer._process_pick(mesh, 3)
-
-    assert frames == [42]
-
-
 def test_only_final_cloud_actors_are_offered_to_the_picker(viewer) -> None:
     """The live and simple actors are absent from _process_pick's lookup tables,
     so offering them would produce picks that silently resolve to nothing."""

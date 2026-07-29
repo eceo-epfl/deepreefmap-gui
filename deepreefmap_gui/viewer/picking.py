@@ -24,7 +24,6 @@ if TYPE_CHECKING:
         _class_names: dict[int, str]
         _final_index: FinalCloudIndex | None
         _frustum_batch_actor: Any
-        _frustum_actors: dict[int, Any]
         _frustum_frame_ids: list[int]
         _frustum_fid_to_idx: dict[int, int]
         _frustum_pts_per: int
@@ -98,7 +97,6 @@ class ViewerPickingMixin(_ViewerPickingHost):
         # from _process_pick's lookup tables, so a pick on them never resolves.
         if self._frustum_batch_actor is not None:
             yield self._frustum_batch_actor
-        yield from self._frustum_actors.values()
         yield from self._class_actors.values()
 
     @staticmethod
@@ -226,17 +224,6 @@ class ViewerPickingMixin(_ViewerPickingHost):
                         return
             except Exception:
                 pass
-
-        # Legacy per-actor frustum pick
-        for fid, actor in self._frustum_actors.items():
-            try:
-                mapper = actor.GetMapper()
-                if mapper is not None and mapper.GetInput() is mesh:
-                    self.frustum_picked.emit(int(fid))
-                    self.point_picked_clear.emit()
-                    return
-            except Exception:
-                continue
 
         picked_cid: int | None = None
         for cid, actor in self._class_actors.items():
