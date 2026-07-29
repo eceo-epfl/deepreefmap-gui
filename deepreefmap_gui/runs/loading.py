@@ -48,6 +48,12 @@ def _manifest_transect_crop(manifest: dict) -> TransectCropParams | None:
 class RunLoadingMixin(MixinBase):
     """DeepReefMapWindow methods for submitting pipeline runs and loading cached runs."""
 
+    # Bumped per load so a result that arrives after a newer load started can be
+    # told apart from the current one. Ordering is not enough on its own: a run
+    # opened first can finish last, because the slow path takes minutes where a
+    # scene-file hit takes under a second.
+    _load_generation = 0
+
     def _cancel_load(self) -> None:
         # Soft cancel: the worker thread can't be interrupted mid-read, but
         # we set a flag so _apply_loaded_run drops the result when it eventually
@@ -306,15 +312,20 @@ class RunLoadingMixin(MixinBase):
 
     def _auto_load_run(self, run_dir: Path) -> None:
         self._load_cancelled = False
+        self._load_generation += 1
         self._status_label.setText(f"Loading run from {run_dir.name}…")
         self._begin_progress(self._load_model)
         # Indeterminate per-step bar until the first stage callback arrives.
         self._progress_bar.setRange(0, 0)
         self._spinner_stop.set_stopping(False)
         self._spinner_stop.setVisible(True)
-        threading.Thread(target=self._load_run_worker, args=(run_dir,), daemon=True).start()
+        threading.Thread(
+            target=self._load_run_worker,
+            args=(run_dir, self._load_generation),
+            daemon=True,
+        ).start()
 
-    def _load_run_worker(self, run_dir: Path) -> None:
+    def _load_run_worker(self, run_dir: Path, generation: int) -> None:
         try:
             from deepreefmap_gui.runs.loaded_run import load_run
 
@@ -326,10 +337,10 @@ class RunLoadingMixin(MixinBase):
             # here it would run against the viewer's point upload and report into
             # the middle of the load's own phases.
             result = load_run(run_dir, regenerate_scene_file=False)
-            self._sig_run_loaded.emit(result, str(run_dir), "")
+            self._sig_run_loaded.emit(result, str(run_dir), "", generation)
         except Exception as exc:
             logger.exception("Failed to load cached run")
-            self._sig_run_loaded.emit(None, str(run_dir), str(exc)[:300])
+            self._sig_run_loaded.emit(None, str(run_dir), str(exc)[:300], generation)
 
     _STAGE_LABELS = {
         "manifest": "Reading manifest",
@@ -387,11 +398,26 @@ class RunLoadingMixin(MixinBase):
         phase_key = _LOAD_STAGE_TO_PHASE.get(stage, stage)
         self._apply_progress(phase_key, label, current=cur, total=tot)
 
-    def _apply_loaded_run(self, result: GuiLoadedRun | None, run_dir_str: str, error: str) -> None:
+    def _apply_loaded_run(
+        self,
+        result: GuiLoadedRun | None,
+        run_dir_str: str,
+        error: str,
+        generation: int,
+    ) -> None:
         import time as _time
         from deepreefmap.pipeline.run_loader import GEOMETRY_ONLY_MODE
 
         _t0 = _time.monotonic()
+
+        # Superseded by a later load. Release what it opened and leave the
+        # window alone -- the bars and the spinner belong to that later load
+        # now, so resetting them here would blank a load still in progress.
+        if generation != self._load_generation:
+            logger.info("Dropping superseded load of %s", run_dir_str)
+            if result is not None and result.scene_accessor is not None:
+                result.scene_accessor.close()
+            return
 
         self._spinner_stop.setVisible(False)
 

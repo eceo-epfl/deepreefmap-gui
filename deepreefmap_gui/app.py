@@ -71,7 +71,7 @@ class DeepReefMapWindow(
     _sig_download_progress = Signal(str, int)
     _sig_pack_progress = Signal(str, int, int)
     _sig_pack_done = Signal(bool, str)
-    _sig_run_loaded = Signal(object, str, str)
+    _sig_run_loaded = Signal(object, str, str, int)
     _sig_load_progress = Signal(str, int, int)
     _sig_scene_file_done = Signal()
     _sig_batch_progress = Signal(int, int, str)

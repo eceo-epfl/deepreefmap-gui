@@ -636,9 +636,23 @@ class UiModeMixin(MixinBase):
             _set_widget_value(getattr(self, attr), self._form_defaults[attr])
 
     def _survey_store(self) -> SurveyStore:
-        """Store keyed to the current output root; reopened when the root changes."""
+        """Store keyed to the current output root; reopened when the root changes.
+
+        Held fixed for as long as a batch runs. The worker was handed this store
+        and writes each pass status through it, and SurveyStore's connections are
+        thread-local, so closing it here would not touch the worker's own
+        connection: the batch would carry on writing to a database the window no
+        longer reads. The batch owns the root it started under.
+        """
         db_path = Path(self._out_root_input.text()).expanduser() / SURVEY_DB_NAME
         store = self._survey_store_obj
+        if store is not None and store.path != db_path and self._survey_worker_running:
+            logger.warning(
+                "Output root changed to %s while a batch is running; keeping %s until it ends",
+                db_path,
+                store.path,
+            )
+            return store
         if store is None or store.path != db_path:
             if store is not None:
                 store.close()
