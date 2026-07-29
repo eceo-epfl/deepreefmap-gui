@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import time
 
+from PySide6.QtCore import QTimer
+from PySide6.QtWidgets import QApplication
+
+from deepreefmap_gui.core.theme import PRIMARY
 from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.profiling.eta import (
     RunEtaEstimator,
@@ -10,10 +14,6 @@ from deepreefmap_gui.profiling.eta import (
     stage_for_phase,
     stage_label_for_phase,
 )
-from deepreefmap_gui.core.theme import PRIMARY
-
-from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QApplication
 
 
 class ProgressModel:

@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-from deepreefmap_gui.core.window_protocol import MixinBase
-
 import logging
 import sqlite3
 import uuid
-from pathlib import Path
-
 from functools import partial
+from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QGuiApplication
@@ -34,9 +31,10 @@ from PySide6.QtWidgets import (
 from deepreefmap_gui.core.icons import copy_icon, crosshair_icon
 from deepreefmap_gui.core.theme import BORDER, GUTTER, PRIMARY, RADIUS
 from deepreefmap_gui.core.widgets import EmptyState, section_card
-from deepreefmap_gui.simple.progress import plan_state
+from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.map.overlays import OverlayTransect
 from deepreefmap_gui.map.widget import SlippyMapWidget
+from deepreefmap_gui.simple.progress import plan_state
 from deepreefmap_gui.survey.models import Transect, haversine_m
 from deepreefmap_gui.survey.models.exporters import save_transects_csv
 from deepreefmap_gui.survey.models.importers import (

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from deepreefmap_gui.core.window_protocol import MixinBase
-
 import logging
 import threading
 from pathlib import Path
 
 from PySide6.QtWidgets import QFileDialog
+
+from deepreefmap_gui.core.window_protocol import MixinBase
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +187,7 @@ class BatchMixin(MixinBase):
         pause_event: threading.Event,
     ) -> None:
         from deepreefmap.pipeline.artifacts import ReconstructionCancelled
+
         from deepreefmap_gui.profiling.instrumentation import instrumented_reconstruction
 
         ok = 0

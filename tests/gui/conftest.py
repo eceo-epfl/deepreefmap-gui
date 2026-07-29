@@ -89,6 +89,7 @@ def make_window(qapp):
 
     def _make():
         from deepreefmap.config.classes import load_classes
+
         from deepreefmap_gui.app import DeepReefMapWindow
 
         win = DeepReefMapWindow(load_classes(), None)

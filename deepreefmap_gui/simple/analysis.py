@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from deepreefmap_gui.core.window_protocol import MixinBase
-
 import logging
 import uuid
 from pathlib import Path
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -27,9 +26,7 @@ from PySide6.QtWidgets import (
 
 from deepreefmap_gui.core.theme import GUTTER, TEXT_MUTED
 from deepreefmap_gui.core.widgets import EmptyState, section_card
-
-from PySide6.QtGui import QColor
-
+from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.cover import COVER_LEVELS
 from deepreefmap_gui.map.overlays import OverlayTransect
 from deepreefmap_gui.map.widget import SlippyMapWidget

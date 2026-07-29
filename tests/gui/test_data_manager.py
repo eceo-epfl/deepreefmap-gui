@@ -1,12 +1,12 @@
 import json
 from pathlib import Path
 
+from _factories import seed_survey_run, write_run
+
 from deepreefmap_gui.runs.run_cards import RUN_META_ROLE
 from deepreefmap_gui.survey.catalogue import UNASSIGNED_TITLE
 from deepreefmap_gui.survey.models import Transect
 from deepreefmap_gui.survey.store import SurveyStore
-
-from _factories import seed_survey_run, write_run
 
 
 def write_survey_run(root: Path, dir_name: str) -> Transect:

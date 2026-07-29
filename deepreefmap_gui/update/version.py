@@ -7,8 +7,8 @@ from pathlib import Path
 
 from PySide6.QtGui import QColor
 
-from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.core.theme import UPDATE
+from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.packaging.releases import (
     current_version,
     fetch_releases,

@@ -8,13 +8,13 @@ from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPaintEvent, QPen, QWheelEvent
 from PySide6.QtWidgets import QToolTip, QWidget
 
+from deepreefmap_gui.core.theme import BORDER, PREVIEW_BG
 from deepreefmap_gui.map.overlays import (
     ENDPOINT_HIT_PX,
     LINE_HIT_PX,
     OverlayTransect,
     segment_distance_px,
 )
-from deepreefmap_gui.core.theme import BORDER, PREVIEW_BG
 from deepreefmap_gui.map.tile_cache import TileCache, shared_tile_cache
 from deepreefmap_gui.map.tile_math import TILE_SIZE, clamp_zoom, deg2tile, fit_zoom, tile2deg
 

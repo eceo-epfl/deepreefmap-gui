@@ -1,8 +1,9 @@
 import json
 
 import pytest
-
+from _factories import VIDEO_HASH, make_transect, make_video
 from deepreefmap.config.classes import load_classes
+
 from deepreefmap_gui.survey.analysis import (
     assemble_transect_covers,
     cover_labels,
@@ -10,8 +11,6 @@ from deepreefmap_gui.survey.analysis import (
     reproducibility_groups,
 )
 from deepreefmap_gui.survey.models import RunRecord, TransectPass
-
-from _factories import VIDEO_HASH, make_transect, make_video
 
 
 @pytest.fixture(scope="module")

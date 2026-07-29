@@ -172,6 +172,7 @@ extend-exclude = ["tests/e2e/_cache", "tests/e2e/_work"]
 # lock in behaviour rather than schedule a refactor.
 extend-select = [
   "E4", "E7", "E9", "W", "E501",
+  "I",       # import sorting: fully autofixable, so it stays sorted for free
   "A",       # builtin shadowing
   "ASYNC", "EXE", "FA", "INT", "SLOT", "TID", "YTT", "PYI",
   "B",       # bugbear: mutable defaults, loop-variable capture in closures

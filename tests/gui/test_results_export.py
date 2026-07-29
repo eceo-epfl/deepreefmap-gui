@@ -16,11 +16,10 @@ from pathlib import Path
 
 import numpy as np
 import yaml
-from PySide6.QtWidgets import QFileDialog
-
 from deepreefmap.config.classes import load_classes
 from deepreefmap.io.exports import save_ortho_grid
 from deepreefmap.pointcloud.grid_ortho import OrthoGrid
+from PySide6.QtWidgets import QFileDialog
 
 PUBLISHED_COVER = {
     "classes": {

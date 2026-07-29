@@ -1,10 +1,9 @@
 import json
 
 import pytest
+from _factories import seed_pass
 
 from deepreefmap_gui.survey.models import RunRecord
-
-from _factories import seed_pass
 
 
 @pytest.fixture

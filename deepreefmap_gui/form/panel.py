@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from deepreefmap_gui.core.window_protocol import MixinBase
-
 import logging
 import threading
 from pathlib import Path
@@ -45,13 +43,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from deepreefmap_gui.system.log_view import LogView, install_qt_log_handler
-from deepreefmap_gui.runs.progress import (
-    _LOAD_PHASES,
-    _RECON_PHASES,
-    ProgressModel,
-)
-from deepreefmap_gui.packaging.releases import current_version, pyapp_binary_path
+from deepreefmap_gui.core.spinner import SpinnerStopButton
 from deepreefmap_gui.core.theme import (
     BAR_HEIGHT,
     BLOCK,
@@ -74,10 +66,17 @@ from deepreefmap_gui.core.theme import (
     WARN_TEXT,
     bar_qss,
 )
-from deepreefmap_gui.core.spinner import SpinnerStopButton
+from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.form.time_edit import TimeSecondsEdit
+from deepreefmap_gui.packaging.releases import current_version, pyapp_binary_path
+from deepreefmap_gui.runs.progress import (
+    _LOAD_PHASES,
+    _RECON_PHASES,
+    ProgressModel,
+)
 from deepreefmap_gui.runs.sunburst import SunburstWidget
 from deepreefmap_gui.runs.timing_popup import HoverColumn
+from deepreefmap_gui.system.log_view import LogView, install_qt_log_handler
 
 logger = logging.getLogger(__name__)
 
@@ -1512,8 +1511,8 @@ class FormPanelMixin(MixinBase):
             notice.setVisible(False)
 
         try:
-            from deepreefmap_gui.profiling.run_history import history_key, load_expected_peaks
             from deepreefmap_gui.profiling.memory_estimate import estimate_peak_bytes, preflight_check
+            from deepreefmap_gui.profiling.run_history import history_key, load_expected_peaks
             from deepreefmap_gui.profiling.system_probe import format_bytes, probe_system
 
             fps = self._fps_spin.value()

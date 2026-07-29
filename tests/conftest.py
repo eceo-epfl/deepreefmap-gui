@@ -3,7 +3,6 @@ import tempfile
 
 import pytest
 
-
 if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 

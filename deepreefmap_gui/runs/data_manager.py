@@ -46,6 +46,8 @@ from deepreefmap_gui.core.theme import (
 )
 from deepreefmap_gui.core.widgets import EmptyState, section_card
 from deepreefmap_gui.core.window_protocol import MixinBase
+from deepreefmap_gui.profiling.eta import format_duration
+from deepreefmap_gui.profiling.system_probe import format_bytes
 from deepreefmap_gui.runs.run_cards import (
     RUN_META_ROLE,
     RunCardDelegate,
@@ -53,8 +55,6 @@ from deepreefmap_gui.runs.run_cards import (
     format_run_metadata,
     related_run_counts,
 )
-from deepreefmap_gui.profiling.eta import format_duration
-from deepreefmap_gui.profiling.system_probe import format_bytes
 from deepreefmap_gui.survey import catalogue
 from deepreefmap_gui.survey.catalogue import FacetGroup, RunEntry
 from deepreefmap_gui.survey.models.transect_pass import PASS_DIRECTIONS

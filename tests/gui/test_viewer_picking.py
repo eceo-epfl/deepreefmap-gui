@@ -14,9 +14,8 @@ rendered frame. Its numeric core, `_select_pick_pixel`, is covered in
 from __future__ import annotations
 
 import numpy as np
-import pyvista as pv
 import pytest
-
+import pyvista as pv
 from deepreefmap.pointcloud.final_cloud_index import FinalCloudIndex
 
 CORAL, SAND = 1, 2

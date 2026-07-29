@@ -1,17 +1,16 @@
 from __future__ import annotations
 
-from deepreefmap_gui.core.window_protocol import MixinBase
-
 import json
 import logging
 import threading
 from pathlib import Path
-
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QFileDialog, QProgressDialog
+
+from deepreefmap_gui.core.window_protocol import MixinBase
 
 if TYPE_CHECKING:
     from collections.abc import Callable

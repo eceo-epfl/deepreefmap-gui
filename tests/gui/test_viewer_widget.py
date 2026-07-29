@@ -105,7 +105,6 @@ CLASS_IDS = (1, 2, 3, 4)
 def _semantic_scene(viewer):
     """Populate the viewer the way a finished load does: an index plus one actor per class."""
     import pyvista as pv
-
     from deepreefmap.pointcloud.final_cloud_index import FinalCloudIndex
 
     xyz = np.zeros((2, 3), dtype=np.float32)

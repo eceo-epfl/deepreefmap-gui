@@ -2,10 +2,9 @@ import json
 import time
 
 import pytest
+from _factories import make_transect
 
 from deepreefmap_gui.simple.batch import _COL_STATUS, _COL_TRANSECT
-
-from _factories import make_transect
 
 
 @pytest.fixture

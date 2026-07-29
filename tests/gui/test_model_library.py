@@ -15,8 +15,7 @@ import tarfile
 
 import pytest
 
-from deepreefmap_gui.models import library
-from deepreefmap_gui.models import manager
+from deepreefmap_gui.models import library, manager
 from deepreefmap_gui.models.manager import ModelInfo, is_model_cached
 
 

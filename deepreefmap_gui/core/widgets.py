@@ -16,12 +16,12 @@ from PySide6.QtWidgets import (
 from deepreefmap_gui.core.theme import (
     BORDER,
     CARD_BG,
+    ERROR,
     RADIUS,
     SUCCESS,
     TEXT_DIM,
     TEXT_MUTED,
     WARNING,
-    ERROR,
 )
 
 

@@ -13,13 +13,18 @@ import numpy as np
 
 if TYPE_CHECKING:
     import pyvista as pv
-
     from deepreefmap.config.classes import ClassConfig
     from deepreefmap.pipeline.artifacts import (
         FrameBatch,
         MappingSequenceResult,
         SemanticPointCloud,
     )
+from deepreefmap.pointcloud.final_cloud_index import FinalCloudIndex, build_final_cloud_index
+from deepreefmap.pointcloud.live_frame_cloud import (
+    LiveFrameCloudCache,
+    build_enabled_label_lut,
+    mask_points_by_enabled_lut,
+)
 from PySide6.QtCore import QEvent, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
@@ -32,13 +37,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from deepreefmap.pointcloud.final_cloud_index import FinalCloudIndex, build_final_cloud_index
-from deepreefmap.pointcloud.live_frame_cloud import (
-    LiveFrameCloudCache,
-    build_enabled_label_lut,
-    mask_points_by_enabled_lut,
-)
-from deepreefmap_gui.viewer.legend import LegendOverlay
 from deepreefmap_gui.core.theme import (
     BORDER,
     CARD_BG,
@@ -50,6 +48,7 @@ from deepreefmap_gui.core.theme import (
     SLIDER_HANDLE,
     TEXT_SECONDARY,
 )
+from deepreefmap_gui.viewer.legend import LegendOverlay
 from deepreefmap_gui.viewer.picking import ViewerPickingMixin
 from deepreefmap_gui.viewer.render import (
     _build_frustum_lines,

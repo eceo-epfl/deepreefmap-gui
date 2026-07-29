@@ -2,25 +2,22 @@
 
 from __future__ import annotations
 
-from deepreefmap_gui.core.window_protocol import MixinBase
-
 import json
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, SupportsInt, cast
 
-
-from deepreefmap_gui.system.log_view import close_run_log_file
+from deepreefmap_gui.core.theme import BORDER, OVERLAY_TEXT, PRIMARY, TEXT_MUTED, TEXT_SECONDARY
+from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.profiling.eta import STAGE_MESSAGE_TO_PHASE as _STAGE_MESSAGE_TO_PHASE
 from deepreefmap_gui.runs.progress import _SETUP_MESSAGE_TO_PHASE
-from deepreefmap_gui.core.theme import BORDER, OVERLAY_TEXT, PRIMARY, TEXT_MUTED, TEXT_SECONDARY
+from deepreefmap_gui.system.log_view import close_run_log_file
 
 if TYPE_CHECKING:
-    from PySide6.QtWidgets import QToolButton, QVBoxLayout, QWidget
-
     from deepreefmap.config.classes import ClassConfig
     from deepreefmap.pipeline.artifacts import SemanticPointCloud
     from deepreefmap.pointcloud.grid_ortho import OrthoGrid
+    from PySide6.QtWidgets import QToolButton, QVBoxLayout, QWidget
 
 logger = logging.getLogger(__name__)
 

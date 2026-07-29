@@ -1,13 +1,12 @@
 import json
 
 import pytest
+from _factories import make_transect, seed_survey_run, write_run
 
 from deepreefmap_gui.survey import catalogue
 from deepreefmap_gui.survey.catalogue import UNASSIGNED_TITLE
 from deepreefmap_gui.survey.models import RunRecord, TransectPass
 from deepreefmap_gui.survey.store import SurveyStore
-
-from _factories import make_transect, seed_survey_run, write_run
 
 
 @pytest.fixture

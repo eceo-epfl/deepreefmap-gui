@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from deepreefmap_gui.core.window_protocol import MixinBase
-
 import logging
 import sqlite3
 import threading
@@ -13,6 +11,7 @@ from datetime import datetime
 from functools import partial
 from pathlib import Path
 
+from deepreefmap.pipeline.artifacts import ReconstructionCancelled
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
@@ -39,9 +38,9 @@ from deepreefmap_gui.core.theme import (
     WARN_TEXT,
 )
 from deepreefmap_gui.core.widgets import EmptyState, StatusPillDelegate, section_card
-from deepreefmap_gui.simple.progress import ATTENTION, BLOCKED, run_gate
+from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.form.video_scrub import VideoScrubDialog
-from deepreefmap.pipeline.artifacts import ReconstructionCancelled
+from deepreefmap_gui.simple.progress import ATTENTION, BLOCKED, run_gate
 from deepreefmap_gui.survey.models import (
     PASS_DIRECTIONS,
     RunRecord,

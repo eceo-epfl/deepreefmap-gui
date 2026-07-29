@@ -11,10 +11,9 @@ from PySide6.QtCore import QObject, QUrl, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 
-from deepreefmap_gui.paths import tile_cache_dir
-
 from deepreefmap_gui.map.layers import TileLayer
 from deepreefmap_gui.packaging.releases import current_version
+from deepreefmap_gui.paths import tile_cache_dir
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +144,6 @@ class TileCache(QObject):
                 self._prune_disk_cache()
         self._remember(key, pixmap)
         self.tile_ready.emit(zoom, x, y)
-
 
     def _prune_disk_cache(self) -> None:
         """Drop the least recently written tiles until the cache fits its budget.

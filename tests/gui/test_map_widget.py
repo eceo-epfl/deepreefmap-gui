@@ -1,5 +1,4 @@
 import pytest
-
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtTest import QTest

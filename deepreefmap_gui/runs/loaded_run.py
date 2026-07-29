@@ -15,10 +15,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 import numpy as np
-
 from deepreefmap.config.classes import ClassConfig
-from deepreefmap.pipeline.artifacts import FrameBatch, MappingSequenceResult, SemanticPointCloud
 from deepreefmap.pipeline import resume as resume_mod
+from deepreefmap.pipeline.artifacts import FrameBatch, MappingSequenceResult, SemanticPointCloud
 from deepreefmap.pipeline.run_loader import (
     SEMANTIC_MODE,
     _world_points_fallback_warning,

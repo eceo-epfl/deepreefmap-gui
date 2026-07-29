@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from deepreefmap.config.classes import ClassConfig
+
 from deepreefmap_gui.cover import aggregate_cover
 from deepreefmap_gui.survey.store import SurveyStore
 

@@ -6,14 +6,12 @@ import logging
 from typing import TYPE_CHECKING, Any, Callable
 
 import numpy as np
-
 from PySide6.QtCore import Qt, QTimer
 
 if TYPE_CHECKING:
+    from deepreefmap.pointcloud.final_cloud_index import FinalCloudIndex
     from PySide6.QtCore import Signal
     from PySide6.QtWidgets import QWidget
-
-    from deepreefmap.pointcloud.final_cloud_index import FinalCloudIndex
 
     class _ViewerPickingHost(QWidget):
         # --- plotter + actor tables --------------------------------------
