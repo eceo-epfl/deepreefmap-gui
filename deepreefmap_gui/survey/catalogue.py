@@ -245,10 +245,6 @@ def group_stats(entries: list[RunEntry]) -> GroupStats:
     )
 
 
-def runs_facet(entries: list[RunEntry]) -> list[RunEntry]:
-    return list(entries)
-
-
 def transects_facet(
     entries: list[RunEntry], transects: Iterable[Transect] = ()
 ) -> list[FacetGroup]:

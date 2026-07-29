@@ -79,12 +79,6 @@ class EmptyState(QWidget):
 
         layout.addStretch(1)
 
-    def set_text(self, message: str, hint: str = "") -> None:
-        self._message.setText(message)
-        self._hint.setText(hint)
-        self._hint.setVisible(bool(hint))
-
-
 # Run statuses come from SurveyStore; anything unrecognised stays neutral.
 _STATUS_COLORS = {
     "succeeded": SUCCESS,

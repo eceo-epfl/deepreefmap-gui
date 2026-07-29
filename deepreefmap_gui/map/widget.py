@@ -29,7 +29,6 @@ class SlippyMapWidget(QWidget):
     map_clicked = Signal(float, float)
     transect_clicked = Signal(str)
     transect_endpoint_moved = Signal(str, str, float, float)
-    view_changed = Signal()
 
     def __init__(self, cache: TileCache | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -55,7 +54,6 @@ class SlippyMapWidget(QWidget):
         self._center = (lat, lon)
         self._zoom = clamp_zoom(zoom)
         self.update()
-        self.view_changed.emit()
 
     def set_transects(self, transects: list[OverlayTransect]) -> None:
         self._transects = list(transects)
@@ -261,8 +259,6 @@ class SlippyMapWidget(QWidget):
             else:
                 lat, lon = self.latlon_at(event.position())
                 self.map_clicked.emit(lat, lon)
-        else:
-            self.view_changed.emit()
         self._press_pos = None
         self._press_center_tile = None
         self._dragging_endpoint = None
@@ -282,4 +278,3 @@ class SlippyMapWidget(QWidget):
         cy = ty - (anchor.y() - self.height() / 2) / TILE_SIZE
         self._center = tile2deg(cx, cy, self._zoom)
         self.update()
-        self.view_changed.emit()

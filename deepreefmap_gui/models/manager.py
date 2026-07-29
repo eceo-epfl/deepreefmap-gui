@@ -326,10 +326,6 @@ def hf_cache_root() -> Path:
     return _HF_CACHE_ROOT
 
 
-def loger_ckpts_root() -> Path:
-    return _LOGER_CKPTS
-
-
 def hf_cache_dir(repo_id: str) -> Path:
     return _hf_cache_dir(repo_id)
 

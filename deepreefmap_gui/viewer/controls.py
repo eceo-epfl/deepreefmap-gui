@@ -64,15 +64,6 @@ class ViewerControlsMixin(MixinBase):
         self._warnings_label_running.setText(text)
         self._warnings_label_running.setVisible(visible)
 
-    def _cancel_load(self) -> None:
-        # Soft cancel: the worker thread can't be interrupted mid-read, but
-        # we set a flag so _apply_loaded_run drops the result when it eventually
-        # arrives. The thread is a daemon and will exit with the process.
-        self._load_cancelled = True
-        self._spinner_stop.setVisible(False)
-        self._reset_progress_bars()
-        self._status_label.setText("Load cancelled.")
-
     def _on_viewer_control_changed(self) -> None:
         if not self._viewer.has_scene_data:
             return
