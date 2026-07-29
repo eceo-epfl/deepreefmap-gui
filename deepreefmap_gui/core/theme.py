@@ -100,7 +100,11 @@ def _chevron_file(direction: str, color: str, size: int = 16) -> str:
         painter.drawLine(QPointF(mid, mid + drop / 2), QPointF(mid + arm, mid - drop / 2))
         painter.end()
         pixmap.save(str(path))
-    # Qt stylesheet urls take forward slashes on every platform.
+    # Qt stylesheet urls take forward slashes on every platform. Callers quote
+    # the result: this lands under the user's cache directory, which on Windows
+    # sits below a profile name that routinely contains a space, and an unquoted
+    # url() stops parsing there -- taking every rule after it in the block with
+    # it, so the combo and spin arrows all disappear.
     return path.as_posix()
 
 
@@ -118,8 +122,8 @@ QComboBox::drop-down {{
     border: none;
     width: 20px;
 }}
-QComboBox::down-arrow {{ image: url({down}); width: 12px; height: 12px; }}
-QComboBox::down-arrow:disabled {{ image: url({down_off}); }}
+QComboBox::down-arrow {{ image: url("{down}"); width: 12px; height: 12px; }}
+QComboBox::down-arrow:disabled {{ image: url("{down_off}"); }}
 QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {{
     subcontrol-origin: border;
     border: none;
@@ -128,13 +132,13 @@ QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {{
 }}
 QAbstractSpinBox::up-button {{ subcontrol-position: top right; }}
 QAbstractSpinBox::down-button {{ subcontrol-position: bottom right; }}
-QAbstractSpinBox::up-arrow {{ image: url({up}); width: 10px; height: 10px; }}
-QAbstractSpinBox::down-arrow {{ image: url({down}); width: 10px; height: 10px; }}
+QAbstractSpinBox::up-arrow {{ image: url("{up}"); width: 10px; height: 10px; }}
+QAbstractSpinBox::down-arrow {{ image: url("{down}"); width: 10px; height: 10px; }}
 QAbstractSpinBox::up-arrow:disabled, QAbstractSpinBox::up-arrow:off {{
-    image: url({up_off});
+    image: url("{up_off}");
 }}
 QAbstractSpinBox::down-arrow:disabled, QAbstractSpinBox::down-arrow:off {{
-    image: url({down_off});
+    image: url("{down_off}");
 }}
 """
 

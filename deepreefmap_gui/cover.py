@@ -120,7 +120,7 @@ def save_cover_csv(path: Path, cover: dict[str, object]) -> None:
                 )
             )
     rows.sort(key=lambda r: r[2], reverse=True)
-    with path.open("w", newline="") as fh:
+    with path.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
         writer.writerow(["class_id", "name", "fraction", "count"])
         for cid, name, frac, count in rows:
@@ -147,7 +147,7 @@ def save_cover_csv_levels(
             reverse=True,
         )
         path = out_dir / f"{prefix}_{level}.csv"
-        with path.open("w", newline="") as fh:
+        with path.open("w", newline="", encoding="utf-8") as fh:
             writer = csv.writer(fh)
             writer.writerow(["name", "fraction", "count"])
             for name, frac, count in rows:

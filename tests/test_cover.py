@@ -104,7 +104,7 @@ def test_aggregate_skips_a_non_integer_class_key() -> None:
 
 
 def _read_csv(path: Path) -> list[dict[str, str]]:
-    with path.open() as fh:
+    with path.open(encoding="utf-8") as fh:
         return list(csv.DictReader(fh))
 
 

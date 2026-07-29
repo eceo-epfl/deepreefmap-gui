@@ -32,9 +32,13 @@ def _attach_parent_console() -> None:
 
         if not ctypes.windll.kernel32.AttachConsole(-1):  # ATTACH_PARENT_PROCESS
             return
-        sys.stdout = open("CONOUT$", "w", buffering=1)  # noqa: SIM115
-        sys.stderr = open("CONOUT$", "w", buffering=1)  # noqa: SIM115
-        sys.stdin = open("CONIN$")  # noqa: SIM115
+        # encoding="locale" is the deliberate choice here, not an omission: these
+        # are the console's own streams, so they have to match whatever code page
+        # the attached console is using. Forcing utf-8 would mojibake output on a
+        # console that is not.
+        sys.stdout = open("CONOUT$", "w", buffering=1, encoding="locale")  # noqa: SIM115
+        sys.stderr = open("CONOUT$", "w", buffering=1, encoding="locale")  # noqa: SIM115
+        sys.stdin = open("CONIN$", encoding="locale")  # noqa: SIM115
     except Exception:
         pass
 
@@ -46,11 +50,11 @@ def _ensure_stdio_streams() -> None:
     and tqdm dies on its first refresh, killing the reconstruction.
     """
     if sys.stdout is None:
-        sys.stdout = open(os.devnull, "w")  # noqa: SIM115
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115
     if sys.stderr is None:
-        sys.stderr = open(os.devnull, "w")  # noqa: SIM115
+        sys.stderr = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115
     if sys.stdin is None:
-        sys.stdin = open(os.devnull)  # noqa: SIM115
+        sys.stdin = open(os.devnull, encoding="utf-8")  # noqa: SIM115
 
 
 def _refresh_uninstall_display_version() -> None:

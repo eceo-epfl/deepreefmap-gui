@@ -70,7 +70,7 @@ def _load_published_run(window, tmp_path: Path) -> Path:
 
 
 def _fine_csv_fractions(path: Path) -> dict[str, float]:
-    with path.open() as fh:
+    with path.open(encoding="utf-8") as fh:
         return {row["name"]: float(row["fraction"]) for row in csv.DictReader(fh)}
 
 

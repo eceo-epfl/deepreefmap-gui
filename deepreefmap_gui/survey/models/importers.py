@@ -31,7 +31,7 @@ def import_transects_csv(path: Path) -> list[Transect]:
     Required columns: name, start_lat, start_lon, end_lat, end_lon.
     Optional: length_m, depth_m, description, id (a UUID kept for round-trips).
     """
-    with path.open(newline="") as f:
+    with path.open(newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
         if reader.fieldnames is None:
             raise ValueError("CSV has no header row.")

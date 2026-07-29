@@ -25,7 +25,7 @@ TRANSECT_CSV_COLUMNS = [
 
 def save_transects_csv(path: Path, transects: Iterable[Transect]) -> None:
     """CSV in the shape import_transects_csv reads back, ids included."""
-    with path.open("w", newline="") as f:
+    with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(TRANSECT_CSV_COLUMNS)
         for t in transects:
@@ -49,7 +49,7 @@ def save_repeatability_csv(
     covers: list[Any],
 ) -> None:
     """Per-class repeatability stats plus one fraction column per pass."""
-    with path.open("w", newline="") as f:
+    with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(
             ["class", "mean_fraction", "std", "cv", "range"]
@@ -70,11 +70,11 @@ def save_repeatability_csv(
 
 
 def save_survey_json(path: Path, document: Mapping[str, Any]) -> None:
-    path.write_text(json.dumps(document, indent=2))
+    path.write_text(json.dumps(document, indent=2), encoding="utf-8")
 
 
 def load_survey_json(path: Path) -> dict[str, Any]:
-    doc = json.loads(path.read_text())
+    doc = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(doc, dict):
         raise ValueError("Survey JSON must be a single object.")
     return doc

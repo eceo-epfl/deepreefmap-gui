@@ -62,7 +62,7 @@ def load_survey_preset() -> dict[str, Any]:
     """Resolve the preset: $DEEPREEFMAP_SURVEY_PRESET, then user copy, then bundled."""
     override = os.environ.get("DEEPREEFMAP_SURVEY_PRESET")
     if override:
-        return parse_preset(Path(override).read_text())
+        return parse_preset(Path(override).read_text(encoding="utf-8"))
     user_copy = survey_preset_path()
     if user_copy.is_file():
         return parse_preset(user_copy.read_text())

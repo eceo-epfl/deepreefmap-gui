@@ -199,7 +199,7 @@ def _load_all(path: Path) -> dict[str, list[dict]]:
     not fill the config directory with copies.
     """
     try:
-        raw = path.read_text()
+        raw = path.read_text(encoding="utf-8")
     except OSError:
         return {}
     try:
