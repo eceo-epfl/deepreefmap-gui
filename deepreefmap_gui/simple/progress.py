@@ -112,22 +112,23 @@ def run_gate(
             counts,
             f"Download {', '.join(missing_models)} first: switch to Advanced and open Models.",
         )
-    # After the models, matching the advanced form's order: a user without the
-    # weights has to fix that first either way. The bundled preset maps with
-    # loger_star, so on a CPU-only laptop this is every pass in the batch failing
-    # one after another, with nothing said beforehand.
-    if gpu_missing:
-        return SectionState(
-            BLOCKED,
-            counts,
-            "These settings need a GPU and none was detected. "
-            "Switch to Advanced and choose a mapping backend that runs on CPU.",
-        )
     if failed:
         return SectionState(
             ATTENTION,
             f"{counts} · {failed} failed",
             f"{_passes(failed)} failed. The log has the error; the batch can be run again.",
+        )
+    # A warning rather than a blocker: the detection can be wrong, and refusing to
+    # start would leave a field laptop with no way to try. Below `failed` because
+    # this function returns on the first match and `failed` is only non-zero once
+    # a batch has run -- so this shows beforehand, and the failure count, which is
+    # the more specific message by then, takes over afterwards.
+    if gpu_missing:
+        return SectionState(
+            ATTENTION,
+            counts,
+            "These settings need a GPU and none was detected; passes are likely to "
+            "fail. Switch to Advanced to choose a mapping backend that runs on CPU.",
         )
     if remaining:
         return SectionState(OK, f"{counts} · {remaining} to process")

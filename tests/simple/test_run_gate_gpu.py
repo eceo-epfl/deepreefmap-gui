@@ -3,14 +3,14 @@
 Scenario: a CPU-only laptop opens the wizard. The bundled preset maps with
 loger_star, which is CUDA-only.
 
-Expected behaviour: the batch is blocked before it starts, with a reason. It used
-to start and fail every pass in turn, having said nothing beforehand -- the
-advanced form has checked this all along.
+Expected behaviour: the wizard says so before the batch starts, and still lets it
+run. It used to say nothing at all and fail every pass in turn; briefly it blocked
+outright, which left a field laptop with no way to try at all.
 """
 
 from __future__ import annotations
 
-from deepreefmap_gui.simple.progress import BLOCKED, OK, run_gate
+from deepreefmap_gui.simple.progress import ATTENTION, OK, run_gate
 
 
 def gate(**overrides):
@@ -26,20 +26,22 @@ def gate(**overrides):
     return run_gate(**kwargs)
 
 
-def test_a_missing_gpu_blocks_the_batch():
+def test_a_missing_gpu_warns_without_blocking():
+    """ATTENTION, not BLOCKED: _refresh_survey_actions only disables the button
+    on BLOCKED, so this warns and still lets the user try."""
     state = gate(gpu_missing=True)
 
-    assert state.state == BLOCKED
+    assert state.state == ATTENTION
     assert "GPU" in state.reason
 
 
-def test_a_present_gpu_does_not_block():
+def test_a_present_gpu_says_nothing():
     assert gate(gpu_missing=False).state == OK
 
 
 def test_missing_models_are_reported_before_the_gpu():
-    """Both are blockers and only the first is shown. Weights are the thing the
-    user can act on without changing settings, so they come first."""
+    """Weights are a real blocker and the GPU is a warning, so the blocker wins
+    regardless of order."""
     state = gate(gpu_missing=True, missing_models=["loger_star"])
 
     assert "Download" in state.reason
@@ -49,6 +51,17 @@ def test_unassigned_passes_still_come_first():
     state = gate(unassigned=2, gpu_missing=True)
 
     assert "transect" in state.reason
+
+
+def test_a_failed_pass_is_reported_before_the_gpu_warning():
+    """Both are ATTENTION and run_gate returns on the first match. `failed` is
+    only non-zero after a run, so the GPU warning shows beforehand and the more
+    specific failure count takes over once there is one."""
+    state = gate(gpu_missing=True, failed=2)
+
+    assert state.state == ATTENTION
+    assert "failed" in state.reason
+    assert "GPU" not in state.reason
 
 
 class _Preset(dict):

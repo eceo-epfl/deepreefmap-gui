@@ -106,6 +106,19 @@ def test_assigning_transect_persists_pass(batch_window, tmp_path, monkeypatch):
     assert batch_window._survey_start_btn.text() == "Next: Process (1) →"
 
 
+def test_no_gpu_warns_but_still_lets_the_batch_run(batch_window, tmp_path, monkeypatch):
+    """The bundled preset maps with loger_star, so a CPU-only field laptop hits
+    this on every batch. It must say so and still let the user try -- detection
+    can be wrong, and a Process button that will not move leaves no way out."""
+    monkeypatch.setattr(batch_window, "_gpu_available", lambda: False)
+    add_video(batch_window, tmp_path, monkeypatch)
+    assign_transect(batch_window, 0)
+
+    assert batch_window._survey_start_btn.isEnabled(), "a warning must not disable the run"
+    assert "GPU" in batch_window._survey_start_btn.toolTip()
+    assert "GPU" in batch_window._status_label.text()
+
+
 def test_split_pass_duplicates_row(batch_window, tmp_path, monkeypatch):
     add_video(batch_window, tmp_path, monkeypatch)
     assign_transect(batch_window, 0)

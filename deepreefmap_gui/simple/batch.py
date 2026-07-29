@@ -39,7 +39,7 @@ from deepreefmap_gui.core.theme import (
     WARN_TEXT,
 )
 from deepreefmap_gui.core.widgets import EmptyState, StatusPillDelegate, section_card
-from deepreefmap_gui.simple.progress import BLOCKED, run_gate
+from deepreefmap_gui.simple.progress import ATTENTION, BLOCKED, run_gate
 from deepreefmap_gui.form.video_scrub import VideoScrubDialog
 from deepreefmap.pipeline.artifacts import ReconstructionCancelled
 from deepreefmap_gui.survey.models import (
@@ -601,6 +601,13 @@ class SimpleBatchMixin(MixinBase):
                 # the far end of the window, easy to miss from the pass table.
                 self._survey_start_btn.setText(f"Assign transects first ({unassigned} to do)")
             self._status_label.setText(gate.reason)
+        elif gate.state == ATTENTION and gate.reason:
+            # A warning still leaves the batch runnable, so the button carries no
+            # sign of it. Without this the missing-GPU and failed-pass warnings
+            # live only in the nav badge and the tooltip.
+            self._status_label.setText(gate.reason)
+            self._set_survey_forward_action("process", count=len(remaining))
+            self._survey_start_btn.setEnabled(bool(remaining) or bool(self._survey_rows))
         elif remaining:
             self._set_survey_forward_action("process", count=len(remaining))
             self._survey_start_btn.setEnabled(True)
