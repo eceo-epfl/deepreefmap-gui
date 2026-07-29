@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections import OrderedDict
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -63,6 +64,18 @@ from deepreefmap_gui.viewer.render import (
 logger = logging.getLogger(__name__)
 
 _EMPTY_XYZ = np.zeros((0, 3), dtype=np.float32)
+
+# Ceiling for the composed image panels, in bytes rather than entries: the
+# processing resolution is a user setting, so an entry is ~4.7 MB at 960x540 and
+# ~18.7 MB at 1920x1080. A count that suited one would be wrong for the other.
+_FRAME_PANEL_CACHE_BYTES = 256 * 1024 * 1024
+# Held regardless of budget, so a resolution large enough to blow it on its own
+# still keeps the current frame and its neighbours rather than thrashing.
+_FRAME_PANEL_MIN_ENTRIES = 4
+
+
+def _panel_nbytes(parts: "tuple[np.ndarray, np.ndarray, np.ndarray]") -> int:
+    return int(sum(int(p.nbytes) for p in parts))
 
 
 class QtPointCloudViewer(ViewerPickingMixin, QWidget):
@@ -285,7 +298,10 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         self._pick_press_pos: tuple[int, int] | None = None
         self._pick_drag_detected: bool = False
 
-        self._frame_panel_cache: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+        self._frame_panel_cache: OrderedDict[
+            int, tuple[np.ndarray, np.ndarray, np.ndarray]
+        ] = OrderedDict()
+        self._frame_panel_bytes = 0
 
         self._sig_start_run.connect(self._on_start_run)
         self._sig_set_stage.connect(self._on_set_stage)
@@ -957,6 +973,7 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         self._frame_batch = None
         self._mapping_result = None
         self._frame_panel_cache.clear()
+        self._frame_panel_bytes = 0
         self._last_t = None
         self._last_accumulate = None
         self._last_semantic = None
@@ -1326,12 +1343,42 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         if self._final_index is None:
             return None
         t = int(self._last_t)
-        parts = self._frame_panel_cache.get(t) or self._compose_frame_panel(t)
+        parts = self._cached_frame_panel(t) or self._compose_frame_panel(t)
         if parts is None:
             return None
-        self._frame_panel_cache[t] = parts
+        self._cache_frame_panel(t, parts)
         rgb, seg, depth = parts
         return np.concatenate([rgb, seg, depth], axis=0)
+
+    def _cached_frame_panel(
+        self, t: int
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+        parts = self._frame_panel_cache.get(t)
+        if parts is not None:
+            self._frame_panel_cache.move_to_end(t)
+        return parts
+
+    def _cache_frame_panel(
+        self, t: int, parts: tuple[np.ndarray, np.ndarray, np.ndarray]
+    ) -> None:
+        """Hold a composed panel, dropping the least recently used to stay in budget.
+
+        Linear playback never revisits a frame, so this only pays off when the
+        user scrubs back over ground already covered. Letting it grow unbounded
+        to serve that costs three full-resolution images per frame: ~4.7 MB at
+        960x540, so a 1000-frame run reaches several GB resident.
+        """
+        if t in self._frame_panel_cache:
+            self._frame_panel_bytes -= _panel_nbytes(self._frame_panel_cache[t])
+        self._frame_panel_cache[t] = parts
+        self._frame_panel_cache.move_to_end(t)
+        self._frame_panel_bytes += _panel_nbytes(parts)
+        while (
+            len(self._frame_panel_cache) > _FRAME_PANEL_MIN_ENTRIES
+            and self._frame_panel_bytes > _FRAME_PANEL_CACHE_BYTES
+        ):
+            _, evicted = self._frame_panel_cache.popitem(last=False)
+            self._frame_panel_bytes -= _panel_nbytes(evicted)
 
     def _update_image_panel(self, t: int) -> None:
         if self._frame_batch is None or self._mapping_result is None:
@@ -1339,11 +1386,11 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         if self._final_index is None:
             return
 
-        parts = self._frame_panel_cache.get(t)
+        parts = self._cached_frame_panel(t)
         if parts is None:
             parts = self._compose_frame_panel(t)
             if parts is not None:
-                self._frame_panel_cache[t] = parts
+                self._cache_frame_panel(t, parts)
 
         if parts is None:
             return
