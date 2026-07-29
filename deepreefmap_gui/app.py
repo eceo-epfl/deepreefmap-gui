@@ -242,6 +242,7 @@ class DeepReefMapWindow(
             "_sys_timer",
             "_status_tick_timer",
             "_data_refresh_timer",
+            "_out_root_commit_timer",
         ):
             timer = getattr(self, attr, None)
             if timer is not None:

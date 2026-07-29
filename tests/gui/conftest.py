@@ -69,16 +69,29 @@ def make_window(qapp):
 
     A factory rather than an instance so tests can set env vars (mock PyApp,
     timing-profile path) before construction.
+
+    Every window it builds has its timers stopped on teardown. Nothing closes
+    these windows, so a debounce armed during construction outlives the test and
+    fires inside whichever later test happens to run the event loop -- an
+    order-dependent failure a long way from its cause. Stopping is enough;
+    closeEvent is deliberately not called, since it prompts when a run is in
+    flight.
     """
     require_torch()
+    built = []
 
     def _make():
         from deepreefmap.config.classes import load_classes
         from deepreefmap_gui.app import DeepReefMapWindow
 
-        return DeepReefMapWindow(load_classes(), None)
+        win = DeepReefMapWindow(load_classes(), None)
+        built.append(win)
+        return win
 
-    return _make
+    yield _make
+
+    for win in built:
+        win._stop_window_timers()
 
 
 @pytest.fixture

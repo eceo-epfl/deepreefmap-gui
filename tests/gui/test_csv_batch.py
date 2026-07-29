@@ -16,6 +16,18 @@ import threading
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _deliver_queued_signals(qapp):
+    """Let each batch's completion land in the test that started it.
+
+    The worker emits _sig_batch_done from its thread, so Qt queues it for the
+    GUI thread. Joining the thread does not deliver it: it waits until something
+    runs the event loop, which may be a later, unrelated test.
+    """
+    yield
+    qapp.processEvents()
+
+
 @pytest.fixture
 def batch_csv(tmp_path):
     """A three-row CSV whose videos exist, so no row is skipped as missing."""
