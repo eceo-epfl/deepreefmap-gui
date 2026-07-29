@@ -107,13 +107,10 @@ def test_a_finished_run_writes_a_scene_file_the_loader_accepts(run_data):
     assert out is not None and out.exists()
     assert find_scene_file(run_dir) == out
     scene = load_scene_file(out, run_dir=run_dir)
-    try:
-        assert scene is not None
-        assert scene.manifest["name"] == "reef north"
-        assert scene.manifest["survey"]["pass"]["direction"] == "forward"
-        assert scene.frame_accessor.n_frames == N_FRAMES
-    finally:
-        scene.frame_accessor.close()
+    assert scene is not None
+    assert scene.manifest["name"] == "reef north"
+    assert scene.manifest["survey"]["pass"]["direction"] == "forward"
+    assert len(scene.frame_indices) == N_FRAMES
 
 
 def test_a_geometry_only_run_writes_nothing(run_data):
@@ -136,8 +133,9 @@ def test_the_write_reports_progress_the_bar_can_follow(run_data):
     stages = [s for s, _c, _t in seen]
     assert stages[0] == "scene_index"
     assert stages[-1] == "scene_done"
-    frame_ticks = [(c, t) for s, c, t in seen if s == "scene_frames"]
-    assert frame_ticks == [(i, N_FRAMES) for i in range(N_FRAMES)] + [(N_FRAMES, N_FRAMES)]
+    # The index build is the whole cost now that no pixels are written, so it is
+    # the stage that has to report both ends for the bar to move at all.
+    assert ("scene_index", 0, 1) in seen and ("scene_index", 1, 1) in seen
 
 
 # --- showing it ---------------------------------------------------------

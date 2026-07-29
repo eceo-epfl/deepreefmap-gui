@@ -1,8 +1,19 @@
 """Zarr-based quick-load scene file for the Qt viewer.
 
-Stores the pre-computed FinalCloudIndex, mapping result, class config, and frame
-images in one portable .zarr.zip, skipping the 1-2 min reference-cloud build on
-load. Frame images are lazy-loaded per-chunk.
+Caches only what a run directory cannot cheaply produce again: the pre-computed
+FinalCloudIndex, the class table (a custom YAML is referenced by path, not value,
+so the run dir alone cannot rebuild it), and the frame metadata needed to open the
+PNG caches. Skips the 1-2 min reference-cloud build on load.
+
+Deliberately does *not* store frame pixels or the mapping arrays. Both already sit
+beside it in the run directory in a form that is smaller and no slower to read:
+PNG beats Blosc on the frames by ~1.5x, and the uncompressed mapping_outputs.npz
+reads at disk speed. Caching them made the scene file 46% of the run directory for
+about 1% of the value. See runs/loaded_run.py::_load_from_scene_file for the read
+side, which pairs this file with RunDirFrameAccessor and resume.load_mapping_result.
+
+The run directory is read-only input here: this module creates, replaces and prunes
+scene files and touches nothing the pipeline wrote.
 """
 
 from __future__ import annotations
@@ -11,6 +22,8 @@ import hashlib
 import json
 import logging
 import os
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
@@ -31,21 +44,53 @@ __all__ = [
     "FrameAccessor",
     "LazyFrameBatch",
     "LoadedScene",
-    "SceneFrameAccessor",
     "compute_source_fingerprint",
     "find_scene_file",
     "fingerprint_matches",
     "load_scene_file",
+    "prune_other_scene_files",
     "save_scene_file",
     "scene_file_name",
+    "tmp_write_in_progress",
 ]
 
 SCENE_FILE_SUFFIX = ".scene.zarr.zip"
-SCHEMA_VERSION = 1
+# 2 dropped the frame pixels and the mapping group, which together were 99% of
+# the file. 1 is still readable so an existing scene can be upgraded in place
+# from its own index rather than rebuilt from the run dir.
+SCHEMA_VERSION = 2
 MIN_SCHEMA = 1
-MAX_SCHEMA = 1
+MAX_SCHEMA = 2
 
 ProgressCB = Callable[[str, int, int], None]
+
+# Scene .tmp files this process is writing right now. A scene write runs on a
+# daemon thread while the run stays open, so the same run can be opened again
+# mid-write; without this the second open deletes the first one's output.
+_ACTIVE_TMP_PATHS: set[Path] = set()
+_ACTIVE_TMP_LOCK = threading.Lock()
+
+# A .tmp touched more recently than this is treated as another process's live
+# write rather than debris. Generous against the gaps between chunk flushes on a
+# slow disk; the only cost of being wrong is one abandoned file left one open
+# longer, against deleting a write that was still running.
+_TMP_ABANDONED_AFTER_S = 300.0
+
+
+def tmp_write_in_progress(tmp_path: Path) -> bool:
+    """Whether a scene .tmp is being written and must not be deleted.
+
+    True while this process holds it, and while any process has touched it
+    recently enough that it cannot be assumed abandoned.
+    """
+    with _ACTIVE_TMP_LOCK:
+        if tmp_path in _ACTIVE_TMP_PATHS:
+            return True
+    try:
+        age = time.time() - tmp_path.stat().st_mtime
+    except OSError:
+        return False
+    return age < _TMP_ABANDONED_AFTER_S
 
 
 def scene_file_name(manifest: dict[str, Any] | None = None, run_dir: Path | None = None) -> str:
@@ -76,6 +121,30 @@ def find_scene_file(run_dir: Path) -> Path | None:
         if legacy:
             return legacy[0]
     return None
+
+
+def prune_other_scene_files(run_dir: Path, *, keep: Path) -> None:
+    """Drop scene files superseded by ``keep``, once it is safely in place.
+
+    ``scene_file_name`` derives from the manifest's run name, which is only
+    filled in after the run, so a regenerated scene can land under a different
+    name and leave the old one behind. Globs only the GUI-written suffixes, so
+    nothing the pipeline produced can match: the run directory is read-only to
+    everything here except the scene file itself.
+    """
+    for suffix in (SCENE_FILE_SUFFIX, *_LEGACY_SUFFIXES):
+        for path in run_dir.glob("*" + suffix):
+            if path == keep:
+                continue
+            try:
+                freed = path.stat().st_size
+                path.unlink()
+                logger.info(
+                    "Removed superseded scene file %s (%.0f MB reclaimed)",
+                    path.name, freed / 2**20,
+                )
+            except OSError:
+                logger.debug("Could not remove superseded scene file %s", path, exc_info=True)
 
 # ---------------------------------------------------------------------------
 # Blosc compressor shared across all datasets
@@ -157,48 +226,48 @@ def save_scene_file(
                 pass
 
     tmp_path = path.parent / (path.name + ".tmp")
+    with _ACTIVE_TMP_LOCK:
+        _ACTIVE_TMP_PATHS.add(tmp_path)
     try:
-        store = zarr.ZipStore(str(tmp_path), mode="w")
-        root = zarr.group(store=store, overwrite=True)
+        # `with`, so a failure anywhere below closes the archive before the
+        # cleanup unlinks it. An open ZipStore holds the file on Windows, where
+        # the unlink would then fail and leave the .tmp behind for good.
+        with zarr.ZipStore(str(tmp_path), mode="w") as store:
+            root = zarr.group(store=store, overwrite=True)
 
-        _emit("scene_meta", 0, 4)
+            _emit("scene_meta", 0, 2)
 
-        # --- root attrs ---
-        from deepreefmap import __version__ as _current_version
-        root.attrs["schema_version"] = SCHEMA_VERSION
-        root.attrs["deepreefmap_version"] = _current_version
-        if run_dir is not None:
-            root.attrs["source_fingerprint"] = compute_source_fingerprint(run_dir)
+            # --- root attrs ---
+            from deepreefmap import __version__ as _current_version
+            root.attrs["schema_version"] = SCHEMA_VERSION
+            root.attrs["deepreefmap_version"] = _current_version
+            if run_dir is not None:
+                root.attrs["source_fingerprint"] = compute_source_fingerprint(run_dir)
 
-        # --- /meta ---
-        meta = root.require_group("meta")
-        meta.attrs["run_name"] = manifest.get("name", "")
-        meta.attrs["mode"] = manifest.get("mode", "semantic")
-        meta.attrs["scale_type"] = str(mapping_result.scale_type)
-        meta.create_dataset(
-            "manifest",
-            data=np.array(json.dumps(manifest), dtype=object),
-            object_codec=JSONCodec(),
-        )
+            # --- /meta ---
+            meta = root.require_group("meta")
+            meta.attrs["run_name"] = manifest.get("name", "")
+            meta.attrs["mode"] = manifest.get("mode", "semantic")
+            # Not read back (the mapping result comes from the npz now); kept so
+            # the file still says which mapping produced the index it holds.
+            meta.attrs["scale_type"] = str(mapping_result.scale_type)
+            meta.create_dataset(
+                "manifest",
+                data=np.array(json.dumps(manifest), dtype=object),
+                object_codec=JSONCodec(),
+            )
+            _save_frame_meta(meta, frame_batch)
 
-        _emit("scene_meta", 1, 4)
+            _emit("scene_meta", 1, 2)
 
-        # --- /classes ---
-        _save_classes(root, classes_config)
-        _emit("scene_meta", 2, 4)
+            # --- /classes ---
+            _save_classes(root, classes_config)
+            _emit("scene_meta", 2, 2)
 
-        # --- /mapping ---
-        _save_mapping(root, mapping_result)
-        _emit("scene_meta", 3, 4)
+            # --- /final_cloud_index ---
+            _save_fci(root, final_cloud_index)
+            _emit("scene_fci", 1, 1)
 
-        # --- /frames ---
-        _save_frames(root, frame_batch, _emit)
-
-        # --- /final_cloud_index ---
-        _save_fci(root, final_cloud_index)
-        _emit("scene_fci", 1, 1)
-
-        store.close()
         os.replace(str(tmp_path), str(path))
         _emit("scene_done", 1, 1)
 
@@ -208,6 +277,9 @@ def save_scene_file(
         except OSError:
             pass
         raise
+    finally:
+        with _ACTIVE_TMP_LOCK:
+            _ACTIVE_TMP_PATHS.discard(tmp_path)
 
 
 def _save_classes(root, classes_config: "ClassConfig") -> None:
@@ -226,68 +298,22 @@ def _save_classes(root, classes_config: "ClassConfig") -> None:
     g.attrs["classes_path"] = "" if classes_config.path is None else str(classes_config.path)
 
 
-def _save_mapping(root, mr: "MappingSequenceResult") -> None:
+def _save_frame_meta(meta, fb: "FrameBatch") -> None:
+    """Enough to reopen the run's PNG caches, without the pixels.
+
+    A few KB. The alternative was deriving these from the library's preprocess
+    sidecar, but two of three real runs on disk have none, so the scene file
+    carries them and stays self-describing.
+    """
     comp = _compressor()
-    g = root.require_group("mapping")
-    g.attrs["scale_type"] = str(mr.scale_type)
-
-    g.create_dataset("frame_indices", data=np.asarray(mr.frame_indices, dtype=np.int32), compressor=comp)
-    g.create_dataset("intrinsics", data=np.asarray(mr.intrinsics, dtype=np.float64), compressor=comp)
-    g.create_dataset("poses_w_c", data=np.asarray(mr.poses_w_c, dtype=np.float64), compressor=comp)
-
-    depth = np.asarray(mr.depth_maps, dtype=np.float32)
-    g.create_dataset(
-        "depth_maps", data=depth, compressor=comp,
-        chunks=(1, *depth.shape[1:]),
-    )
-
-    if mr.world_points is not None:
-        wp = np.asarray(mr.world_points, dtype=np.float32)
-        g.create_dataset("world_points", data=wp, compressor=comp, chunks=(1, *wp.shape[1:]))
-
-    if mr.confidence is not None:
-        conf = np.asarray(mr.confidence, dtype=np.float32)
-        g.create_dataset("confidence", data=conf, compressor=comp, chunks=(1, *conf.shape[1:]))
-
-    if mr.gravity_vectors is not None:
-        g.create_dataset("gravity_vectors", data=np.asarray(mr.gravity_vectors, dtype=np.float32), compressor=comp)
-
-
-def _save_frames(root, fb: "FrameBatch", emit: ProgressCB) -> None:
-    comp = _compressor()
-    g = root.require_group("frames")
     frames = fb.frames
-    n = len(frames)
-    if n == 0:
-        return
-
-    h, w = frames[0].image_rgb.shape[:2]
-    g.attrs["n_frames"] = n
-    g.attrs["image_height"] = h
-    g.attrs["image_width"] = w
-
-    g.create_dataset(
-        "frame_indices",
-        data=np.array([f.frame_index for f in frames], dtype=np.int32),
-        compressor=comp,
-    )
-    g.create_dataset(
-        "clip_counts",
-        data=np.array(fb.clip_counts, dtype=np.int32),
-        compressor=comp,
-    )
-
-    images = g.zeros("images_rgb", shape=(n, h, w, 3), dtype=np.uint8, chunks=(1, h, w, 3), compressor=comp)
-    labels = g.zeros("labels", shape=(n, h, w), dtype=np.uint8, chunks=(1, h, w), compressor=comp)
-    masks = g.zeros("masks", shape=(n, h, w), dtype=np.uint8, chunks=(1, h, w), compressor=comp)
-
-    for i, f in enumerate(frames):
-        emit("scene_frames", i, n)
-        images[i] = f.image_rgb
-        labels[i] = f.labels
-        masks[i] = f.keep_mask
-
-    emit("scene_frames", n, n)
+    indices = np.array([f.frame_index for f in frames], dtype=np.int32)
+    meta.create_dataset("frame_indices", data=indices, compressor=comp)
+    meta.create_dataset("clip_counts", data=np.array(fb.clip_counts, dtype=np.int32), compressor=comp)
+    width, height = fb.image_size
+    meta.attrs["n_frames"] = len(frames)
+    meta.attrs["image_width"] = int(width)
+    meta.attrs["image_height"] = int(height)
 
 
 def _save_fci(root, fci: "FinalCloudIndex") -> None:
@@ -340,9 +366,14 @@ class LoadedScene:
     manifest: dict[str, Any]
     classes_config: "ClassConfig"
     final_cloud_index: "FinalCloudIndex"
-    mapping_result: "MappingSequenceResult"
-    frame_accessor: "SceneFrameAccessor"
     run_mode: str
+    # Enough to build a RunDirFrameAccessor over the run's PNGs. The pixels and
+    # the mapping arrays are not in the file; the caller reads them from the run
+    # directory, which is where the pipeline already put them.
+    frame_indices: np.ndarray
+    clip_counts: tuple[int, ...]
+    image_size: tuple[int, int]
+    schema_version: int
 
 
 def load_scene_file(
@@ -361,65 +392,72 @@ def load_scene_file(
             except Exception:
                 pass
 
-    store = zarr.ZipStore(str(path), mode="r")
-    root = zarr.open_group(store=store, mode="r")
+    # `with`: everything is materialised into numpy here, so no handle outlives
+    # the call. That is only true since the frame pixels left the file -- before,
+    # the store had to stay open for the lazy per-chunk reads.
+    with zarr.ZipStore(str(path), mode="r") as store:
+        root = zarr.open_group(store=store, mode="r")
 
-    # --- schema check ---
-    version = root.attrs.get("schema_version", 0)
-    if version < MIN_SCHEMA or version > MAX_SCHEMA:
-        logger.info(
-            "Scene file schema %d outside supported range [%d, %d], will regenerate",
-            version, MIN_SCHEMA, MAX_SCHEMA,
-        )
-        store.close()
-        return None
+        # --- schema check ---
+        version = int(root.attrs.get("schema_version", 0))
+        if version < MIN_SCHEMA or version > MAX_SCHEMA:
+            logger.info(
+                "Scene file schema %d outside supported range [%d, %d], will regenerate",
+                version, MIN_SCHEMA, MAX_SCHEMA,
+            )
+            return None
 
-    # --- fingerprint check ---
-    if run_dir is not None:
-        stored_fp = root.attrs.get("source_fingerprint")
-        if stored_fp is not None:
-            current_fp = compute_source_fingerprint(run_dir)
-            if not fingerprint_matches(stored_fp, current_fp):
-                logger.info("Scene file source fingerprint mismatch, will regenerate")
-                store.close()
-                return None
+        # --- fingerprint check ---
+        if run_dir is not None:
+            stored_fp = root.attrs.get("source_fingerprint")
+            if stored_fp is not None:
+                current_fp = compute_source_fingerprint(run_dir)
+                if not fingerprint_matches(stored_fp, current_fp):
+                    logger.info("Scene file source fingerprint mismatch, will regenerate")
+                    return None
 
-    _emit("scene_open", 1, 1)
+        _emit("scene_open", 1, 1)
 
-    # --- /meta ---
-    meta = root["meta"]
-    manifest_raw = meta["manifest"][()]
-    if isinstance(manifest_raw, np.ndarray):
-        manifest_raw = manifest_raw.item()
-    manifest = json.loads(manifest_raw) if isinstance(manifest_raw, str) else manifest_raw
-    run_mode = str(meta.attrs.get("mode", "semantic"))
+        # --- /meta ---
+        meta = root["meta"]
+        manifest_raw = meta["manifest"][()]
+        if isinstance(manifest_raw, np.ndarray):
+            manifest_raw = manifest_raw.item()
+        manifest = json.loads(manifest_raw) if isinstance(manifest_raw, str) else manifest_raw
+        run_mode = str(meta.attrs.get("mode", "semantic"))
+        frame_indices, clip_counts, image_size = _load_frame_meta(root)
 
-    # --- /classes ---
-    _emit("scene_classes", 0, 1)
-    classes_config = _load_classes(root)
-    _emit("scene_classes", 1, 1)
+        # --- /classes ---
+        _emit("scene_classes", 0, 1)
+        classes_config = _load_classes(root)
+        _emit("scene_classes", 1, 1)
 
-    # --- /final_cloud_index ---
-    _emit("scene_cloud_index", 0, 1)
-    fci = _load_fci(root)
-    _emit("scene_cloud_index", 1, 1)
-
-    # --- /mapping ---
-    _emit("scene_mapping", 0, 1)
-    mapping_result = _load_mapping(root)
-    _emit("scene_mapping", 1, 1)
-
-    # --- /frames (lazy accessor) ---
-    frame_accessor = SceneFrameAccessor(store, root)
+        # --- /final_cloud_index ---
+        _emit("scene_cloud_index", 0, 1)
+        fci = _load_fci(root)
+        _emit("scene_cloud_index", 1, 1)
 
     return LoadedScene(
         manifest=manifest,
         classes_config=classes_config,
         final_cloud_index=fci,
-        mapping_result=mapping_result,
-        frame_accessor=frame_accessor,
         run_mode=run_mode,
+        frame_indices=frame_indices,
+        clip_counts=clip_counts,
+        image_size=image_size,
+        schema_version=version,
     )
+
+
+def _load_frame_meta(root) -> tuple[np.ndarray, tuple[int, ...], tuple[int, int]]:
+    """Frame metadata, from /meta on schema 2 or the old /frames group on 1."""
+    group = root["meta"] if "frame_indices" in root["meta"] else root.get("frames")
+    if group is None or "frame_indices" not in group:
+        return np.zeros(0, dtype=np.int32), (), (0, 0)
+    indices = np.asarray(group["frame_indices"][:], dtype=np.int64)
+    clip_counts = tuple(int(x) for x in group["clip_counts"][:])
+    size = (int(group.attrs.get("image_width", 0)), int(group.attrs.get("image_height", 0)))
+    return indices, clip_counts, size
 
 
 def _load_classes(root) -> "ClassConfig":
@@ -489,81 +527,3 @@ def _load_fci(root) -> "FinalCloudIndex":
     )
 
 
-def _load_mapping(root) -> "MappingSequenceResult":
-    from deepreefmap.pipeline.artifacts import MappingSequenceResult
-
-    g = root["mapping"]
-    scale_type = g.attrs.get("scale_type", "unknown")
-
-    world_points = g["world_points"][:] if "world_points" in g else None
-    confidence = g["confidence"][:] if "confidence" in g else None
-    gravity_vectors = g["gravity_vectors"][:] if "gravity_vectors" in g else None
-
-    return MappingSequenceResult(
-        frame_indices=g["frame_indices"][:],
-        depth_maps=g["depth_maps"][:],
-        poses_w_c=g["poses_w_c"][:],
-        intrinsics=g["intrinsics"][:],
-        world_points=world_points,
-        confidence=confidence,
-        scale_type=scale_type,
-        gravity_vectors=gravity_vectors,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Lazy frame access
-# ---------------------------------------------------------------------------
-
-class SceneFrameAccessor:
-    """Read frames on-demand from an open Zarr ZipStore.
-
-    Each frame image/labels/mask is one chunk, so reading a single frame
-    touches exactly one compressed block per dataset. Satisfies the
-    ``deepreefmap_gui.io.lazy_frames.FrameAccessor`` protocol so a ``LazyFrameBatch``
-    can read through it.
-    """
-
-    def __init__(self, store, root) -> None:
-        self._store = store
-        self._root = root
-        fg = root["frames"]
-        self._images = fg["images_rgb"]
-        self._labels = fg["labels"]
-        self._masks = fg["masks"]
-        self._frame_indices = fg["frame_indices"][:]
-        self._clip_counts = tuple(int(x) for x in fg["clip_counts"][:])
-        self._n = int(fg.attrs["n_frames"])
-        self._image_height = int(fg.attrs["image_height"])
-        self._image_width = int(fg.attrs["image_width"])
-
-    @property
-    def n_frames(self) -> int:
-        return self._n
-
-    @property
-    def frame_indices(self) -> np.ndarray:
-        return self._frame_indices
-
-    @property
-    def clip_counts(self) -> tuple[int, ...]:
-        return self._clip_counts
-
-    @property
-    def image_size(self) -> tuple[int, int]:
-        return (self._image_width, self._image_height)
-
-    def get_image(self, positional_index: int) -> np.ndarray:
-        return self._images[positional_index]
-
-    def get_labels(self, positional_index: int) -> np.ndarray:
-        return self._labels[positional_index]
-
-    def get_mask(self, positional_index: int) -> np.ndarray:
-        return self._masks[positional_index]
-
-    def close(self) -> None:
-        try:
-            self._store.close()
-        except Exception:
-            pass

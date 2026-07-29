@@ -254,9 +254,16 @@ class DeepReefMapWindow(
         """Close what Qt's parent-child ownership does not cover.
 
         Three handles are held by plain Python attributes rather than QObjects,
-        so nothing releases them when the window is destroyed. The scene archive
-        is the one that is visibly damaging: on Windows the open ZipStore keeps
-        the scene file locked, so the next launch cannot regenerate it.
+        so nothing releases them when the window is destroyed. Two hold an OS
+        resource outright: the survey store is a live SQLite connection and the
+        run log is an open file.
+
+        The frame accessor holds none, now that the scene file is closed before
+        load_scene_file returns and the pixels are read per-frame from the run
+        directory. It is still closed here because close() is part of the
+        FrameAccessor protocol and this is the only place a window-held accessor
+        would be released; an implementation backed by an archive rather than a
+        directory would need it.
         """
         accessor = getattr(self, "_scene_accessor", None)
         if accessor is not None:

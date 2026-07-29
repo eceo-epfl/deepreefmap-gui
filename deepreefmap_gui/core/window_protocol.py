@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     )
 
     from deepreefmap.config.classes import ClassConfig
-    from deepreefmap_gui.io.scene_file import SceneFrameAccessor
+    from deepreefmap_gui.io.lazy_frames import FrameAccessor
     from deepreefmap_gui.system.log_view import LogView
     from deepreefmap_gui.runs.progress import ProgressModel
     from deepreefmap_gui.viewer.pick_tooltip import PickCard
@@ -128,7 +128,7 @@ if TYPE_CHECKING:
         _legend_solo_buttons: dict[int, QToolButton]
         _legend_toggles: dict[int, QCheckBox]
         _run_log_file_handler: logging.FileHandler | None
-        _scene_accessor: SceneFrameAccessor | None
+        _scene_accessor: FrameAccessor | None
         _available_releases: list[dict]
         _current_version_str: str
 

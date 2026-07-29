@@ -35,9 +35,11 @@ STAGES: tuple[StageSpec, ...] = (
     StageSpec("cloud", "Cloud", POINTS_NLOGN, 13.0),
     StageSpec("ortho", "Ortho", POINTS, 22.0),
     StageSpec("save_view", "Save + view", POINTS, 7.0),
-    # The scene .zarr.zip re-serialises the whole cloud + every frame, so it
-    # scales with points and was the untimed "reconstruction complete" tail.
-    StageSpec("scene_save", "Scene file", POINTS, 14.0),
+    # The scene .zarr.zip now stores only the cloud index, so this is the index
+    # build plus a ~30 MB write. Measured at 0.5s against runs of 186-585s on
+    # this machine; it was 3.6-15.8s while the file also carried every frame.
+    # Only a first-run prior either way -- recorded history overrides it.
+    StageSpec("scene_save", "Scene file", POINTS, 1.0),
 )
 
 _STAGE_BY_KEY = {s.key: s for s in STAGES}

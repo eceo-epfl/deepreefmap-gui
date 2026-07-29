@@ -108,6 +108,9 @@ class RunDirFrameAccessor:
         return self._read(self._masks_dir / f"{self._stem(positional_index)}.png", cv2.IMREAD_GRAYSCALE)
 
     def close(self) -> None:
+        # Nothing to release: every read opens and closes its own file. Present
+        # because FrameAccessor declares it, so callers can close whatever they
+        # hold without knowing which implementation it is.
         pass
 
 

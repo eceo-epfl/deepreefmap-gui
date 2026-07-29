@@ -83,9 +83,12 @@ _RECON_PHASES: list[tuple[str, float]] = [
     ("viewer_upload", 6.0),
     ("viewer_finalise", 1.0),
     ("ortho_save", 2.0),
-    # The scene file is the last write and the slowest; give it real weight so the
-    # total bar keeps moving instead of freezing at "Reconstruction complete".
-    ("scene_save", 8.0),
+    # The scene file is the last write, but no longer a slow one: it holds the
+    # cloud index rather than a copy of every frame, so it is ~0.5s against a
+    # multi-minute run. Deliberately larger than that share, because the bar
+    # rounds to whole percent: below ~2 the total reads 100% while the write is
+    # still running, and 100% has to mean finished.
+    ("scene_save", 2.0),
 ]
 
 # Some coarse stages are reported as several sub-phases but must read as one
@@ -152,7 +155,9 @@ _LOAD_PHASES: list[tuple[str, float]] = [
     ("viewer_finalise", 1.0),
     # Only runs made before the pipeline started writing its own scene file reach
     # this; for those it is the last thing between "loaded" and idle, and it runs
-    # after the viewer is up rather than alongside it.
+    # after the viewer is up rather than alongside it. Weighted far higher than
+    # its counterpart on the reconstruction bar for the same ~0.5s of work: a
+    # load is seconds, not minutes, so the same write is a real share of it.
     ("scene_save", 8.0),
 ]
 
@@ -162,7 +167,6 @@ _LOAD_PHASES: list[tuple[str, float]] = [
 _SCENE_SAVE_STAGES: tuple[str, ...] = (
     "scene_index",
     "scene_meta",
-    "scene_frames",
     "scene_fci",
     "scene_done",
 )

@@ -352,7 +352,6 @@ class RunLoadingMixin(MixinBase):
         # names, so these never collide with the "Reading …" labels above.
         "scene_index": "Indexing cloud for scene file",
         "scene_meta": "Writing scene metadata",
-        "scene_frames": "Writing frames to scene file",
         "scene_fci": "Writing point cloud to scene file",
         "scene_done": "Scene file written",
     }

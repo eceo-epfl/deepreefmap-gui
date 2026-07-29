@@ -18,21 +18,25 @@ import numpy as np
 
 from deepreefmap.config.classes import ClassConfig
 from deepreefmap.pipeline.artifacts import FrameBatch, MappingSequenceResult, SemanticPointCloud
+from deepreefmap.pipeline import resume as resume_mod
 from deepreefmap.pipeline.run_loader import (
     SEMANTIC_MODE,
     _world_points_fallback_warning,
     load_cached_run,
 )
 
+from deepreefmap_gui.io.lazy_frames import FrameAccessor, RunDirFrameAccessor
 from deepreefmap_gui.io.scene_file import (
     SCENE_FILE_SUFFIX,
+    SCHEMA_VERSION,
     LazyFrameBatch,
     ProgressCB,
-    SceneFrameAccessor,
     find_scene_file,
     load_scene_file,
+    prune_other_scene_files,
     save_scene_file,
     scene_file_name,
+    tmp_write_in_progress,
 )
 
 if TYPE_CHECKING:
@@ -58,8 +62,15 @@ class GuiLoadedRun:
     geometry_rgb: np.ndarray | None = None
     world_points_warning: str | None = None
     from_scene_file: bool = False
-    scene_accessor: SceneFrameAccessor | None = None
+    # Typed as the protocol, not a concrete class: the fast path now reads frames
+    # from the run dir, so this holds a RunDirFrameAccessor whose close() is a
+    # no-op. Kept so the window's teardown keeps one place to release whatever
+    # the loaded run is holding.
+    scene_accessor: FrameAccessor | None = None
     final_cloud_index: FinalCloudIndex | None = None
+    # Schema of the scene file this run came from, so an older one can be
+    # upgraded in place. 0 when the run did not come from a scene file.
+    scene_schema_version: int = 0
 
 
 def load_run(
@@ -86,13 +97,23 @@ def load_run(
             loaded = _load_from_scene_file(scene_path, run_dir)
             if loaded is not None:
                 logger.info("Loaded from scene file (fast path): %s", scene_path)
+                _upgrade_scene_file(run_dir, loaded)
                 return loaded
             logger.info("Scene file stale or incompatible, falling back to slow path")
         except Exception:
             logger.warning("Scene file load failed, falling back to slow path", exc_info=True)
 
-    # Clean up stale .tmp files from interrupted background generation
+    # Clean up .tmp files left by an interrupted background generation -- but not
+    # one that is still being written. Reaching here means the scene file was
+    # missing or unusable, which is exactly the state a run is in *while* its
+    # first scene file is being generated, so the run this is called for is the
+    # likeliest one to have a live write in flight. Deleting it made the write
+    # fail into generate_scene_file_async's swallowed handler, leaving that run
+    # on the slow path for good.
     for tmp in run_dir.glob("*" + SCENE_FILE_SUFFIX + ".tmp"):
+        if tmp_write_in_progress(tmp):
+            logger.debug("Leaving in-progress scene temp file alone: %s", tmp)
+            continue
         try:
             tmp.unlink()
             logger.info("Cleaned up stale temp file: %s", tmp)
@@ -119,26 +140,75 @@ def scene_file_pending(result: GuiLoadedRun) -> bool:
 
 
 def _load_from_scene_file(scene_path: Path, run_dir: Path) -> GuiLoadedRun | None:
+    """Fast path: the cloud index from the scene, everything else from the run dir.
+
+    The scene file holds only what the run directory cannot cheaply reproduce.
+    Frames come from the PNG caches and the mapping arrays from the npz, both
+    read-only and both cheaper than the copies the scene used to carry.
+    """
     scene = load_scene_file(scene_path, run_dir=run_dir)
     if scene is None:
         return None
 
-    fb = LazyFrameBatch(scene.frame_accessor, scene.mapping_result.intrinsics)
-    output_files = scene.manifest.get("output_files", [])
+    mapping_result = resume_mod.load_mapping_result(run_dir)
+    if mapping_result is None:
+        # Same outcome as a stale scene: fall back to the library loader, which
+        # raises its own clear error for a run missing its mapping artifact.
+        logger.info("Scene file usable but mapping_outputs.npz is not, falling back")
+        return None
+
+    accessor = RunDirFrameAccessor(
+        run_dir, scene.frame_indices, scene.clip_counts, scene.image_size
+    )
+    fb = LazyFrameBatch(accessor, mapping_result.intrinsics)
 
     return GuiLoadedRun(
         run_dir=run_dir,
         manifest=scene.manifest,
         classes_config=scene.classes_config,
         frame_batch=fb,
-        mapping_result=scene.mapping_result,
-        output_files=output_files,
+        mapping_result=mapping_result,
+        output_files=scene.manifest.get("output_files", []),
         mode=scene.run_mode,
         from_scene_file=True,
-        scene_accessor=scene.frame_accessor,
+        scene_accessor=accessor,
         final_cloud_index=scene.final_cloud_index,
-        world_points_warning=_world_points_fallback_warning(scene.manifest, scene.mapping_result),
+        world_points_warning=_world_points_fallback_warning(scene.manifest, mapping_result),
+        scene_schema_version=scene.schema_version,
     )
+
+
+def _upgrade_scene_file(run_dir: Path, loaded: GuiLoadedRun) -> None:
+    """Rewrite an older scene file in the current schema, then drop the old one.
+
+    A schema-1 scene carries the frame pixels and the mapping arrays, which is
+    most of its size and none of its value. Everything the new one needs was
+    just read out of it, so this is a rewrite of ~31 MB rather than a rebuild,
+    and it reclaims the rest of the file the first time a run is opened.
+
+    Best-effort: the run is already loaded and usable, so a failure here is
+    logged and forgotten rather than allowed to fail the load.
+    """
+    if loaded.final_cloud_index is None or loaded.scene_schema_version >= SCHEMA_VERSION:
+        return
+    try:
+        out = run_dir / scene_file_name(loaded.manifest, run_dir)
+        save_scene_file(
+            out,
+            manifest=loaded.manifest,
+            classes_config=loaded.classes_config,
+            mapping_result=loaded.mapping_result,
+            frame_batch=loaded.frame_batch,  # type: ignore[arg-type]  # LazyFrameBatch is interface-compatible but not a FrameBatch subclass
+            final_cloud_index=loaded.final_cloud_index,
+            run_dir=run_dir,
+        )
+        prune_other_scene_files(run_dir, keep=out)
+        logger.info(
+            "Upgraded scene file from schema %d to %d: %s",
+            loaded.scene_schema_version, SCHEMA_VERSION, out.name,
+        )
+    except Exception:
+        logger.warning("Scene file upgrade failed, leaving the old one alone", exc_info=True)
 
 
 def _wrap_loaded_run(loaded) -> GuiLoadedRun:
@@ -195,6 +265,7 @@ def write_scene_file(
         run_dir=run_dir,
         progress_cb=progress_cb,
     )
+    prune_other_scene_files(run_dir, keep=out)
     return out
 
 

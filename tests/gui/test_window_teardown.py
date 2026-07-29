@@ -1,9 +1,14 @@
 """What closing the main window releases.
 
 Qt destroys child QObjects with their parent, so the timers and widgets look
-after themselves. Three handles do not: the scene archive, the survey database
-and the run log file are held by plain attributes. On Windows the open scene
-archive keeps the file locked, so the next launch cannot regenerate it.
+after themselves. Three handles do not: the frame accessor, the survey database
+and the run log file are held by plain attributes.
+
+Only two of those hold an OS resource today -- the SQLite connection and the log
+file. The accessor is closed on the same path because close() is part of the
+FrameAccessor protocol, and the window is the only thing that would release an
+implementation that did hold a handle. The fake below stands in for exactly that:
+RunDirFrameAccessor.close() is a no-op, so a real one would assert nothing.
 
 The worker threads are deliberately signalled rather than joined -- see the
 comment in closeEvent -- so these assert on the cancel events, not on the
@@ -53,15 +58,15 @@ def running_pipeline(window):
     thread.join()
 
 
-def test_closing_releases_the_scene_archive_and_the_survey_store(window):
+def test_closing_releases_the_frame_accessor_and_the_survey_store(window):
     accessor, store = _FakeAccessor(), _FakeStore()
     window._scene_accessor = accessor
     window._survey_store_obj = store
 
     _close(window)
 
-    assert accessor.closed, "the scene file stays locked on Windows"
-    assert store.closed
+    assert accessor.closed, "an accessor holding a handle would never be released"
+    assert store.closed, "the SQLite connection outlives the window otherwise"
     assert window._scene_accessor is None
     assert window._survey_store_obj is None
 

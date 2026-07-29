@@ -10,6 +10,7 @@ trusted at all: the schema range and the source fingerprint.
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import numpy as np
@@ -21,6 +22,7 @@ from deepreefmap.pointcloud.final_cloud_index import FinalCloudIndex
 
 from deepreefmap_gui.io.scene_file import (
     SCENE_FILE_SUFFIX,
+    SCHEMA_VERSION,
     compute_source_fingerprint,
     find_scene_file,
     fingerprint_matches,
@@ -204,14 +206,13 @@ def test_round_trip_preserves_every_section(tmp_path, scene, classes_config):
     assert [c.name for c in loaded.classes_config.classes] == ["reef", "sand"]
     assert loaded.classes_config.id_to_color[1] == (10, 20, 30)
 
-    mr = loaded.mapping_result
-    np.testing.assert_array_equal(mr.frame_indices, mapping.frame_indices)
-    np.testing.assert_allclose(mr.depth_maps, mapping.depth_maps)
-    np.testing.assert_allclose(mr.poses_w_c, mapping.poses_w_c)
-    np.testing.assert_allclose(mr.intrinsics, mapping.intrinsics)
-    np.testing.assert_allclose(mr.confidence, mapping.confidence)
-    np.testing.assert_allclose(mr.world_points, mapping.world_points)
-    assert str(mr.scale_type) == str(mapping.scale_type)
+    # Frame metadata, not frame pixels: enough to reopen the run's PNG caches.
+    np.testing.assert_array_equal(
+        loaded.frame_indices, [f.frame_index for f in frame_batch.frames]
+    )
+    assert loaded.clip_counts == (2, 1)
+    assert loaded.image_size == (W, H)
+    assert loaded.schema_version == SCHEMA_VERSION
 
     out = loaded.final_cloud_index
     assert out.frame_order == fci.frame_order
@@ -224,28 +225,62 @@ def test_round_trip_preserves_every_section(tmp_path, scene, classes_config):
         np.testing.assert_allclose(out.conf_by_class[cid], fci.conf_by_class[cid])
         np.testing.assert_array_equal(out.prefix_end_by_class[cid], fci.prefix_end_by_class[cid])
 
-    loaded.frame_accessor.close()
 
 
-def test_frames_load_lazily_and_match(tmp_path, scene, classes_config):
-    frame_batch, _mapping, _fci = scene
+def test_no_pixels_or_mapping_arrays_are_written(tmp_path, scene, classes_config):
+    """The whole point of the format: those two were 99% of the file.
+
+    Both already sit in the run directory in a form that is smaller (PNG beats
+    Blosc on frames by ~1.5x) and no slower to read, so caching them cost 46% of
+    a run directory for nothing. Asserted on the archive's own key list, because
+    a reinstated copy would otherwise only show up as a mysteriously large file.
+    """
+    import zipfile
+
     path = tmp_path / ("s" + SCENE_FILE_SUFFIX)
     _save(path, scene, classes_config)
 
-    acc = load_scene_file(path).frame_accessor
-    try:
-        assert acc.n_frames == N_FRAMES
-        assert acc.image_size == (W, H)
-        assert acc.clip_counts == (2, 1)
-        np.testing.assert_array_equal(
-            acc.frame_indices, [f.frame_index for f in frame_batch.frames]
-        )
-        for i, frame in enumerate(frame_batch.frames):
-            np.testing.assert_array_equal(acc.get_image(i), frame.image_rgb)
-            np.testing.assert_array_equal(acc.get_labels(i), frame.labels)
-            np.testing.assert_array_equal(acc.get_mask(i), frame.keep_mask)
-    finally:
-        acc.close()
+    keys = zipfile.ZipFile(path).namelist()
+    assert not [k for k in keys if k.startswith("mapping/")]
+    assert not [k for k in keys if k.startswith("frames/")]
+    assert [k for k in keys if k.startswith("final_cloud_index/")]
+
+
+def test_the_file_does_not_grow_with_the_frames(tmp_path, scene, classes_config):
+    """Scale-free version of the guard above: 16x the pixels, same file.
+
+    The real runs this came from wrote 1968 MB of frame images into a 3471 MB
+    scene file, so a reinstated copy is only visible at full size. Comparing two
+    resolutions catches it on a toy scene, where a byte-count ceiling cannot.
+    """
+    rng = np.random.default_rng(1)
+    frame_batch, mapping, fci = scene
+    big = FrameBatch(
+        frames=tuple(
+            PreparedFrame(
+                frame_index=f.frame_index,
+                image_rgb=rng.integers(0, 255, (H * 4, W * 4, 3), dtype=np.uint8),
+                labels=rng.choice(CLASS_IDS, size=(H * 4, W * 4)).astype(np.uint8),
+                keep_mask=(rng.random((H * 4, W * 4)) > 0.5).astype(np.uint8),
+                image_path=None,
+                labels_path=None,
+                mask_path=None,
+            )
+            for f in frame_batch.frames
+        ),
+        intrinsics=frame_batch.intrinsics,
+        image_size=(W * 4, H * 4),
+        clip_counts=frame_batch.clip_counts,
+        gravity_vectors=None,
+    )
+
+    small_path = tmp_path / ("small" + SCENE_FILE_SUFFIX)
+    big_path = tmp_path / ("big" + SCENE_FILE_SUFFIX)
+    _save(small_path, scene, classes_config)
+    _save(big_path, (big, mapping, fci), classes_config)
+
+    # Only the image-size attrs differ, a couple of bytes of JSON.
+    assert abs(big_path.stat().st_size - small_path.stat().st_size) < 200
 
 
 def test_progress_is_reported_for_each_stage(tmp_path, scene, classes_config):
@@ -253,12 +288,12 @@ def test_progress_is_reported_for_each_stage(tmp_path, scene, classes_config):
     path = tmp_path / ("s" + SCENE_FILE_SUFFIX)
     _save(path, scene, classes_config, progress_cb=lambda stage, c, t: seen.append(stage))
 
-    assert {"scene_meta", "scene_frames", "scene_fci", "scene_done"} <= set(seen)
+    assert {"scene_meta", "scene_fci", "scene_done"} <= set(seen)
     assert seen[-1] == "scene_done"
 
     loaded_stages: list[str] = []
-    load_scene_file(path, progress_cb=lambda s, c, t: loaded_stages.append(s)).frame_accessor.close()
-    assert {"scene_open", "scene_classes", "scene_cloud_index", "scene_mapping"} <= set(loaded_stages)
+    load_scene_file(path, progress_cb=lambda s, c, t: loaded_stages.append(s))
+    assert {"scene_open", "scene_classes", "scene_cloud_index"} <= set(loaded_stages)
 
 
 def test_a_failing_progress_callback_does_not_abort_the_save(tmp_path, scene, classes_config):
@@ -270,7 +305,7 @@ def test_a_failing_progress_callback_does_not_abort_the_save(tmp_path, scene, cl
 
     _save(path, scene, classes_config, progress_cb=boom)
     assert path.exists()
-    load_scene_file(path).frame_accessor.close()
+    load_scene_file(path)
 
 
 # --- staleness guards -------------------------------------------------------
@@ -281,7 +316,6 @@ def test_load_rejects_a_scene_whose_run_changed(tmp_path, scene, classes_config,
 
     loaded = load_scene_file(path, run_dir=run_dir)
     assert loaded is not None
-    loaded.frame_accessor.close()
 
     # Reprocessing the run at a different fps changes the frame count.
     (run_dir / "frames" / "999999.png").write_bytes(b"a new frame")
@@ -295,7 +329,6 @@ def test_load_without_a_run_dir_skips_the_fingerprint_check(tmp_path, scene, cla
 
     loaded = load_scene_file(path)
     assert loaded is not None
-    loaded.frame_accessor.close()
 
 
 @pytest.mark.parametrize("version", [0, 99])
@@ -340,3 +373,194 @@ def test_a_failed_save_leaves_no_partial_file(tmp_path, scene, classes_config):
 
     assert not path.exists()
     assert not (path.parent / (path.name + ".tmp")).exists()
+
+
+# --- the archive handle -------------------------------------------------
+#
+# Every path must close the store, success included: since the frame pixels left
+# the file there is nothing to read lazily, so a load materialises everything and
+# hands back no handle. A leak here is silent: runs/loaded_run.py swallows the
+# exception and regenerates, and on Windows the held handle locks the file so the
+# regeneration fails too -- which is why these assert on the archive itself rather
+# than on descriptor counts, where POSIX happily unlinks a file that is still open.
+
+
+@pytest.fixture
+def opened_stores(monkeypatch):
+    """Every ZipStore scene_file opens, in order, so a test can check it closed."""
+    import zarr
+
+    stores = []
+    real = zarr.ZipStore
+
+    def spy(*args, **kwargs):
+        store = real(*args, **kwargs)
+        stores.append(store)
+        return store
+
+    monkeypatch.setattr(zarr, "ZipStore", spy)
+    return stores
+
+
+def _is_closed(store) -> bool:
+    return store.zf.fp is None
+
+
+def test_a_load_that_fails_partway_closes_the_archive(
+    tmp_path, scene, classes_config, monkeypatch, opened_stores
+):
+    import deepreefmap_gui.io.scene_file as scene_file
+
+    path = tmp_path / ("s" + SCENE_FILE_SUFFIX)
+    _save(path, scene, classes_config)
+    opened_stores.clear()
+    monkeypatch.setattr(
+        scene_file, "_load_fci", lambda _root: (_ for _ in ()).throw(ValueError("corrupt"))
+    )
+
+    with pytest.raises(ValueError, match="corrupt"):
+        load_scene_file(path)
+
+    assert len(opened_stores) == 1
+    assert _is_closed(opened_stores[0])
+
+
+def test_a_rejected_scene_closes_the_archive(tmp_path, scene, classes_config, opened_stores):
+    """The early returns were already right; pin them so the try/except wrapped
+    around them cannot quietly change the answer."""
+    import zarr
+
+    path = tmp_path / ("s" + SCENE_FILE_SUFFIX)
+    _save(path, scene, classes_config)
+    store = zarr.ZipStore(str(path), mode="a")
+    zarr.open_group(store=store, mode="a").attrs["schema_version"] = 99
+    store.close()
+    opened_stores.clear()
+
+    assert load_scene_file(path) is None
+    assert len(opened_stores) == 1
+    assert _is_closed(opened_stores[0])
+
+
+def test_a_successful_load_closes_the_archive_too(
+    tmp_path, scene, classes_config, opened_stores
+):
+    """Nothing is read lazily out of a scene file any more, so the success path
+    owns the handle like every other path and must not leave the file locked."""
+    path = tmp_path / ("s" + SCENE_FILE_SUFFIX)
+    _save(path, scene, classes_config)
+    opened_stores.clear()
+
+    loaded = load_scene_file(path)
+
+    assert loaded is not None
+    assert loaded.final_cloud_index is not None
+    assert _is_closed(opened_stores[0])
+
+
+def test_a_failed_save_closes_the_archive_before_removing_the_file(
+    tmp_path, scene, classes_config, opened_stores
+):
+    frame_batch, mapping, _fci = scene
+    path = tmp_path / ("s" + SCENE_FILE_SUFFIX)
+
+    class Broken:
+        frame_order = (0, 2, 4)
+        class_ids = (1,)
+        xyz_by_class = {1: np.zeros((2, 3), dtype=np.float32)}
+
+        def __getattr__(self, name):
+            raise OSError(28, "No space left on device")
+
+    with pytest.raises(OSError):
+        save_scene_file(
+            path,
+            manifest={"name": "x"},
+            classes_config=classes_config,
+            mapping_result=mapping,
+            frame_batch=frame_batch,
+            final_cloud_index=Broken(),
+        )
+
+    assert len(opened_stores) == 1
+    assert _is_closed(opened_stores[0])
+
+
+# --- telling a live write from debris -----------------------------------
+#
+# load_run sweeps leftover .tmp files, and reaches that sweep exactly when the
+# scene file is missing or unusable -- the state a run is in while its first
+# scene file is being written on a background thread.
+
+
+def test_a_tmp_this_process_is_writing_is_reported_in_progress(tmp_path, scene, classes_config):
+    from deepreefmap_gui.io.scene_file import tmp_write_in_progress
+
+    path = tmp_path / ("s" + SCENE_FILE_SUFFIX)
+    tmp = path.parent / (path.name + ".tmp")
+    seen: list[bool] = []
+
+    def spy(*_args):
+        seen.append(tmp_write_in_progress(tmp))
+
+    _save(path, scene, classes_config, progress_cb=spy)
+
+    assert seen and all(seen), "the write was not registered while it ran"
+    assert not tmp_write_in_progress(tmp), "the registration outlived the write"
+
+
+def test_a_failed_write_stops_being_reported_in_progress(tmp_path, scene, classes_config):
+    """Otherwise one crashed write pins the path for the life of the process."""
+    from deepreefmap_gui.io.scene_file import tmp_write_in_progress
+
+    frame_batch, mapping, _fci = scene
+    path = tmp_path / ("s" + SCENE_FILE_SUFFIX)
+
+    class Broken:
+        frame_order = (0, 2, 4)
+        class_ids = (1,)
+        xyz_by_class = {1: np.zeros((2, 3), dtype=np.float32)}
+
+        def __getattr__(self, name):
+            raise OSError(28, "No space left on device")
+
+    with pytest.raises(OSError):
+        save_scene_file(
+            path,
+            manifest={"name": "x"},
+            classes_config=classes_config,
+            mapping_result=mapping,
+            frame_batch=frame_batch,
+            final_cloud_index=Broken(),
+        )
+
+    assert not tmp_write_in_progress(path.parent / (path.name + ".tmp"))
+
+
+def test_a_recently_touched_tmp_is_left_for_the_process_writing_it(tmp_path):
+    """Another GUI instance on the same run dir is not in this process's registry."""
+    from deepreefmap_gui.io.scene_file import tmp_write_in_progress
+
+    tmp = tmp_path / ("s" + SCENE_FILE_SUFFIX + ".tmp")
+    tmp.write_bytes(b"partial")
+
+    assert tmp_write_in_progress(tmp)
+
+
+def test_an_old_tmp_is_debris(tmp_path):
+    import os as _os
+
+    from deepreefmap_gui.io.scene_file import _TMP_ABANDONED_AFTER_S, tmp_write_in_progress
+
+    tmp = tmp_path / ("s" + SCENE_FILE_SUFFIX + ".tmp")
+    tmp.write_bytes(b"partial")
+    stale = time.time() - _TMP_ABANDONED_AFTER_S - 60
+    _os.utime(tmp, (stale, stale))
+
+    assert not tmp_write_in_progress(tmp)
+
+
+def test_a_missing_tmp_is_not_in_progress(tmp_path):
+    from deepreefmap_gui.io.scene_file import tmp_write_in_progress
+
+    assert not tmp_write_in_progress(tmp_path / "gone.tmp")
