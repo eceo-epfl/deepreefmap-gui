@@ -1647,7 +1647,9 @@ class FormPanelMixin(MixinBase):
             if missing:
                 reasons.append(f"download required model{'s' if len(missing) > 1 else ''}: {', '.join(missing)}")
 
-        if self._map_combo.currentText() in ("loger", "loger_star") and not self._gpu_available():
+        from deepreefmap_gui.models.manager import GPU_ONLY_BACKENDS
+
+        if self._map_combo.currentText() in GPU_ONLY_BACKENDS and not self._gpu_available():
             reasons.append("LoGeR needs a GPU (none detected)")
 
         ok = not reasons

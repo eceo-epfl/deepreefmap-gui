@@ -209,6 +209,12 @@ DPT_BACKBONE_MAP: dict[str, str] = {
     "coralscapes-vit-l-dpt": "dinov3-vitl16",
 }
 
+# Mapping backends that cannot run on CPU. Both gate their Start button on this,
+# so it lives here rather than as a tuple literal in each: the advanced form and
+# the simple wizard disagreeing about which backends need a GPU is the failure
+# this is preventing.
+GPU_ONLY_BACKENDS: frozenset[str] = frozenset({"loger", "loger_star"})
+
 ALL_MODELS = SEGMENTATION_MODELS + MAPPING_MODELS + BACKBONE_MODELS
 
 # Models discovered at run time via discover_models(). Session-scoped (not

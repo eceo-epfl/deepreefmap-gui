@@ -513,6 +513,18 @@ class SimpleBatchMixin(MixinBase):
 
     # --- Run gating and execution ---
 
+    def _survey_gpu_missing(self) -> bool:
+        """Whether the preset's mapping backend needs a GPU this machine lacks.
+
+        Reuses the advanced form's cached probe rather than repeating it: this
+        runs from _refresh_survey_actions, which fires on every table change.
+        """
+        if self._survey_preset is None:
+            return False
+        from deepreefmap_gui.models.manager import GPU_ONLY_BACKENDS
+
+        return self._survey_preset["mapping_name"] in GPU_ONLY_BACKENDS and not self._gpu_available()
+
     def _survey_missing_models(self) -> list[str]:
         if self._survey_preset is None:
             return []
@@ -577,6 +589,7 @@ class SimpleBatchMixin(MixinBase):
             failed=self._survey_failed_count() if self._survey_rows else 0,
             has_preset=self._survey_preset is not None,
             missing_models=missing,
+            gpu_missing=self._survey_gpu_missing(),
         )
         self._survey_gate = gate
 

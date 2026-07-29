@@ -85,6 +85,7 @@ def run_gate(
     failed: int,
     has_preset: bool,
     missing_models: list[str],
+    gpu_missing: bool = False,
 ) -> SectionState:
     """Run's verdict, and by construction the Process button's.
 
@@ -110,6 +111,17 @@ def run_gate(
             BLOCKED,
             counts,
             f"Download {', '.join(missing_models)} first: switch to Advanced and open Models.",
+        )
+    # After the models, matching the advanced form's order: a user without the
+    # weights has to fix that first either way. The bundled preset maps with
+    # loger_star, so on a CPU-only laptop this is every pass in the batch failing
+    # one after another, with nothing said beforehand.
+    if gpu_missing:
+        return SectionState(
+            BLOCKED,
+            counts,
+            "These settings need a GPU and none was detected. "
+            "Switch to Advanced and choose a mapping backend that runs on CPU.",
         )
     if failed:
         return SectionState(

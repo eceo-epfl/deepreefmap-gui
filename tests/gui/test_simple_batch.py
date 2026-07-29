@@ -14,6 +14,11 @@ def batch_window(simple_window, tmp_path, monkeypatch):
     window._survey_store().add_transect(make_transect())
     window._refresh_survey_batch_tab()
     monkeypatch.setattr(window, "_survey_missing_models", list)
+    # Same reason as the models stub above: the bundled preset maps with
+    # loger_star, so on a machine without CUDA the gate blocks the batch and
+    # these tests never reach what they are about. The gate itself is covered in
+    # tests/simple/test_run_gate_gpu.py.
+    monkeypatch.setattr(window, "_gpu_available", lambda: True)
     return window
 
 
