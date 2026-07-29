@@ -14,7 +14,7 @@ import shutil
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from deepreefmap_gui.io.atomic import atomic_write_json
@@ -94,15 +94,29 @@ class FacetGroup:
         return collected
 
 
+def parse_run_timestamp(ts: object) -> datetime | None:
+    """An ISO-8601 run timestamp as an aware datetime, or None if unusable.
+
+    A timestamp with no offset is read as UTC, which is what writes it: the
+    pipeline uses datetime.now(timezone.utc) and the survey store records the
+    same value. Left alone, fromisoformat gives a naive datetime whose
+    .timestamp() assumes local time, so an older naive manifest sorts against a
+    newer offset-carrying one by the local UTC offset -- hours out, and in the
+    wrong direction depending on which side of UTC the machine sits.
+    """
+    if not isinstance(ts, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(ts)
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
+
+
 def run_sort_key(manifest: dict, mtime: float) -> float:
     """Prefer the recorded run timestamp; fall back to the manifest file mtime."""
-    ts = manifest.get("run_timestamp")
-    if isinstance(ts, str):
-        try:
-            return datetime.fromisoformat(ts).timestamp()
-        except ValueError:
-            pass
-    return mtime
+    parsed = parse_run_timestamp(manifest.get("run_timestamp"))
+    return parsed.timestamp() if parsed is not None else mtime
 
 
 def run_duration_s(manifest: dict) -> float | None:
