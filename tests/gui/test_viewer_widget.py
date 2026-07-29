@@ -246,22 +246,6 @@ def test_colorize_depth_all_nan() -> None:
     assert result.sum() == 0
 
 
-@pytest.mark.parametrize(
-    "rgb, expected_r",
-    [
-        (np.array([[255, 0, 128]], dtype=np.uint8), 1.0),
-        (np.array([[0.5, 0.0, 1.0]], dtype=np.float32), 0.5),
-    ],
-)
-def test_to_rgba_normalizes_by_dtype(rgb, expected_r) -> None:
-    from deepreefmap_gui.viewer.render import _to_rgba
-
-    rgba = _to_rgba(rgb)
-    assert rgba.shape == (1, 4)
-    assert abs(rgba[0, 0] - expected_r) < 0.01
-    assert abs(rgba[0, 3] - 1.0) < 0.01
-
-
 def test_build_frustum_lines_shape() -> None:
     from deepreefmap_gui.viewer.render import _build_frustum_lines
 

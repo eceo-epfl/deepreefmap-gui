@@ -383,7 +383,7 @@ def test_picking_a_different_point_rebuilds_the_marker(viewer) -> None:
     viewer.set_picked_marker((9.0, 9.0, 9.0), (10, 200, 30), anchor_display=(100.0, 50.0))
 
     assert viewer._pick_ring_sources != before
-    assert viewer.picked_xyz == pytest.approx((9.0, 9.0, 9.0))
+    assert viewer._picked_xyz == pytest.approx((9.0, 9.0, 9.0))
 
 
 def test_moving_the_anchor_carries_the_ring_ticks_and_leader_with_it(viewer) -> None:
@@ -439,7 +439,7 @@ def test_clearing_removes_every_overlay_prop_it_added(viewer) -> None:
     assert viewer._plotter.renderer.GetViewProps().GetNumberOfItems() == baseline
     assert viewer._pick_2d_actors == []
     assert viewer._pick_tick_sources == []
-    assert viewer.picked_xyz is None
+    assert viewer._picked_xyz is None
 
 
 def test_a_camera_move_asks_for_the_anchor_to_be_recomputed(viewer) -> None:

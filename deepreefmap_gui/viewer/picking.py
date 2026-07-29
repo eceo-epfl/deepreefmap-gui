@@ -441,10 +441,6 @@ class ViewerPickingMixin(_ViewerPickingHost):
         except Exception:
             return None
 
-    @property
-    def picked_xyz(self) -> tuple[float, float, float] | None:
-        return self._picked_xyz
-
     def _add_pick_2d_overlay(
         self,
         anchor_display: tuple[float, float],
