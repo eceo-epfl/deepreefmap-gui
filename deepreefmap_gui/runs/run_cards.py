@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QStyleOptionViewItem,
 )
 
+from deepreefmap_gui.profiling.system_probe import format_bytes
 from deepreefmap_gui.core.theme import (
     BANNER_TEXT,
     CARD_BG,
@@ -64,12 +65,6 @@ def related_run_counts(entries: list[tuple[Path, dict]]) -> dict[Path, int]:
         related.discard(run_dir)
         counts[run_dir] = len(related)
     return counts
-
-
-def format_bytes(total: float) -> str:
-    if total >= 1e9:
-        return f"{total / 1e9:.2f} GB"
-    return f"{total / 1e6:.1f} MB"
 
 
 def format_disk_size(run_dir: Path) -> str | None:

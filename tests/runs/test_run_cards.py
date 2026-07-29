@@ -61,7 +61,9 @@ def test_card_video_line_shows_hash_size_and_date() -> None:
     meta = build_run_card_meta(manifest, Path("run_a"))
     assert "GX_VIDEO.MP4" in meta["video"]
     assert "#deadbeef" in meta["video"]
-    assert "3.80 GB" in meta["video"]
+    # Binary units: 3.8e9 bytes is 3.5 GiB. These read as SI before the two byte
+    # formatters were collapsed into one.
+    assert "3.5 GB" in meta["video"]
     assert "2026-07-12" in meta["video"]
 
 

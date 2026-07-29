@@ -50,11 +50,11 @@ from deepreefmap_gui.runs.run_cards import (
     RUN_META_ROLE,
     RunCardDelegate,
     build_run_card_meta,
-    format_bytes,
     format_run_metadata,
     related_run_counts,
 )
 from deepreefmap_gui.profiling.eta import format_duration
+from deepreefmap_gui.profiling.system_probe import format_bytes
 from deepreefmap_gui.survey import catalogue
 from deepreefmap_gui.survey.catalogue import FacetGroup, RunEntry
 from deepreefmap_gui.survey.models.transect_pass import PASS_DIRECTIONS

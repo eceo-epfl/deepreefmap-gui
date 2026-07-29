@@ -158,8 +158,14 @@ def sample_utilisation() -> Utilisation:
     )
 
 
-def format_bytes(n: int | None) -> str:
-    """Render a byte count as `3.4 GB` / `812 MB`, or a dash when unknown."""
+def format_bytes(n: float | None) -> str:
+    """Render a byte count as `3.4 GB` / `812 MB`, or a dash when unknown.
+
+    Binary units throughout, matching what an OS disk dialog reports. This is the
+    only byte formatter in the app on purpose: a second SI-based one meant the
+    Data panel showed a run as "4.29 GB" while the System panel showed the free
+    space it had to fit into as "4.0 GB", from the same byte count.
+    """
     if n is None:
         return "—"
     gb = n / 1024**3
