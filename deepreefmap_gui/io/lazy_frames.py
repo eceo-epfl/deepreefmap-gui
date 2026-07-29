@@ -39,7 +39,10 @@ class RunDirFrameAccessor:
     """Read prepared frames on demand from a run directory's PNG caches.
 
     The PNG caches are lossless, so a reloaded array equals the one preprocessing
-    held in RAM.
+    held in RAM. This is the read path behind a scene file: the scene stores the
+    cloud index and the frame metadata, the pixels stay here.
+
+    The directory is treated as read-only; nothing on this path writes to it.
     """
 
     def __init__(
@@ -87,7 +90,19 @@ class RunDirFrameAccessor:
         return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
     def get_labels(self, positional_index: int) -> np.ndarray:
-        return self._read(self._labels_dir / f"{self._stem(positional_index)}.png", cv2.IMREAD_GRAYSCALE)
+        # Not a plain .png read: runs predating the PNG label cache store .npy,
+        # widened to int32. The library owns both the suffix search and the
+        # narrowing back to uint8, so call it rather than restate it here.
+        from deepreefmap.pipeline.resume import read_labels_file, resolve_labels_path
+
+        stem = self._stem(positional_index)
+        path = resolve_labels_path(self._labels_dir, stem)
+        labels = None if path is None else read_labels_file(path)
+        if labels is None:
+            raise FileNotFoundError(
+                f"Prepared frame artifact is missing or unreadable: {self._labels_dir}/{stem}"
+            )
+        return labels
 
     def get_mask(self, positional_index: int) -> np.ndarray:
         return self._read(self._masks_dir / f"{self._stem(positional_index)}.png", cv2.IMREAD_GRAYSCALE)

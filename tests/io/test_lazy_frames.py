@@ -146,3 +146,56 @@ def test_close_is_safe_to_call(accessor):
     """The accessor holds no handles, but the protocol requires the method."""
     accessor.close()
     accessor.close()
+
+
+# --- pre-PNG label caches ---------------------------------------------------
+
+def test_labels_fall_back_to_the_pre_png_npy_cache(tmp_path):
+    """Runs predating the PNG label cache store .npy, widened to int32.
+
+    Reached whenever an older run is opened, because the scene file no longer
+    carries its own copy of the labels. A plain `{stem}.png` read returns None
+    for these and the frame fails to load at all.
+    """
+    for sub in ("frames", "labels", "masks"):
+        (tmp_path / sub).mkdir()
+    labels = np.array([[1, 5], [22, 25]], dtype=np.int32)
+    for frame_index in (0,):
+        stem = f"{frame_index:08d}"
+        cv2.imwrite(str(tmp_path / "frames" / f"{stem}.png"), np.zeros((2, 2, 3), np.uint8))
+        cv2.imwrite(str(tmp_path / "masks" / f"{stem}.png"), np.zeros((2, 2), np.uint8))
+        np.save(tmp_path / "labels" / f"{stem}.npy", labels)
+
+    accessor = RunDirFrameAccessor(tmp_path, (0,), clip_counts=(1,), image_size=(2, 2))
+    got = accessor.get_labels(0)
+
+    np.testing.assert_array_equal(got, labels)
+    # Narrowed on the way out: the viewer's colour LUT and cv2.resize both
+    # expect the uint8 the PNG cache would have given.
+    assert got.dtype == np.uint8
+
+
+def test_a_png_label_cache_wins_over_a_stale_npy(tmp_path):
+    """Both can exist after a re-run; the PNG is the current one."""
+    for sub in ("frames", "labels", "masks"):
+        (tmp_path / sub).mkdir()
+    cv2.imwrite(str(tmp_path / "frames" / "00000000.png"), np.zeros((2, 2, 3), np.uint8))
+    cv2.imwrite(str(tmp_path / "masks" / "00000000.png"), np.zeros((2, 2), np.uint8))
+    np.save(tmp_path / "labels" / "00000000.npy", np.full((2, 2), 9, dtype=np.int32))
+    cv2.imwrite(str(tmp_path / "labels" / "00000000.png"), np.full((2, 2), 4, dtype=np.uint8))
+
+    accessor = RunDirFrameAccessor(tmp_path, (0,), clip_counts=(1,), image_size=(2, 2))
+
+    assert accessor.get_labels(0).tolist() == [[4, 4], [4, 4]]
+
+
+def test_a_missing_label_cache_names_the_frame_it_could_not_read(tmp_path):
+    for sub in ("frames", "labels", "masks"):
+        (tmp_path / sub).mkdir()
+    cv2.imwrite(str(tmp_path / "frames" / "00000000.png"), np.zeros((2, 2, 3), np.uint8))
+    cv2.imwrite(str(tmp_path / "masks" / "00000000.png"), np.zeros((2, 2), np.uint8))
+
+    accessor = RunDirFrameAccessor(tmp_path, (0,), clip_counts=(1,), image_size=(2, 2))
+
+    with pytest.raises(FileNotFoundError, match="00000000"):
+        accessor.get_labels(0)
