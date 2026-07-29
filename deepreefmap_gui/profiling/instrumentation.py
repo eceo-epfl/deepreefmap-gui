@@ -98,7 +98,7 @@ def apply_manifest_timings(
     if not manifest_path.exists():
         return None
     try:
-        manifest = json.loads(manifest_path.read_text())
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except Exception:
         return None
     if run_name is not None:

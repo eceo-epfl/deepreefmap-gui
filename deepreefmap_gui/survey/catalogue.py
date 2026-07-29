@@ -140,7 +140,7 @@ def scan_out_root(out_root: Path) -> list[RunEntry]:
             continue
         manifest: dict = {}
         try:
-            manifest = json.loads(manifest_path.read_text())
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             logger.warning("Unreadable manifest in %s", child)
         entries.append(_entry_from_manifest(child, manifest, manifest_path.stat().st_mtime))
@@ -334,7 +334,7 @@ def dir_size_bytes(run_dir: Path) -> int:
 def rename_run(run_dir: Path, new_name: str) -> dict:
     """Set the display name in the run manifest, atomically."""
     manifest_path = run_dir / "run_manifest.json"
-    manifest = json.loads(manifest_path.read_text())
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["name"] = new_name.strip()
     atomic_write_json(manifest_path, manifest)
     return manifest

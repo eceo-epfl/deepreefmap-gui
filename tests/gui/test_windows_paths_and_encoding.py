@@ -124,3 +124,30 @@ def test_a_csv_in_another_encoding_is_not_refused(tmp_path):
     jobs = _load_batch_csv(path)
 
     assert len(jobs) == 1
+
+
+def test_no_text_file_is_read_or_written_without_an_encoding():
+    """Scenario: ruff's PLW1514 covers open() and Path.open(), but not
+    Path.read_text()/write_text() -- which is how most of this app touches JSON
+    manifests and YAML presets.
+
+    Expected behaviour: none of them fall back to the locale encoding, which on
+    Windows is a code page that mangles any non-ASCII run name or video path.
+    """
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2] / "deepreefmap_gui"
+    offenders = []
+    for path in sorted(root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            if node.func.attr not in ("read_text", "write_text"):
+                continue
+            if any(kw.arg == "encoding" for kw in node.keywords):
+                continue
+            offenders.append(f"{path.relative_to(root)}:{node.lineno} {node.func.attr}")
+
+    assert offenders == [], "reads/writes using the platform encoding: " + ", ".join(offenders)

@@ -48,7 +48,7 @@ def assemble_transect_covers(
             continue
         cover_path = out_root / run.run_dir_name / "benthic_cover.json"
         try:
-            raw = json.loads(cover_path.read_text())
+            raw = json.loads(cover_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             logger.warning("No readable benthic cover for %s", run.run_dir_name)
             continue

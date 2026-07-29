@@ -57,7 +57,7 @@ class ResultsMixin(MixinBase):
         manifest_path = out / "run_manifest.json"
         if manifest_path.exists():
             try:
-                manifest = json.loads(manifest_path.read_text())
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                 self._show_run_meta_banner(manifest, out, include_disk_size=True)
             except Exception:
                 pass
@@ -92,7 +92,7 @@ class ResultsMixin(MixinBase):
         if path is None:
             return None
         try:
-            return json.loads(path.read_text())
+            return json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             logger.debug("Unreadable benthic cover report: %s", path, exc_info=True)
             return None

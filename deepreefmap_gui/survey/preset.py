@@ -48,7 +48,8 @@ PRESET_KEYS = {
 
 
 def _bundled_text() -> str:
-    return resources.files("deepreefmap_gui.resources").joinpath("configs/survey_preset.yaml").read_text()
+    bundled = resources.files("deepreefmap_gui.resources").joinpath("configs/survey_preset.yaml")
+    return bundled.read_text(encoding="utf-8")
 
 
 def _bundled_defaults() -> dict[str, Any]:
@@ -65,7 +66,7 @@ def load_survey_preset() -> dict[str, Any]:
         return parse_preset(Path(override).read_text(encoding="utf-8"))
     user_copy = survey_preset_path()
     if user_copy.is_file():
-        return parse_preset(user_copy.read_text())
+        return parse_preset(user_copy.read_text(encoding="utf-8"))
     return parse_preset(_bundled_text())
 
 

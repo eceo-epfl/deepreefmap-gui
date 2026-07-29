@@ -329,7 +329,7 @@ def export_model_pack(
             pass
         raise
 
-    sidecar.write_text(json.dumps(manifest, indent=2))
+    sidecar.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     if progress_cb is not None:
         progress_cb("export", total, total)
     logger.info("Exported %d repo(s) to %s", len(repo_exports), pack_dir)
@@ -340,7 +340,7 @@ def read_pack_manifest(pack_dir: str | Path) -> dict:
     pack_dir = Path(pack_dir)
     sidecar = pack_dir / MANIFEST_NAME
     if sidecar.exists():
-        return json.loads(sidecar.read_text())
+        return json.loads(sidecar.read_text(encoding="utf-8"))
     tar_path = pack_dir / TAR_NAME
     with tarfile.open(tar_path, "r") as tar:
         member = tar.extractfile(MANIFEST_NAME)

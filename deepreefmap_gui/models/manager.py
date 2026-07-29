@@ -303,7 +303,7 @@ def repo_commit(repo_id: str) -> str | None:
     """Current commit hash for a repo from refs/main, or None. Never hits the network."""
     ref = _hf_cache_dir(repo_id) / "refs" / "main"
     try:
-        return ref.read_text().strip()
+        return ref.read_text(encoding="utf-8").strip()
     except OSError:
         return None
 
@@ -365,7 +365,7 @@ def _verify_repo(repo_id: str) -> tuple[ModelStatus, str]:
     # (coralscapes_hub_model.py). Its absence is the file that crashed at runtime.
     if has_config:
         try:
-            module = json.loads(config.read_text()).get("hub_inference_module")
+            module = json.loads(config.read_text(encoding="utf-8")).get("hub_inference_module")
         except (OSError, ValueError):
             return ModelStatus.PARTIAL, "config.json unreadable"
         if module and not (snap / module).exists():
