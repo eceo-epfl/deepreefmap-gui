@@ -45,18 +45,6 @@ def _settle(ms: int = 500) -> None:
     loop.exec()
 
 
-def _ours(scan_spy, tmp_path) -> list:
-    """Only the scans of paths this test owns.
-
-    Running the event loop also delivers work other tests queued and never drove
-    -- worker signals, debounces on windows nothing closed. Those scan their own
-    roots, so filtering by tree keeps this test measuring its own behaviour.
-    Typing per keystroke still shows up: every prefix of the path is under
-    tmp_path too.
-    """
-    return [p for p in scan_spy if p == tmp_path or tmp_path in p.parents]
-
-
 def test_typing_a_path_does_not_scan_per_keystroke(window, scan_spy, tmp_path):
     target = tmp_path / "surveys" / "reef"
     target.mkdir(parents=True)
@@ -64,7 +52,7 @@ def test_typing_a_path_does_not_scan_per_keystroke(window, scan_spy, tmp_path):
 
     _type(window, str(target))
 
-    assert _ours(scan_spy, tmp_path) == [], "every keystroke walked the filesystem"
+    assert scan_spy == [], "every keystroke walked the filesystem"
 
 
 def test_the_scan_happens_once_the_path_settles(window, scan_spy, tmp_path):
@@ -75,8 +63,10 @@ def test_the_scan_happens_once_the_path_settles(window, scan_spy, tmp_path):
     _type(window, str(target))
     _settle()
 
-    ours = _ours(scan_spy, tmp_path)
-    assert ours == [target]
+    # Deliberately unfiltered. This is the only test that runs an event loop, so
+    # any work another test queued and never drove lands here -- an extra entry
+    # means something leaked, which is worth failing on.
+    assert scan_spy == [target]
 
 
 def test_typing_leaves_no_database_in_the_parents_it_passes(window, tmp_path):

@@ -70,12 +70,19 @@ def make_window(qapp):
     A factory rather than an instance so tests can set env vars (mock PyApp,
     timing-profile path) before construction.
 
-    Every window it builds has its timers stopped on teardown. Nothing closes
-    these windows, so a debounce armed during construction outlives the test and
-    fires inside whichever later test happens to run the event loop -- an
-    order-dependent failure a long way from its cause. Stopping is enough;
-    closeEvent is deliberately not called, since it prompts when a run is in
-    flight.
+    Every window it builds is drained and stopped on teardown, in that order.
+    Nothing closes these windows, so anything they left pending outlives the test
+    and lands inside whichever later test happens to run the event loop -- an
+    order-dependent failure a long way from its cause.
+
+    The order is the whole point. Some work is queued rather than armed: deleting
+    a run directory fires QFileSystemWatcher.directoryChanged asynchronously, and
+    a batch worker emits its done signal across threads. Neither has been
+    delivered by teardown, so stopping timers first misses them entirely -- the
+    delivery happens later and arms a timer on a window nothing is watching any
+    more. Draining first lets them land, then the stop catches what they armed.
+
+    closeEvent is deliberately not called: it prompts when a run is in flight.
     """
     require_torch()
     built = []
@@ -90,6 +97,10 @@ def make_window(qapp):
 
     yield _make
 
+    if built:
+        from PySide6.QtWidgets import QApplication
+
+        QApplication.processEvents()
     for win in built:
         win._stop_window_timers()
 
