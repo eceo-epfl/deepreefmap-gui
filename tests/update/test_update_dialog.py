@@ -47,14 +47,26 @@ def _lines(dialog) -> list[str]:
 # --- what the worker thread dispatches to -------------------------------
 
 
-def test_the_worker_runs_the_real_update(dialog, monkeypatch) -> None:
-    """Guarantee the Install button's worker is wired to perform_update()."""
+def test_the_worker_runs_the_real_update(qapp, tmp_path, monkeypatch) -> None:
+    """Guarantee the Install button's worker is wired to perform_update(), and that
+    it threads current_version through -- that argument is what retains the outgoing
+    binary for rollback, so a dropped one silently breaks rollback (see the e2e)."""
+    monkeypatch.delenv("DEEPREEFMAP_MOCK_PYAPP", raising=False)
+    binary = tmp_path / "deepreefmap-gui"
+    binary.write_bytes(b"OLD")
+    dialog = update_dialog.UpdateProgressDialog(
+        target_version="1.2.0",
+        release={"tag_name": "v1.2.0", "assets": []},
+        binary_path=binary,
+        current_version="1.1.0",
+    )
     calls: dict[str, object] = {}
 
     def fake_perform_update(
         release, binary_path, target_version, current_version=None, progress_cb=None, line_cb=None
     ):
         calls["args"] = (release, binary_path, target_version)
+        calls["current_version"] = current_version
         if line_cb is not None:
             line_cb("working")
 
@@ -65,6 +77,7 @@ def test_the_worker_runs_the_real_update(dialog, monkeypatch) -> None:
 
     assert calls["args"][1] == dialog._binary_path
     assert calls["args"][2] == "1.2.0"
+    assert calls["current_version"] == "1.1.0"
     assert outcomes == [(True, "Installed 1.2.0. Restart to apply.")]
 
 

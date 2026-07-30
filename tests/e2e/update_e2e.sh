@@ -94,18 +94,20 @@ py() { "$1" self python "${@:2}"; }
 swap_binary() {
     local target="$1" target_native
     target_native=$(native "$target")
-    py "$target" - "$target_native" "$asset" "$port" "$new_version" <<'PY'
+    py "$target" - "$target_native" "$asset" "$port" "$new_version" "$old_version" <<'PY'
 import sys
 from pathlib import Path
 
 from deepreefmap_gui.packaging.binary_swap import perform_update
 
-binary, asset, port, version = sys.argv[1:5]
+binary, asset, port, version, current = sys.argv[1:6]
 release = {
     "tag_name": f"v{version}",
     "assets": [{"name": asset, "browser_download_url": f"http://127.0.0.1:{port}/{asset}"}],
 }
-perform_update(release, Path(binary), version, line_cb=print)
+# Pass current_version exactly as the GUI worker does, so the outgoing binary is
+# retained under previous/ for rollback.
+perform_update(release, Path(binary), version, current_version=current, line_cb=print)
 PY
 }
 
