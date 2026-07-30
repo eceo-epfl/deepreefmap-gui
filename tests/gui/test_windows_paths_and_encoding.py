@@ -104,24 +104,24 @@ def _write_csv(path, encoding, name="reef"):
 def test_a_csv_with_an_excel_bom_is_read(tmp_path):
     """Excel writes UTF-8 with a BOM; without utf-8-sig the BOM lands in the
     first column name and the required-columns check fails."""
-    from deepreefmap_gui.form.batch import _load_batch_csv
+    from deepreefmap_gui.form.batch import load_batch_csv
 
     path = tmp_path / "jobs.csv"
     _write_csv(path, "utf-8-sig")
 
-    jobs = _load_batch_csv(path)
+    jobs = load_batch_csv(path)
 
     assert [j.name for j in jobs] == ["reef"]
 
 
 def test_a_csv_in_another_encoding_is_not_refused(tmp_path):
     """One unrepresentable character should not cost the user the whole batch."""
-    from deepreefmap_gui.form.batch import _load_batch_csv
+    from deepreefmap_gui.form.batch import load_batch_csv
 
     path = tmp_path / "jobs.csv"
     _write_csv(path, "cp1252", name="r\u00e9cif")
 
-    jobs = _load_batch_csv(path)
+    jobs = load_batch_csv(path)
 
     assert len(jobs) == 1
 

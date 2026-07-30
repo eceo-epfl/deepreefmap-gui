@@ -11,8 +11,6 @@ without a window, the same split progress.py uses for the step badges.
 
 from __future__ import annotations
 
-from deepreefmap_gui.core.window_protocol import MixinBase
-
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +27,7 @@ from PySide6.QtWidgets import (
 
 from deepreefmap_gui.core.theme import ERROR, GUTTER, SUCCESS, TEXT_MUTED
 from deepreefmap_gui.core.widgets import section_card
+from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.models.manager import GPU_ONLY_BACKENDS
 from deepreefmap_gui.profiling.system_probe import GPU_NONE, format_bytes, probe_system
 

@@ -64,6 +64,18 @@ class ViewerControlsMixin(MixinBase):
         self._warnings_label_running.setText(text)
         self._warnings_label_running.setVisible(visible)
 
+    def _overlay_point_size(self) -> float:
+        """The overlay slider holds tenths, because QSlider is integer-only."""
+        return self._ov_pt_slider.value() / 10.0
+
+    def _frustums_visible(self) -> bool:
+        button = getattr(self, "_ov_frustum_btn", None)
+        return button is not None and button.isChecked()
+
+    def _following_camera(self) -> bool:
+        button = getattr(self, "_ov_follow_btn", None)
+        return button is not None and button.isChecked()
+
     def _on_viewer_control_changed(self) -> None:
         if not self._viewer.has_scene_data:
             return

@@ -11,7 +11,6 @@ and find a tab that simple mode does not show.
 from __future__ import annotations
 
 import pytest
-
 from _factories import make_transect
 from _qt_wait import wait_until
 

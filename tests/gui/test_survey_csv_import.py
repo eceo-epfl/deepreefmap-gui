@@ -11,7 +11,6 @@ video does when the transect is unknown.
 from __future__ import annotations
 
 import pytest
-
 from _factories import make_transect
 
 from deepreefmap_gui.simple.batch import _COL_TRANSECT, _COL_TRIM

@@ -271,7 +271,7 @@ def _run_manifest_provenance(out_root: Path, run_dir_name: str) -> dict[str, str
     blank = {"deepreefmap_version": "", "segmentation_model": "", "mapping_backend": ""}
     path = out_root / run_dir_name / "run_manifest.json"
     try:
-        manifest = json.loads(path.read_text())
+        manifest = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return blank
     if not isinstance(manifest, dict):

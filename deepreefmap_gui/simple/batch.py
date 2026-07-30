@@ -1644,7 +1644,7 @@ class SimpleBatchMixin(MixinBase):
         """Non-fatal warnings a succeeded run recorded in its manifest, if any."""
         path = Path(self._out_root_input.text()).expanduser() / run_dir_name / "run_manifest.json"
         try:
-            manifest = json.loads(path.read_text())
+            manifest = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return []
         warnings = manifest.get("quality_warnings") if isinstance(manifest, dict) else None

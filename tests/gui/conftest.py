@@ -99,9 +99,9 @@ def _assume_gpu(monkeypatch):
     gate blocks and every ready-state test fails. Tests for the no-GPU path
     override _gpu_available or _gpu_only_mapper themselves.
     """
-    from deepreefmap_gui.app import DeepReefMapWindow
+    from deepreefmap_gui.form.panel import FormPanelMixin
 
-    monkeypatch.setattr(DeepReefMapWindow, "_gpu_available", lambda self: True)
+    monkeypatch.setattr(FormPanelMixin, "_gpu_available", lambda self: True)
 
 
 @pytest.fixture

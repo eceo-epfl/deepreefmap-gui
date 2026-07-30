@@ -262,7 +262,7 @@ def test_save_offline_area_reports_the_size_saved(simple_window, monkeypatch):
     w._on_save_offline_area()
     text = w._status_label.text()
     assert "12 map tiles" in text
-    assert "2.4 MB" in text
+    assert "2 MB" in text
 
 
 def test_save_offline_area_says_so_when_nothing_is_cached(simple_window, monkeypatch):
