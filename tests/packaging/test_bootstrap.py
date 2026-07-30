@@ -22,10 +22,10 @@ def test_bootstrap_self_heals_then_reexecs_when_env_broken(monkeypatch, tmp_path
     monkeypatch.setenv("PYAPP", str(fake_binary))
     monkeypatch.delenv("DEEPREEFMAP_SELF_HEAL_ATTEMPTED", raising=False)
     monkeypatch.setattr(binary_swap, "env_is_healthy", lambda *a, **k: False)
+    # A broken env is repaired by `self restore` (wipe + reinstall from cache),
+    # then the binary re-execs into the repaired env.
     restored: list[str] = []
-    monkeypatch.setattr(
-        binary_swap, "self_restore", lambda b: bool(restored.append(b)) or True
-    )
+    monkeypatch.setattr(binary_swap, "self_restore", lambda b: bool(restored.append(b)) or True)
 
     class _Reexec(Exception):
         pass
@@ -46,6 +46,20 @@ def test_bootstrap_self_heals_then_reexecs_when_env_broken(monkeypatch, tmp_path
         assert os.environ.get("DEEPREEFMAP_SELF_HEAL_ATTEMPTED") == "1"
     finally:
         os.environ.pop("DEEPREEFMAP_SELF_HEAL_ATTEMPTED", None)
+
+
+def test_bootstrap_provision_arg_exits_without_launching(monkeypatch, tmp_path) -> None:
+    """The installer runs `<binary> __provision__` to provision (in the launcher,
+    before Python) and exit, never opening the GUI or dispatching to the CLI."""
+    import deepreefmap_gui.app as gui_app
+    import deepreefmap_gui.bootstrap as bootstrap
+    import deepreefmap.cli.main as cli_main
+
+    monkeypatch.setattr(sys, "argv", ["deepreefmap", "__provision__"])
+    monkeypatch.setattr(gui_app, "launch", lambda: pytest.fail("GUI must not launch for __provision__"))
+    monkeypatch.setattr(cli_main, "app", lambda *a: pytest.fail("CLI must not run for __provision__"))
+
+    bootstrap.main()  # returns immediately
 
 
 def _quiet_bootstrap(monkeypatch, tmp_path):

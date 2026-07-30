@@ -147,6 +147,7 @@ if TYPE_CHECKING:
         # --- buttons -----------------------------------------------------
         _batch_btn: QPushButton
         _desktop_entry_btn: QPushButton
+        _models_tab_btn: QPushButton
         _discover_btn: QPushButton
         _export_models_btn: QPushButton
         _hf_auth_btn: QPushButton
@@ -195,6 +196,7 @@ if TYPE_CHECKING:
         _memory_warn_icon: QLabel
         _recorded_runs_caption: QLabel
         _status_label: QLabel
+        _model_cache_label: QLabel
         _update_status_label: QLabel
         _update_version_label: QLabel
         _warnings_label: QLabel
@@ -203,6 +205,8 @@ if TYPE_CHECKING:
         # --- run form, borrowed by the simple-mode settings dialog ----------
         _setup_page: QWidget
         _run_tab_layout: QVBoxLayout
+        _env_list_container: QWidget
+        _env_list_layout: QVBoxLayout
         _video_row_widget: QWidget
         _range_row_widget: QWidget
         _run_name_widget: QWidget
@@ -313,6 +317,7 @@ if TYPE_CHECKING:
         _sig_survey_progress = Signal(int, int, str)
         _sig_survey_done = Signal(int, int, str)
         _sig_run_sizes_done = Signal(object)
+        _sig_storage_done = Signal(object)
 
         # --- cross-mixin methods -----------------------------------------
         def _add_run_warning(self, message: str) -> None: ...
@@ -334,6 +339,11 @@ if TYPE_CHECKING:
         def _update_memory_profile_warning(self) -> None: ...
         def _cancel_load(self) -> None: ...
         def _check_for_update(self) -> None: ...
+        def _measure_storage(self) -> None: ...
+        def _refresh_storage(self) -> None: ...
+        def _apply_storage(self, info: dict) -> None: ...
+        def _on_delete_environment(self, path: str, version: str) -> None: ...
+        def _go_to_models_tab(self) -> None: ...
         def _clear_run_warnings(self) -> None: ...
         def _collect_loger_options(self, mapping_name: str) -> dict | None: ...
         def _collect_run_settings(self) -> dict: ...
