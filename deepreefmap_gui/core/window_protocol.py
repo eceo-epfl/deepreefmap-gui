@@ -89,6 +89,7 @@ if TYPE_CHECKING:
         _pick_stage: str | None
         _plan_map_fitted: bool
         _survey_rows: list
+        _survey_table_index: list[int | None]
         _survey_transects: list
         _survey_batch: SurveyBatch | None
         _survey_preset: dict | None
@@ -240,8 +241,6 @@ if TYPE_CHECKING:
         _preview_toggle_btn: QToolButton
         _plan_map: SlippyMapWidget
         _analysis_map: SlippyMapWidget
-        _map_start_btn: QToolButton
-        _map_end_btn: QToolButton
         _survey_batch_name: QLineEdit
         _survey_preset_label: QLabel
         _survey_pass_table: QTableWidget
@@ -260,11 +259,13 @@ if TYPE_CHECKING:
         _analysis_repro_label: QLabel
         _analysis_estimate_label: QLabel
         _analysis_runs_list: QListWidget
-        _transect_list: QListWidget
+        _transect_list: QTreeWidget
         _tr_name_input: QLineEdit
         _tr_start_coord: QLineEdit
         _tr_end_coord: QLineEdit
-        _pick_both_btn: QPushButton
+        _tr_geometry: QLabel
+        _pick_both_btn: QToolButton
+        _plan_view_timer: QTimer
         _tr_length: QDoubleSpinBox
         _tr_depth: QDoubleSpinBox
         _tr_description: NotesEdit

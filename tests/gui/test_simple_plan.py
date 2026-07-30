@@ -1,7 +1,7 @@
 import pytest
 from _factories import make_transect
 
-from deepreefmap_gui.survey.models import TransectPass, VideoAsset
+from deepreefmap_gui.survey.models import RunRecord, TransectPass, VideoAsset
 from deepreefmap_gui.survey.models.exporters import save_transects_csv
 
 
@@ -10,6 +10,33 @@ def type_coord(window, which, text):
     edit = window._tr_start_coord if which == "start" else window._tr_end_coord
     edit.setText(text)
     window._on_coords_edited()
+
+
+def row_texts(window, group_title=None):
+    """Every transect row as a tuple of columns, optionally within one group."""
+    tree = window._transect_list
+    rows = []
+    for index in range(tree.topLevelItemCount()):
+        group = tree.topLevelItem(index)
+        if group_title is not None and not group.text(0).startswith(group_title):
+            continue
+        for child_index in range(group.childCount()):
+            child = group.child(child_index)
+            # The last column is a spacer that absorbs the leftover width.
+            rows.append(tuple(child.text(c) for c in range(tree.columnCount() - 1)))
+    return rows
+
+
+def group_titles(window):
+    tree = window._transect_list
+    return [tree.topLevelItem(i).text(0) for i in range(tree.topLevelItemCount())]
+
+
+def select_row(window, index):
+    """Click the row at ``index`` of the full list, as the user would."""
+    tree = window._transect_list
+    group = tree.topLevelItem(tree.topLevelItemCount() - 1)
+    tree.setCurrentItem(group.child(index))
 
 
 def test_transect_autosaves_once_complete(simple_window):
@@ -26,10 +53,11 @@ def test_transect_autosaves_once_complete(simple_window):
     w._tr_length.setValue(50.0)
     w._maybe_autosave()
     assert w._survey_store().list_transects()[0].length_m == 50.0
-    assert w._transect_list.count() == 1
+    rows = row_texts(w, "All transects")
+    assert len(rows) == 1
     # A typed tape length is the cable actually laid, so it stands in the row in
     # place of the straight-line distance between the GPS endpoints.
-    assert "50 m tape" in w._transect_list.item(0).text()
+    assert rows[0][:2] == ("T1", "50 m tape")
 
 
 def test_draft_row_tracks_typing_before_save(simple_window):
@@ -37,15 +65,14 @@ def test_draft_row_tracks_typing_before_save(simple_window):
 
     w = simple_window
     w._refresh_transect_list()
-    assert w._transect_list.count() == 0
+    assert row_texts(w) == []
     w._tr_name_input.setText("Nor")
-    assert w._transect_list.count() == 1
-    item = w._transect_list.item(0)
-    assert item.data(Qt.ItemDataRole.UserRole) == "draft"
-    assert "Nor" in item.text()
-    assert w._transect_list.currentRow() == 0
+    assert [r[0] for r in row_texts(w)] == ["Nor"]
+    item = w._transect_list.currentItem()
+    assert item.data(0, Qt.ItemDataRole.UserRole) == "draft"
+    assert item.text(0) == "Nor"
     w._tr_name_input.setText("North reef")
-    assert "North reef" in w._transect_list.item(0).text()
+    assert [r[0] for r in row_texts(w)] == ["North reef"]
     assert w._survey_store().list_transects() == []
 
 
@@ -68,25 +95,28 @@ def test_garbage_coordinate_never_saves(simple_window):
     assert w._survey_store().list_transects() == []
 
 
-def test_map_buttons_set_endpoints_one_shot(simple_window):
+def test_new_transect_arrives_named_and_ready_to_draw(simple_window):
+    """Scenario: New, then the two clicks that place the line.
+
+    Expected behaviour: nothing to name and nothing to arm in between.
+    """
     w = simple_window
-    w._map_start_btn.setChecked(True)
+    w._survey_store().add_transect(make_transect("Transect 1"))
+    w._refresh_transect_list()
+    w._on_transect_new()
+    assert w._tr_name_input.text() == "Transect 2"
+    assert w._pick_both_btn.isChecked()
     w._plan_map.map_clicked.emit(-17.5, 177.1)
-    assert w._tr_start_coord.text() == "-17.500000, 177.100000"
-    assert not w._map_start_btn.isChecked()
-    w._map_end_btn.setChecked(True)
     w._plan_map.map_clicked.emit(-17.5005, 177.1005)
-    assert w._tr_end_coord.text() == "-17.500500, 177.100500"
-    assert not w._map_end_btn.isChecked()
+    assert [t.name for t in w._survey_store().list_transects()] == ["Transect 1", "Transect 2"]
 
 
-def test_map_buttons_are_mutually_exclusive(simple_window):
+def test_new_name_skips_numbers_already_taken(simple_window):
     w = simple_window
-    w._map_start_btn.setChecked(True)
-    w._map_end_btn.setChecked(True)
-    assert not w._map_start_btn.isChecked()
-    w._map_start_btn.setChecked(True)
-    assert not w._map_end_btn.isChecked()
+    for name in ("Transect 1", "Transect 3"):
+        w._survey_store().add_transect(make_transect(name))
+    w._on_transect_new()
+    assert w._tr_name_input.text() == "Transect 2"
 
 
 def test_copy_endpoint_puts_latlon_on_clipboard(simple_window, monkeypatch):
@@ -121,10 +151,9 @@ def test_map_click_without_armed_button_is_ignored(simple_window):
 
 def test_draft_line_appears_once_both_endpoints_set(simple_window):
     w = simple_window
-    w._map_start_btn.setChecked(True)
+    w._pick_both_btn.setChecked(True)
     w._plan_map.map_clicked.emit(-17.5, 177.1)
     assert not any(t.id == "draft" for t in w._plan_map._transects)
-    w._map_end_btn.setChecked(True)
     w._plan_map.map_clicked.emit(-17.5005, 177.1005)
     assert any(t.id == "draft" for t in w._plan_map._transects)
     w._tr_name_input.setText("T1")
@@ -148,7 +177,7 @@ def test_edit_selected_transect_updates_row(simple_window):
     w = simple_window
     w._survey_store().add_transect(make_transect())
     w._refresh_transect_list()
-    w._transect_list.setCurrentRow(0)
+    select_row(w, 0)
     assert w._tr_name_input.text() == "T1"
     w._tr_end_coord.setText("-17.502, 177.1005")
     w._on_transect_save()
@@ -168,7 +197,7 @@ def test_delete_with_passes_is_blocked(simple_window):
         TransectPass(transect_id=transect.id, video_id=video.id, begin_s=0.0, end_s=30.0)
     )
     w._refresh_transect_list()
-    w._transect_list.setCurrentRow(0)
+    select_row(w, 0)
     w._on_transect_delete()
     assert "cannot be deleted" in w._status_label.text()
     assert len(store.list_transects()) == 1
@@ -220,17 +249,6 @@ def test_pick_both_walks_start_then_end(simple_window):
     assert not w._plan_map._pick_mode
 
 
-def test_single_endpoint_pick_disarms_pick_both(simple_window):
-    w = simple_window
-    w._pick_both_btn.setChecked(True)
-    w._map_end_btn.setChecked(True)
-    assert not w._pick_both_btn.isChecked()
-    assert w._pick_stage is None
-    w._plan_map.map_clicked.emit(-17.6, 177.2)
-    assert w._tr_end_coord.text() == "-17.600000, 177.200000"
-    assert w._tr_start_coord.text() == ""
-
-
 def test_notes_round_trip_through_the_store(simple_window):
     w = simple_window
     w._tr_name_input.setText("T1")
@@ -242,7 +260,7 @@ def test_notes_round_trip_through_the_store(simple_window):
     assert stored.description == "tape run W→E\nviz ~12 m"
     w._on_transect_new()
     w._refresh_transect_list()
-    w._transect_list.setCurrentRow(0)
+    select_row(w, 0)
     assert w._tr_description.toPlainText() == "tape run W→E\nviz ~12 m"
 
 
@@ -251,7 +269,7 @@ def test_selecting_a_transect_filters_the_browser(simple_window):
     transect = make_transect()
     w._survey_store().add_transect(transect)
     w._refresh_transect_list()
-    w._transect_list.setCurrentRow(0)
+    select_row(w, 0)
     assert w._data_facet == "transects"
     assert w._data_selected_key == ("transect", str(transect.id))
 
@@ -270,3 +288,149 @@ def test_save_offline_area_says_so_when_nothing_is_cached(simple_window, monkeyp
     monkeypatch.setattr(w._plan_map, "save_visible_area", lambda: (0, 0))
     w._on_save_offline_area()
     assert "Nothing to save yet" in w._status_label.text()
+
+
+def test_columns_count_the_passes_and_runs_on_each_transect(simple_window):
+    w = simple_window
+    store = w._survey_store()
+    transect = make_transect()
+    video = VideoAsset(file_name="a.mp4", path="/a.mp4", hash="cd" * 16)
+    store.add_transect(transect)
+    store.upsert_video(video)
+    pass_ = TransectPass(transect_id=transect.id, video_id=video.id, begin_s=0.0, end_s=30.0)
+    store.add_pass(pass_)
+    store.add_run(RunRecord(pass_id=pass_.id, run_dir_name="run_001", status="succeeded"))
+    w._refresh_transect_list()
+    assert row_texts(w, "All transects")[0][3:] == ("1", "1")
+
+
+def test_in_view_section_holds_what_the_map_shows(simple_window):
+    """Scenario: two transects far apart, the map on one of them.
+
+    Expected behaviour: the visible one is duplicated into a section at the top,
+    and stays in the full list below.
+    """
+    w = simple_window
+    w._plan_map.resize(400, 300)
+    w._survey_store().add_transect(make_transect("Near"))
+    w._survey_store().add_transect(
+        make_transect("Far", start_lat=10.0, start_lon=20.0, end_lat=10.001, end_lon=20.001)
+    )
+    w._refresh_transect_list()
+    w._plan_map.set_view(-17.5, 177.1, 16)
+    w._apply_plan_view_change()
+    assert group_titles(w) == ["In view  (1)", "All transects  (2)"]
+    assert [r[0] for r in row_texts(w, "In view")] == ["Near"]
+    assert sorted(r[0] for r in row_texts(w, "All transects")) == ["Far", "Near"]
+
+
+def test_panning_away_empties_the_in_view_section(simple_window):
+    w = simple_window
+    w._plan_map.resize(400, 300)
+    w._survey_store().add_transect(make_transect("Near"))
+    w._survey_store().add_transect(
+        make_transect("Far", start_lat=10.0, start_lon=20.0, end_lat=10.001, end_lon=20.001)
+    )
+    w._refresh_transect_list()
+    w._plan_map.set_view(-17.5, 177.1, 16)
+    w._apply_plan_view_change()
+    assert group_titles(w)[0].startswith("In view")
+    w._plan_map.set_view(40.0, -70.0, 16)
+    w._apply_plan_view_change()
+    assert group_titles(w) == ["All transects  (2)"]
+
+
+def test_selecting_a_transect_moves_the_map_to_it(simple_window):
+    w = simple_window
+    w._plan_map.resize(400, 300)
+    transect = make_transect()
+    w._survey_store().add_transect(transect)
+    w._plan_map.set_view(40.0, -70.0, 5)
+    w._refresh_transect_list()
+    select_row(w, 0)
+    lat, lon = w._plan_map._center
+    assert lat == pytest.approx(transect.start_lat, abs=0.01)
+    assert lon == pytest.approx(transect.start_lon, abs=0.01)
+    # Short of filling the viewport, so the reef either side stays on screen.
+    p1 = w._plan_map._px_of(transect.start_lat, transect.start_lon)
+    p2 = w._plan_map._px_of(transect.end_lat, transect.end_lon)
+    span = max(abs(p1.x() - p2.x()), abs(p1.y() - p2.y()))
+    assert 0 < span <= 0.6 * min(w._plan_map.width(), w._plan_map.height())
+
+
+def test_typing_a_coordinate_redraws_without_saving_it(simple_window):
+    w = simple_window
+    transect = make_transect()
+    w._survey_store().add_transect(transect)
+    w._refresh_transect_list()
+    select_row(w, 0)
+    w._tr_end_coord.setText("-17.4, 177.3")
+    overlay = next(t for t in w._plan_map._transects if t.id == str(transect.id))
+    assert overlay.end == pytest.approx((-17.4, 177.3))
+    assert w._survey_store().get_transect(transect.id).end_lat == transect.end_lat
+
+
+def test_geometry_readout_states_length_and_heading(simple_window):
+    w = simple_window
+    assert "once both ends are set" in w._tr_geometry.text()
+    type_coord(w, "start", "0.0, 0.0")
+    type_coord(w, "end", "0.0, 0.01")
+    text = w._tr_geometry.text()
+    assert "1112 m" in text
+    assert "090° E" in text
+
+
+def test_copy_action_appears_only_once_there_is_a_coordinate(simple_window):
+    w = simple_window
+    assert not w._coord_copy_actions["start"].isVisible()
+    w._tr_start_coord.setText("-17.5, 177.1")
+    assert w._coord_copy_actions["start"].isVisible()
+    w._tr_start_coord.clear()
+    assert not w._coord_copy_actions["start"].isVisible()
+
+
+def test_draw_tool_narrates_the_click_it_wants(simple_window):
+    w = simple_window
+    assert w._pick_both_btn.text() == "Draw"
+    w._pick_both_btn.setChecked(True)
+    assert w._pick_both_btn.text() == "Click start"
+    w._plan_map.map_clicked.emit(-17.5, 177.1)
+    assert w._pick_both_btn.text() == "Click end"
+    assert w._plan_map._pending_start == (-17.5, 177.1)
+    w._plan_map.map_clicked.emit(-17.5005, 177.1005)
+    assert w._pick_both_btn.text() == "Draw"
+    assert w._plan_map._pending_start is None
+
+
+def test_copy_confirms_at_the_field_and_in_the_status_bar(simple_window, monkeypatch):
+    captured = []
+    shown = []
+
+    class _Clipboard:
+        def setText(self, text):
+            captured.append(text)
+
+    class _App:
+        @staticmethod
+        def clipboard():
+            return _Clipboard()
+
+    monkeypatch.setattr("deepreefmap_gui.simple.plan.QGuiApplication", _App)
+    monkeypatch.setattr(
+        "deepreefmap_gui.simple.plan.QToolTip.showText",
+        staticmethod(lambda *args: shown.append(args[1])),
+    )
+    w = simple_window
+    w._tr_start_coord.setText("-17.500000, 177.100000")
+    w._copy_endpoint("start")
+    assert captured == ["-17.500000, 177.100000"]
+    assert shown == ["Copied to clipboard"]
+    assert "clipboard" in w._status_label.text()
+
+
+def test_unset_length_and_depth_read_as_nothing_recorded(simple_window):
+    w = simple_window
+    assert w._tr_length.text() == "—"
+    assert w._tr_depth.text() == "—"
+    w._tr_depth.setValue(8.5)
+    assert w._tr_depth.text() == "8.5 m"

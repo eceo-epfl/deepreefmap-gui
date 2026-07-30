@@ -14,7 +14,7 @@ from pathlib import Path
 
 from deepreefmap.pipeline.artifacts import ReconstructionCancelled
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QColor, QFont, QGuiApplication
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
 from deepreefmap_gui.core.theme import (
     GUTTER,
     RADIUS_SM,
+    TEXT_DIM,
     TEXT_MUTED,
     WARN_BG,
     WARN_BORDER,
@@ -77,7 +78,30 @@ from deepreefmap_gui.survey.store import SurveyStore
 
 logger = logging.getLogger(__name__)
 
-_COL_VIDEO, _COL_TRANSECT, _COL_DIRECTION, _COL_TRIM, _COL_STATUS = range(5)
+_COL_VIDEO, _COL_TRANSECT, _COL_DIRECTION, _COL_TRIM, _COL_STATUS, _COL_ACTION = range(6)
+
+# Where a pass sits relative to the next batch. Every row is in exactly one of
+# these, and the table is grouped in this order.
+QUEUED, HELD, DONE = "queued", "held", "done"
+_GROUP_TITLES = {
+    QUEUED: "In the next batch",
+    HELD: "Held back",
+    DONE: "Already processed",
+}
+_GROUP_HINTS = {
+    QUEUED: "Processing runs these, top to bottom.",
+    HELD: "Skipped by every batch until returned.",
+    DONE: "Succeeded once. Run again to redo one.",
+}
+# The one move each row can make, on a button in the row itself. A pass is held
+# or released one at a time far more often than in bulk, and a button beside the
+# row it acts on needs no selection and no explanation.
+_MOVE_LABELS = {QUEUED: "Hold", HELD: "Return", DONE: "Run again"}
+_MOVE_HINTS = {
+    QUEUED: "Keep this pass in the batch but skip it when processing runs.",
+    HELD: "Put this pass back into the next batch.",
+    DONE: "Reconstruct this pass again in the next batch.",
+}
 
 # File-name prefixes a GoPro uses for the second and later chapters of one
 # recording (GX/GH/GL on HERO6 and up, GP on the older models).
@@ -167,22 +191,28 @@ def _failed_pass_label(transect: Transect | None, run_dir_name: str) -> str:
     return f"{name} pass {number}" if number is not None else name
 
 
-def _style_transect_combo(combo: QComboBox, *, assigned: bool) -> None:
-    """Unassigned rows must look wrong from across the room.
+def _style_warning_combo(combo: QComboBox, *, ok: bool, filled: bool = True) -> None:
+    """Mark a dropdown that needs a second look.
 
-    A per-widget stylesheet replaces the global QComboBox rule outright, so the
-    warning variant restates the padding and radius it displaces.
+    ``filled`` is for the cell that stops the batch — an unassigned transect —
+    which has to look wrong from across the room. The outlined variant is for a
+    cell that is merely worth checking, and which may be right: filling every
+    row of a genuinely one-way survey turns the table amber and says nothing.
+
+    A per-widget stylesheet replaces the global QComboBox rule outright, so both
+    variants restate the padding and radius they displace.
     """
-    if assigned:
+    if ok:
         combo.setStyleSheet("")
-    else:
-        combo.setStyleSheet(
-            f"QComboBox {{ background-color: {WARN_BG}; color: {WARN_TEXT};"
-            f" border: 1px solid {WARN_BORDER}; border-radius: {RADIUS_SM}px;"
-            " padding: 4px 8px; }"
-            " QComboBox::drop-down { subcontrol-origin: padding;"
-            " subcontrol-position: center right; border: none; width: 20px; }"
-        )
+        return
+    background = f"background-color: {WARN_BG};" if filled else ""
+    combo.setStyleSheet(
+        f"QComboBox {{ {background} color: {WARN_TEXT};"
+        f" border: 1px solid {WARN_BORDER}; border-radius: {RADIUS_SM}px;"
+        " padding: 4px 8px; }"
+        " QComboBox::drop-down { subcontrol-origin: padding;"
+        " subcontrol-position: center right; border: none; width: 20px; }"
+    )
 
 
 def _probe_video(path: str) -> tuple[float, float] | None:
@@ -295,6 +325,11 @@ class _PassRow:
     direction: str = "forward"
     transect_id: uuid.UUID | None = None
     pass_id: uuid.UUID | None = None
+    # Held back from processing, and kept that way in the database.
+    held: bool = False
+    # A pass that already succeeded and has been asked for again. Deliberately
+    # not persisted: it says what this batch should do next, not what the pass is.
+    requeued: bool = False
 
     @property
     def video(self) -> VideoAsset:
@@ -328,6 +363,8 @@ class SimpleBatchMixin(MixinBase):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
         self._survey_rows = []
+        # Table row -> index into _survey_rows, with None for a group heading.
+        self._survey_table_index: list[int | None] = []
         self._survey_transects = []
         self._survey_batch = None
         self._survey_cancel_event = None
@@ -384,9 +421,9 @@ class SimpleBatchMixin(MixinBase):
         header_layout.addLayout(preset_row)
         layout.addWidget(header_card)
 
-        self._survey_pass_table = QTableWidget(0, 5)
+        self._survey_pass_table = QTableWidget(0, 6)
         self._survey_pass_table.setHorizontalHeaderLabels(
-            ["Video", "Transect", "Direction", "Trim", "Status"]
+            ["Video", "Transect", "Direction", "Trim", "Status", ""]
         )
         self._survey_pass_table.verticalHeader().setVisible(False)
         self._survey_pass_table.verticalHeader().setDefaultSectionSize(34)
@@ -417,6 +454,7 @@ class SimpleBatchMixin(MixinBase):
             (_COL_DIRECTION, 120),
             (_COL_TRIM, 110),
             (_COL_STATUS, 110),
+            (_COL_ACTION, 110),
         ):
             self._survey_pass_table.setColumnWidth(column, width)
         # Dropping video files onto the table queues them, handled centrally by
@@ -435,16 +473,6 @@ class SimpleBatchMixin(MixinBase):
         )
         passes_card, passes_layout = section_card("Passes")
         passes_layout.addWidget(self._survey_table_stack, 1)
-        # A transect swum only one way is usually a forgotten out-and-back, and
-        # nothing downstream can tell the difference, so say it here.
-        self._survey_direction_notice = QLabel("")
-        self._survey_direction_notice.setWordWrap(True)
-        self._survey_direction_notice.setStyleSheet(
-            f"background-color: {WARN_BG}; color: {WARN_TEXT};"
-            f" border: 1px solid {WARN_BORDER}; padding: 6px; border-radius: {RADIUS_SM}px;"
-        )
-        self._survey_direction_notice.setVisible(False)
-        passes_layout.addWidget(self._survey_direction_notice)
         # Outcome of the last batch, kept on the page rather than written to the
         # status bar, which the next thing to happen overwrites.
         self._survey_summary_label = QLabel("")
@@ -465,10 +493,12 @@ class SimpleBatchMixin(MixinBase):
             "Ctrl-click to select a run of rows."
         )
         self._survey_assign_btn.clicked.connect(self._on_survey_assign_selected)
-        self._survey_alternate_check = QCheckBox("Alternate direction")
+        # Named for the action it modifies rather than for what it does: on its
+        # own "Alternate direction" says nothing about when it takes effect.
+        self._survey_alternate_check = QCheckBox("…alternating forward/reverse")
         self._survey_alternate_check.setToolTip(
-            "Assign forward, reverse, forward… down the list, for passes swum "
-            "out and back."
+            "Changes what Assign does: it sets forward, reverse, forward… down "
+            "the selected rows, for a transect swum out and back."
         )
         self._survey_sort_btn = QPushButton("Sort by time")
         self._survey_sort_btn.setProperty("quiet", "true")
@@ -495,13 +525,16 @@ class SimpleBatchMixin(MixinBase):
             "transect naming a planned transect."
         )
         self._survey_import_btn.clicked.connect(self._on_survey_import_csv)
-        self._survey_split_btn = QPushButton("Split pass")
+        self._survey_split_btn = QPushButton("Add another pass from this clip")
         self._survey_split_btn.setToolTip(
-            "Duplicate the selected row for another pass in the same recording."
+            "One recording can hold several swims. This copies the selected row "
+            "so you can trim the second swim out of the same file."
         )
         self._survey_split_btn.clicked.connect(self._on_survey_split_pass)
-        self._survey_remove_btn = QPushButton("Remove pass")
-        self._survey_remove_btn.setToolTip("Drop the selected pass from this batch.")
+        self._survey_remove_btn = QPushButton("Remove from batch")
+        self._survey_remove_btn.setToolTip(
+            "Take the selected pass out of this batch. The video file is left alone."
+        )
         self._survey_remove_btn.clicked.connect(self._on_survey_remove_pass)
         for btn in (
             self._survey_import_btn,
@@ -523,13 +556,15 @@ class SimpleBatchMixin(MixinBase):
 
     def _recompute_row_actions(self) -> None:
         """Split and remove act on a selected row, so they say when there isn't one."""
-        selected = 0 <= self._survey_pass_table.currentRow() < len(self._survey_rows)
+        selected = self._model_index(self._survey_pass_table.currentRow()) is not None
         for btn in (self._survey_split_btn, self._survey_remove_btn):
             btn.setEnabled(selected)
         # Assigning needs both a selection and somewhere to assign it to.
-        self._survey_assign_btn.setEnabled(
-            bool(self._selected_survey_rows()) and bool(self._survey_transects)
-        )
+        can_assign = bool(self._selected_survey_rows()) and bool(self._survey_transects)
+        self._survey_assign_btn.setEnabled(can_assign)
+        # Greyed out with Assign, so the two read as one control rather than as a
+        # button and an unrelated checkbox beside it.
+        self._survey_alternate_check.setEnabled(can_assign)
         self._survey_sort_btn.setEnabled(len(self._survey_rows) > 1)
         self._survey_table_stack.setCurrentIndex(0 if self._survey_rows else 1)
 
@@ -539,17 +574,19 @@ class SimpleBatchMixin(MixinBase):
         Read from the selection rather than currentRow(): the bulk actions are
         the reason the table is multi-select in the first place.
         """
-        rows = {index.row() for index in self._survey_pass_table.selectedIndexes()}
-        return sorted(r for r in rows if 0 <= r < len(self._survey_rows))
+        table_rows = {index.row() for index in self._survey_pass_table.selectedIndexes()}
+        models = {self._model_index(row) for row in table_rows}
+        return sorted(index for index in models if index is not None)
 
-    def _on_survey_pass_activated(self, row_index: int, _column: int) -> None:
+    def _on_survey_pass_activated(self, table_row: int, _column: int) -> None:
         """Open the run this pass produced, without leaving the Run step."""
         if self._run_in_flight():
             self._status_label.setText("Unavailable while processing.")
             return
-        if not 0 <= row_index < len(self._survey_rows):
+        index = self._model_index(table_row)
+        if index is None:
             return
-        row = self._survey_rows[row_index]
+        row = self._survey_rows[index]
         if row.pass_id is None:
             self._status_label.setText("Pass not yet processed.")
             return
@@ -687,21 +724,24 @@ class SimpleBatchMixin(MixinBase):
                 videos = [store.get_video(video_id) for video_id in pass_.video_ids()]
                 if any(video is None for video in videos):
                     continue
-                self._append_survey_row(_PassRow(
+                self._survey_rows.append(_PassRow(
                     videos=[video for video in videos if video is not None],
                     begin_s=pass_.begin_s,
                     end_s=pass_.end_s,
                     direction=pass_.direction,
                     transect_id=pass_.transect_id,
                     pass_id=pass_.id,
+                    held=pass_.held,
                 ))
-        self._refresh_survey_pass_statuses()
+        self._rebuild_survey_table()
         self._recompute_survey_start()
 
     def _refresh_survey_transect_combos(self) -> None:
         self._survey_transects = self._survey_store().list_transects()
         for index, row in enumerate(self._survey_rows):
-            combo = self._survey_pass_table.cellWidget(index, _COL_TRANSECT)
+            combo = self._survey_pass_table.cellWidget(
+                self._table_row_of(index), _COL_TRANSECT
+            )
             if isinstance(combo, QComboBox):
                 self._fill_transect_combo(combo, row.transect_id)
 
@@ -714,13 +754,90 @@ class SimpleBatchMixin(MixinBase):
             if selected is not None and transect.id == selected:
                 combo.setCurrentIndex(combo.count() - 1)
         combo.blockSignals(False)
-        _style_transect_combo(combo, assigned=combo.currentData() is not None)
+        _style_warning_combo(combo, ok=combo.currentData() is not None)
 
-    def _append_survey_row(self, row: _PassRow) -> None:
+    # --- Table shape ---
+
+    def _survey_row_states(self) -> list[str]:
+        """Which group each row belongs to, from one query rather than per row."""
+        if not self._survey_rows:
+            return []
+        succeeded = self._survey_store().succeeded_pass_ids()
+        states = []
+        for row in self._survey_rows:
+            if row.held:
+                states.append(HELD)
+            elif row.pass_id is not None and row.pass_id in succeeded and not row.requeued:
+                states.append(DONE)
+            else:
+                states.append(QUEUED)
+        return states
+
+    def _model_index(self, table_row: int) -> int | None:
+        """The pass behind a table row, or None for a group heading."""
+        if not 0 <= table_row < len(self._survey_table_index):
+            return None
+        return self._survey_table_index[table_row]
+
+    def _table_row_of(self, model_index: int) -> int:
+        """Where a pass currently sits in the table; -1 if it is not shown."""
+        try:
+            return self._survey_table_index.index(model_index)
+        except ValueError:
+            return -1
+
+    def _rebuild_survey_table(self) -> None:
+        """Repaint the whole table, grouped by what the next batch will do.
+
+        A batch left running overnight is read at a glance from the groups: what
+        is still to run, what was deliberately held back, and what is finished.
+        """
+        table = self._survey_pass_table
+        keep = set(self._selected_survey_rows())
+        current = self._model_index(table.currentRow())
+        table.clearSpans()
+        table.setRowCount(0)
+        self._survey_table_index = []
+        states = self._survey_row_states()
+        for state in (QUEUED, HELD, DONE):
+            members = [index for index, value in enumerate(states) if value == state]
+            # Only the groups that have something in them: an empty "Held back"
+            # heading is a permanent reminder of a feature, not information.
+            if not members:
+                continue
+            self._append_group_heading(state, len(members))
+            for index in members:
+                self._append_survey_cells(index, state)
+        self._refresh_survey_pass_statuses()
+        selection = table.selectionModel()
+        for model_index in keep:
+            row = self._table_row_of(model_index)
+            if row >= 0:
+                table.selectRow(row)
+        if current is not None and self._table_row_of(current) >= 0 and selection is not None:
+            table.setCurrentCell(self._table_row_of(current), _COL_VIDEO)
+
+    def _append_group_heading(self, state: str, count: int) -> None:
         table = self._survey_pass_table
         index = table.rowCount()
         table.insertRow(index)
-        self._survey_rows.append(row)
+        self._survey_table_index.append(None)
+        item = QTableWidgetItem(f"{_GROUP_TITLES[state]}  ({count})")
+        item.setToolTip(_GROUP_HINTS[state])
+        item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+        font = item.font()
+        font.setWeight(QFont.Weight.DemiBold)
+        item.setFont(font)
+        item.setForeground(QColor(TEXT_MUTED if state == QUEUED else TEXT_DIM))
+        table.setItem(index, 0, item)
+        table.setSpan(index, 0, 1, table.columnCount())
+
+    def _append_survey_cells(self, model_index: int, state: str) -> None:
+        row = self._survey_rows[model_index]
+        table = self._survey_pass_table
+        index = table.rowCount()
+        table.insertRow(index)
+        self._survey_table_index.append(model_index)
 
         video_item = QTableWidgetItem(_video_cell_text(row.videos))
         video_item.setToolTip("\n".join(video.path for video in row.videos))
@@ -751,6 +868,20 @@ class SimpleBatchMixin(MixinBase):
         status_item.setFlags(status_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         table.setItem(index, _COL_STATUS, status_item)
 
+        move_btn = QPushButton(_MOVE_LABELS[state])
+        move_btn.setProperty("quiet", "true")
+        move_btn.setToolTip(_MOVE_HINTS[state])
+        move_btn.setEnabled(not self._survey_worker_running)
+        move_btn.clicked.connect(
+            partial(self._move_rows, [model_index], state == QUEUED)
+        )
+        table.setCellWidget(index, _COL_ACTION, move_btn)
+
+    def _append_survey_row(self, row: _PassRow) -> None:
+        """Add a pass to the batch and put it in the group it belongs to."""
+        self._survey_rows.append(row)
+        self._rebuild_survey_table()
+
     def _refresh_row_widgets(self, index: int) -> None:
         """Repaint one row's cells from the row, without re-entering their slots.
 
@@ -760,15 +891,18 @@ class SimpleBatchMixin(MixinBase):
         """
         row = self._survey_rows[index]
         table = self._survey_pass_table
-        combo = table.cellWidget(index, _COL_TRANSECT)
+        table_row = self._table_row_of(index)
+        if table_row < 0:
+            return
+        combo = table.cellWidget(table_row, _COL_TRANSECT)
         if isinstance(combo, QComboBox):
             self._fill_transect_combo(combo, row.transect_id)
-        direction = table.cellWidget(index, _COL_DIRECTION)
+        direction = table.cellWidget(table_row, _COL_DIRECTION)
         if isinstance(direction, QComboBox):
             direction.blockSignals(True)
             direction.setCurrentText(row.direction)
             direction.blockSignals(False)
-        trim = table.cellWidget(index, _COL_TRIM)
+        trim = table.cellWidget(table_row, _COL_TRIM)
         if isinstance(trim, QPushButton):
             trim.setText(f"{_mmss(row.begin_s)}-{_mmss(row.end_s)}")
 
@@ -935,11 +1069,8 @@ class SimpleBatchMixin(MixinBase):
         ordered = sorted(self._survey_rows, key=_clip_sort_key)
         if ordered == self._survey_rows:
             return
-        self._survey_rows = []
-        self._survey_pass_table.setRowCount(0)
-        for row in ordered:
-            self._append_survey_row(row)
-        self._refresh_survey_pass_statuses()
+        self._survey_rows = ordered
+        self._rebuild_survey_table()
         self._recompute_survey_start()
 
     def _on_survey_import_csv(self) -> None:
@@ -1000,8 +1131,8 @@ class SimpleBatchMixin(MixinBase):
         )
 
     def _on_survey_split_pass(self) -> None:
-        index = self._survey_pass_table.currentRow()
-        if not 0 <= index < len(self._survey_rows):
+        index = self._model_index(self._survey_pass_table.currentRow())
+        if index is None:
             return
         source = self._survey_rows[index]
         self._append_survey_row(_PassRow(
@@ -1015,8 +1146,8 @@ class SimpleBatchMixin(MixinBase):
         self._persist_survey_row(row)
 
     def _on_survey_remove_pass(self) -> None:
-        index = self._survey_pass_table.currentRow()
-        if not 0 <= index < len(self._survey_rows):
+        index = self._model_index(self._survey_pass_table.currentRow())
+        if index is None:
             return
         row = self._survey_rows[index]
         if row.pass_id is not None:
@@ -1026,13 +1157,47 @@ class SimpleBatchMixin(MixinBase):
                 self._status_label.setText("Pass has recorded runs and cannot be removed.")
                 return
         self._survey_rows.pop(index)
-        self._survey_pass_table.removeRow(index)
+        self._rebuild_survey_table()
         self._recompute_survey_start()
+
+    # --- Holding a pass back ---
+
+    def _move_rows(self, indices: list[int], hold: bool) -> None:
+        """Move a selection between the batch and the held group."""
+        if self._survey_worker_running:
+            self._status_label.setText("Unavailable while processing.")
+            return
+        states = self._survey_row_states()
+        moved = 0
+        for index in indices:
+            if not 0 <= index < len(self._survey_rows):
+                continue
+            row = self._survey_rows[index]
+            if hold:
+                if states[index] == HELD:
+                    continue
+                row.held = True
+                row.requeued = False
+            else:
+                if states[index] == QUEUED:
+                    continue
+                row.held = False
+                # A pass that already succeeded needs saying so explicitly, or
+                # the group it just left would take it straight back.
+                row.requeued = states[index] == DONE
+            self._write_survey_row(row)
+            moved += 1
+        if not moved:
+            return
+        self._rebuild_survey_table()
+        self._recompute_survey_start()
+        verb = "Held back" if hold else "Returned to the batch"
+        self._status_label.setText(f"{verb} {moved} pass{'' if moved == 1 else 'es'}.")
 
     def _on_survey_row_transect(self, row: _PassRow, combo: QComboBox, _index: int) -> None:
         data = combo.currentData()
         row.transect_id = uuid.UUID(data) if data else None
-        _style_transect_combo(combo, assigned=row.transect_id is not None)
+        _style_warning_combo(combo, ok=row.transect_id is not None)
         self._persist_survey_row(row)
 
     def _on_survey_row_direction(self, row: _PassRow, direction: str) -> None:
@@ -1128,6 +1293,7 @@ class SimpleBatchMixin(MixinBase):
                 end_s=row.end_s,
                 direction=row.direction,
                 batch_id=batch.id,
+                held=row.held,
             )
             store.add_pass(pass_)
             row.pass_id = pass_.id
@@ -1139,10 +1305,11 @@ class SimpleBatchMixin(MixinBase):
                 stored.end_s = row.end_s
                 stored.direction = row.direction
                 stored.extra_video_ids = extra_video_ids
+                stored.held = row.held
                 store.update_pass(stored)
 
-    def _single_direction_warnings(self) -> list[str]:
-        """Transects every pass of which runs the same way.
+    def _single_direction_transects(self) -> dict[uuid.UUID, str]:
+        """Transects every pass of which runs the same way, and why that is odd.
 
         Repeat passes are normally swum out and back, and nothing downstream can
         tell a deliberate one-way survey from a row of forgotten dropdowns.
@@ -1152,18 +1319,38 @@ class SimpleBatchMixin(MixinBase):
             if row.transect_id is not None:
                 directions.setdefault(row.transect_id, []).append(row.direction)
         names = {transect.id: transect.name for transect in self._survey_transects}
-        warnings = []
+        flagged = {}
         for transect_id, values in directions.items():
             if len(values) < 2 or len(set(values)) != 1:
                 continue
             name = names.get(transect_id, "Unnamed transect")
-            warnings.append(f"{name}: {len(values)} passes, all {values[0]}.")
-        return sorted(warnings)
+            flagged[transect_id] = (
+                f"All {len(values)} passes of {name} are set to {values[0]}. "
+                "Repeat passes are usually swum out and back."
+            )
+        return flagged
 
     def _refresh_direction_notice(self) -> None:
-        warnings = self._single_direction_warnings()
-        self._survey_direction_notice.setText(" ".join(warnings))
-        self._survey_direction_notice.setVisible(bool(warnings))
+        """Mark the direction dropdowns of a transect swum only one way.
+
+        A banner under the table said the same thing further from the control
+        that fixes it, and stayed on screen for a survey that really was one-way.
+        The marking is on the cell, where the answer is either changed or ignored.
+        """
+        one_way = self._single_direction_transects()
+        for index, row in enumerate(self._survey_rows):
+            combo = self._survey_pass_table.cellWidget(
+                self._table_row_of(index), _COL_DIRECTION
+            )
+            if not isinstance(combo, QComboBox):
+                continue
+            flagged = row.transect_id in one_way
+            _style_warning_combo(combo, ok=not flagged, filled=False)
+            combo.setToolTip(
+                one_way[row.transect_id]
+                if flagged
+                else "Which way this pass was swum along the transect."
+            )
 
     # --- Run gating and execution ---
 
@@ -1202,15 +1389,13 @@ class SimpleBatchMixin(MixinBase):
         return int(max(spans) * max(1, fps)) or None
 
     def _survey_remaining_rows(self) -> list[_PassRow]:
-        store = self._survey_store()
-        remaining = []
-        for row in self._survey_rows:
-            if row.pass_id is None:
-                continue
-            runs = store.runs_for_pass(row.pass_id)
-            if not any(run.status == "succeeded" for run in runs):
-                remaining.append(row)
-        return remaining
+        """The passes the next batch would actually process, in table order."""
+        states = self._survey_row_states()
+        return [
+            row
+            for row, state in zip(self._survey_rows, states, strict=True)
+            if state == QUEUED and row.pass_id is not None
+        ]
 
     def _survey_failed_count(self) -> int:
         """Passes whose most recent run failed and has not since succeeded."""
@@ -1563,6 +1748,10 @@ class SimpleBatchMixin(MixinBase):
 
     def _on_survey_done(self, ok: int, total: int, last_error: str) -> None:
         self._survey_worker_running = False
+        # The re-run request is spent: a pass asked for again belongs back with
+        # the processed ones once the batch that redid it has finished.
+        for row in self._survey_rows:
+            row.requeued = False
         # These passes are the newest evidence of what a run costs on disk, so
         # the setup step's footage capacity is measured again rather than kept.
         self._footage_rate_cache = None
@@ -1618,8 +1807,12 @@ class SimpleBatchMixin(MixinBase):
     def _refresh_survey_pass_statuses(self) -> None:
         store = self._survey_store()
         for index, row in enumerate(self._survey_rows):
-            item = self._survey_pass_table.item(index, _COL_STATUS)
+            item = self._survey_pass_table.item(self._table_row_of(index), _COL_STATUS)
             if item is None:
+                continue
+            if row.held:
+                item.setText("Held")
+                item.setToolTip("Held back: every batch skips this pass until it is returned.")
                 continue
             if row.pass_id is None:
                 item.setText("")
@@ -1679,13 +1872,13 @@ class SimpleBatchMixin(MixinBase):
 
     def _on_survey_pass_menu(self, pos) -> None:
         """Right-click for the bulk assign, and for a failed pass's full error."""
-        index = self._survey_pass_table.rowAt(pos.y())
-        if not 0 <= index < len(self._survey_rows):
+        index = self._model_index(self._survey_pass_table.rowAt(pos.y()))
+        if index is None:
             return
         # Right-clicking outside the selection acts on the row under the cursor,
         # which is what every file manager does.
         if index not in self._selected_survey_rows():
-            self._survey_pass_table.selectRow(index)
+            self._survey_pass_table.selectRow(self._table_row_of(index))
         menu = QMenu(self)
         indices = self._selected_survey_rows()
         if indices and self._survey_transects:
@@ -1695,6 +1888,16 @@ class SimpleBatchMixin(MixinBase):
                     transect.name,
                     partial(self._assign_rows_to_transect, indices, transect.id),
                 )
+        states = self._survey_row_states()
+        selected = indices or [index]
+        if any(states[i] != HELD for i in selected):
+            menu.addAction(
+                f"Hold back {len(selected)} selected", partial(self._move_rows, selected, True)
+            )
+        if any(states[i] in (HELD, DONE) for i in selected):
+            menu.addAction(
+                f"Return {len(selected)} to the batch", partial(self._move_rows, selected, False)
+            )
         error = self._survey_pass_error(self._survey_rows[index])
         if error:
             menu.addAction("Copy error details", partial(self._copy_pass_error, error))

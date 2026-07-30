@@ -145,6 +145,8 @@ _STATUS_COLORS = {
     # redo rather than the neutral grey a deliberate cancel gets.
     "interrupted": WARNING,
     "queued": TEXT_MUTED,
+    # Held back by the user, not by anything that went wrong.
+    "held": TEXT_DIM,
 }
 
 

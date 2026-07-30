@@ -100,6 +100,11 @@ _MIGRATIONS = [
     """
     ALTER TABLE transect_pass ADD COLUMN extra_video_ids TEXT NOT NULL DEFAULT '[]';
     """,
+    # Holding a pass back is a property of the pass, not of the session: a batch
+    # left half-run overnight must come back with the same passes held.
+    """
+    ALTER TABLE transect_pass ADD COLUMN held INTEGER NOT NULL DEFAULT 0;
+    """,
 ]
 
 
@@ -220,6 +225,30 @@ class SurveyStore:
 
     def list_transects(self) -> list[Transect]:
         return self._list("transect", Transect, "name")
+
+    def transect_usage_counts(self) -> dict[uuid.UUID, tuple[int, int]]:
+        """(passes, runs) per transect, for every transect that has either.
+
+        Two grouped queries rather than a count per row: the plan list is
+        rebuilt on every keystroke while a transect is being typed.
+        """
+        counts: dict[uuid.UUID, tuple[int, int]] = {}
+        conn = self._conn()
+        for row in conn.execute(
+            "SELECT transect_id, COUNT(*) AS n FROM transect_pass GROUP BY transect_id"
+        ):
+            counts[uuid.UUID(row["transect_id"])] = (row["n"], 0)
+        for row in conn.execute(
+            """
+            SELECT transect_pass.transect_id AS transect_id, COUNT(*) AS n
+            FROM run_record
+            JOIN transect_pass ON transect_pass.id = run_record.pass_id
+            GROUP BY transect_pass.transect_id
+            """
+        ):
+            transect_id = uuid.UUID(row["transect_id"])
+            counts[transect_id] = (counts.get(transect_id, (0, 0))[0], row["n"])
+        return counts
 
     # --- Videos ---
 
@@ -372,6 +401,17 @@ class SurveyStore:
             (str(transect_id),),
         ).fetchall()
         return [from_row(RunRecord, r) for r in rows]
+
+    def succeeded_pass_ids(self) -> set[uuid.UUID]:
+        """Passes with at least one successful run, in one query.
+
+        The Run table groups every row by whether it still has work to do, and
+        asks on every repaint, so it cannot afford a query per row.
+        """
+        rows = self._conn().execute(
+            "SELECT DISTINCT pass_id FROM run_record WHERE status = 'succeeded'"
+        ).fetchall()
+        return {uuid.UUID(row["pass_id"]) for row in rows}
 
     def list_runs(self) -> list[RunRecord]:
         return self._list("run_record", RunRecord, "created_at")

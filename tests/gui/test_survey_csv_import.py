@@ -50,7 +50,7 @@ def test_import_queues_one_pass_per_row(import_window, tmp_path, monkeypatch):
 
     do_import(window, csv_path, monkeypatch)
 
-    assert window._survey_pass_table.rowCount() == 2
+    assert len(window._survey_rows) == 2
     assert "Queued 2 pass" in window._status_label.text()
     # One planned transect, so both rows land assigned and the batch can run.
     assert all(row.transect_id is not None for row in window._survey_rows)
@@ -67,7 +67,7 @@ def test_import_honours_the_timestamp_range(import_window, tmp_path, monkeypatch
 
     row = window._survey_rows[0]
     assert (row.begin_s, row.end_s) == (12.0, 34.0)
-    assert window._survey_pass_table.cellWidget(0, _COL_TRIM).text() == "0:12-0:34"
+    assert window._survey_pass_table.cellWidget(window._table_row_of(0), _COL_TRIM).text() == "0:12-0:34"
 
 
 def test_a_range_past_the_end_is_clamped(import_window, tmp_path, monkeypatch):
@@ -98,7 +98,7 @@ def test_the_transect_column_assigns_the_pass(import_window, tmp_path, monkeypat
 
     do_import(window, csv_path, monkeypatch)
 
-    combo = window._survey_pass_table.cellWidget(0, _COL_TRANSECT)
+    combo = window._survey_pass_table.cellWidget(window._table_row_of(0), _COL_TRANSECT)
     assert combo.currentText() == "Reef North"
     assert len(store.list_passes()) == 1
 
@@ -130,7 +130,7 @@ def test_a_bad_csv_queues_nothing(import_window, tmp_path, monkeypatch):
 
     do_import(window, csv_path, monkeypatch)
 
-    assert window._survey_pass_table.rowCount() == 0
+    assert len(window._survey_rows) == 0
     assert "Nothing imported" in window._status_label.text()
 
 
@@ -141,5 +141,5 @@ def test_import_is_refused_mid_batch(import_window, tmp_path, monkeypatch):
 
     do_import(window, csv_path, monkeypatch)
 
-    assert window._survey_pass_table.rowCount() == 0
+    assert len(window._survey_rows) == 0
     assert "Unavailable while processing" in window._status_label.text()

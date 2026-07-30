@@ -45,6 +45,9 @@ def from_row(cls: type[T], row: Mapping[str, Any]) -> T:
         hint = hints[f.name]
         if get_origin(hint) is list:
             value = _decode_list(hint, value)
+        elif hint is bool:
+            # sqlite has no boolean type, so the column comes back as 0 or 1.
+            value = bool(value)
         elif value is not None and _accepts_uuid(hint):
             value = uuid.UUID(value)
         kwargs[f.name] = value

@@ -304,10 +304,10 @@ def test_dropped_video_queues_a_pass(tmp_path, make_window, monkeypatch):
     monkeypatch.setattr(
         "deepreefmap_gui.simple.batch._probe_video", lambda _p: (60.0, 30.0)
     )
-    before = window._survey_pass_table.rowCount()
+    before = len(window._survey_rows)
     window._handle_data_drop([clip])
     # Probing runs on a worker thread, so the row arrives with a queued signal.
-    assert wait_until(lambda: window._survey_pass_table.rowCount() == before + 1)
+    assert wait_until(lambda: len(window._survey_rows) == before + 1)
     assert "Queued 1 pass from 1 video." in window._status_label.text()
 
 
@@ -446,6 +446,6 @@ def test_library_queue_as_pass_adds_a_row(tmp_path, make_window, monkeypatch):
     )
     window._data_facet_buttons["library"].click()
     window._data_video_list.setCurrentRow(0)
-    before = window._survey_pass_table.rowCount()
+    before = len(window._survey_rows)
     window._on_data_queue_video_clicked()
-    assert wait_until(lambda: window._survey_pass_table.rowCount() == before + 1)
+    assert wait_until(lambda: len(window._survey_rows) == before + 1)
