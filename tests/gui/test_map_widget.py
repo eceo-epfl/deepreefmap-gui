@@ -95,6 +95,62 @@ def test_render_without_network_is_safe(map_widget):
     assert not image.isNull()
 
 
+def test_network_disabled_reads_as_offline(qapp):
+    cache = TileCache(OSM_LAYER)
+    cache.network_enabled = False
+    assert cache.offline is True
+    cache.network_enabled = True
+    assert cache.offline is False
+
+
+def test_connectivity_error_flips_offline_but_a_404_does_not(qapp):
+    from PySide6.QtNetwork import QNetworkReply
+
+    cache = TileCache(OSM_LAYER)
+    flips = []
+    cache.offline_changed.connect(flips.append)
+
+    cache._note_reply_error(QNetworkReply.NetworkError.HostNotFoundError)
+    assert cache.offline is True
+    # A missing tile past the edge of coverage is not a lost connection.
+    cache._note_reply_error(QNetworkReply.NetworkError.ContentNotFoundError)
+    assert cache.offline is True
+    cache._note_reply_error(QNetworkReply.NetworkError.NoError)
+    assert cache.offline is False
+    assert flips == [True, False]
+
+
+def test_offline_banner_renders(map_widget):
+    # The fixture disables the network, so the map is offline and the banner
+    # paints over whatever saved tiles exist rather than a bare grid.
+    assert map_widget.is_offline()
+    map_widget.set_view(-17.5, 177.1, 12)
+    image = map_widget.grab()
+    assert not image.isNull()
+
+
+def test_save_visible_area_reports_the_tiles_on_disk(map_widget, tmp_path, monkeypatch):
+    monkeypatch.setattr("deepreefmap_gui.map.tile_cache.tile_cache_dir", lambda: tmp_path)
+    map_widget.set_view(-17.5, 177.1, 12)
+    keys = map_widget._visible_tile_keys()
+    assert keys  # the viewport covers at least one tile
+
+    for zoom, x, y in keys:
+        path = tmp_path / OSM_LAYER.id / str(zoom) / str(x) / f"{y}.png"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x" * 100)
+
+    count, saved = map_widget.save_visible_area()
+    assert count == len(keys)
+    assert saved == len(keys) * 100
+
+
+def test_save_visible_area_is_zero_when_nothing_cached(map_widget, tmp_path, monkeypatch):
+    monkeypatch.setattr("deepreefmap_gui.map.tile_cache.tile_cache_dir", lambda: tmp_path)
+    map_widget.set_view(-17.5, 177.1, 12)
+    assert map_widget.save_visible_area() == (0, 0)
+
+
 def test_pick_mode_sends_clicks_past_transects(map_widget):
     """While picking a coordinate, a click on a line sets the point rather than
     selecting that transect."""

@@ -8,7 +8,7 @@ from deepreefmap_gui.profiling.eta import (
     format_duration,
     format_remaining,
     stage_for_phase,
-    stage_label_for_phase,
+    stage_plain_label_for_phase,
 )
 from deepreefmap_gui.core.theme import PRIMARY
 
@@ -332,13 +332,15 @@ class ProgressBarsMixin(MixinBase):
             parts.append(f"{format_remaining(stage_left)} left")
         metrics = " · ".join(parts)
         # Color the active coarse stage so the left text names it (and the stage
-        # name is dropped from the bars). During a reconstruction take it from the
-        # estimator's running stage (monotonic), so a late viewer-setup event can't
-        # regress the token to a finished stage while a later save is still running.
-        # Fall back to the fine phase key when there is no estimator (cached load).
-        stage = est.running_stage_label() if est is not None else None
+        # name is dropped from the bars). Plain-language here so the diver reads
+        # what is happening. The engineer stage names stay in the hover breakdown.
+        # During a reconstruction take it from the estimator's running stage
+        # (monotonic), so a late viewer-setup event can't regress the token to a
+        # finished stage while a later save is still running. Fall back to the fine
+        # phase key when there is no estimator (cached load).
+        stage = est.running_stage_plain_label() if est is not None else None
         if not stage:
-            stage = stage_label_for_phase(getattr(self, "_status_phase_key", "") or "")
+            stage = stage_plain_label_for_phase(getattr(self, "_status_phase_key", "") or "")
         if stage:
             first = f'<b><span style="color:{PRIMARY}">{stage}</span></b> · {base}'
         else:

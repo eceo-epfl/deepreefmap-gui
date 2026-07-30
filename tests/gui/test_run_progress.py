@@ -35,7 +35,9 @@ def test_status_ticker_appends_elapsed_and_keeps_base(make_window, monkeypatch) 
     monkeypatch.setattr(progress_mod.time, "monotonic", lambda: clock[0])
 
     window._apply_progress("mapping", "Mapping", current=3, total=10)
-    assert _plain(window._status_label.text()) == "Mapping · Mapping 3/10 · 0s"
+    # The coloured stage token is plain language for the diver. The engineer
+    # "Mapping" name survives as the base label after it.
+    assert _plain(window._status_label.text()) == "Working out the 3D shape · Mapping 3/10 · 0s"
 
     clock[0] += 74.0
     window._render_status()

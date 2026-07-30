@@ -35,6 +35,9 @@ class SlippyMapWidget(QWidget):
         super().__init__(parent)
         self._cache = cache if cache is not None else shared_tile_cache()
         self._cache.tile_ready.connect(lambda *_: self.update())
+        # Losing (or regaining) the connection repaints, so the offline banner
+        # appears without waiting for the next pan or zoom.
+        self._cache.offline_changed.connect(lambda *_: self.update())
         self._center = (0.0, 0.0)
         self._zoom = 2
         self._transects: list[OverlayTransect] = []
@@ -82,6 +85,24 @@ class SlippyMapWidget(QWidget):
         lon = sum(p[1] for p in points) / len(points)
         self.set_view(lat, lon, zoom)
 
+    def save_visible_area(self) -> tuple[int, int]:
+        """Persist the tiles now on screen for offline use, returning (count, bytes)."""
+        return self._cache.cache_area(self._visible_tile_keys())
+
+    def is_offline(self) -> bool:
+        return self._cache.offline
+
+    def _visible_tile_keys(self) -> list[tuple[int, int, int]]:
+        """(zoom, x, y) of every tile currently on screen, normalised and in range."""
+        _cx, _cy, first_x, last_x, first_y, last_y = self._tile_bounds()
+        span = 2**self._zoom
+        return [
+            (self._zoom, tx % span, ty)
+            for tx in range(first_x, last_x + 1)
+            for ty in range(first_y, last_y + 1)
+            if 0 <= ty < span
+        ]
+
     def latlon_at(self, pos: QPointF) -> tuple[float, float]:
         cx, cy = deg2tile(*self._center, self._zoom)
         tx = cx + (pos.x() - self.width() / 2) / TILE_SIZE
@@ -104,15 +125,29 @@ class SlippyMapWidget(QWidget):
         self._paint_tiles(painter)
         self._paint_transects(painter)
         self._paint_attribution(painter)
+        # Offline: the saved tiles above are all that will draw, so say so rather
+        # than leave the empty grid looking like a broken map.
+        if self._cache.offline:
+            self._paint_offline_banner(painter)
 
-    def _paint_tiles(self, painter: QPainter) -> None:
+    def _tile_bounds(self) -> tuple[float, float, int, int, int, int]:
+        """Centre tile and the inclusive tile-index box that covers the viewport."""
         cx, cy = deg2tile(*self._center, self._zoom)
         half_w = self.width() / 2
         half_h = self.height() / 2
-        first_x = math.floor(cx - half_w / TILE_SIZE)
-        last_x = math.floor(cx + half_w / TILE_SIZE)
-        first_y = math.floor(cy - half_h / TILE_SIZE)
-        last_y = math.floor(cy + half_h / TILE_SIZE)
+        return (
+            cx,
+            cy,
+            math.floor(cx - half_w / TILE_SIZE),
+            math.floor(cx + half_w / TILE_SIZE),
+            math.floor(cy - half_h / TILE_SIZE),
+            math.floor(cy + half_h / TILE_SIZE),
+        )
+
+    def _paint_tiles(self, painter: QPainter) -> None:
+        cx, cy, first_x, last_x, first_y, last_y = self._tile_bounds()
+        half_w = self.width() / 2
+        half_h = self.height() / 2
         grid_pen = QPen(QColor(BORDER))
         for tx in range(first_x, last_x + 1):
             for ty in range(first_y, last_y + 1):
@@ -171,6 +206,21 @@ class SlippyMapWidget(QWidget):
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(0, 0, 0, 110))
         painter.drawRect(rect)
+        painter.setPen(QColor(235, 235, 235))
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
+
+    def _paint_offline_banner(self, painter: QPainter) -> None:
+        """A top-centre pill naming the offline state, over whatever tiles exist."""
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        text = "Offline: showing saved map"
+        metrics = painter.fontMetrics()
+        pad = 6
+        width = metrics.horizontalAdvance(text) + 2 * pad
+        height = metrics.height() + pad
+        rect = QRectF((self.width() - width) / 2, 8, width, height)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(0, 0, 0, 160))
+        painter.drawRoundedRect(rect, 4, 4)
         painter.setPen(QColor(235, 235, 235))
         painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
 
