@@ -6,8 +6,8 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtCore import QRectF, QSize, Qt
+from PySide6.QtGui import QColor, QFont, QPainter
 from PySide6.QtWidgets import (
     QStyle,
     QStyledItemDelegate,
@@ -17,17 +17,29 @@ from PySide6.QtWidgets import (
 from deepreefmap_gui.core.theme import (
     BANNER_TEXT,
     CARD_BG,
+    ERROR,
     SELECTION_BG,
     SURFACE_HI,
     TEXT_DIM,
     TEXT_MUTED,
     TEXT_SECONDARY,
+    WARNING,
     WINDOW_TEXT,
 )
 from deepreefmap_gui.profiling.eta import format_duration
 from deepreefmap_gui.survey.catalogue import run_duration_s
 
 RUN_META_ROLE = Qt.ItemDataRole.UserRole + 1
+
+# Only incomplete runs carry a "status" in their card meta; a finished run has
+# none and paints no pill. Anything unrecognised stays neutral.
+_STATUS_COLORS = {
+    "failed": ERROR,
+    "running": WARNING,
+    "cancelled": TEXT_MUTED,
+    "pending": WARNING,
+    "incomplete": WARNING,
+}
 
 _GEOMETRY_LABELS = {
     "world_points": "world points (full)",
@@ -429,6 +441,29 @@ class RunCardDelegate(QStyledItemDelegate):
             if slug_max_w > 0:
                 elided_slug = slug_fm.elidedText(slug, Qt.TextElideMode.ElideRight, slug_max_w)
                 painter.drawText(slug_x, baseline, elided_slug)
+
+        # Status pill for incomplete runs, right-aligned on the title row so a
+        # crashed run reads apart from finished ones at a glance.
+        status = meta.get("status")
+        if status:
+            status_font = self._slug_font(base)
+            painter.setFont(status_font)
+            status_fm = painter.fontMetrics()
+            color = QColor(_STATUS_COLORS.get(status, TEXT_MUTED))
+            pad = max(4, int(layout["title_h"] * 0.3))
+            pill_w = status_fm.horizontalAdvance(status) + pad * 2
+            pill_h = status_fm.height() + 2
+            pill_x = r.right() - pill_w
+            pill_y = r.top() + (layout["head_h"] - pill_h) // 2
+            pill = QRectF(pill_x, pill_y, pill_w, pill_h)
+            fill = QColor(color)
+            fill.setAlpha(46)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(fill)
+            painter.drawRoundedRect(pill, pill_h / 2, pill_h / 2)
+            painter.setPen(color)
+            painter.drawText(pill, Qt.AlignmentFlag.AlignCenter, status)
 
         # Facts (word-wrapped block).
         cursor_y = r.top() + layout["head_h"]

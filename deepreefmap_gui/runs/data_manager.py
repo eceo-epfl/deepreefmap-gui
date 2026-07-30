@@ -1,4 +1,4 @@
-"""Data section: browse every run in the output root by run, transect, or video."""
+"""Browse: every run in the output root, by run, transect, or video."""
 
 from __future__ import annotations
 
@@ -8,12 +8,15 @@ import threading
 import uuid
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QEvent, Qt, QTimer, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QButtonGroup,
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QFileDialog,
     QFormLayout,
     QHBoxLayout,
     QInputDialog,
@@ -62,9 +65,24 @@ from deepreefmap_gui.survey.models.transect_pass import PASS_DIRECTIONS
 logger = logging.getLogger(__name__)
 
 # Keys are persisted and test-pinned; only the labels say what each view does.
-_FACETS = (("runs", "All runs"), ("transects", "By transect"), ("videos", "By video"))
+_FACETS = (
+    ("runs", "All runs"),
+    ("transects", "By transect"),
+    ("videos", "By video"),
+    ("library", "Video library"),
+)
+
+# Facets whose left rail groups runs into a tree. "runs" and "library" have no
+# grouping, so their rail is hidden.
+_GROUPED_FACETS = ("transects", "videos")
 
 _RAIL_TITLES = {"transects": "Transects", "videos": "Videos"}
+
+# Right-pane pages inside the runs stack.
+_RUN_LIST_PAGE, _EMPTY_PAGE, _VIDEO_LIST_PAGE = 0, 1, 2
+
+# What a dropped file has to be to queue as a pass.
+_VIDEO_SUFFIXES = {".mp4", ".mov", ".avi", ".mkv"}
 
 _GROUP_KEY_ROLE = Qt.ItemDataRole.UserRole
 
@@ -90,7 +108,7 @@ def _facet_qss(*, first: bool, last: bool) -> str:
 
 
 class DataManagerMixin(MixinBase):
-    """DeepReefMapWindow methods for the Data section, hosted by both modes."""
+    """DeepReefMapWindow methods for Browse, one panel hosted by both modes."""
 
     _data_facet: str = "runs"
     _data_selected_key: tuple | None = None
@@ -161,15 +179,30 @@ class DataManagerMixin(MixinBase):
 
         self._data_run_list = QListWidget()
         self._data_run_list.setItemDelegate(RunCardDelegate(self._data_run_list))
+        # Delete and Assign act on a whole selection, so several runs can be
+        # picked at once.
+        self._data_run_list.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection
+        )
         self._data_run_list.itemDoubleClicked.connect(self._on_data_run_activated)
         self._data_run_list.itemSelectionChanged.connect(self._update_data_actions)
         self._data_run_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._data_run_list.customContextMenuRequested.connect(self._on_data_context_menu)
+
+        # A clip lives in the store even before it is processed, so the run list
+        # cannot show it. The library facet swaps to this list of video cards.
+        self._data_video_list = QListWidget()
+        self._data_video_list.itemDoubleClicked.connect(self._on_data_video_activated)
+        self._data_video_list.itemSelectionChanged.connect(self._update_data_actions)
+        self._data_video_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._data_video_list.customContextMenuRequested.connect(self._on_data_video_menu)
+
         self._data_run_stack = QStackedWidget()
         self._data_run_stack.addWidget(self._data_run_list)
         self._data_run_stack.addWidget(
             EmptyState("No runs here yet", "Processed passes collect here.")
         )
+        self._data_run_stack.addWidget(self._data_video_list)
         runs_layout.addWidget(self._data_run_stack, 1)
 
         actions = QHBoxLayout()
@@ -177,6 +210,9 @@ class DataManagerMixin(MixinBase):
         self._data_open_btn = QPushButton("Open")
         self._data_open_btn.clicked.connect(self._on_data_open_clicked)
         actions.addWidget(self._data_open_btn)
+        self._data_show_btn = QPushButton("Show in folder")
+        self._data_show_btn.clicked.connect(self._on_data_show_in_folder_clicked)
+        actions.addWidget(self._data_show_btn)
         self._data_rename_btn = QPushButton("Rename…")
         self._data_rename_btn.clicked.connect(self._on_data_rename_clicked)
         actions.addWidget(self._data_rename_btn)
@@ -186,8 +222,28 @@ class DataManagerMixin(MixinBase):
         self._data_delete_btn = QPushButton("Delete…")
         self._data_delete_btn.clicked.connect(self._on_data_delete_clicked)
         actions.addWidget(self._data_delete_btn)
+        self._data_queue_btn = QPushButton("Queue as pass")
+        self._data_queue_btn.clicked.connect(self._on_data_queue_video_clicked)
+        actions.addWidget(self._data_queue_btn)
         actions.addStretch(1)
+        # A run folder from anywhere on disk, not only ones under the output
+        # root, mirroring the CLI's view-run.
+        self._data_open_folder_btn = QPushButton("Open run folder…")
+        self._data_open_folder_btn.clicked.connect(self._on_data_open_folder_clicked)
+        actions.addWidget(self._data_open_folder_btn)
+        self._data_rescan_btn = QPushButton("Rescan")
+        self._data_rescan_btn.setToolTip(
+            "Re-read the output folder, picking up runs copied in since it opened."
+        )
+        self._data_rescan_btn.clicked.connect(self._on_data_rescan_clicked)
+        actions.addWidget(self._data_rescan_btn)
         runs_layout.addLayout(actions)
+
+        # A shared drop handler queues dropped videos as passes and opens a
+        # dropped run folder, rather than three widgets each learning to drop.
+        for widget in (self._data_run_list, self._data_tree):
+            widget.setAcceptDrops(True)
+            widget.installEventFilter(self)
         self._data_split.addWidget(runs_card)
         self._data_split.setStretchFactor(0, 0)
         self._data_split.setStretchFactor(1, 1)
@@ -216,7 +272,7 @@ class DataManagerMixin(MixinBase):
         return self._data_host_simple
 
     def _host_data_panel(self, simple: bool) -> None:
-        """Move the single Data panel into whichever mode is showing."""
+        """Move the single Browse panel into whichever mode is showing."""
         host = self._data_host_simple if simple else self._data_tab
         layout = host.layout()
         if layout is not None and self._data_panel.parentWidget() is not host:
@@ -241,6 +297,12 @@ class DataManagerMixin(MixinBase):
                 if self._data_rebuilt_root != root:
                     store.rebuild_from_scan(root)
                     self._data_rebuilt_root = root
+                # Crashed runs never wrote a manifest, so scan_out_root skips
+                # them; surface them here so they can be seen and cleared.
+                entries += catalogue.scan_incomplete_runs(
+                    root, store, {e.dir_name for e in entries}
+                )
+                entries.sort(key=lambda e: e.sort_key, reverse=True)
                 catalogue.reconcile(entries, store)
             except Exception:
                 logger.exception("Survey database unavailable for %s", root)
@@ -264,13 +326,25 @@ class DataManagerMixin(MixinBase):
         self._run_size_cache.clear()
         self._refresh_data_manager()
 
+    def _on_data_rescan_clicked(self) -> None:
+        """Re-read the folder, including the manifest rebuild.
+
+        The rebuild runs once per output root per session, so a run dropped in
+        from a colleague's drive while the app is open is invisible until this
+        clears the gate and reads it back.
+        """
+        self._data_rebuilt_root = None
+        self._run_size_cache.clear()
+        self._refresh_data_manager()
+        self._status_label.setText("Rescanned the output folder.")
+
     def _rebuild_data_tree(self) -> None:
         tree = self._data_tree
         tree.blockSignals(True)
         try:
             tree.clear()
             self._data_groups = {}
-            grouped = self._data_facet != "runs"
+            grouped = self._data_facet in _GROUPED_FACETS
             if not grouped:
                 self._data_selected_key = None
             else:
@@ -387,15 +461,38 @@ class DataManagerMixin(MixinBase):
             self._scope_syncing = False
 
     def _update_data_actions(self) -> None:
-        """The four actions all need a selected run, so they say when there is none."""
-        has = self._data_run_list.currentItem() is not None
+        """Gate each action on what the current facet and selection support.
+
+        The run actions want a run, the library's queue wants a video, and a run
+        with no manifest can only be shown in a folder or deleted.
+        """
+        library = self._data_facet == "library"
+        self._data_queue_btn.setVisible(library)
         for button in (
             self._data_open_btn,
+            self._data_show_btn,
             self._data_rename_btn,
             self._data_assign_btn,
             self._data_delete_btn,
         ):
-            button.setEnabled(has)
+            button.setVisible(not library)
+        # The open-any-folder action is a hub-wide entry point, always available.
+        self._data_open_folder_btn.setVisible(True)
+        self._data_open_folder_btn.setEnabled(not self._run_in_flight())
+
+        if library:
+            self._data_queue_btn.setEnabled(self._data_selected_video() is not None)
+            return
+
+        current = self._data_selected_entry()
+        selected = self._data_selected_entries()
+        complete_current = current is not None and not current.incomplete
+        self._data_open_btn.setEnabled(complete_current)
+        self._data_rename_btn.setEnabled(complete_current)
+        # Showing a crashed run in its folder is exactly how you inspect it.
+        self._data_show_btn.setEnabled(current is not None)
+        self._data_assign_btn.setEnabled(any(not e.incomplete for e in selected))
+        self._data_delete_btn.setEnabled(bool(selected))
 
     def _on_data_facet_changed(self, name: str) -> None:
         # _focus_data_on_transect sets the facet and the key together and then
@@ -423,6 +520,9 @@ class DataManagerMixin(MixinBase):
         return self._data_groups.get(self._data_selected_key, [])
 
     def _rebuild_data_run_list(self) -> None:
+        if self._data_facet == "library":
+            self._rebuild_video_library()
+            return
         listed = self._data_listed_entries()
         related = related_run_counts([(e.run_dir, e.manifest) for e in self._data_entries])
         current = self._data_run_list.currentItem()
@@ -431,6 +531,17 @@ class DataManagerMixin(MixinBase):
         for entry in listed:
             item = QListWidgetItem(entry.display_name)
             item.setData(Qt.ItemDataRole.UserRole, str(entry.run_dir))
+            if entry.incomplete:
+                item.setData(RUN_META_ROLE, self._incomplete_card_meta(entry))
+                item.setData(
+                    Qt.ItemDataRole.ToolTipRole,
+                    f"<b>{entry.dir_name}</b><br>"
+                    "<i>No run manifest: this run did not finish.</i>",
+                )
+                self._data_run_list.addItem(item)
+                if keep is not None and str(entry.run_dir) == keep:
+                    self._data_run_list.setCurrentItem(item)
+                continue
             tooltip = format_run_metadata(
                 entry.manifest,
                 entry.run_dir,
@@ -451,8 +562,20 @@ class DataManagerMixin(MixinBase):
                 self._data_run_list.setCurrentItem(item)
         self._data_group_header.setText(self._data_header_text(listed))
         self._data_group_header.setVisible(bool(listed))
-        self._data_run_stack.setCurrentIndex(0 if listed else 1)
+        self._data_run_stack.setCurrentIndex(_RUN_LIST_PAGE if listed else _EMPTY_PAGE)
         self._update_data_actions()
+
+    def _incomplete_card_meta(self, entry: RunEntry) -> dict:
+        facts = ["No manifest — the run did not finish"]
+        if entry.size_bytes is not None:
+            facts.append(format_bytes(entry.size_bytes))
+        return {
+            "title": entry.display_name,
+            "slug": "",
+            "facts": "  ·  ".join(facts),
+            "video": "",
+            "status": entry.status_label,
+        }
 
     def _data_header_text(self, listed: list[RunEntry]) -> str:
         if not listed:
@@ -486,14 +609,20 @@ class DataManagerMixin(MixinBase):
 
     def _open_data_run(self, item: QListWidgetItem) -> None:
         run_dir = item.data(Qt.ItemDataRole.UserRole)
-        if not run_dir:
-            return
+        if run_dir:
+            self._load_run_from_dir(Path(run_dir))
+
+    def _load_run_from_dir(self, path: Path) -> None:
+        """Load a run directory into the viewer, guarded against a live run.
+
+        The single seam every open path routes through: the run cards, the
+        open-folder action, and a dropped folder all end up here.
+        """
         # Browse stays reachable while a batch runs, so opening an old run here
         # would take the viewer away from the run currently streaming into it.
         if self._run_in_flight():
             self._status_label.setText("Wait for the batch to finish before opening a run.")
             return
-        path = Path(run_dir)
         # Banner first, straight from the manifest, so the click lands
         # instantly even when the load itself takes a while.
         manifest_path = path / "run_manifest.json"
@@ -504,6 +633,17 @@ class DataManagerMixin(MixinBase):
             except Exception:
                 self._hide_run_meta_banner()
         self._auto_load_run(path)
+
+    def _on_data_open_folder_clicked(self) -> None:
+        """Open a run directory picked from disk, wherever it sits."""
+        if self._run_in_flight():
+            self._status_label.setText("Wait for the batch to finish before opening a run.")
+            return
+        path = QFileDialog.getExistingDirectory(
+            self, "Open run folder", self._out_root_input.text()
+        )
+        if path:
+            self._load_run_from_dir(Path(path))
 
     # --- Actions ---
 
@@ -517,17 +657,77 @@ class DataManagerMixin(MixinBase):
                 return entry
         return None
 
+    def _data_selected_entries(self) -> list[RunEntry]:
+        """Every run picked in the list, for the actions that act on many."""
+        run_dirs = {
+            item.data(Qt.ItemDataRole.UserRole)
+            for item in self._data_run_list.selectedItems()
+        }
+        return [e for e in self._data_entries if str(e.run_dir) in run_dirs]
+
+    def _on_data_show_in_folder_clicked(self) -> None:
+        entry = self._data_selected_entry()
+        if entry is not None:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(entry.run_dir)))
+
     def _on_data_context_menu(self, pos) -> None:
         item = self._data_run_list.itemAt(pos)
-        if item is not None:
+        # Leave an existing multi-selection alone: collapsing it to the
+        # right-clicked row would throw away the runs the menu is about to act on.
+        if item is not None and not item.isSelected():
             self._data_run_list.setCurrentItem(item)
         menu = QMenu(self._data_run_list)
         menu.addAction("Open", self._on_data_open_clicked)
+        menu.addAction("Show in folder", self._on_data_show_in_folder_clicked)
         menu.addAction("Rename…", self._on_data_rename_clicked)
         menu.addAction("Assign to transect…", self._on_data_assign_clicked)
         menu.addSeparator()
         menu.addAction("Delete…", self._on_data_delete_clicked)
         menu.exec(self._data_run_list.mapToGlobal(pos))
+
+    # --- Drag and drop ---
+
+    def _data_drop_event_filter(self, obj, event) -> bool:
+        """Filter file drops on the run list, group tree and pass table.
+
+        One handler serves all three rather than subclassing each widget. Video
+        files queue as passes; a run folder opens. Returns True when the event is
+        consumed. DeepReefMapWindow.eventFilter calls this, because QObject owns
+        eventFilter earlier in the MRO than this mixin.
+        """
+        etype = event.type()
+        if etype in (QEvent.Type.DragEnter, QEvent.Type.DragMove):
+            if event.mimeData().hasUrls():
+                event.acceptProposedAction()
+                return True
+            return False
+        if etype == QEvent.Type.Drop and event.mimeData().hasUrls():
+            paths = [
+                Path(url.toLocalFile())
+                for url in event.mimeData().urls()
+                if url.isLocalFile()
+            ]
+            self._handle_data_drop(paths)
+            event.acceptProposedAction()
+            return True
+        return False
+
+    def _handle_data_drop(self, paths: list[Path]) -> None:
+        videos = [
+            p for p in paths if p.is_file() and p.suffix.lower() in _VIDEO_SUFFIXES
+        ]
+        run_dirs = [p for p in paths if p.is_dir()]
+        if videos:
+            # Probing happens off the GUI thread, so the rows and the count both
+            # land in _on_videos_probed rather than here.
+            self._add_video_paths([str(p) for p in videos])
+            return
+        if run_dirs:
+            self._load_run_from_dir(run_dirs[0])
+            if len(run_dirs) > 1:
+                self._status_label.setText("Dropped several folders; opened the first.")
+            return
+        self._status_label.setText("Drop video files or a run folder here.")
 
     def _on_data_rename_clicked(self) -> None:
         entry = self._data_selected_entry()
@@ -550,12 +750,14 @@ class DataManagerMixin(MixinBase):
         self._refresh_data_manager()
 
     def _on_data_delete_clicked(self) -> None:
-        entry = self._data_selected_entry()
-        if entry is None:
+        entries = self._data_selected_entries()
+        if not entries:
             return
-        if self._active_run_dir is not None and entry.run_dir == self._active_run_dir:
+        if self._active_run_dir is not None and any(
+            e.run_dir == self._active_run_dir for e in entries
+        ):
             QMessageBox.information(
-                self, "Delete run", "This run is open. Close it first with the + button."
+                self, "Delete run", "One of these runs is open. Close it first with the + button."
             )
             return
         if self._pipeline_thread is not None and self._pipeline_thread.is_alive():
@@ -563,33 +765,46 @@ class DataManagerMixin(MixinBase):
                 self, "Delete run", "Wait for the current run to finish."
             )
             return
-        size = self._run_size_cache.get(entry.dir_name)
-        size_txt = f" ({format_bytes(size)})" if size is not None else ""
-        answer = QMessageBox.question(
-            self,
-            "Delete run",
-            f"Delete '{entry.display_name}'{size_txt}?\nThis cannot be undone.",
-        )
+        answer = QMessageBox.question(self, "Delete run", self._delete_prompt(entries))
         if answer != QMessageBox.StandardButton.Yes:
             return
         store = self._survey_store() if getattr(self, "_data_store_ok", False) else None
-        try:
-            catalogue.delete_run(self._data_out_root(), entry.run_dir, store)
-        except Exception as exc:
-            self._status_label.setText(f"Delete failed: {exc}")
-            logger.exception("Failed to delete run")
-            return
-        self._run_size_cache.pop(entry.dir_name, None)
-        self._status_label.setText(f"Deleted '{entry.display_name}'.")
+        deleted = 0
+        for entry in entries:
+            try:
+                # A crashed run has no manifest, so it needs the manifest-free
+                # remover; both keep delete_run_dir's direct-child guard.
+                if entry.incomplete:
+                    catalogue.delete_run_dir(self._data_out_root(), entry.run_dir, store)
+                else:
+                    catalogue.delete_run(self._data_out_root(), entry.run_dir, store)
+            except Exception as exc:
+                self._status_label.setText(f"Delete failed: {exc}")
+                logger.exception("Failed to delete run")
+                continue
+            self._run_size_cache.pop(entry.dir_name, None)
+            deleted += 1
+        if deleted:
+            self._status_label.setText(f"Deleted {deleted} run{'s' if deleted != 1 else ''}.")
         self._refresh_data_manager()
 
+    def _delete_prompt(self, entries: list[RunEntry]) -> str:
+        if len(entries) == 1:
+            entry = entries[0]
+            size = self._run_size_cache.get(entry.dir_name)
+            size_txt = f" ({format_bytes(size)})" if size is not None else ""
+            return f"Delete '{entry.display_name}'{size_txt}?\nThis cannot be undone."
+        return f"Delete {len(entries)} runs?\nThis cannot be undone."
+
     def _data_assign_targets(self) -> list[RunEntry]:
-        """The whole footage group of the selected run, or the selected tree
+        """The whole footage group of every selected run, or the selected tree
         group, so reruns of the same pass move together."""
-        entry = self._data_selected_entry()
-        if entry is not None:
-            key = catalogue.group_key(entry)
-            return [e for e in self._data_entries if catalogue.group_key(e) == key]
+        # A crashed run has no time window, so it cannot become a pass; leave it
+        # out rather than fail the whole assignment.
+        selected = [e for e in self._data_selected_entries() if not e.incomplete]
+        if selected:
+            keys = {catalogue.group_key(e) for e in selected}
+            return [e for e in self._data_entries if catalogue.group_key(e) in keys]
         if self._data_selected_key is not None:
             return self._data_groups.get(self._data_selected_key, [])
         return []
@@ -645,6 +860,79 @@ class DataManagerMixin(MixinBase):
         self._refresh_data_manager()
         self._refresh_transect_list()
         self._refresh_survey_analysis()
+
+    # --- Video library ---
+
+    def _rebuild_video_library(self) -> None:
+        current = self._data_video_list.currentItem()
+        keep = current.data(Qt.ItemDataRole.UserRole) if current is not None else None
+        self._data_video_list.clear()
+        entries = self._video_library_entries()
+        for entry in entries:
+            video = entry.video
+            if entry.orphan:
+                tag = "not yet processed"
+            else:
+                tag = f"{entry.pass_count} pass{'es' if entry.pass_count != 1 else ''}"
+                if entry.run_count:
+                    tag += f", {entry.run_count} run{'s' if entry.run_count != 1 else ''}"
+            item = QListWidgetItem(f"{video.file_name}  ·  {tag}")
+            item.setData(Qt.ItemDataRole.UserRole, video.path)
+            item.setData(Qt.ItemDataRole.ToolTipRole, video.path)
+            self._data_video_list.addItem(item)
+            if keep is not None and video.path == keep:
+                self._data_video_list.setCurrentItem(item)
+        self._data_group_header.setText(self._video_library_header(entries))
+        self._data_group_header.setVisible(bool(entries))
+        self._data_run_stack.setCurrentIndex(_VIDEO_LIST_PAGE if entries else _EMPTY_PAGE)
+        self._update_data_actions()
+
+    def _video_library_entries(self) -> list[catalogue.VideoLibraryEntry]:
+        if not getattr(self, "_data_store_ok", False):
+            return []
+        try:
+            store = self._survey_store()
+            return catalogue.video_library(
+                store.list_videos(), store.list_passes(), store.list_runs()
+            )
+        except Exception:
+            logger.exception("Could not list the video library")
+            return []
+
+    def _video_library_header(self, entries: list[catalogue.VideoLibraryEntry]) -> str:
+        if not entries:
+            return ""
+        orphans = sum(1 for e in entries if e.orphan)
+        bits = [f"{len(entries)} video{'s' if len(entries) != 1 else ''}"]
+        if orphans:
+            bits.append(f"{orphans} not yet processed")
+        return " · ".join(bits)
+
+    def _data_selected_video(self) -> str | None:
+        if self._data_facet != "library":
+            return None
+        item = self._data_video_list.currentItem()
+        return item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+
+    def _on_data_video_activated(self, item: QListWidgetItem) -> None:
+        self._queue_video_path(item.data(Qt.ItemDataRole.UserRole))
+
+    def _on_data_video_menu(self, pos) -> None:
+        item = self._data_video_list.itemAt(pos)
+        if item is not None:
+            self._data_video_list.setCurrentItem(item)
+        menu = QMenu(self._data_video_list)
+        menu.addAction("Queue as pass", self._on_data_queue_video_clicked)
+        menu.exec(self._data_video_list.mapToGlobal(pos))
+
+    def _on_data_queue_video_clicked(self) -> None:
+        self._queue_video_path(self._data_selected_video())
+
+    def _queue_video_path(self, path: str | None) -> None:
+        """Turn a library clip into a fresh pass, off the GUI thread."""
+        if not path:
+            return
+        self._add_video_paths([path])
 
     # --- Disk sizes ---
 

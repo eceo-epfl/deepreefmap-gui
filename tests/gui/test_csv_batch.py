@@ -11,7 +11,10 @@ half catching up.
 
 from __future__ import annotations
 
+import json
 import threading
+import time
+from pathlib import Path
 
 import pytest
 
@@ -168,3 +171,31 @@ def test_finishing_a_batch_brings_start_back(advanced_window):
 
     assert not window._start_btn.isHidden()
     assert window._batch_btn.isEnabled()
+
+
+def test_completed_batch_lands_flat_and_shows_in_data_manager(
+    advanced_window, batch_csv, monkeypatch, qapp
+):
+    """Batch jobs write straight under the output root, one level shallower than
+    the old batch_out/, so scan_out_root's single-level walk lists them."""
+    window = advanced_window
+
+    def fake_run(**kwargs):
+        (kwargs["output_dir"] / "run_manifest.json").write_text(json.dumps({"mode": "semantic"}))
+
+    monkeypatch.setattr(
+        "deepreefmap_gui.profiling.instrumentation.instrumented_reconstruction", fake_run
+    )
+    _start_batch(window, batch_csv, monkeypatch)
+    window._pipeline_thread.join(timeout=5)
+
+    out_root = Path(window._out_root_input.text())
+    assert (out_root / "alpha" / "run_manifest.json").exists()
+    assert not (out_root / "batch_out").exists()
+
+    # _on_batch_done refreshes the data manager off the batch-done signal.
+    deadline = time.monotonic() + 5
+    while window._data_run_list.count() < 3 and time.monotonic() < deadline:
+        qapp.processEvents()
+    names = {window._data_run_list.item(i).text() for i in range(window._data_run_list.count())}
+    assert {"alpha", "beta", "gamma"} <= names

@@ -7,7 +7,7 @@ from deepreefmap_gui.survey.catalogue import UNASSIGNED_TITLE
 from deepreefmap_gui.survey.models import RunRecord, TransectPass
 from deepreefmap_gui.survey.store import SurveyStore
 
-from _factories import make_transect, seed_survey_run, write_run
+from _factories import make_transect, make_video, seed_pass, seed_survey_run, write_run
 
 
 @pytest.fixture
@@ -187,6 +187,67 @@ def test_assign_keeps_manifest_ids_so_rebuild_stays_idempotent(out_root, store):
     assert entry.moved_from == "T1"
 
 
+def test_scan_incomplete_runs_surfaces_recorded_crash(out_root, store):
+    _t, _v, pass_ = seed_pass(store)
+    run = RunRecord(pass_id=pass_.id, run_dir_name="crashed", status="running")
+    store.add_run(run)
+    (out_root / "crashed").mkdir()
+    incomplete = catalogue.scan_incomplete_runs(out_root, store, set())
+    assert [e.dir_name for e in incomplete] == ["crashed"]
+    assert incomplete[0].incomplete
+    catalogue.reconcile(incomplete, store)
+    assert incomplete[0].status_label == "running"
+
+
+def test_scan_incomplete_runs_detects_run_log_without_record(out_root):
+    half = out_root / "halfrun"
+    half.mkdir()
+    (half / "run.log").write_text("started")
+    incomplete = catalogue.scan_incomplete_runs(out_root, None, set())
+    assert [e.dir_name for e in incomplete] == ["halfrun"]
+    assert incomplete[0].status_label == "incomplete"
+
+
+def test_scan_incomplete_runs_ignores_complete_known_and_bare_dirs(out_root, store):
+    write_run(out_root, "done")
+    (out_root / "random").mkdir()
+    incomplete = catalogue.scan_incomplete_runs(out_root, store, {"done"})
+    assert incomplete == []
+
+
+def test_delete_run_dir_removes_manifestless_dir_and_row(out_root, store):
+    _t, _v, pass_ = seed_pass(store)
+    run = RunRecord(pass_id=pass_.id, run_dir_name="crashed", status="failed")
+    store.add_run(run)
+    (out_root / "crashed").mkdir()
+    catalogue.delete_run_dir(out_root, out_root / "crashed", store)
+    assert not (out_root / "crashed").exists()
+    assert store.get_run(run.id) is None
+
+
+def test_delete_run_dir_refuses_outside_root(out_root, tmp_path, store):
+    stray = tmp_path / "elsewhere" / "run1"
+    stray.mkdir(parents=True)
+    with pytest.raises(ValueError):
+        catalogue.delete_run_dir(out_root, stray, store)
+
+
+def test_video_library_flags_orphans(out_root, store):
+    _t, video, _pass = seed_pass(store)
+    orphan = store.upsert_video(
+        make_video(content_hash="ff" * 16, file_name="orphan.mp4", path="/data/orphan.mp4")
+    )
+    by_id = {
+        e.video.id: e
+        for e in catalogue.video_library(
+            store.list_videos(), store.list_passes(), store.list_runs()
+        )
+    }
+    assert by_id[video.id].pass_count == 1
+    assert not by_id[video.id].orphan
+    assert by_id[orphan.id].orphan
+
+
 def test_group_stats_ranges(out_root):
     write_run(out_root, "small", run_duration_s=100.0, semantic_reference_points=1_000)
     write_run(out_root, "large", run_duration_s=300.0, semantic_reference_points=9_000)
@@ -197,3 +258,19 @@ def test_group_stats_ranges(out_root):
     assert stats.total_bytes == 5
     assert stats.duration_range == (100.0, 300.0)
     assert stats.point_range == (1_000, 9_000)
+
+
+def test_library_counts_a_pass_against_every_chapter(store):
+    """The second half of a swim the camera split is not an unused clip."""
+    transect, video, pass_ = seed_pass(store)
+    second = store.upsert_video(
+        make_video("cd" * 16, file_name="GX020001.MP4", path="/data/GX020001.MP4")
+    )
+    pass_.extra_video_ids = [second.id]
+    store.update_pass(pass_)
+
+    entries = {e.video.file_name: e for e in catalogue.video_library(
+        store.list_videos(), store.list_passes()
+    )}
+    assert entries["GX020001.MP4"].pass_count == 1
+    assert not entries["GX020001.MP4"].orphan

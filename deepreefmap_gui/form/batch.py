@@ -11,10 +11,18 @@ from PySide6.QtWidgets import QFileDialog
 logger = logging.getLogger(__name__)
 
 
-class _BatchJob:
+class BatchJob:
     """One row of a batch reconstruction CSV; name defaults to the video filename stem."""
 
-    __slots__ = ("video", "begin_s", "end_s", "transect_length", "crop_width", "name")
+    __slots__ = (
+        "video",
+        "begin_s",
+        "end_s",
+        "transect_length",
+        "crop_width",
+        "name",
+        "transect",
+    )
 
     def __init__(
         self,
@@ -24,6 +32,7 @@ class _BatchJob:
         transect_length: float | None,
         crop_width: float | None,
         name: str,
+        transect: str = "",
     ) -> None:
         self.video = video
         self.begin_s = begin_s
@@ -31,6 +40,7 @@ class _BatchJob:
         self.transect_length = transect_length
         self.crop_width = crop_width
         self.name = name
+        self.transect = transect
 
 
 def _parse_optional_float(raw: str) -> float | None:
@@ -54,8 +64,13 @@ def _parse_timestamp_range(raw: str) -> tuple[float | None, float | None]:
     return _parse_optional_float(head), _parse_optional_float(tail)
 
 
-def _load_batch_csv(path: Path) -> list[_BatchJob]:
-    """Read a CSV with case-insensitive columns and return parsed rows."""
+def load_batch_csv(path: Path) -> list[BatchJob]:
+    """Read a CSV with case-insensitive columns and return parsed rows.
+
+    One parser for both readers: the advanced batch runs these rows straight
+    through the pipeline, and the survey queue imports them as passes. Only
+    `transect` is optional, and only the survey queue reads it.
+    """
     import csv
 
     suffix = path.suffix.lower()
@@ -65,7 +80,7 @@ def _load_batch_csv(path: Path) -> list[_BatchJob]:
             "Save the sheet as CSV and try again."
         )
     required = {"videos", "timestamps", "transect_length", "crop_width"}
-    jobs: list[_BatchJob] = []
+    jobs: list[BatchJob] = []
     with path.open(newline="") as f:
         reader = csv.DictReader(f)
         if reader.fieldnames is None:
@@ -76,6 +91,7 @@ def _load_batch_csv(path: Path) -> list[_BatchJob]:
             raise ValueError(
                 f"CSV is missing required columns: {', '.join(sorted(missing))}"
             )
+        transect_col = norm.get("transect")
         for n, row in enumerate(reader, start=2):
             video = (row.get(norm["videos"], "") or "").strip()
             if not video:
@@ -87,13 +103,14 @@ def _load_batch_csv(path: Path) -> list[_BatchJob]:
             except ValueError as exc:
                 raise ValueError(f"Row {n}: {exc}") from exc
             jobs.append(
-                _BatchJob(
+                BatchJob(
                     video=video,
                     begin_s=begin_s,
                     end_s=end_s,
                     transect_length=transect_length,
                     crop_width=crop_width,
                     name=Path(video).stem or f"job_{n - 1}",
+                    transect=(row.get(transect_col, "") or "").strip() if transect_col else "",
                 )
             )
     if not jobs:
@@ -114,15 +131,16 @@ class BatchMixin(MixinBase):
         if not path_str:
             return
         try:
-            jobs = _load_batch_csv(Path(path_str))
+            jobs = load_batch_csv(Path(path_str))
         except Exception as exc:
             self._status_label.setText(f"Batch CSV error: {exc}")
             logger.exception("Failed to load batch CSV")
             return
 
-        # Outputs go to `batch_out/<job_name>/` under the user's chosen
-        # output root so they don't collide with regular single runs.
-        base_out = Path(self._out_root_input.text()).expanduser() / "batch_out"
+        # One subdirectory per job, straight under the user's output root rather
+        # than a batch_out/ level below it, so the run browser's single-level
+        # scan lists batch jobs alongside single runs.
+        base_out = Path(self._out_root_input.text()).expanduser()
         base_out.mkdir(parents=True, exist_ok=True)
 
         self._set_form_enabled(False)
@@ -159,7 +177,7 @@ class BatchMixin(MixinBase):
 
     def _run_batch_worker(
         self,
-        jobs: list[_BatchJob],
+        jobs: list[BatchJob],
         base_out: Path,
         common: dict,
         cancel_event: threading.Event,

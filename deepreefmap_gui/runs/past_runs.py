@@ -32,7 +32,8 @@ class PastRunsMixin(MixinBase):
         self._viewer._clear_scene_data()
         self._results_group.setVisible(False)
         self._viewer.legend_overlay.setVisible(False)
-        self._viewer_controls_group.setVisible(False)
+        # The display controls act on a loaded cloud, so they go with it.
+        self._set_overlay_controls_visible(False)
         self._sidebar_tabs.setTabEnabled(self._TAB_RESULTS, False)
         self._hide_run_meta_banner()
         self._clear_run_warnings()
