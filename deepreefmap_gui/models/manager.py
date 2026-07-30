@@ -5,7 +5,7 @@ import logging
 import os
 import shutil
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -300,6 +300,29 @@ def repo_commit(repo_id: str) -> str | None:
         return ref.read_text().strip()
     except OSError:
         return None
+
+
+def resolve_model_versions(names: Iterable[str]) -> dict[str, str]:
+    """HuggingFace commit revision for each named model's repos, keyed by repo id.
+
+    The value is the repo's refs/main commit, the id HuggingFace assigns to the
+    exact snapshot in the cache. It resolves back at the source (the repo tree URL
+    or HfApi().model_info(repo, revision=...)), so it is not a hash we compute.
+    Best-effort provenance: the version present, not a guarantee the run loaded
+    it. Unknown names and repos with no cached ref are skipped. A DPT head lists
+    its backbone in hf_repos, so the head name alone covers both.
+    """
+    catalogue = {info.name: info for info in all_known_models()}
+    versions: dict[str, str] = {}
+    for name in names:
+        info = catalogue.get(name)
+        if info is None:
+            continue
+        for repo in info.hf_repos:
+            commit = repo_commit(repo)
+            if commit is not None:
+                versions[repo] = commit
+    return versions
 
 
 def _snapshot_dir(repo_id: str) -> Path | None:

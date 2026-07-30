@@ -6,8 +6,12 @@ from deepreefmap_gui.survey.store import SurveyStore
 
 
 @pytest.fixture(autouse=True)
-def _isolate_survey_preset(tmp_path, monkeypatch):
+def _isolate_user_data_preset(tmp_path, monkeypatch):
     """Keep preset reads off the developer's real data dir.
+
+    Named apart from the GUI directory's _isolate_survey_preset: both are autouse
+    and monkeypatch the same survey_preset_path, so a shared basename could let
+    the wrong one win on a mixed cross-directory pytest invocation.
 
     load_survey_preset falls back to platformdirs.user_data_dir when the env
     override is unset, so an unguarded test asserts against whatever the app last
