@@ -3,6 +3,8 @@ import threading
 import time
 
 import pytest
+from _factories import make_transect
+from _qt_wait import wait_until
 from PySide6.QtWidgets import QDialog, QMessageBox
 
 from deepreefmap_gui.simple.batch import (
@@ -14,9 +16,6 @@ from deepreefmap_gui.simple.batch import (
     _diagnose_failure,
     _rough_batch_time,
 )
-
-from _factories import make_transect
-from _qt_wait import wait_until
 
 
 def test_diagnose_failure_speaks_plainly_and_advises():

@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 from deepreefmap_gui.core.theme import (
     BORDER,
     CARD_BG,
+    ERROR,
     RADIUS,
     RADIUS_SM,
     SUCCESS,
@@ -27,7 +28,6 @@ from deepreefmap_gui.core.theme import (
     WARN_BORDER,
     WARN_TEXT,
     WARNING,
-    ERROR,
 )
 
 

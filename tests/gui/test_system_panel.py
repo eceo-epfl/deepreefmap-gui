@@ -10,8 +10,6 @@ from __future__ import annotations
 from deepreefmap_gui.core.theme import BLOCK, UPDATE
 
 
-
-
 def _recorded_runs_text(window) -> str:
     """Caption + every child label text + every meter bar stylesheet, concatenated."""
     from PySide6.QtWidgets import QLabel, QProgressBar

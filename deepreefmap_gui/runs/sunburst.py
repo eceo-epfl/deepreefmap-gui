@@ -3,13 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Sequence, SupportsFloat, cast
 
+from deepreefmap.config.classes import ClassConfig
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPaintEvent, QPen, QPixmap
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
-from deepreefmap.config.classes import ClassConfig
 from deepreefmap_gui.cover import aggregate_cover, group_color_for_name, group_name_for_id
-
 
 _FINE_RING_OUTER = 1.00
 _FINE_RING_INNER = 0.62

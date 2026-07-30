@@ -10,9 +10,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
-from huggingface_hub.constants import HF_HUB_CACHE
-
 from deepreefmap.paths import loger_ckpts_dir
+from huggingface_hub.constants import HF_HUB_CACHE
 
 logger = logging.getLogger(__name__)
 
@@ -257,10 +256,10 @@ def discover_models() -> tuple[list[str], str | None]:
     # Failures come back as a string rather than an exception: the caller is a
     # worker thread and cannot raise across the boundary.
     try:
+        from deepreefmap.segmentation.registry import register_segmentation_model
         from huggingface_hub import HfApi
 
         from deepreefmap_gui.models.families import synthesize_model_info
-        from deepreefmap.segmentation.registry import register_segmentation_model
 
         repos = HfApi().list_models(author="EPFL-ECEO")
     except Exception as exc:  # network, auth, or API errors
@@ -348,10 +347,6 @@ def _snapshot_dir(repo_id: str) -> Path | None:
 # what lets that monkeypatch (and a future HF_HOME relocation) take effect.
 def hf_cache_root() -> Path:
     return _HF_CACHE_ROOT
-
-
-def loger_ckpts_root() -> Path:
-    return _LOGER_CKPTS
 
 
 def hf_cache_dir(repo_id: str) -> Path:

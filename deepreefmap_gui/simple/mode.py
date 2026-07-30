@@ -11,8 +11,6 @@ needs one owner deciding who holds it.
 
 from __future__ import annotations
 
-from deepreefmap_gui.core.window_protocol import MixinBase
-
 import logging
 from functools import partial
 from pathlib import Path
@@ -54,6 +52,7 @@ from deepreefmap_gui.core.theme import (
     WINDOW,
     WINDOW_TEXT,
 )
+from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.simple.progress import browse_state, plan_state, run_gate
 from deepreefmap_gui.survey.preset import (
     ActivePreset,

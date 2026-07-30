@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 
-from deepreefmap_gui.profiling.eta import STAGES, STAGE_MESSAGE_TO_PHASE, stage_for_phase
+from deepreefmap_gui.profiling.eta import STAGE_MESSAGE_TO_PHASE, STAGES, stage_for_phase
 from deepreefmap_gui.profiling.instrumentation import (
     STAGE_SPANS,
     WRITER_DRIVEN_STAGES,

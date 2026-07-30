@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-
 from pathlib import Path
 
 from PySide6.QtCore import QPointF, QStandardPaths, Qt
@@ -39,7 +38,6 @@ SLIDER_HANDLE = "#f0f0f0"  # near-white grab handle on trim/timeline sliders
 # legible at a glance, not the loudest thing on the page. Line edits keep the
 # strong palette Highlight, where a hard selection colour is what you want.
 SELECTION_BG = "#2b4763"
-SELECTION_BG_HOVER = "#345574"
 
 # Named semantic accents. These consolidate several inconsistent spellings that
 # were scattered across the GUI (e.g. success was both "#4a4" and

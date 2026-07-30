@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-from deepreefmap_gui.core.window_protocol import MixinBase
-
 import logging
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from deepreefmap_gui.system.log_view import close_run_log_file, open_run_log_file
+from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.profiling.eta import STAGE_MESSAGE_TO_PHASE as _STAGE_MESSAGE_TO_PHASE
 from deepreefmap_gui.runs.progress import _LOAD_STAGE_TO_PHASE
+from deepreefmap_gui.system.log_view import close_run_log_file, open_run_log_file
 
 if TYPE_CHECKING:
     from deepreefmap.postproc.ortho_outputs import TransectCropParams
@@ -392,6 +391,7 @@ class RunLoadingMixin(MixinBase):
         generation: int,
     ) -> None:
         import time as _time
+
         from deepreefmap.pipeline.run_loader import GEOMETRY_ONLY_MODE
 
         _t0 = _time.monotonic()

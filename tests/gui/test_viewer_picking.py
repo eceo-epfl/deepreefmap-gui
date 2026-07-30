@@ -14,9 +14,8 @@ rendered frame. Its numeric core, `_select_pick_pixel`, is covered in
 from __future__ import annotations
 
 import numpy as np
-import pyvista as pv
 import pytest
-
+import pyvista as pv
 from deepreefmap.pointcloud.final_cloud_index import FinalCloudIndex
 
 CORAL, SAND = 1, 2
@@ -257,18 +256,6 @@ def test_a_frustum_point_id_past_the_last_camera_does_not_report_a_frame(viewer)
     assert cleared
 
 
-def test_a_per_actor_frustum_reports_its_own_frame_id(viewer) -> None:
-    viewer._final_index = _index()
-    mesh = pv.PolyData(np.zeros((16, 3), dtype=np.float32))
-    viewer._frustum_actors = {42: viewer._plotter.add_mesh(mesh, style="points")}
-    frames: list[int] = []
-    viewer.frustum_picked.connect(frames.append)
-
-    viewer._process_pick(mesh, 3)
-
-    assert frames == [42]
-
-
 def test_only_final_cloud_actors_are_offered_to_the_picker(viewer) -> None:
     """The live and simple actors are absent from _process_pick's lookup tables,
     so offering them would produce picks that silently resolve to nothing."""
@@ -383,7 +370,7 @@ def test_picking_a_different_point_rebuilds_the_marker(viewer) -> None:
     viewer.set_picked_marker((9.0, 9.0, 9.0), (10, 200, 30), anchor_display=(100.0, 50.0))
 
     assert viewer._pick_ring_sources != before
-    assert viewer.picked_xyz == pytest.approx((9.0, 9.0, 9.0))
+    assert viewer._picked_xyz == pytest.approx((9.0, 9.0, 9.0))
 
 
 def test_moving_the_anchor_carries_the_ring_ticks_and_leader_with_it(viewer) -> None:
@@ -439,7 +426,7 @@ def test_clearing_removes_every_overlay_prop_it_added(viewer) -> None:
     assert viewer._plotter.renderer.GetViewProps().GetNumberOfItems() == baseline
     assert viewer._pick_2d_actors == []
     assert viewer._pick_tick_sources == []
-    assert viewer.picked_xyz is None
+    assert viewer._picked_xyz is None
 
 
 def test_a_camera_move_asks_for_the_anchor_to_be_recomputed(viewer) -> None:

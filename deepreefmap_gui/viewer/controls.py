@@ -2,25 +2,22 @@
 
 from __future__ import annotations
 
-from deepreefmap_gui.core.window_protocol import MixinBase
-
 import json
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, SupportsInt, cast
 
-
-from deepreefmap_gui.system.log_view import close_run_log_file
+from deepreefmap_gui.core.theme import BORDER, OVERLAY_TEXT, PRIMARY, TEXT_MUTED, TEXT_SECONDARY
+from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.profiling.eta import STAGE_MESSAGE_TO_PHASE as _STAGE_MESSAGE_TO_PHASE
 from deepreefmap_gui.runs.progress import _SETUP_MESSAGE_TO_PHASE
-from deepreefmap_gui.core.theme import BORDER, OVERLAY_TEXT, PRIMARY, TEXT_MUTED, TEXT_SECONDARY
+from deepreefmap_gui.system.log_view import close_run_log_file
 
 if TYPE_CHECKING:
-    from PySide6.QtWidgets import QToolButton, QVBoxLayout, QWidget
-
     from deepreefmap.config.classes import ClassConfig
     from deepreefmap.pipeline.artifacts import SemanticPointCloud
     from deepreefmap.pointcloud.grid_ortho import OrthoGrid
+    from PySide6.QtWidgets import QToolButton, QVBoxLayout, QWidget
 
 logger = logging.getLogger(__name__)
 
@@ -66,27 +63,6 @@ class ViewerControlsMixin(MixinBase):
         visible = self._warnings_label.isVisible()
         self._warnings_label_running.setText(text)
         self._warnings_label_running.setVisible(visible)
-
-    def _cancel_load(self) -> None:
-        # Soft cancel: the worker thread can't be interrupted mid-read, but
-        # we set a flag so _apply_loaded_run drops the result when it eventually
-        # arrives. The thread is a daemon and will exit with the process.
-        self._load_cancelled = True
-        self._spinner_stop.setVisible(False)
-        self._reset_progress_bars()
-        self._status_label.setText("Load cancelled.")
-
-    def _overlay_point_size(self) -> float:
-        """The overlay slider holds tenths, because QSlider is integer-only."""
-        return self._ov_pt_slider.value() / 10.0
-
-    def _frustums_visible(self) -> bool:
-        button = getattr(self, "_ov_frustum_btn", None)
-        return button is not None and button.isChecked()
-
-    def _following_camera(self) -> bool:
-        button = getattr(self, "_ov_follow_btn", None)
-        return button is not None and button.isChecked()
 
     def _on_viewer_control_changed(self) -> None:
         if not self._viewer.has_scene_data:

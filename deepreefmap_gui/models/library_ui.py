@@ -7,8 +7,6 @@ matching the download/QC-render pattern elsewhere in the window.
 
 from __future__ import annotations
 
-from deepreefmap_gui.core.window_protocol import MixinBase
-
 import logging
 import threading
 from pathlib import Path
@@ -32,6 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from deepreefmap_gui.core.theme import TEXT_MUTED, TEXT_SECONDARY
+from deepreefmap_gui.core.window_protocol import MixinBase
 
 if TYPE_CHECKING:
     from deepreefmap_gui.models.library import ProgressCallback

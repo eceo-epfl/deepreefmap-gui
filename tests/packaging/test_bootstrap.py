@@ -55,8 +55,8 @@ def _quiet_bootstrap(monkeypatch, tmp_path):
 
 
 def test_bootstrap_no_args_launches_gui(monkeypatch, tmp_path) -> None:
-    import deepreefmap_gui.bootstrap as bootstrap
     import deepreefmap_gui.app as gui_app
+    import deepreefmap_gui.bootstrap as bootstrap
 
     _quiet_bootstrap(monkeypatch, tmp_path)
     monkeypatch.setattr(sys, "argv", ["deepreefmap"])
@@ -67,9 +67,10 @@ def test_bootstrap_no_args_launches_gui(monkeypatch, tmp_path) -> None:
 
 
 def test_bootstrap_args_dispatch_to_cli(monkeypatch, tmp_path) -> None:
-    import deepreefmap_gui.bootstrap as bootstrap
     import deepreefmap.cli.main as cli_main
+
     import deepreefmap_gui.app as gui_app
+    import deepreefmap_gui.bootstrap as bootstrap
 
     _quiet_bootstrap(monkeypatch, tmp_path)
     monkeypatch.setattr(sys, "argv", ["deepreefmap", "list-models"])

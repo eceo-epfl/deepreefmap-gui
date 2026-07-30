@@ -4,12 +4,11 @@ import threading
 import uuid
 
 import pytest
+from _factories import make_transect, make_video, seed_pass
 
 from deepreefmap_gui.survey.models import RunRecord, SurveyBatch, TransectPass
 from deepreefmap_gui.survey.models.convert import survey_manifest_block
 from deepreefmap_gui.survey.store import SurveyStore
-
-from _factories import make_transect, make_video, seed_pass
 
 
 def test_transect_crud_round_trip(store):

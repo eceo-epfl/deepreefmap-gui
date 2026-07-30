@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from deepreefmap_gui.core.window_protocol import MixinBase
-
 import threading
 from typing import TYPE_CHECKING, cast
 
@@ -20,8 +18,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from deepreefmap_gui.models.hf_dialog import HfLoginDialog
 from deepreefmap_gui.core.theme import BORDER, CARD_BG, DANGER_BG, SUCCESS, TEXT_DIM, WARNING
+from deepreefmap_gui.core.window_protocol import MixinBase
+from deepreefmap_gui.models.hf_dialog import HfLoginDialog
 
 if TYPE_CHECKING:
     from deepreefmap_gui.models.manager import ModelInfo

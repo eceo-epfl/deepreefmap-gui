@@ -11,6 +11,9 @@ if TYPE_CHECKING:
     import uuid
     from pathlib import Path
 
+    from deepreefmap.config.classes import ClassConfig
+    from deepreefmap.pipeline.artifacts import SemanticPointCloud
+    from deepreefmap.pointcloud.grid_ortho import OrthoGrid
     from PySide6.QtCore import QSettings, QTimer, Signal
     from PySide6.QtWidgets import (
         QCheckBox,
@@ -35,27 +38,24 @@ if TYPE_CHECKING:
         QWidget,
     )
 
-    from deepreefmap.config.classes import ClassConfig
-    from deepreefmap_gui.io.lazy_frames import FrameAccessor
-    from deepreefmap_gui.system.log_view import LogView
-    from deepreefmap_gui.runs.progress import ProgressModel
-    from deepreefmap_gui.viewer.pick_tooltip import PickCard
-    from deepreefmap_gui.profiling.eta import RunEtaEstimator
     from deepreefmap_gui.core.spinner import SpinnerStopButton
-    from deepreefmap_gui.form.time_edit import TimeSecondsEdit
-    from deepreefmap_gui.runs.timing_popup import HoverColumn, TimingPopup
-    from deepreefmap.pipeline.artifacts import SemanticPointCloud
-    from deepreefmap.pointcloud.grid_ortho import OrthoGrid
-    from deepreefmap_gui.viewer.widget import QtPointCloudViewer
-    from deepreefmap_gui.runs.sunburst import SunburstWidget
-    from deepreefmap_gui.map.widget import SlippyMapWidget
     from deepreefmap_gui.core.widgets import NotReadyStrip
+    from deepreefmap_gui.form.time_edit import TimeSecondsEdit
+    from deepreefmap_gui.io.lazy_frames import FrameAccessor
+    from deepreefmap_gui.map.widget import SlippyMapWidget
+    from deepreefmap_gui.models.library_ui import PackProgressDialog
+    from deepreefmap_gui.profiling.eta import RunEtaEstimator
+    from deepreefmap_gui.runs.progress import ProgressModel
+    from deepreefmap_gui.runs.sunburst import SunburstWidget
+    from deepreefmap_gui.runs.timing_popup import HoverColumn, TimingPopup
     from deepreefmap_gui.simple.charts import GroupedBarChart
     from deepreefmap_gui.simple.plan import NotesEdit
     from deepreefmap_gui.survey.models import SurveyBatch
     from deepreefmap_gui.survey.preset import ActivePreset
     from deepreefmap_gui.survey.store import SurveyStore
-    from deepreefmap_gui.models.library_ui import PackProgressDialog
+    from deepreefmap_gui.system.log_view import LogView
+    from deepreefmap_gui.viewer.pick_tooltip import PickCard
+    from deepreefmap_gui.viewer.widget import QtPointCloudViewer
 
     # QWidget, not QMainWindow: DeepReefMapWindow lists QMainWindow first among
     # its bases, so a QMainWindow base here breaks C3 linearisation.

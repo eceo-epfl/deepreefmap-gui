@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 
-
 def test_overlay_has_reset_button_and_r_shortcut_triggers_view_reset(window) -> None:
     from PySide6.QtGui import QKeySequence, QShortcut
 

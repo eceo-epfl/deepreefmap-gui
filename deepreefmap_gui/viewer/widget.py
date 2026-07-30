@@ -13,13 +13,18 @@ import numpy as np
 
 if TYPE_CHECKING:
     import pyvista as pv
-
     from deepreefmap.config.classes import ClassConfig
     from deepreefmap.pipeline.artifacts import (
         FrameBatch,
         MappingSequenceResult,
         SemanticPointCloud,
     )
+from deepreefmap.pointcloud.final_cloud_index import FinalCloudIndex, build_final_cloud_index
+from deepreefmap.pointcloud.live_frame_cloud import (
+    LiveFrameCloudCache,
+    build_enabled_label_lut,
+    mask_points_by_enabled_lut,
+)
 from PySide6.QtCore import QEvent, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
@@ -32,13 +37,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from deepreefmap.pointcloud.final_cloud_index import FinalCloudIndex, build_final_cloud_index
-from deepreefmap.pointcloud.live_frame_cloud import (
-    LiveFrameCloudCache,
-    build_enabled_label_lut,
-    mask_points_by_enabled_lut,
-)
-from deepreefmap_gui.viewer.legend import LegendOverlay
 from deepreefmap_gui.core.theme import (
     BORDER,
     CARD_BG,
@@ -50,6 +48,7 @@ from deepreefmap_gui.core.theme import (
     SLIDER_HANDLE,
     TEXT_SECONDARY,
 )
+from deepreefmap_gui.viewer.legend import LegendOverlay
 from deepreefmap_gui.viewer.picking import ViewerPickingMixin
 from deepreefmap_gui.viewer.render import (
     _build_frustum_lines,
@@ -238,7 +237,6 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         self._live_polydata: pv.PolyData | None = None
         self._class_actors: dict[int, Any] = {}
         self._class_polydata: dict[int, pv.PolyData] = {}
-        self._frustum_actors: dict[int, Any] = {}
         self._frustum_batch_actor: Any = None
         self._frustum_batch_pd: Any = None
         self._frustum_highlight_actor: Any = None
@@ -940,8 +938,6 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
                 _remove(self._frustum_batch_actor)
             if hasattr(self, "_frustum_highlight_actor") and self._frustum_highlight_actor is not None:
                 _remove(self._frustum_highlight_actor)
-            for actor in self._frustum_actors.values():
-                _remove(actor)
             if self._live_actor is not None:
                 _remove(self._live_actor)
             if self._simple_actor is not None:
@@ -953,7 +949,6 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
                 pass
         self._class_actors.clear()
         self._class_polydata.clear()
-        self._frustum_actors.clear()
         self._frustum_batch_actor = None
         self._frustum_batch_pd = None
         self._frustum_highlight_actor = None
@@ -1316,23 +1311,6 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
                     new_pd = _make_line_segments_polydata(pts)
                     self._frustum_highlight_pd.copy_from(new_pd)
             return
-
-        # Legacy per-actor path
-        for fid, actor in self._frustum_actors.items():
-            actor.SetVisibility(bool(visible))
-            if not visible:
-                continue
-            prop = actor.GetProperty()
-            if fid == current_frame:
-                prop.SetColor(1.0, 0.8, 0.25)
-                prop.SetOpacity(0.9)
-                prop.SetLineWidth(2.0)
-            else:
-                prop.SetColor(0.5, 0.5, 0.5)
-                prop.SetOpacity(0.6)
-                prop.SetLineWidth(1.0)
-
-    # --- Image panel ---
 
     def current_frame_stack(self) -> "np.ndarray | None":
         """Return the RGB/seg/depth composite for exporting the current frame."""

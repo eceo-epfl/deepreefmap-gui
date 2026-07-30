@@ -7,6 +7,8 @@ import sys
 import threading
 from pathlib import Path
 from typing import cast
+
+from deepreefmap.config.classes import ClassConfig
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QIcon, QSurfaceFormat
 from PySide6.QtWidgets import (
@@ -20,26 +22,25 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from deepreefmap.config.classes import ClassConfig
 from deepreefmap_gui.core.theme import BANNER_BG, BANNER_BORDER, BANNER_TEXT
 from deepreefmap_gui.form.batch import BatchMixin
 from deepreefmap_gui.form.panel import FormPanelMixin
-from deepreefmap_gui.models.management import ModelManagementMixin
 from deepreefmap_gui.models.library_ui import ModelLibraryMixin
+from deepreefmap_gui.models.management import ModelManagementMixin
 from deepreefmap_gui.runs.data_manager import DataManagerMixin
+from deepreefmap_gui.runs.loading import RunLoadingMixin
 from deepreefmap_gui.runs.past_runs import PastRunsMixin
+from deepreefmap_gui.runs.progress import ProgressBarsMixin
 from deepreefmap_gui.runs.progress_panel import ProgressPanel
 from deepreefmap_gui.runs.results import ResultsMixin
-from deepreefmap_gui.runs.loading import RunLoadingMixin
 from deepreefmap_gui.simple.analysis import SimpleAnalysisMixin
 from deepreefmap_gui.simple.batch import SimpleBatchMixin
 from deepreefmap_gui.simple.mode import UiModeMixin
 from deepreefmap_gui.simple.plan import SimplePlanMixin
 from deepreefmap_gui.simple.setup import SimpleSetupMixin
 from deepreefmap_gui.system.panel import SystemPanelMixin
-from deepreefmap_gui.viewer.controls import ViewerControlsMixin
-from deepreefmap_gui.runs.progress import ProgressBarsMixin
 from deepreefmap_gui.update.version import VersionCheckMixin
+from deepreefmap_gui.viewer.controls import ViewerControlsMixin
 
 logger = logging.getLogger(__name__)
 

@@ -1,15 +1,14 @@
 import json
 from pathlib import Path
 
+from _factories import seed_survey_run, write_run
+from _qt_wait import wait_until
 from PySide6.QtCore import QEvent, QUrl
 
 from deepreefmap_gui.runs.run_cards import RUN_META_ROLE
 from deepreefmap_gui.survey.catalogue import UNASSIGNED_TITLE
 from deepreefmap_gui.survey.models import Transect, VideoAsset
 from deepreefmap_gui.survey.store import SurveyStore
-
-from _factories import seed_survey_run, write_run
-from _qt_wait import wait_until
 
 
 class _FakeMime:

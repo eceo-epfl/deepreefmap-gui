@@ -14,7 +14,6 @@ from PySide6.QtWidgets import (
     QStyleOptionViewItem,
 )
 
-from deepreefmap_gui.profiling.system_probe import format_bytes
 from deepreefmap_gui.core.theme import (
     BANNER_TEXT,
     CARD_BG,
@@ -28,6 +27,7 @@ from deepreefmap_gui.core.theme import (
     WINDOW_TEXT,
 )
 from deepreefmap_gui.profiling.eta import format_duration
+from deepreefmap_gui.profiling.system_probe import format_bytes
 from deepreefmap_gui.survey.catalogue import run_duration_s
 
 RUN_META_ROLE = Qt.ItemDataRole.UserRole + 1

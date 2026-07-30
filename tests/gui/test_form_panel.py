@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 
-
 def test_loger_options_collected_from_form(window) -> None:
 
     assert window._collect_loger_options("scsfmlearner") is None

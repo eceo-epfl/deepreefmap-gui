@@ -1,9 +1,8 @@
 import pytest
+from _factories import make_transect
 
 from deepreefmap_gui.survey.models import TransectPass, VideoAsset
 from deepreefmap_gui.survey.models.exporters import save_transects_csv
-
-from _factories import make_transect
 
 
 def type_coord(window, which, text):

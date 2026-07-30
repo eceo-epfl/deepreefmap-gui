@@ -12,6 +12,7 @@ import importlib.metadata
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+
 from typing_extensions import Self
 
 _INSTALLER_ISS = Path(__file__).parents[2] / "scripts" / "installer.iss"

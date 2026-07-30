@@ -10,9 +10,6 @@ from __future__ import annotations
 import json
 
 import pytest
-
-from deepreefmap_gui.models.families import synthesize_model_info
-from deepreefmap_gui.models.manager import ALL_MODELS, ModelInfo, register_discovered
 from deepreefmap.segmentation.dinov3_dpt import DinoV3DPTWrapper
 from deepreefmap.segmentation.registry import (
     create_segmentation_model,
@@ -21,6 +18,9 @@ from deepreefmap.segmentation.registry import (
     register_segmentation_model,
 )
 from deepreefmap.segmentation.segformer import SegformerWrapper
+
+from deepreefmap_gui.models.families import synthesize_model_info
+from deepreefmap_gui.models.manager import ALL_MODELS, ModelInfo, register_discovered
 
 
 def test_model_list_has_all_expected_models() -> None:
@@ -73,8 +73,9 @@ def test_dinov3_dpt_entries_include_facebook_backbone() -> None:
 
 
 def test_loger_entries_materialise_into_ckpts_dir() -> None:
-    from deepreefmap_gui.models.manager import MAPPING_MODELS
     from deepreefmap.mapping.registry import _LOGER_CKPTS
+
+    from deepreefmap_gui.models.manager import MAPPING_MODELS
 
     by_name = {m.name: m for m in MAPPING_MODELS}
     assert "loger" in by_name and "loger_star" in by_name

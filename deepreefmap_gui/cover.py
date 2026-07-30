@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import SupportsFloat, cast
 
 import yaml
-
 from deepreefmap.config.classes import ClassConfig
 
 COVER_LEVELS = ("fine", "intermediate", "coarse")

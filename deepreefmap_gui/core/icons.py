@@ -121,25 +121,6 @@ def arrow_right_icon(size: int = 24, color: QColor | None = None) -> QIcon:
     return QIcon(pm)
 
 
-def help_icon(size: int = 24, color: QColor | None = None) -> QIcon:
-    c = color or QColor(170, 170, 170)
-    pm, p = _px(size)
-    pen = QPen(c, 1.6)
-    p.setPen(pen)
-    cx, cy = size / 2, size / 2
-    r = size * 0.36
-    p.drawEllipse(QPointF(cx, cy), r, r)
-    from PySide6.QtGui import QFont
-
-    f = QFont()
-    f.setPixelSize(int(size * 0.45))
-    f.setBold(True)
-    p.setFont(f)
-    p.drawText(QRectF(0, -size * 0.03, size, size), Qt.AlignmentFlag.AlignCenter, "?")
-    p.end()
-    return QIcon(pm)
-
-
 def check_icon(size: int = 16, color: QColor | None = None) -> QIcon:
     c = color or QColor(SUCCESS)
     pm, p = _px(size)

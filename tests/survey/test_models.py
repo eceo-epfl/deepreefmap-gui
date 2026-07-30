@@ -1,6 +1,7 @@
 import uuid
 
 import pytest
+from _factories import make_transect, make_video
 
 from deepreefmap_gui.survey.models import RunRecord, SurveyBatch, TransectPass
 from deepreefmap_gui.survey.models.convert import (
@@ -10,8 +11,6 @@ from deepreefmap_gui.survey.models.convert import (
     survey_manifest_block,
     to_row,
 )
-
-from _factories import make_transect, make_video
 
 
 def make_pass(transect, video, **overrides):
