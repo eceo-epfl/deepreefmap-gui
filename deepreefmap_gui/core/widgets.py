@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QRectF, Qt
+from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter
 from PySide6.QtWidgets import (
+    QHBoxLayout,
     QLabel,
+    QPushButton,
     QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
@@ -17,9 +19,13 @@ from deepreefmap_gui.core.theme import (
     BORDER,
     CARD_BG,
     RADIUS,
+    RADIUS_SM,
     SUCCESS,
     TEXT_DIM,
     TEXT_MUTED,
+    WARN_BG,
+    WARN_BORDER,
+    WARN_TEXT,
     WARNING,
     ERROR,
 )
@@ -85,12 +91,59 @@ class EmptyState(QWidget):
         self._hint.setVisible(bool(hint))
 
 
+class NotReadyStrip(QWidget):
+    """The one thing blocking a page, next to the button that goes and fixes it.
+
+    Directions the page cannot follow ("switch modes, then find the tab") are
+    not an action, so the destination is a button. Hidden whenever nothing
+    blocks, which is why it sits above the content rather than inside it.
+    """
+
+    action_clicked = Signal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("notReadyStrip")
+        self.setStyleSheet(
+            f"QWidget#notReadyStrip {{ background-color: {WARN_BG};"
+            f" border: 1px solid {WARN_BORDER}; border-radius: {RADIUS_SM}px; }}"
+        )
+        row = QHBoxLayout(self)
+        row.setContentsMargins(10, 6, 10, 6)
+        row.setSpacing(10)
+
+        self._reason = QLabel("")
+        self._reason.setWordWrap(True)
+        self._reason.setStyleSheet(f"color: {WARN_TEXT};")
+        row.addWidget(self._reason, 1)
+
+        self._action = QPushButton("")
+        self._action.clicked.connect(self.action_clicked)
+        row.addWidget(self._action)
+
+        self.setVisible(False)
+
+    def show_blocker(self, reason: str, action: str = "") -> None:
+        """Name the blocker. An empty action means it is fixed on this page."""
+        self._reason.setText(reason)
+        self._action.setText(action)
+        self._action.setVisible(bool(action))
+        self.setVisible(bool(reason))
+
+    def clear(self) -> None:
+        self._reason.setText("")
+        self.setVisible(False)
+
+
 # Run statuses come from SurveyStore; anything unrecognised stays neutral.
 _STATUS_COLORS = {
     "succeeded": SUCCESS,
     "running": WARNING,
     "failed": ERROR,
     "cancelled": TEXT_DIM,
+    # Abandoned by a crash or quit, not a clean stop: amber flags it as work to
+    # redo rather than the neutral grey a deliberate cancel gets.
+    "interrupted": WARNING,
     "queued": TEXT_MUTED,
 }
 
@@ -116,7 +169,9 @@ class StatusPillDelegate(QStyledItemDelegate):
         if style is not None:
             style.drawControl(QStyle.ControlElement.CE_ItemViewItem, blank, painter, option.widget)
 
-        color = QColor(_STATUS_COLORS.get(text, TEXT_MUTED))
+        # Key off the leading word so a decorated pill ("Succeeded ⚠") keeps its
+        # colour; case-insensitive so a title-cased "Failed" pill still reads red.
+        color = QColor(_STATUS_COLORS.get(text.lower().split()[0], TEXT_MUTED))
         metrics = option.fontMetrics
         pad_x = 8
         width = min(metrics.horizontalAdvance(text) + pad_x * 2, option.rect.width() - 8)

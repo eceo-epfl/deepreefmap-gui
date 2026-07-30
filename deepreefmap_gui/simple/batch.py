@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from deepreefmap_gui.core.window_protocol import MixinBase
 
+import json
 import logging
 import sqlite3
 import threading
@@ -14,7 +15,9 @@ from functools import partial
 from pathlib import Path
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QFileDialog,
@@ -22,6 +25,8 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMenu,
+    QMessageBox,
     QPushButton,
     QStackedWidget,
     QTableWidget,
@@ -38,8 +43,20 @@ from deepreefmap_gui.core.theme import (
     WARN_BORDER,
     WARN_TEXT,
 )
-from deepreefmap_gui.core.widgets import EmptyState, StatusPillDelegate, section_card
-from deepreefmap_gui.simple.progress import BLOCKED, run_gate
+from deepreefmap_gui.core.widgets import (
+    EmptyState,
+    NotReadyStrip,
+    StatusPillDelegate,
+    section_card,
+)
+from deepreefmap_gui.simple.progress import (
+    BLOCKED,
+    FIX_HERE,
+    FIX_SETTINGS,
+    FIX_SETUP,
+    SectionState,
+    run_gate,
+)
 from deepreefmap_gui.form.video_scrub import VideoScrubDialog
 from deepreefmap.pipeline.artifacts import ReconstructionCancelled
 from deepreefmap_gui.survey.models import (
@@ -51,16 +68,103 @@ from deepreefmap_gui.survey.models import (
     VideoAsset,
 )
 from deepreefmap_gui.survey.models.convert import survey_manifest_block
-from deepreefmap_gui.survey.preset import load_survey_preset
+from deepreefmap_gui.survey.preset import (
+    MACHINE_OVERRIDABLE_KEYS,
+    describe_keys,
+    manifest_config_block,
+)
 from deepreefmap_gui.survey.store import SurveyStore
 
 logger = logging.getLogger(__name__)
 
 _COL_VIDEO, _COL_TRANSECT, _COL_DIRECTION, _COL_TRIM, _COL_STATUS = range(5)
 
+# File-name prefixes a GoPro uses for the second and later chapters of one
+# recording (GX/GH/GL on HERO6 and up, GP on the older models).
+_CHAPTER_PREFIXES = ("GX", "GH", "GL", "GP")
+
+# One probed clip: its path, and the (duration_s, fps) the decoder reported.
+_ProbedClip = tuple[str, tuple[float, float]]
+
+# Button text per fix destination, so the strip names the place it goes rather
+# than describing the journey. The header entry point uses the same words.
+_FIX_ACTIONS = {FIX_SETUP: "Set up laptop", FIX_SETTINGS: "Edit settings…"}
 
 def _mmss(seconds: float) -> str:
     return f"{int(seconds) // 60}:{int(seconds) % 60:02d}"
+
+
+def _one_sentence(text: str) -> str:
+    """First line of an error, short enough for a tooltip or the status line."""
+    stripped = (text or "").strip()
+    return stripped.splitlines()[0][:200] if stripped else ""
+
+
+def _diagnose_failure(text: str) -> str:
+    """Turn a raw pipeline error into one plain sentence with what to try next.
+
+    A diver cannot act on a Python traceback. Known signatures get advice; the
+    fallback keeps the raw first line so nothing is hidden. The raw text is always
+    available under "Copy error details".
+    """
+    low = (text or "").lower()
+    if "out of memory" in low or "cuda" in low and "memory" in low:
+        return (
+            "Ran out of graphics memory. Try again with a smaller processing size, "
+            "or ask your admin to lower the batch size."
+        )
+    if "no space left" in low or "disk" in low and "full" in low:
+        return "The drive filled up. Free some space and process the pass again."
+    if "not found" in low and ("model" in low or "checkpoint" in low or ".pt" in low):
+        return "A model is missing. Open Set up laptop and get the models first."
+    if any(word in low for word in ("decode", "codec", "corrupt", "unreadable")):
+        return "The video could not be read. Check the clip copied off the camera cleanly."
+    return _one_sentence(text) or "The run failed. No cause was recorded."
+
+
+def _rough_batch_time(pass_count: int) -> str | None:
+    """A plain "about N hours" from past run durations, or None with no history.
+
+    Rough on purpose: the median of every recorded run on this machine, not the
+    current config, so a first-ever run says nothing rather than guessing.
+    """
+    import statistics
+
+    from deepreefmap_gui.profiling.run_history import summarise_recorded_runs
+
+    seconds = [r["run_seconds"] for r in summarise_recorded_runs() if r.get("run_seconds")]
+    if not seconds:
+        return None
+    total = statistics.median(seconds) * pass_count
+    if total < 5400:
+        return f"about {max(1, round(total / 60))} minutes"
+    hours = round(total / 3600)
+    return f"about {hours} hour{'' if hours == 1 else 's'}"
+
+
+def _import_summary(file_name: str, queued: int, skipped: int, unmatched: int) -> str:
+    """What a CSV import did, including the rows it could not place."""
+    parts = [f"Queued {queued} pass(es) from {file_name}."]
+    if skipped:
+        parts.append(f"{skipped} video(s) would not open and were left out.")
+    if unmatched:
+        parts.append(f"{unmatched} named a transect that is not planned yet.")
+    return " ".join(parts)
+
+
+def _pass_number(run_dir_name: str) -> int | None:
+    """The `pNN` ordinal baked into a survey run-dir slug, if one is present."""
+    for token in run_dir_name.split("__"):
+        if len(token) > 1 and token[0] == "p" and token[1:].isdigit():
+            return int(token[1:])
+    return None
+
+
+def _failed_pass_label(transect: Transect | None, run_dir_name: str) -> str:
+    """Name a failed pass by transect and pass number, never by the run-dir slug."""
+    name = transect.name if transect is not None else "Unassigned"
+    number = _pass_number(run_dir_name)
+    return f"{name} pass {number}" if number is not None else name
 
 
 def _style_transect_combo(combo: QComboBox, *, assigned: bool) -> None:
@@ -82,7 +186,11 @@ def _style_transect_combo(combo: QComboBox, *, assigned: bool) -> None:
 
 
 def _probe_video(path: str) -> tuple[float, float] | None:
-    """(duration_s, fps) via cv2, or None when the file cannot be decoded."""
+    """(duration_s, fps) via cv2, or None when the file cannot be decoded.
+
+    Opening and measuring a 4 GB clip off an SD card takes long enough to freeze
+    the window, which is why _add_video_paths hands this to a worker thread.
+    """
     import cv2
 
     cap = cv2.VideoCapture(path)
@@ -98,14 +206,108 @@ def _probe_video(path: str) -> tuple[float, float] | None:
     return float(frames) / float(fps), float(fps)
 
 
+def _clip_time(mtime: str | None) -> str:
+    """When the clip was recorded, in local time.
+
+    A GoPro's mtime is the moment recording stopped, which is what a diver
+    matches against their slate.
+    """
+    if not mtime:
+        return "time unknown"
+    try:
+        stamp = datetime.fromisoformat(mtime)
+    except ValueError:
+        return "time unknown"
+    if stamp.tzinfo is not None:
+        stamp = stamp.astimezone()
+    return stamp.strftime("%H:%M")
+
+
+def _clip_length(duration_s: float | None) -> str:
+    if not duration_s or duration_s <= 0:
+        return "length unknown"
+    total = int(round(duration_s))
+    return f"{total}s" if total < 60 else f"{total // 60}m {total % 60:02d}s"
+
+
+def _video_cell_text(videos: list[VideoAsset]) -> str:
+    """Name, time and length: a card of GX01nnnn.MP4 files is otherwise unreadable."""
+    first = videos[0]
+    name = first.file_name
+    if len(videos) > 1:
+        name += f" +{len(videos) - 1} chapter{'' if len(videos) == 2 else 's'}"
+    return f"{name} · {_clip_time(first.mtime)} · {_clip_length(_total_duration_s(videos))}"
+
+
+def _total_duration_s(videos: list[VideoAsset]) -> float | None:
+    """Length of the chapters played back to back, or None when any is unknown."""
+    if any(video.duration_s is None for video in videos):
+        return None
+    return sum(video.duration_s or 0.0 for video in videos)
+
+
+def _chapter_key(file_name: str) -> tuple[str, int] | None:
+    """(recording, chapter) for a chaptered GoPro file, else None.
+
+    A recording split at the camera's ~4 GB limit continues in GX02nnnn,
+    GX03nnnn and so on, where nnnn names the recording and the middle pair is
+    the chapter. Older HEROs open the same recording with GOPRnnnn and continue
+    in GPnnnn.
+    """
+    stem = Path(file_name).stem.upper()
+    if stem.startswith("GOPR") and stem[4:].isdigit():
+        return stem[4:], 0
+    if len(stem) != 8 or stem[:2] not in _CHAPTER_PREFIXES:
+        return None
+    chapter, recording = stem[2:4], stem[4:]
+    if not chapter.isdigit() or not recording.isdigit():
+        return None
+    return recording, int(chapter)
+
+
+def _group_chapters(probed: list[_ProbedClip]) -> list[list[_ProbedClip]]:
+    """Split one add into passes, gathering the chapters of a recording into one.
+
+    Grouping only spans the clips added together, which is how a card is read:
+    select the lot, and a swim that overran 4 GB stays one pass.
+    """
+    groups: list[list[_ProbedClip]] = []
+    by_recording: dict[str, int] = {}
+    for path, result in probed:
+        key = _chapter_key(Path(path).name)
+        recording = key[0] if key is not None else None
+        if recording is not None and recording in by_recording:
+            groups[by_recording[recording]].append((path, result))
+            continue
+        if recording is not None:
+            by_recording[recording] = len(groups)
+        groups.append([(path, result)])
+    for group in groups:
+        group.sort(key=lambda item: _chapter_key(Path(item[0]).name) or ("", 0))
+    return groups
+
+
 @dataclass
 class _PassRow:
-    video: VideoAsset
+    videos: list[VideoAsset]
     begin_s: float
     end_s: float
     direction: str = "forward"
     transect_id: uuid.UUID | None = None
     pass_id: uuid.UUID | None = None
+
+    @property
+    def video(self) -> VideoAsset:
+        """The first chapter, which is the pass's video identity."""
+        return self.videos[0]
+
+    def total_duration_s(self) -> float | None:
+        return _total_duration_s(self.videos)
+
+
+def _clip_sort_key(row: _PassRow) -> tuple[int, str]:
+    """Order by recording time, with unreadable timestamps kept at the bottom."""
+    return (1, "") if not row.video.mtime else (0, row.video.mtime)
 
 
 @dataclass
@@ -113,7 +315,7 @@ class _SurveyJob:
     run: RunRecord
     pass_: TransectPass
     transect: Transect
-    video: VideoAsset
+    videos: list[VideoAsset]
     dir_name: str
 
 
@@ -130,13 +332,15 @@ class SimpleBatchMixin(MixinBase):
         self._survey_batch = None
         self._survey_cancel_event = None
         self._survey_worker_running = False
-        try:
-            self._survey_preset = load_survey_preset()
-        except (OSError, ValueError) as exc:
-            self._survey_preset = None
-            logger.warning("Preset unavailable: %s", exc)
+        self._reload_active_preset()
 
         layout.setSpacing(GUTTER)
+
+        # Above everything, so a laptop that cannot run says so before the user
+        # fills a queue with it. _recompute_survey_start owns its text.
+        self._survey_not_ready = NotReadyStrip()
+        self._survey_not_ready.action_clicked.connect(self._on_survey_fix_blocker)
+        layout.addWidget(self._survey_not_ready)
 
         # Batch identity and the settings every pass in it will run under, as
         # one block: they answer the same question, "what is about to happen".
@@ -163,6 +367,20 @@ class SimpleBatchMixin(MixinBase):
         self._survey_settings_btn.setToolTip("Change any run setting for this batch.")
         self._survey_settings_btn.clicked.connect(self._on_edit_run_settings)
         preset_row.addWidget(self._survey_settings_btn)
+        # Beside the name of the settings, because that is where you look when you
+        # want to know whether this computer is still on the standard.
+        self._survey_restore_btn = QPushButton("Restore standard settings")
+        self._survey_restore_btn.setProperty("quiet", "true")
+        self._survey_restore_btn.setToolTip(
+            "Drop the changes made on this computer and use the standard settings again."
+        )
+        self._survey_restore_btn.clicked.connect(self._restore_standard_settings)
+        preset_row.addWidget(self._survey_restore_btn)
+        self._survey_audit_btn = QPushButton("Settings history…")
+        self._survey_audit_btn.setProperty("quiet", "true")
+        self._survey_audit_btn.setToolTip("Which settings every processed run actually used.")
+        self._survey_audit_btn.clicked.connect(self._on_show_config_audit)
+        preset_row.addWidget(self._survey_audit_btn)
         header_layout.addLayout(preset_row)
         layout.addWidget(header_card)
 
@@ -174,12 +392,19 @@ class SimpleBatchMixin(MixinBase):
         self._survey_pass_table.verticalHeader().setDefaultSectionSize(34)
         self._survey_pass_table.setShowGrid(False)
         self._survey_pass_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        # A survey day is dozens of clips over a handful of transects, so
+        # assigning is a bulk action: select the run of rows, assign them once.
+        self._survey_pass_table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         self._survey_pass_table.setItemDelegateForColumn(_COL_STATUS, StatusPillDelegate(self))
         self._survey_pass_table.itemSelectionChanged.connect(self._recompute_row_actions)
         # Seeing the result is what you actually want after processing, so the
         # row you processed opens it. Only the Video and Status columns get the
         # signal; the three between them hold cell widgets that eat the click.
         self._survey_pass_table.cellDoubleClicked.connect(self._on_survey_pass_activated)
+        # A failed pass keeps its error on the row (tooltip). Right-click copies
+        # the full text so it can be pasted into a bug report.
+        self._survey_pass_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._survey_pass_table.customContextMenuRequested.connect(self._on_survey_pass_menu)
         h_header = self._survey_pass_table.horizontalHeader()
         h_header.setDefaultAlignment(
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
@@ -194,6 +419,11 @@ class SimpleBatchMixin(MixinBase):
             (_COL_STATUS, 110),
         ):
             self._survey_pass_table.setColumnWidth(column, width)
+        # Dropping video files onto the table queues them, handled centrally by
+        # the browser's eventFilter (DataManagerMixin) so all three drop targets
+        # share one path.
+        self._survey_pass_table.setAcceptDrops(True)
+        self._survey_pass_table.installEventFilter(self)
 
         self._survey_table_stack = QStackedWidget()
         self._survey_table_stack.addWidget(self._survey_pass_table)
@@ -205,6 +435,16 @@ class SimpleBatchMixin(MixinBase):
         )
         passes_card, passes_layout = section_card("Passes")
         passes_layout.addWidget(self._survey_table_stack, 1)
+        # A transect swum only one way is usually a forgotten out-and-back, and
+        # nothing downstream can tell the difference, so say it here.
+        self._survey_direction_notice = QLabel("")
+        self._survey_direction_notice.setWordWrap(True)
+        self._survey_direction_notice.setStyleSheet(
+            f"background-color: {WARN_BG}; color: {WARN_TEXT};"
+            f" border: 1px solid {WARN_BORDER}; padding: 6px; border-radius: {RADIUS_SM}px;"
+        )
+        self._survey_direction_notice.setVisible(False)
+        passes_layout.addWidget(self._survey_direction_notice)
         # Outcome of the last batch, kept on the page rather than written to the
         # status bar, which the next thing to happen overwrites.
         self._survey_summary_label = QLabel("")
@@ -214,19 +454,60 @@ class SimpleBatchMixin(MixinBase):
         passes_layout.addWidget(self._survey_summary_label)
         layout.addWidget(passes_card, 1)
 
-        row_buttons = QHBoxLayout()
-        row_buttons.setSpacing(6)
+        # Two rows: what you do to the whole batch, then what you do to one pass.
+        bulk_buttons = QHBoxLayout()
+        bulk_buttons.setSpacing(6)
         add_btn = QPushButton("Add videos…")
         add_btn.clicked.connect(self._on_survey_add_videos)
+        self._survey_assign_btn = QPushButton("Assign selected to…")
+        self._survey_assign_btn.setToolTip(
+            "Set the transect on every selected row at once. Shift-click or "
+            "Ctrl-click to select a run of rows."
+        )
+        self._survey_assign_btn.clicked.connect(self._on_survey_assign_selected)
+        self._survey_alternate_check = QCheckBox("Alternate direction")
+        self._survey_alternate_check.setToolTip(
+            "Assign forward, reverse, forward… down the list, for passes swum "
+            "out and back."
+        )
+        self._survey_sort_btn = QPushButton("Sort by time")
+        self._survey_sort_btn.setProperty("quiet", "true")
+        self._survey_sort_btn.setToolTip("Order the rows by when each clip was recorded.")
+        self._survey_sort_btn.clicked.connect(self._on_survey_sort_by_time)
+        for widget in (
+            add_btn,
+            self._survey_assign_btn,
+            self._survey_alternate_check,
+            self._survey_sort_btn,
+        ):
+            bulk_buttons.addWidget(widget)
+        bulk_buttons.addStretch(1)
+        layout.addLayout(bulk_buttons)
+
+        row_buttons = QHBoxLayout()
+        row_buttons.setSpacing(6)
+        # A CSV of the day's dives is a queue too, so it fills this one rather
+        # than starting a second kind of batch somewhere else.
+        self._survey_import_btn = QPushButton("Import queue from CSV…")
+        self._survey_import_btn.setToolTip(
+            "Queue passes from a spreadsheet. Columns: videos, timestamps "
+            "(begin-end seconds), transect_length, crop_width, and an optional "
+            "transect naming a planned transect."
+        )
+        self._survey_import_btn.clicked.connect(self._on_survey_import_csv)
         self._survey_split_btn = QPushButton("Split pass")
         self._survey_split_btn.setToolTip(
-            "Duplicate the selected row for another pass in the same video."
+            "Duplicate the selected row for another pass in the same recording."
         )
         self._survey_split_btn.clicked.connect(self._on_survey_split_pass)
         self._survey_remove_btn = QPushButton("Remove pass")
         self._survey_remove_btn.setToolTip("Drop the selected pass from this batch.")
         self._survey_remove_btn.clicked.connect(self._on_survey_remove_pass)
-        for btn in (add_btn, self._survey_split_btn, self._survey_remove_btn):
+        for btn in (
+            self._survey_import_btn,
+            self._survey_split_btn,
+            self._survey_remove_btn,
+        ):
             row_buttons.addWidget(btn)
         row_buttons.addStretch(1)
         layout.addLayout(row_buttons)
@@ -245,7 +526,21 @@ class SimpleBatchMixin(MixinBase):
         selected = 0 <= self._survey_pass_table.currentRow() < len(self._survey_rows)
         for btn in (self._survey_split_btn, self._survey_remove_btn):
             btn.setEnabled(selected)
+        # Assigning needs both a selection and somewhere to assign it to.
+        self._survey_assign_btn.setEnabled(
+            bool(self._selected_survey_rows()) and bool(self._survey_transects)
+        )
+        self._survey_sort_btn.setEnabled(len(self._survey_rows) > 1)
         self._survey_table_stack.setCurrentIndex(0 if self._survey_rows else 1)
+
+    def _selected_survey_rows(self) -> list[int]:
+        """Indices of every selected row, in table order.
+
+        Read from the selection rather than currentRow(): the bulk actions are
+        the reason the table is multi-select in the first place.
+        """
+        rows = {index.row() for index in self._survey_pass_table.selectedIndexes()}
+        return sorted(r for r in rows if 0 <= r < len(self._survey_rows))
 
     def _on_survey_pass_activated(self, row_index: int, _column: int) -> None:
         """Open the run this pass produced, without leaving the Run step."""
@@ -264,7 +559,11 @@ class SimpleBatchMixin(MixinBase):
         # manifest in it.
         succeeded = [run for run in runs if run.status == "succeeded"]
         if not succeeded:
-            self._status_label.setText("This pass has no successful run to open.")
+            last = runs[-1] if runs else None
+            if last is not None and last.status == "failed":
+                self._status_label.setText(f"This pass failed: {_diagnose_failure(last.error)}")
+            else:
+                self._status_label.setText("This pass has no successful run to open.")
             return
         run_dir = Path(self._out_root_input.text()).expanduser() / succeeded[-1].run_dir_name
         if not run_dir.is_dir():
@@ -273,7 +572,7 @@ class SimpleBatchMixin(MixinBase):
         self._auto_load_run(run_dir)
 
     def _on_edit_run_settings(self) -> None:
-        """Open the real run form in a dialog and adopt whatever comes back."""
+        """Open the real run form in a dialog, and keep the edit only on OK."""
         from deepreefmap_gui.simple.settings_dialog import RunSettingsDialog
 
         if self._survey_worker_running:
@@ -285,24 +584,69 @@ class SimpleBatchMixin(MixinBase):
             self._run_name_widget,
             self._transect_length_widget,
         ]
+        # The dialog edits the live form widgets, so abandoning the edit means
+        # putting the values back here rather than dropping a pending copy.
+        before = self._snapshot_form_settings()
         dialog = RunSettingsDialog(self, self._setup_page, per_run)
         self._settings_dialog_open = True
         try:
-            dialog.exec()
+            accepted = dialog.exec() == QDialog.DialogCode.Accepted
         finally:
             dialog.restore_form()
             self._settings_dialog_open = False
-        self._adopt_form_as_preset()
+        if accepted:
+            self._adopt_form_as_preset()
+        else:
+            # Cancel, Escape and the window's close button all land here.
+            self._restore_form_settings(before)
         self._recompute_survey_start()
 
     def _survey_preset_summary(self) -> str:
-        if self._survey_preset is None:
-            return "The preset could not be loaded; fix the preset file to run batches."
-        p = self._survey_preset
-        return (
-            f"Preset: {p['segmentation_name']} + {p['mapping_name']}"
-            f" @ {p['fps']} fps, {p['camera_profile_name']}"
+        """Name the settings this batch will run under, then say how they differ.
+
+        The configuration has an identity worth citing in a report, so the name
+        and version lead. The technical line still follows, read from the form
+        rather than the preset dict: the batch runs from _collect_run_settings(),
+        so the label must describe the values the run will actually use.
+        """
+        if self._survey_preset is None or self._active_preset is None:
+            return "The settings could not be loaded; fix the settings file to run batches."
+        org = self._active_preset.org
+        lines = [f"Settings: {org.label}"]
+        if org.locked:
+            lines[0] += ", set by your organisation"
+        # Split by what this machine is allowed to keep rather than by what is
+        # already on disk: the answer must not change depending on whether the
+        # settings dialog has closed yet. The page carries it, not the status
+        # bar, because the next thing to happen overwrites the status bar.
+        deviations = self._survey_deviations()
+        machine = [key for key in deviations if key in MACHINE_OVERRIDABLE_KEYS]
+        organisation = [key for key in deviations if key not in MACHINE_OVERRIDABLE_KEYS]
+        if machine:
+            lines.append(f"Changed on this computer: {describe_keys(machine)}.")
+        if organisation:
+            lines.append(
+                f"Changed for this batch only: {describe_keys(organisation)}."
+                f" {org.name} sets these, so they go back to standard next launch."
+            )
+        s = self._collect_run_settings()
+        lines.append(
+            f"{s['segmentation_name']} + {s['mapping_name']}"
+            f" @ {s['fps']} fps, {s['camera_profile_name']}"
         )
+        return "\n".join(lines)
+
+    def _on_show_config_audit(self) -> None:
+        """List what every processed run under this output root actually used."""
+        from deepreefmap_gui.simple.config_audit_dialog import ConfigAuditDialog
+        from deepreefmap_gui.survey.config_audit import audit_out_root
+
+        if self._active_preset is None:
+            self._status_label.setText("The settings could not be read.")
+            return
+        org = self._active_preset.org
+        rows = audit_out_root(Path(self._out_root_input.text()).expanduser(), org)
+        ConfigAuditDialog(self, rows, org).exec()
 
     # --- Batch and table state ---
 
@@ -310,6 +654,10 @@ class SimpleBatchMixin(MixinBase):
         if self._survey_batch is None:
             name = self._survey_batch_name.text().strip() or datetime.now().strftime("%Y-%m-%d")  # noqa: DTZ005 (local time is intended: this is a user-facing default name)
             batch = SurveyBatch(name=name)
+            # Name the configuration on the batch too, so a folder rebuilt from
+            # manifests alone still knows which settings the day was run under.
+            if self._active_preset is not None:
+                batch.preset_name = self._active_preset.org.name
             self._survey_store().add_batch(batch)
             self._survey_batch = batch
         return self._survey_batch
@@ -334,11 +682,13 @@ class SimpleBatchMixin(MixinBase):
         self._survey_pass_table.setRowCount(0)
         if self._survey_batch is not None:
             for pass_ in store.list_passes(batch_id=self._survey_batch.id):
-                video = store.get_video(pass_.video_id)
-                if video is None:
+                # A chapter the library has lost is dropped rather than faked, so
+                # the row cannot claim a file the run would fail to open.
+                videos = [store.get_video(video_id) for video_id in pass_.video_ids()]
+                if any(video is None for video in videos):
                     continue
                 self._append_survey_row(_PassRow(
-                    video=video,
+                    videos=[video for video in videos if video is not None],
                     begin_s=pass_.begin_s,
                     end_s=pass_.end_s,
                     direction=pass_.direction,
@@ -372,8 +722,8 @@ class SimpleBatchMixin(MixinBase):
         table.insertRow(index)
         self._survey_rows.append(row)
 
-        video_item = QTableWidgetItem(row.video.file_name)
-        video_item.setToolTip(row.video.path)
+        video_item = QTableWidgetItem(_video_cell_text(row.videos))
+        video_item.setToolTip("\n".join(video.path for video in row.videos))
         video_item.setFlags(video_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         table.setItem(index, _COL_VIDEO, video_item)
 
@@ -393,13 +743,34 @@ class SimpleBatchMixin(MixinBase):
         trim_btn = QPushButton(f"{_mmss(row.begin_s)}-{_mmss(row.end_s)}")
         # Quiet: this is an editable cell you can click, not a form action.
         trim_btn.setProperty("quiet", "true")
-        trim_btn.setToolTip("Click to trim the section of this video the pass covers.")
+        trim_btn.setToolTip("Click to trim the section of the recording this pass covers.")
         trim_btn.clicked.connect(partial(self._on_survey_row_trim, row, trim_btn))
         table.setCellWidget(index, _COL_TRIM, trim_btn)
 
         status_item = QTableWidgetItem("")
         status_item.setFlags(status_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         table.setItem(index, _COL_STATUS, status_item)
+
+    def _refresh_row_widgets(self, index: int) -> None:
+        """Repaint one row's cells from the row, without re-entering their slots.
+
+        A bulk action writes the model first, so the widget signals would
+        persist and re-gate once per row on top of the pass the action already
+        wrote.
+        """
+        row = self._survey_rows[index]
+        table = self._survey_pass_table
+        combo = table.cellWidget(index, _COL_TRANSECT)
+        if isinstance(combo, QComboBox):
+            self._fill_transect_combo(combo, row.transect_id)
+        direction = table.cellWidget(index, _COL_DIRECTION)
+        if isinstance(direction, QComboBox):
+            direction.blockSignals(True)
+            direction.setCurrentText(row.direction)
+            direction.blockSignals(False)
+        trim = table.cellWidget(index, _COL_TRIM)
+        if isinstance(trim, QPushButton):
+            trim.setText(f"{_mmss(row.begin_s)}-{_mmss(row.end_s)}")
 
     # --- Row actions ---
 
@@ -410,30 +781,223 @@ class SimpleBatchMixin(MixinBase):
             str(self._settings.value("last_video_path", "")),
             "Videos (*.mp4 *.mov *.avi *.mkv);;All files (*)",
         )
-        skipped = 0
+        self._add_video_paths(paths)
+
+    def _add_video_paths(self, paths: list[str]) -> None:
+        """Queue clips as passes, decoding them off the GUI thread.
+
+        One card of GoPro clips is dozens of multi-gigabyte files and cv2 has to
+        open every one to learn its length, so probing on the GUI thread froze
+        the window for as long as the card took to read. The rows appear when the
+        worker reports back.
+        """
+        if not paths:
+            return
+        self._status_label.setText(f"Reading {len(paths)} video(s)…")
+
+        def worker() -> None:
+            probed = [(path, _probe_video(path)) for path in paths]
+            # Widgets are off limits here; the Signal hands over to the GUI thread.
+            self._sig_videos_probed.emit(probed)
+
+        self._video_probe_thread = threading.Thread(target=worker, daemon=True)
+        self._video_probe_thread.start()
+
+    def _on_videos_probed(self, probed: list) -> None:
+        """Append one row per readable recording, then report the batch once."""
+        readable = [(path, result) for path, result in probed if result is not None]
+        groups = _group_chapters(readable)
+        for group in groups:
+            self._add_pass_for_chapters(group)
+        self._recompute_survey_start()
+        parts = []
+        if groups:
+            self._refresh_data_manager()
+            # Passes and videos are counted separately: a chaptered recording is
+            # several files and one pass.
+            parts.append(
+                f"Queued {len(groups)} pass{'' if len(groups) == 1 else 'es'}"
+                f" from {len(readable)} video{'' if len(readable) == 1 else 's'}."
+            )
+        skipped = len(probed) - len(readable)
+        if skipped:
+            parts.append(f"Skipped {skipped} unreadable video(s).")
+        if parts:
+            self._status_label.setText(" ".join(parts))
+
+    def _record_video(self, path: str) -> VideoAsset | None:
+        """Probe a clip and record it in the store. None when it will not decode.
+
+        The CSV importer records one clip per row; the button and drag-and-drop go
+        through _add_pass_for_chapters, which groups a recording's chapters.
+        """
+        probed = _probe_video(path)
+        if probed is None:
+            return None
+        duration_s, fps = probed
+        asset = VideoAsset.from_path(Path(path))
+        asset.duration_s = duration_s
+        asset.fps = fps
+        return self._survey_store().upsert_video(asset)
+
+    def _only_transect_id(self) -> uuid.UUID | None:
+        """With exactly one transect the choice is unambiguous, so preselect it.
+
+        Never copy the previous row's transect: a silently wrong assignment is
+        worse than a loud empty one.
+        """
+        return self._survey_transects[0].id if len(self._survey_transects) == 1 else None
+
+    def _add_video_path(self, path: str, probed: tuple[float, float] | None = None) -> bool:
+        """Queue one probed video as a fresh pass. False when it will not decode.
+
+        Shared by the Add videos button and the browser's drag-and-drop, so a
+        dropped clip and a picked one land the same row. ``probed`` is the worker
+        thread's measurement, so this only decodes when a caller has none.
+        """
+        if probed is None:
+            probed = _probe_video(path)
+        if probed is None:
+            return False
+        self._add_pass_for_chapters([(path, probed)])
+        return True
+
+    def _add_pass_for_chapters(self, group: list[_ProbedClip]) -> None:
+        """Queue one recording, however many chapters it arrived in, as one pass."""
         store = self._survey_store()
-        for path_str in paths:
-            probed = _probe_video(path_str)
-            if probed is None:
-                skipped += 1
-                continue
-            duration_s, fps = probed
-            asset = VideoAsset.from_path(Path(path_str))
+        videos: list[VideoAsset] = []
+        seen: set[uuid.UUID] = set()
+        for path, (duration_s, fps) in group:
+            asset = VideoAsset.from_path(Path(path))
             asset.duration_s = duration_s
             asset.fps = fps
             asset = store.upsert_video(asset)
-            # With exactly one transect the choice is unambiguous, so preselect
-            # it. Never copy the previous row's transect: a silently wrong
-            # assignment is worse than a loud empty one.
-            only = self._survey_transects[0].id if len(self._survey_transects) == 1 else None
-            self._append_survey_row(
-                _PassRow(video=asset, begin_s=0.0, end_s=duration_s, transect_id=only)
+            # The library is keyed by content hash, so the same recording picked
+            # from two folders is one chapter, not a chapter played twice.
+            if asset.id in seen:
+                continue
+            seen.add(asset.id)
+            videos.append(asset)
+        # With exactly one transect the choice is unambiguous, so preselect it.
+        # Never copy the previous row's transect: a silently wrong assignment is
+        # worse than a loud empty one.
+        only = self._survey_transects[0].id if len(self._survey_transects) == 1 else None
+        # The pass covers the chapters played back to back, which is how the
+        # pipeline reads a list of videos.
+        self._append_survey_row(_PassRow(
+            videos=videos,
+            begin_s=0.0,
+            end_s=sum(video.duration_s or 0.0 for video in videos),
+            transect_id=only,
+        ))
+        if only is not None:
+            self._persist_survey_row(self._survey_rows[-1])
+
+    def _on_survey_assign_selected(self) -> None:
+        """Offer the transect list for every selected row at once."""
+        indices = self._selected_survey_rows()
+        if not indices:
+            self._status_label.setText("Select the rows you want to assign first.")
+            return
+        if not self._survey_transects:
+            self._status_label.setText("Add a transect in Plan before assigning passes.")
+            return
+        menu = QMenu(self)
+        for transect in self._survey_transects:
+            menu.addAction(
+                transect.name, partial(self._assign_rows_to_transect, indices, transect.id)
             )
-            if only is not None:
-                self._persist_survey_row(self._survey_rows[-1])
-        if skipped:
-            self._status_label.setText(f"Skipped {skipped} unreadable video(s).")
+        button = self._survey_assign_btn
+        menu.exec(button.mapToGlobal(button.rect().bottomLeft()))
+
+    def _assign_rows_to_transect(self, indices: list[int], transect_id: uuid.UUID) -> None:
+        """Set one transect across many rows, writing each pass and gating once."""
+        alternate = self._survey_alternate_check.isChecked()
+        assigned = 0
+        for position, index in enumerate(indices):
+            if not 0 <= index < len(self._survey_rows):
+                continue
+            row = self._survey_rows[index]
+            row.transect_id = transect_id
+            if alternate:
+                row.direction = PASS_DIRECTIONS[position % len(PASS_DIRECTIONS)]
+            self._refresh_row_widgets(index)
+            self._write_survey_row(row)
+            assigned += 1
         self._recompute_survey_start()
+        name = next((t.name for t in self._survey_transects if t.id == transect_id), "")
+        self._status_label.setText(
+            f"Assigned {assigned} pass{'' if assigned == 1 else 'es'} to {name}."
+        )
+
+    def _on_survey_sort_by_time(self) -> None:
+        """Reorder the rows by recording time, so the day reads in the order it happened."""
+        ordered = sorted(self._survey_rows, key=_clip_sort_key)
+        if ordered == self._survey_rows:
+            return
+        self._survey_rows = []
+        self._survey_pass_table.setRowCount(0)
+        for row in ordered:
+            self._append_survey_row(row)
+        self._refresh_survey_pass_statuses()
+        self._recompute_survey_start()
+
+    def _on_survey_import_csv(self) -> None:
+        """Queue a CSV of passes, so a spreadsheet and this table are one queue.
+
+        The columns are the batch CSV's, plus an optional `transect` naming a
+        planned transect: a row that names one lands assigned, and a row that does
+        not lands like a dropped video, waiting for one. Per-row transect_length
+        and crop_width are ignored here, because a pass takes its length from the
+        transect it belongs to and its crop width from the run settings.
+        """
+        from deepreefmap_gui.form.batch import load_batch_csv
+
+        if self._survey_worker_running:
+            self._status_label.setText("Wait for the current batch to finish.")
+            return
+        path_str, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import passes from CSV",
+            str(self._settings.value("last_video_path", "")),
+            "CSV files (*.csv);;All files (*)",
+        )
+        if not path_str:
+            return
+        try:
+            jobs = load_batch_csv(Path(path_str))
+        except (OSError, ValueError) as exc:
+            self._status_label.setText(f"Nothing imported: {exc}")
+            logger.warning("Could not import %s: %s", path_str, exc)
+            return
+
+        by_name = {t.name.strip().lower(): t.id for t in self._survey_transects}
+        queued = skipped = unmatched = 0
+        for job in jobs:
+            asset = self._record_video(job.video)
+            if asset is None:
+                skipped += 1
+                continue
+            named = by_name.get(job.transect.lower()) if job.transect else None
+            if job.transect and named is None:
+                unmatched += 1
+            duration_s = asset.duration_s or 0.0
+            begin_s = min(max(job.begin_s or 0.0, 0.0), duration_s)
+            end_s = min(job.end_s, duration_s) if job.end_s else duration_s
+            row = _PassRow(
+                videos=[asset],
+                begin_s=begin_s,
+                end_s=max(end_s, begin_s),
+                transect_id=named or self._only_transect_id(),
+            )
+            self._append_survey_row(row)
+            if row.transect_id is not None:
+                self._persist_survey_row(row)
+            queued += 1
+        self._recompute_survey_start()
+        self._status_label.setText(
+            _import_summary(Path(path_str).name, queued, skipped, unmatched)
+        )
 
     def _on_survey_split_pass(self) -> None:
         index = self._survey_pass_table.currentRow()
@@ -441,7 +1005,7 @@ class SimpleBatchMixin(MixinBase):
             return
         source = self._survey_rows[index]
         self._append_survey_row(_PassRow(
-            video=source.video,
+            videos=list(source.videos),
             begin_s=source.begin_s,
             end_s=source.end_s,
             direction=source.direction,
@@ -476,24 +1040,90 @@ class SimpleBatchMixin(MixinBase):
         self._persist_survey_row(row)
 
     def _on_survey_row_trim(self, row: _PassRow, button: QPushButton) -> None:
-        duration_s = row.video.duration_s or row.end_s
+        # The range spans every chapter, so the slider runs the whole swim. The
+        # preview only decodes the first file, so it holds its last frame beyond
+        # that: previewing across chapters needs the dialog to switch captures.
+        duration_s = row.total_duration_s() or row.end_s
         dialog = VideoScrubDialog(row.video.path, duration_s, row.begin_s, row.end_s, parent=self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         row.begin_s, row.end_s = dialog.time_range()
         button.setText(f"{_mmss(row.begin_s)}-{_mmss(row.end_s)}")
         self._persist_survey_row(row)
+        self._offer_trim_to_transect(row)
+
+    def _offer_trim_to_transect(self, source: _PassRow) -> None:
+        """Ask whether one trim covers every pass of the same transect.
+
+        Passes of one transect are usually the same swim filmed the same way, so
+        the tape-in and tape-out cuts repeat. Only ask when there are siblings to
+        apply it to.
+        """
+        if source.transect_id is None:
+            return
+        siblings = [
+            index
+            for index, row in enumerate(self._survey_rows)
+            if row is not source and row.transect_id == source.transect_id
+        ]
+        if not siblings:
+            return
+        name = next(
+            (t.name for t in self._survey_transects if t.id == source.transect_id), "this transect"
+        )
+        answer = QMessageBox.question(
+            self,
+            "Apply to all rows?",
+            f"Apply {_mmss(source.begin_s)}-{_mmss(source.end_s)} to all "
+            f"{len(siblings) + 1} passes of {name}?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._apply_trim_to_rows(siblings, source.begin_s, source.end_s)
+
+    def _apply_trim_to_rows(self, indices: list[int], begin_s: float, end_s: float) -> None:
+        """Write one time range across many rows, skipping clips too short to hold it."""
+        applied, skipped = 0, 0
+        for index in indices:
+            row = self._survey_rows[index]
+            duration_s = row.total_duration_s()
+            # A shorter clip keeps the same start and simply runs to its own end.
+            limit = end_s if duration_s is None else min(end_s, duration_s)
+            if limit <= begin_s:
+                skipped += 1
+                continue
+            row.begin_s, row.end_s = begin_s, limit
+            self._refresh_row_widgets(index)
+            self._write_survey_row(row)
+            applied += 1
+        self._recompute_survey_start()
+        message = f"Trimmed {applied + 1} pass{'' if applied == 0 else 'es'} to the same range."
+        if skipped:
+            message += f" {skipped} clip(s) were too short and kept their own range."
+        self._status_label.setText(message)
 
     def _persist_survey_row(self, row: _PassRow) -> None:
+        self._write_survey_row(row)
+        self._recompute_survey_start()
+
+    def _write_survey_row(self, row: _PassRow) -> None:
+        """Insert or update this row's pass. An unassigned row has no pass yet.
+
+        Separate from _persist_survey_row so a bulk action can write every row it
+        touches and rebuild the gate once at the end rather than per row.
+        """
         if row.transect_id is None:
-            self._recompute_survey_start()
             return
         store = self._survey_store()
         batch = self._ensure_survey_batch()
+        extra_video_ids = [video.id for video in row.videos[1:]]
         if row.pass_id is None:
             pass_ = TransectPass(
                 transect_id=row.transect_id,
                 video_id=row.video.id,
+                extra_video_ids=extra_video_ids,
                 begin_s=row.begin_s,
                 end_s=row.end_s,
                 direction=row.direction,
@@ -508,26 +1138,68 @@ class SimpleBatchMixin(MixinBase):
                 stored.begin_s = row.begin_s
                 stored.end_s = row.end_s
                 stored.direction = row.direction
+                stored.extra_video_ids = extra_video_ids
                 store.update_pass(stored)
-        self._recompute_survey_start()
+
+    def _single_direction_warnings(self) -> list[str]:
+        """Transects every pass of which runs the same way.
+
+        Repeat passes are normally swum out and back, and nothing downstream can
+        tell a deliberate one-way survey from a row of forgotten dropdowns.
+        """
+        directions: dict[uuid.UUID, list[str]] = {}
+        for row in self._survey_rows:
+            if row.transect_id is not None:
+                directions.setdefault(row.transect_id, []).append(row.direction)
+        names = {transect.id: transect.name for transect in self._survey_transects}
+        warnings = []
+        for transect_id, values in directions.items():
+            if len(values) < 2 or len(set(values)) != 1:
+                continue
+            name = names.get(transect_id, "Unnamed transect")
+            warnings.append(f"{name}: {len(values)} passes, all {values[0]}. Is that right?")
+        return sorted(warnings)
+
+    def _refresh_direction_notice(self) -> None:
+        warnings = self._single_direction_warnings()
+        self._survey_direction_notice.setText(" ".join(warnings))
+        self._survey_direction_notice.setVisible(bool(warnings))
 
     # --- Run gating and execution ---
 
     def _survey_missing_models(self) -> list[str]:
+        """Required-but-uncached models, judged against what the run will load.
+
+        _required_model_names() reads the run form (mapping, segmentation, the
+        DPT backbone), the same widgets _collect_run_settings() reads and the
+        batch runs from, so the gate cannot block on a model the run would not
+        load nor pass one it would. Iterating all_known_models() rather than the
+        hardcoded catalogue means a model discovered this session is gated too.
+        """
         if self._survey_preset is None:
             return []
-        from deepreefmap_gui.models.manager import ALL_MODELS, DPT_BACKBONE_MAP, is_model_cached
+        from deepreefmap_gui.models.manager import all_known_models, is_model_cached
 
-        required = {self._survey_preset["mapping_name"]}
-        if not self._survey_preset["skip_segmentation"]:
-            seg = self._survey_preset["segmentation_name"]
-            required.add(seg)
-            backbone = DPT_BACKBONE_MAP.get(seg)
-            if backbone:
-                required.add(backbone)
+        required = self._required_model_names()
         return sorted(
-            info.name for info in ALL_MODELS if info.name in required and not is_model_cached(info)
+            info.name for info in all_known_models()
+            if info.name in required and not is_model_cached(info)
         )
+
+    def _simple_peak_frames(self, fps: int) -> int | None:
+        """Frames in the longest queued pass, for the memory grade.
+
+        A batch is many passes, but they run one at a time, so the pass that
+        peaks memory is simply the longest clip. None when nothing is queued.
+        """
+        spans = [
+            row.end_s - row.begin_s
+            for row in getattr(self, "_survey_rows", [])
+            if row.end_s > row.begin_s
+        ]
+        if not spans:
+            return None
+        return int(max(spans) * max(1, fps)) or None
 
     def _survey_remaining_rows(self) -> list[_PassRow]:
         store = self._survey_store()
@@ -561,6 +1233,20 @@ class SimpleBatchMixin(MixinBase):
         """
         # Row actions and the empty state follow the table from one place.
         self._recompute_row_actions()
+        self._refresh_direction_notice()
+        # Keep the summary label on the same source as the gate and the run: all
+        # three derive from the form, so the label cannot claim settings the run
+        # would not use.
+        self._survey_preset_label.setText(self._survey_preset_summary())
+        # Restoring is only an action when there is something to restore, and the
+        # tooltip says which of the two situations you are in.
+        deviated = bool(self._survey_deviations())
+        self._survey_restore_btn.setEnabled(deviated and not self._survey_worker_running)
+        self._survey_restore_btn.setToolTip(
+            "Drop the changes made on this computer and use the standard settings again."
+            if deviated
+            else "This computer is already on the standard settings."
+        )
         if self._survey_worker_running:
             self._survey_start_btn.setEnabled(False)
             self._refresh_section_state()
@@ -577,8 +1263,10 @@ class SimpleBatchMixin(MixinBase):
             failed=self._survey_failed_count() if self._survey_rows else 0,
             has_preset=self._survey_preset is not None,
             missing_models=missing,
+            gpu_only_mapper=self._gpu_only_mapper(),
         )
         self._survey_gate = gate
+        self._paint_not_ready_strip(gate)
 
         if gate.state == BLOCKED:
             self._set_survey_forward_action("process", count=len(remaining))
@@ -596,6 +1284,32 @@ class SimpleBatchMixin(MixinBase):
             self._survey_start_btn.setEnabled(bool(self._survey_rows))
         self._survey_start_btn.setToolTip(gate.reason)
         self._refresh_section_state()
+        # The queued passes drive both the memory grade and the setup step's
+        # models row, so re-read them whenever the batch changes.
+        self._update_memory_profile_warning()
+        self._refresh_setup_page()
+
+    def _paint_not_ready_strip(self, gate: SectionState) -> None:
+        """Show the blocker only when getting to it needs leaving this page.
+
+        An unassigned transect is fixed in the table two rows down, so a strip
+        pointing at it would be noise. A missing model or a missing graphics card
+        is not fixable from here at all, which is what the strip is for.
+        """
+        if gate.state != BLOCKED or gate.fix == FIX_HERE:
+            self._survey_not_ready.clear()
+            return
+        self._survey_not_ready.show_blocker(gate.reason, _FIX_ACTIONS[gate.fix])
+
+    def _on_survey_fix_blocker(self) -> None:
+        """Go where the live gate says the blocker is fixed."""
+        gate = getattr(self, "_survey_gate", None)
+        if gate is None:
+            return
+        if gate.fix == FIX_SETUP:
+            self._set_simple_section("setup")
+        elif gate.fix == FIX_SETTINGS:
+            self._on_edit_run_settings()
 
     def _set_survey_forward_action(self, action: str, count: int = 0) -> None:
         """Point the Run step's one forward button at processing or at Browse."""
@@ -610,14 +1324,76 @@ class SimpleBatchMixin(MixinBase):
             self._survey_start_btn.setText(f"Next: Process ({count}) →")
             self._survey_start_btn.clicked.connect(self._on_survey_start)
 
+    def _confirm_batch_space(self, pass_count: int) -> bool:
+        """Pre-flight the disk before a batch: only interrupt when it may not fit.
+
+        The estimate is deliberately rough (see setup.ROUGH_PASS_BYTES), so a
+        comfortable margin proceeds silently and a tight one asks first, rather
+        than nagging on every run.
+        """
+        import shutil
+
+        from deepreefmap_gui.simple.setup import estimate_batch_disk
+
+        out_root = Path(self._out_root_input.text()).expanduser()
+        out_root.mkdir(parents=True, exist_ok=True)
+        try:
+            free = shutil.disk_usage(out_root).free
+        except OSError:
+            return True  # can't measure the drive, so don't stand in the way
+        estimate = estimate_batch_disk(pass_count, free)
+        if estimate.fits:
+            return True
+
+        from PySide6.QtWidgets import QMessageBox
+
+        from deepreefmap_gui.profiling.system_probe import format_bytes
+
+        time_str = _rough_batch_time(pass_count)
+        opening = f"About to process {pass_count} pass{'' if pass_count == 1 else 'es'}"
+        opening += f", {time_str}." if time_str else "."
+        answer = QMessageBox.question(
+            self,
+            "Enough space?",
+            f"{opening}\n\n"
+            f"That may need around {format_bytes(estimate.need_bytes)}, and only "
+            f"{format_bytes(estimate.free_bytes)} is free. Processing could stop "
+            "part way and leave some passes unfinished.\n\nStart anyway?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
+    def _pass_dir_name(
+        self, pass_: TransectPass, transect: Transect, store: SurveyStore
+    ) -> str:
+        """The run-dir name a pass keeps for every attempt at it.
+
+        A fresh timestamp per attempt handed each retry an empty directory, so a
+        pass that failed in mapping decoded and segmented its clip again from
+        scratch. Keying the name on the pass id makes a retry land back in the
+        directory holding that work, where the library's own resume cache picks
+        it up. The ordinal is there only so the folder reads as a pass.
+        """
+        siblings = store.list_passes(transect_id=pass_.transect_id)
+        number = next(
+            (index for index, sibling in enumerate(siblings, start=1) if sibling.id == pass_.id),
+            1,
+        )
+        return self._sanitize_run_name(f"{transect.name}__p{number:02d}__{pass_.id.hex[:8]}")
+
     def _on_survey_start(self) -> None:
         if self._survey_preset is None or self._survey_worker_running:
             return
+        remaining = self._survey_remaining_rows()
+        # Confirm before any run records are written, so a Cancel leaves the
+        # batch exactly as it was.
+        if not remaining or not self._confirm_batch_space(len(remaining)):
+            return
         store = self._survey_store()
         batch = self._ensure_survey_batch()
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")  # noqa: DTZ005 (local time is intended: this is a user-facing default name)
         jobs = []
-        for number, row in enumerate(self._survey_remaining_rows(), start=1):
+        for row in remaining:
             assert row.pass_id is not None
             pass_ = store.get_pass(row.pass_id)
             if pass_ is None:
@@ -625,10 +1401,16 @@ class SimpleBatchMixin(MixinBase):
             transect = store.get_transect(pass_.transect_id)
             if transect is None:
                 continue
-            dir_name = self._sanitize_run_name(f"{transect.name}__p{number:02d}__{stamp}")
+            dir_name = self._pass_dir_name(pass_, transect, store)
             run = RunRecord(pass_id=pass_.id, run_dir_name=dir_name)
             store.add_run(run)
-            jobs.append(_SurveyJob(run=run, pass_=pass_, transect=transect, video=row.video, dir_name=dir_name))
+            jobs.append(_SurveyJob(
+                run=run,
+                pass_=pass_,
+                transect=transect,
+                videos=list(row.videos),
+                dir_name=dir_name,
+            ))
         if not jobs:
             return
         self._survey_worker_running = True
@@ -647,9 +1429,17 @@ class SimpleBatchMixin(MixinBase):
         # Read the form on the GUI thread: a survey run honours every setting,
         # not just the seven the preset used to carry.
         settings = self._collect_run_settings()
+        # Snapshot the configuration identity here too, from the same form read,
+        # so the manifest records what this batch ran rather than what the preset
+        # file happens to say once the batch finishes.
+        config = (
+            manifest_config_block(self._active_preset.org, self._survey_deviations())
+            if self._active_preset is not None
+            else None
+        )
         self._pipeline_thread = threading.Thread(
             target=self._run_survey_worker,
-            args=(jobs, out_root, settings, store, batch, self._pause_event),
+            args=(jobs, out_root, settings, store, batch, self._pause_event, config),
             daemon=True,
         )
         self._pipeline_thread.start()
@@ -662,11 +1452,26 @@ class SimpleBatchMixin(MixinBase):
         store: SurveyStore,
         batch: SurveyBatch,
         pause_event: threading.Event,
+        config: dict | None = None,
     ) -> None:
+        import shutil
+
+        from deepreefmap_gui.models.manager import resolve_model_versions
         from deepreefmap_gui.profiling.instrumentation import instrumented_reconstruction
+        from deepreefmap_gui.runs.seeding import seed_from_settings
+        from deepreefmap_gui.simple.setup import ROUGH_PASS_BYTES
+
+        # Which model versions this batch ran against, constant across its passes.
+        # These are HuggingFace commit revisions read off the cache, so the call
+        # is disk-only and safe on this worker thread.
+        version_names = [settings.get("mapping_name")]
+        if not settings.get("skip_segmentation"):
+            version_names.append(settings.get("segmentation_name"))
+        model_versions = resolve_model_versions(n for n in version_names if n)
 
         ok = 0
         last_error = ""
+        disk_stopped = False
         for index, job in enumerate(jobs, start=1):
             # Hold between passes too, so pausing doesn't let the next one start.
             pause_event.wait()
@@ -674,13 +1479,44 @@ class SimpleBatchMixin(MixinBase):
             if cancel_event is not None and cancel_event.is_set():
                 store.set_run_status(job.run.id, "cancelled")
                 continue
-            self._sig_survey_progress.emit(index, len(jobs), job.dir_name)
+            try:
+                free_bytes = shutil.disk_usage(out_root).free
+            except OSError:
+                free_bytes = None
+            if free_bytes is not None and free_bytes < ROUGH_PASS_BYTES:
+                # Stop cleanly: mark this pass and every one after it not-started,
+                # so the batch runs again from here once space is freed.
+                disk_stopped = True
+                for pending in jobs[index - 1:]:
+                    store.set_run_status(pending.run.id, "cancelled")
+                break
+            # The transect name reads as a place, not the run-dir slug: the panel
+            # already carries the "pass N of M" number, so the name need not.
+            self._sig_survey_progress.emit(index, len(jobs), job.transect.name)
             store.set_run_status(job.run.id, "running")
             out_dir = out_root / job.dir_name
             out_dir.mkdir(parents=True, exist_ok=True)
+            # A retry lands back in its own directory and resumes from what is
+            # already there. Seeding covers the rest: another pass of the same
+            # clip and settings, or a first attempt whose name has since changed.
+            seeded = seed_from_settings(
+                out_dir,
+                out_root,
+                settings,
+                [Path(video.path) for video in job.videos],
+                job.pass_.begin_s,
+                job.pass_.end_s,
+            )
+            if seeded is not None:
+                # Say the afternoon is not being spent again, so a diver watching
+                # a retry knows preparation was skipped.
+                self._sig_status_text.emit(
+                    f"Pass {index} of {len(jobs)}: reusing prepared frames from an "
+                    "earlier attempt."
+                )
             try:
                 instrumented_reconstruction(
-                    video_paths=[job.video.path],
+                    video_paths=[video.path for video in job.videos],
                     output_dir=out_dir,
                     transect_length=job.transect.length_m,
                     begin_s=job.pass_.begin_s,
@@ -690,7 +1526,10 @@ class SimpleBatchMixin(MixinBase):
                     cancel_event=cancel_event,
                     pause_event=pause_event,
                     manifest_extra={
-                        "survey": survey_manifest_block(job.run, job.pass_, job.transect, batch)
+                        "survey": survey_manifest_block(
+                            job.run, job.pass_, job.transect, batch,
+                            config=config, model_versions=model_versions,
+                        )
                     },
                     **settings,
                 )
@@ -702,6 +1541,8 @@ class SimpleBatchMixin(MixinBase):
                 logger.exception("Pass %s failed", job.dir_name)
                 last_error = f"{job.dir_name}: {exc}"
                 store.set_run_status(job.run.id, "failed", error=str(exc)[:300])
+        if disk_stopped and not last_error:
+            last_error = "Ran out of disk space before every pass finished."
         self._sig_survey_done.emit(ok, len(jobs), last_error[:300])
 
     def _on_survey_progress(self, index: int, total: int, name: str) -> None:
@@ -725,16 +1566,29 @@ class SimpleBatchMixin(MixinBase):
         # The outcome goes on the page and stays there. The status bar is the
         # wrong home for it: the next thing that happens overwrites it, and a
         # finished batch is exactly when the user walks away from the laptop.
+        # Failures name themselves by transect/pass. The last raw error stays out
+        # of the way on the failed row's own tooltip.
+        failed = self._failed_pass_labels()
         summary = f"{ok} of {total} pass{'' if total == 1 else 'es'} succeeded"
+        if failed:
+            summary += " · Failed: " + ", ".join(failed)
+        elif last_error:
+            # A batch-level stop (e.g. ran out of disk) leaves the remaining
+            # passes cancelled, with no failed row to carry the reason.
+            summary += " · " + last_error
         if ok:
             summary += " · double-click a row to open its run"
         self._survey_summary_label.setText(summary)
         self._survey_summary_label.setVisible(True)
         if ok == total:
             self._status_label.setText(f"Batch complete: {ok}/{total} pass(es) succeeded.")
+        elif failed:
+            self._status_label.setText(
+                f"Batch finished: {ok}/{total} succeeded. Failed: {', '.join(failed)}."
+            )
         elif last_error:
             self._status_label.setText(
-                f"Batch finished: {ok}/{total} succeeded. Last error: {last_error}"
+                f"Batch finished: {ok}/{total} succeeded. {last_error}"
             )
         else:
             self._status_label.setText(f"Batch finished: {ok}/{total} succeeded.")
@@ -759,6 +1613,85 @@ class SimpleBatchMixin(MixinBase):
                 continue
             if row.pass_id is None:
                 item.setText("")
+                item.setToolTip("")
                 continue
             runs = store.runs_for_pass(row.pass_id)
-            item.setText(runs[-1].status if runs else "")
+            last = runs[-1] if runs else None
+            item.setText(last.status.capitalize() if last is not None else "")
+            # A failed pass carries its cause on the row, where it survives the
+            # next event, rather than flashing once in the shared status bar. A
+            # succeeded pass flags any non-fatal quality warning the same way.
+            if last is not None and last.status == "failed":
+                item.setToolTip(_diagnose_failure(last.error))
+            elif last is not None and last.status == "succeeded":
+                warnings = self._pass_quality_warnings(last.run_dir_name)
+                if warnings:
+                    item.setText("Succeeded ⚠")
+                    item.setToolTip("\n".join(warnings))
+                else:
+                    item.setToolTip("")
+            else:
+                item.setToolTip("")
+
+    def _pass_quality_warnings(self, run_dir_name: str) -> list[str]:
+        """Non-fatal warnings a succeeded run recorded in its manifest, if any."""
+        path = Path(self._out_root_input.text()).expanduser() / run_dir_name / "run_manifest.json"
+        try:
+            manifest = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return []
+        warnings = manifest.get("quality_warnings") if isinstance(manifest, dict) else None
+        return [str(w) for w in warnings] if isinstance(warnings, list) else []
+
+    def _survey_pass_error(self, row: _PassRow) -> str:
+        """The full error of a pass's latest run when it failed, else the empty string."""
+        if row.pass_id is None:
+            return ""
+        runs = self._survey_store().runs_for_pass(row.pass_id)
+        last = runs[-1] if runs else None
+        return last.error if last is not None and last.status == "failed" else ""
+
+    def _failed_pass_labels(self) -> list[str]:
+        """Passes whose latest run failed, named by transect and pass number."""
+        store = self._survey_store()
+        labels: list[str] = []
+        for row in self._survey_rows:
+            if row.pass_id is None:
+                continue
+            runs = store.runs_for_pass(row.pass_id)
+            if not runs or any(run.status == "succeeded" for run in runs):
+                continue
+            if runs[-1].status != "failed":
+                continue
+            transect = store.get_transect(row.transect_id) if row.transect_id else None
+            labels.append(_failed_pass_label(transect, runs[-1].run_dir_name))
+        return labels
+
+    def _on_survey_pass_menu(self, pos) -> None:
+        """Right-click for the bulk assign, and for a failed pass's full error."""
+        index = self._survey_pass_table.rowAt(pos.y())
+        if not 0 <= index < len(self._survey_rows):
+            return
+        # Right-clicking outside the selection acts on the row under the cursor,
+        # which is what every file manager does.
+        if index not in self._selected_survey_rows():
+            self._survey_pass_table.selectRow(index)
+        menu = QMenu(self)
+        indices = self._selected_survey_rows()
+        if indices and self._survey_transects:
+            assign = menu.addMenu(f"Assign {len(indices)} selected to")
+            for transect in self._survey_transects:
+                assign.addAction(
+                    transect.name,
+                    partial(self._assign_rows_to_transect, indices, transect.id),
+                )
+        error = self._survey_pass_error(self._survey_rows[index])
+        if error:
+            menu.addAction("Copy error details", partial(self._copy_pass_error, error))
+        if menu.isEmpty():
+            return
+        menu.exec(self._survey_pass_table.viewport().mapToGlobal(pos))
+
+    def _copy_pass_error(self, error: str) -> None:
+        QGuiApplication.clipboard().setText(error)
+        self._status_label.setText("Copied the error details to the clipboard.")

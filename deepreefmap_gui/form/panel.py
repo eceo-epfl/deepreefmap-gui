@@ -72,6 +72,10 @@ from deepreefmap_gui.runs.timing_popup import HoverColumn
 
 logger = logging.getLogger(__name__)
 
+# Mapping backends with no processor fallback: without a card they do not run
+# slowly, they do not run at all. Everything else degrades to the main processor.
+GPU_ONLY_MAPPERS = ("loger", "loger_star")
+
 
 class _InstantTipLabel(QLabel):
     """A QLabel whose tooltip appears the instant the cursor enters, no delay."""
@@ -159,7 +163,6 @@ class FormPanelMixin(MixinBase):
         self._build_run_warnings_and_log(viewer_layout)
         self._build_progress_widgets()
         self._build_run_control_buttons()
-        self._build_viewer_controls_group(viewer_layout)
         self._build_results_group(viewer_layout)
         self._build_models_tab(models_layout)
         self._build_updates_section(system_layout)
@@ -193,9 +196,10 @@ class FormPanelMixin(MixinBase):
 
     def _build_sidebar_tabs(self, layout: QVBoxLayout) -> tuple[QVBoxLayout, ...]:
         # Advanced-mode sidebar tabs: Run (setup form / live log), Results
-        # (viewer controls + results panel for a loaded run), Models (HF auth +
-        # per-model download/delete), System (machine gauges + updates). Simple
-        # mode replaces this whole panel with full-page sections.
+        # (results panel for a loaded run), Browse (the run archive), Models
+        # (HF auth + per-model download/delete), System (machine gauges +
+        # updates). Simple mode replaces this whole panel with full-page
+        # sections.
         self._TAB_RUN = 0
         self._TAB_RESULTS = 1
         self._TAB_DATA = 2
@@ -204,7 +208,8 @@ class FormPanelMixin(MixinBase):
         self._TAB_SYSTEM = 4
         self._sidebar_tabs = QTabWidget()
         # Tabs expand to share the panel width equally so labels of different
-        # length (Run / Results / Models / Updates) end up the same visible width.
+        # length (Run / Results / Browse / Models / System) end up the same
+        # visible width.
         self._sidebar_tabs.tabBar().setExpanding(True)
         self._sidebar_tabs.setStyleSheet(
             "QTabBar::tab { min-width: 70px; padding: 6px 10px; }"
@@ -226,15 +231,16 @@ class FormPanelMixin(MixinBase):
         # The System tab hosts the gauges/benchmark first, with the updates section
         # appended below into the same layout.
         self._system_tab, system_layout = build_system_tab(self._sidebar_tabs)
-        # The Data tab holds the shared Data panel while in advanced mode;
+        # Browse holds the shared run browser while in advanced mode;
         # _host_data_panel moves the panel between here and the simple shell.
+        # Both modes call it Browse: it is one widget, so it gets one name.
         self._data_tab = QWidget()
         data_layout = QVBoxLayout(self._data_tab)
         data_layout.setContentsMargins(4, 6, 4, 4)
         data_layout.addWidget(self._build_data_panel())
         self._sidebar_tabs.addTab(self._run_tab, "Run")
         self._sidebar_tabs.addTab(self._viewer_tab, "Results")
-        self._sidebar_tabs.addTab(self._data_tab, "Data")
+        self._sidebar_tabs.addTab(self._data_tab, "Browse")
         self._sidebar_tabs.addTab(self._models_tab, "Models")
         self._sidebar_tabs.addTab(self._system_tab, "System")
         self._build_system_panel(system_layout)
@@ -303,10 +309,13 @@ class FormPanelMixin(MixinBase):
         video_row.setContentsMargins(0, 0, 0, 0)
         self._video_input = QLineEdit()
         self._video_input.setPlaceholderText("Path to video file")
-        browse_btn = QPushButton("Browse")
-        browse_btn.clicked.connect(self._browse_video)
+        # "Choose…", not "Browse": Browse is the run archive, and one word can
+        # only mean one thing.
+        choose_btn = QPushButton("Choose…")
+        choose_btn.setToolTip("Pick the video file to process.")
+        choose_btn.clicked.connect(self._browse_video)
         video_row.addWidget(self._video_input, 1)
-        video_row.addWidget(browse_btn)
+        video_row.addWidget(choose_btn)
         ig.addWidget(self._video_row_widget)
 
         profile_fps_row = QHBoxLayout()
@@ -494,9 +503,7 @@ class FormPanelMixin(MixinBase):
         self._memory_notice.setWordWrap(True)
         self._memory_notice.setStyleSheet(f"color: {UPDATE}; font-size: 11px; margin: 2px 0 4px 0;")
         self._memory_notice.setVisible(False)
-        self._memory_notice.linkActivated.connect(
-            lambda _: self._sidebar_tabs.setCurrentIndex(self._TAB_SYSTEM)
-        )
+        self._memory_notice.linkActivated.connect(lambda _: self._reveal_memory_detail())
         setup_layout.addWidget(self._memory_notice)
         self._fps_spin.valueChanged.connect(self._update_memory_profile_warning)
         self._begin_spin.valueChanged.connect(self._update_memory_profile_warning)
@@ -738,9 +745,13 @@ class FormPanelMixin(MixinBase):
 
         # Start moved to the top-bar run cluster (self._start_btn); the form keeps
         # only the hint explaining why start is unavailable.
-        self._batch_btn = QPushButton("Batch reconstruction…")
+        # Distinct from simple mode's "Import queue from CSV…", which reads the
+        # same file: this path runs the rows straight through with their own
+        # transect_length and crop_width, and records no transects or passes.
+        self._batch_btn = QPushButton("Run a CSV directly…")
         self._batch_btn.setToolTip(
-            "Run a CSV of reconstructions sequentially. "
+            "Run a CSV of reconstructions sequentially, one output folder per row, "
+            "using each row's own transect length and crop width.\n"
             "Columns: videos, timestamps (begin-end seconds), transect_length, crop_width."
         )
         self._batch_btn.clicked.connect(self._on_batch_clicked)
@@ -856,81 +867,6 @@ class FormPanelMixin(MixinBase):
         self._spinner_stop = SpinnerStopButton(size=_TRANSPORT_SIZE)
         self._spinner_stop.setVisible(False)
         self._spinner_stop.clicked.connect(self._on_stop_clicked)
-
-    def _build_viewer_controls_group(self, viewer_layout: QVBoxLayout) -> None:
-        self._viewer_controls_group = QGroupBox("Viewer controls")
-        self._viewer_controls_group.setVisible(False)
-        vc_layout = QVBoxLayout(self._viewer_controls_group)
-
-        self._semantic_check = QCheckBox("Semantic colors")
-        self._semantic_check.setChecked(True)
-        self._semantic_check.toggled.connect(self._on_viewer_control_changed)
-        vc_layout.addWidget(self._semantic_check)
-
-        self._accumulate_check = QCheckBox("Accumulate frames")
-        self._accumulate_check.setChecked(True)
-        self._accumulate_check.toggled.connect(self._on_viewer_control_changed)
-        vc_layout.addWidget(self._accumulate_check)
-
-        # The frustum toggle lives in the canvas overlay (_build_pick_mode_overlay).
-
-        vc_layout.addWidget(QLabel("Point size"))
-        self._point_size_spin = QDoubleSpinBox()
-        self._point_size_spin.setRange(0.5, 20.0)
-        self._point_size_spin.setValue(2.0)
-        self._point_size_spin.setSingleStep(0.5)
-        self._point_size_spin.valueChanged.connect(self._on_viewer_control_changed)
-        vc_layout.addWidget(self._point_size_spin)
-
-        self._confidence_box = QWidget()
-        conf_layout = QVBoxLayout(self._confidence_box)
-        conf_layout.setContentsMargins(0, 0, 0, 0)
-        conf_layout.addWidget(QLabel("Min confidence (%)"))
-        self._confidence_slider = QSlider(Qt.Orientation.Horizontal)
-        self._confidence_slider.setRange(0, 100)
-        self._confidence_slider.setValue(0)
-        self._confidence_slider.valueChanged.connect(self._on_viewer_control_changed)
-        conf_layout.addWidget(self._confidence_slider)
-        vc_layout.addWidget(self._confidence_box)
-
-        self._frame_slider = self._viewer.frame_slider
-        self._frame_slider.valueChanged.connect(self._on_viewer_control_changed)
-
-        play_row = QHBoxLayout()
-        self._play_check = QCheckBox("Play")
-        self._play_check.toggled.connect(self._on_play_toggled)
-        play_row.addWidget(self._play_check)
-        play_row.addWidget(QLabel("FPS:"))
-        self._play_fps_spin = QSpinBox()
-        self._play_fps_spin.setRange(1, 60)
-        self._play_fps_spin.setValue(8)
-        self._play_fps_spin.valueChanged.connect(self._on_play_fps_changed)
-        play_row.addWidget(self._play_fps_spin)
-        vc_layout.addLayout(play_row)
-
-        follow_row = QHBoxLayout()
-        self._follow_camera_check = QCheckBox("Follow camera")
-        self._follow_camera_check.toggled.connect(self._on_follow_camera_changed)
-        follow_row.addWidget(self._follow_camera_check)
-        self._view_from_camera_btn = QPushButton("Snap")
-        self._view_from_camera_btn.setToolTip("Snap the 3D view to the current frame's camera")
-        self._view_from_camera_btn.clicked.connect(self._on_view_from_camera)
-        follow_row.addWidget(self._view_from_camera_btn)
-        vc_layout.addLayout(follow_row)
-
-        vc_layout.addWidget(QLabel("Camera backoff (m)"))
-        self._camera_backoff_spin = QDoubleSpinBox()
-        self._camera_backoff_spin.setRange(0.0, 5.0)
-        self._camera_backoff_spin.setSingleStep(0.1)
-        self._camera_backoff_spin.setValue(0.5)
-        self._camera_backoff_spin.valueChanged.connect(self._on_follow_camera_changed)
-        vc_layout.addWidget(self._camera_backoff_spin)
-
-        # Results tab: viewer controls + results panel. The tab itself is
-        # disabled until a run is loaded (greyed out and unclickable), so no
-        # empty-state placeholder is needed inside. addStretch is appended at
-        # the end after the results group is added below.
-        viewer_layout.addWidget(self._viewer_controls_group)
 
     def _build_results_group(self, viewer_layout: QVBoxLayout) -> None:
         # The legend lives as a floating overlay on the 3D canvas; this dict
@@ -1121,9 +1057,9 @@ class FormPanelMixin(MixinBase):
         self._out_root_input.textChanged.connect(self._on_output_root_changed)
         self._run_name_input.textChanged.connect(self._on_run_name_changed)
 
-        # Watch the output root directory so the Data section reflects new
-        # manifests appearing on disk (e.g. a sibling process completes a run)
-        # in addition to user edits of the path text.
+        # Watch the output root directory so Browse reflects new manifests
+        # appearing on disk (e.g. a sibling process completes a run) in addition
+        # to user edits of the path text.
         self._out_root_watcher = QFileSystemWatcher(self)
         self._out_root_watcher.directoryChanged.connect(self._on_out_root_dir_changed)
 
@@ -1247,9 +1183,7 @@ class FormPanelMixin(MixinBase):
         self._memory_warn_icon.setVisible(False)
         self._memory_warn_icon.setCursor(Qt.CursorShape.PointingHandCursor)
         self._memory_warn_icon.setText(f'<span style="color:{BLOCK}; font-size:16px;">&#9888;</span>')
-        self._memory_warn_icon.clicked.connect(
-            lambda: self._sidebar_tabs.setCurrentIndex(self._TAB_SYSTEM)
-        )
+        self._memory_warn_icon.clicked.connect(self._reveal_memory_detail)
         h.addWidget(self._memory_warn_icon)
 
         # The form (fps, resolution, any restored video duration) is already built,
@@ -1480,6 +1414,17 @@ class FormPanelMixin(MixinBase):
         self._update_dpt_warning()
         self._update_memory_profile_warning()
 
+    def _memory_grade_frames(self, fps: int) -> int | None:
+        """Frames the memory grade is computed over.
+
+        Advanced grades the one video in the form. Simple has no single video, so
+        it grades the longest clip in the queued batch: that is the pass most
+        likely to run the machine low, and every other pass fits under it.
+        """
+        if getattr(self, "_ui_mode", "advanced") == "simple":
+            return self._simple_peak_frames(fps)
+        return self._estimate_frame_count(fps)
+
     def _update_memory_profile_warning(self) -> None:
         """Grade the configured run and show the memory notice + play-button icon."""
         # Advisory only: a warn or block grade never gates the run.
@@ -1487,10 +1432,13 @@ class FormPanelMixin(MixinBase):
         notice = getattr(self, "_memory_notice", None)
         if icon is None or notice is None:  # top bar / form not built yet
             return
+        setup_label = getattr(self, "_setup_memory_label", None)
 
         def hide() -> None:
             icon.setVisible(False)
             notice.setVisible(False)
+            if setup_label is not None:
+                setup_label.setVisible(False)
 
         try:
             from deepreefmap_gui.profiling.run_history import history_key, load_expected_peaks
@@ -1498,7 +1446,7 @@ class FormPanelMixin(MixinBase):
             from deepreefmap_gui.profiling.system_probe import format_bytes, probe_system
 
             fps = self._fps_spin.value()
-            frames = self._estimate_frame_count(fps)
+            frames = self._memory_grade_frames(fps)
             if not frames:
                 hide()
                 return
@@ -1538,6 +1486,16 @@ class FormPanelMixin(MixinBase):
             f"<b>{headline}</b><br>{verdict.message}<br><i>The run will proceed anyway.</i>"
         )
         icon.setVisible(True)
+
+        # Setup step: the same warning in a plain sentence, no jargon, for the
+        # diver who never opens the System tab.
+        if setup_label is not None:
+            setup_label.setStyleSheet(f"color: {color}; font-size: 11px;")
+            setup_label.setText(
+                "This survey may run this computer low on memory while "
+                "processing. It will still try, but a pass could stop."
+            )
+            setup_label.setVisible(True)
 
     def _update_gated_warning(self) -> None:
         seg_name = self._seg_combo.currentText()
@@ -1608,6 +1566,18 @@ class FormPanelMixin(MixinBase):
             self._gpu_available_cache = cached
         return cached
 
+    def _gpu_only_mapper(self) -> str:
+        """The chosen mapping method when it needs a card this machine lacks.
+
+        Both modes gate on this: advanced disables Start, simple blocks the
+        batch. One helper so a CPU-only laptop cannot be told it is fine by one
+        of them and blocked by the other.
+        """
+        mapping = self._map_combo.currentText()
+        if mapping in GPU_ONLY_MAPPERS and not self._gpu_available():
+            return mapping
+        return ""
+
     def _recompute_submit_state(self) -> None:
         reasons: list[str] = []
         video = self._video_input.text().strip()
@@ -1628,8 +1598,9 @@ class FormPanelMixin(MixinBase):
             if missing:
                 reasons.append(f"download required model{'s' if len(missing) > 1 else ''}: {', '.join(missing)}")
 
-        if self._map_combo.currentText() in ("loger", "loger_star") and not self._gpu_available():
-            reasons.append("LoGeR needs a GPU (none detected)")
+        gpu_only = self._gpu_only_mapper()
+        if gpu_only:
+            reasons.append(f"{gpu_only} needs a GPU (none detected)")
 
         ok = not reasons
         self._start_btn.setEnabled(ok)

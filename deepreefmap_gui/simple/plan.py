@@ -149,6 +149,21 @@ class SimplePlanMixin(MixinBase):
         self._plan_map.transect_endpoint_moved.connect(self._on_plan_endpoint_moved)
         map_layout.addWidget(_framed(self._plan_map), 1)
 
+        # Caching the visible tiles keeps a site drawable at sea, where the
+        # laptop has no connection. Only the tiles on screen are saved, per the
+        # OSM policy against bulk prefetching.
+        offline_row = QHBoxLayout()
+        offline_row.setContentsMargins(0, 0, 0, 0)
+        self._save_offline_btn = QPushButton("Save this area for offline use")
+        self._save_offline_btn.setProperty("quiet", "true")
+        self._save_offline_btn.setToolTip(
+            "Store the map tiles now on screen so this area still draws without internet."
+        )
+        self._save_offline_btn.clicked.connect(self._on_save_offline_area)
+        offline_row.addWidget(self._save_offline_btn)
+        offline_row.addStretch(1)
+        map_layout.addLayout(offline_row)
+
         side_pane = QWidget()
         layout = QVBoxLayout(side_pane)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -536,6 +551,19 @@ class SimplePlanMixin(MixinBase):
         if fit or not self._plan_map_fitted:
             self._plan_map.fit_transects()
             self._plan_map_fitted = bool(overlays)
+
+    def _on_save_offline_area(self) -> None:
+        from deepreefmap_gui.runs.run_cards import format_bytes
+
+        count, saved = self._plan_map.save_visible_area()
+        if count == 0:
+            self._status_label.setText(
+                "Nothing to save yet. Let the map finish loading, then try again."
+            )
+            return
+        self._status_label.setText(
+            f"Saved {count} map tiles ({format_bytes(saved)}) for offline use."
+        )
 
     def _coord_actions(self, which: str) -> QWidget:
         """Per-endpoint action pair: arm a map click to set it, copy it."""

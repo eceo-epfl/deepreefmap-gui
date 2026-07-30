@@ -255,3 +255,19 @@ def test_selecting_a_transect_filters_the_browser(simple_window):
     w._transect_list.setCurrentRow(0)
     assert w._data_facet == "transects"
     assert w._data_selected_key == ("transect", str(transect.id))
+
+
+def test_save_offline_area_reports_the_size_saved(simple_window, monkeypatch):
+    w = simple_window
+    monkeypatch.setattr(w._plan_map, "save_visible_area", lambda: (12, 2_400_000))
+    w._on_save_offline_area()
+    text = w._status_label.text()
+    assert "12 map tiles" in text
+    assert "2.4 MB" in text
+
+
+def test_save_offline_area_says_so_when_nothing_is_cached(simple_window, monkeypatch):
+    w = simple_window
+    monkeypatch.setattr(w._plan_map, "save_visible_area", lambda: (0, 0))
+    w._on_save_offline_area()
+    assert "Nothing to save yet" in w._status_label.text()

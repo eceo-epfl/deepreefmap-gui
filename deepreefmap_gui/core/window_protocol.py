@@ -3,7 +3,7 @@ cross-mixin `self._foo` references."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import logging
@@ -49,9 +49,11 @@ if TYPE_CHECKING:
     from deepreefmap_gui.viewer.widget import QtPointCloudViewer
     from deepreefmap_gui.runs.sunburst import SunburstWidget
     from deepreefmap_gui.map.widget import SlippyMapWidget
+    from deepreefmap_gui.core.widgets import NotReadyStrip
     from deepreefmap_gui.simple.charts import GroupedBarChart
     from deepreefmap_gui.simple.plan import NotesEdit
     from deepreefmap_gui.survey.models import SurveyBatch
+    from deepreefmap_gui.survey.preset import ActivePreset
     from deepreefmap_gui.survey.store import SurveyStore
     from deepreefmap_gui.models.library_ui import PackProgressDialog
 
@@ -90,10 +92,12 @@ if TYPE_CHECKING:
         _survey_transects: list
         _survey_batch: SurveyBatch | None
         _survey_preset: dict | None
+        _active_preset: ActivePreset | None
         _survey_cancel_event: threading.Event | None
         _survey_worker_running: bool
         _settings_dialog_open: bool
         _analysis_covers: list
+        _analysis_all_covers: list
         _downloading: set[str]
         _download_cancel_requested: set[str]
         _download_errors: dict[str, str]
@@ -134,12 +138,8 @@ if TYPE_CHECKING:
         _current_version_str: str
 
         # --- checkboxes --------------------------------------------------
-        _accumulate_check: QCheckBox
-        _follow_camera_check: QCheckBox
-        _play_check: QCheckBox
         _refine_intrinsics_check: QCheckBox
         _require_gravity_check: QCheckBox
-        _semantic_check: QCheckBox
         _skip_seg_check: QCheckBox
         _tsdf_check: QCheckBox
         _update_show_all: QCheckBox
@@ -161,17 +161,14 @@ if TYPE_CHECKING:
         _batch_size_spin: QSpinBox
         _fps_spin: QSpinBox
         _grid_bins_spin: QSpinBox
-        _play_fps_spin: QSpinBox
         _proc_height_spin: QSpinBox
         _proc_width_spin: QSpinBox
         _rr_est_frames_spin: QSpinBox
         _scs_height_spin: QSpinBox
         _scs_width_spin: QSpinBox
         _begin_spin: TimeSecondsEdit
-        _camera_backoff_spin: QDoubleSpinBox
         _crop_width: QDoubleSpinBox
         _end_spin: TimeSecondsEdit
-        _point_size_spin: QDoubleSpinBox
         _results_crop_width: QDoubleSpinBox
         _results_transect_length: QDoubleSpinBox
         _rr_factor_spin: QDoubleSpinBox
@@ -179,7 +176,6 @@ if TYPE_CHECKING:
         _transect_length: QDoubleSpinBox
 
         # --- sliders -----------------------------------------------------
-        _confidence_slider: QSlider
         _frame_slider: QSlider
         _results_crop_slider: QSlider
         _results_transect_slider: QSlider
@@ -214,12 +210,17 @@ if TYPE_CHECKING:
         _data_host_simple: QWidget
         _data_tree: QTreeWidget
         _data_run_list: QListWidget
+        _data_video_list: QListWidget
+        _data_run_stack: QStackedWidget
         _data_group_header: QLabel
         _data_disk_label: QLabel
         _data_open_btn: QPushButton
+        _data_show_btn: QPushButton
+        _data_open_folder_btn: QPushButton
         _data_rename_btn: QPushButton
         _data_assign_btn: QPushButton
         _data_delete_btn: QPushButton
+        _data_queue_btn: QPushButton
         _data_refresh_timer: QTimer
         _data_facet_buttons: dict[str, QToolButton]
         _data_entries: list
@@ -244,11 +245,18 @@ if TYPE_CHECKING:
         _survey_pass_table: QTableWidget
         _survey_start_btn: QPushButton
         _survey_settings_btn: QPushButton
+        _survey_restore_btn: QPushButton
+        _survey_audit_btn: QPushButton
+        _survey_import_btn: QPushButton
+        _survey_not_ready: NotReadyStrip
+        _setup_memory_label: QLabel
+        _hf_auth_user: str | None
         _analysis_transect_combo: QComboBox
         _analysis_level_combo: QComboBox
         _analysis_chart: GroupedBarChart
         _analysis_stats_table: QTableWidget
         _analysis_repro_label: QLabel
+        _analysis_estimate_label: QLabel
         _analysis_runs_list: QListWidget
         _transect_list: QListWidget
         _tr_name_input: QLineEdit
@@ -271,10 +279,8 @@ if TYPE_CHECKING:
         _video_input: QLineEdit
 
         # --- containers / layouts ----------------------------------------
-        _confidence_box: QWidget
         _crop_box: QGroupBox
         _results_group: QGroupBox
-        _viewer_controls_group: QGroupBox
         _models_grid: QGridLayout
         _sidebar_tabs: QTabWidget
         _left_stack: QStackedWidget
@@ -313,9 +319,14 @@ if TYPE_CHECKING:
         _sig_survey_progress = Signal(int, int, str)
         _sig_survey_done = Signal(int, int, str)
         _sig_run_sizes_done = Signal(object)
+        _sig_videos_probed = Signal(object)
 
         # --- cross-mixin methods -----------------------------------------
         def _add_run_warning(self, message: str) -> None: ...
+        def _add_video_path(self, path: str, probed: tuple[float, float] | None = None) -> bool: ...
+        def _add_video_paths(self, paths: list[str]) -> None: ...
+        def _on_videos_probed(self, probed: list) -> None: ...
+        def _on_survey_import_csv(self) -> None: ...
         def _apply_progress(
             self,
             phase_key: str,
@@ -339,6 +350,7 @@ if TYPE_CHECKING:
         def _collect_run_settings(self) -> dict: ...
         def _estimate_frame_count(self, fps: int) -> int | None: ...
         def _recompute_submit_state(self) -> None: ...
+        def _gpu_only_mapper(self) -> str: ...
         def _refresh_desktop_entry_button(self) -> None: ...
         def _refresh_model_status(self) -> None: ...
         def _build_data_panel(self) -> QWidget: ...
@@ -360,7 +372,12 @@ if TYPE_CHECKING:
         def _required_model_names(self) -> set[str]: ...
         def _reset_progress_bars(self) -> None: ...
         def _reset_form_defaults(self) -> None: ...
+        def _snapshot_form_settings(self) -> dict[str, Any]: ...
+        def _restore_form_settings(self, snapshot: dict[str, Any]) -> None: ...
         def _adopt_form_as_preset(self) -> None: ...
+        def _reload_active_preset(self) -> None: ...
+        def _restore_standard_settings(self) -> None: ...
+        def _survey_deviations(self) -> dict: ...
         def _idle_status_text(self) -> str: ...
         def _on_edit_run_settings(self) -> None: ...
         def _set_progress_widgets_visible(self, visible: bool) -> None: ...
@@ -380,6 +397,15 @@ if TYPE_CHECKING:
         def _build_simple_run_page(self) -> QWidget: ...
         def _build_analysis_page(self) -> QWidget: ...
         def _build_simple_shell(self) -> QWidget: ...
+        def _build_setup_page(self) -> QWidget: ...
+        def _build_setup_nav_button(self) -> QToolButton: ...
+        def _refresh_setup_page(self) -> None: ...
+        def _current_setup_checks(self) -> list: ...
+        def _initial_simple_section(self) -> str: ...
+        def _reveal_memory_detail(self) -> None: ...
+        def _simple_peak_frames(self, fps: int) -> int | None: ...
+        def _survey_missing_models(self) -> list[str]: ...
+        def _download_model(self, model_name: str) -> None: ...
         def _set_simple_section(self, name: str) -> None: ...
         def _go_to_step(self, name: str) -> None: ...
         def _set_wizard_navigation_enabled(self, enabled: bool) -> None: ...
@@ -412,6 +438,7 @@ if TYPE_CHECKING:
             self, manifest: dict, run_dir: Path, *, include_disk_size: bool
         ) -> None: ...
         def _show_viewer_controls(self) -> None: ...
+        def _set_overlay_controls_visible(self, visible: bool) -> None: ...
         def _update_effective_dir_label(self) -> None: ...
 
         # event handlers invoked across mixins

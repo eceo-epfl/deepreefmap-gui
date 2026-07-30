@@ -35,6 +35,7 @@ from deepreefmap_gui.simple.analysis import SimpleAnalysisMixin
 from deepreefmap_gui.simple.batch import SimpleBatchMixin
 from deepreefmap_gui.simple.mode import UiModeMixin
 from deepreefmap_gui.simple.plan import SimplePlanMixin
+from deepreefmap_gui.simple.setup import SimpleSetupMixin
 from deepreefmap_gui.system.panel import SystemPanelMixin
 from deepreefmap_gui.viewer.controls import ViewerControlsMixin
 from deepreefmap_gui.runs.progress import ProgressBarsMixin
@@ -57,6 +58,7 @@ class DeepReefMapWindow(
     SimpleAnalysisMixin,
     SimpleBatchMixin,
     SimplePlanMixin,
+    SimpleSetupMixin,
     SystemPanelMixin,
     UiModeMixin,
     ViewerControlsMixin,
@@ -83,6 +85,7 @@ class DeepReefMapWindow(
     _sig_survey_progress = Signal(int, int, str)
     _sig_survey_done = Signal(int, int, str)
     _sig_run_sizes_done = Signal(object)
+    _sig_videos_probed = Signal(object)
 
     def __init__(self, classes_config: ClassConfig, classes_path: Path | None) -> None:
         super().__init__()
@@ -113,6 +116,7 @@ class DeepReefMapWindow(
         self._sig_survey_progress.connect(self._on_survey_progress)
         self._sig_survey_done.connect(self._on_survey_done)
         self._sig_run_sizes_done.connect(self._apply_run_sizes)
+        self._sig_videos_probed.connect(self._on_videos_probed)
 
         self.setWindowTitle("DeepReefMap")
         # Open at ~90% of the available screen, capped at the comfortable
@@ -228,6 +232,13 @@ class DeepReefMapWindow(
         # Apply the saved mode last: it flips the left stack and re-divides the
         # splitter, so everything above must exist first.
         self._init_ui_mode()
+
+    def eventFilter(self, obj, event):  # noqa: N802 (Qt override)
+        # QObject owns eventFilter earlier in the MRO than the mixins, so the
+        # drop handling lives here on the concrete window and delegates in.
+        if self._data_drop_event_filter(obj, event):
+            return True
+        return super().eventFilter(obj, event)
 
     # --- teardown -----------------------------------------------------------
 

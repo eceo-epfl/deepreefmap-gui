@@ -355,6 +355,10 @@ class ModelManagementMixin(MixinBase):
             self._model_actions[info.name] = action
 
         self._recompute_submit_state()
+        # Provisioning from the simple-mode setup step changes what is cached, so
+        # its "Models ready" row follows the same status refresh the Models tab does.
+        if hasattr(self, "_setup_check_rows"):
+            self._refresh_setup_page()
 
     def _required_model_names(self) -> set[str]:
         required = {self._map_combo.currentText()}

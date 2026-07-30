@@ -98,6 +98,64 @@ def test_run_status_stamps_lifecycle(store):
     assert finished.finished_at is not None
 
 
+def test_reconcile_marks_non_terminal_runs_interrupted(store):
+    """Pending and running rows are leftovers once the process is gone; a
+    terminal succeeded/failed/cancelled row is a finished decision and stays."""
+    _, _, pass_ = seed_pass(store)
+    running = RunRecord(pass_id=pass_.id, run_dir_name="running")
+    pending = RunRecord(pass_id=pass_.id, run_dir_name="pending")
+    done = RunRecord(pass_id=pass_.id, run_dir_name="done")
+    for record in (running, pending, done):
+        store.add_run(record)
+    store.set_run_status(running.id, "running")
+    store.set_run_status(done.id, "succeeded")
+
+    assert store.reconcile_interrupted_runs() == 2
+    assert store.get_run(running.id).status == "interrupted"
+    assert store.get_run(pending.id).status == "interrupted"
+    assert store.get_run(done.id).status == "succeeded"
+    reconciled = store.get_run(running.id)
+    assert reconciled.finished_at is not None
+    assert reconciled.error
+
+
+def test_reopening_a_store_reconciles_stale_runs(tmp_path):
+    """Scenario: a crash left a run 'running'.
+
+    Expected behaviour: the next open flips it to interrupted, so it reads as
+    work to redo rather than live work that blocks the pass forever.
+    """
+    path = tmp_path / "survey.db"
+    store = SurveyStore(path)
+    _, _, pass_ = seed_pass(store)
+    run = RunRecord(pass_id=pass_.id, run_dir_name="t1__p01")
+    store.add_run(run)
+    store.set_run_status(run.id, "running")
+    store.close()
+
+    reopened = SurveyStore(path)
+    assert reopened.get_run(run.id).status == "interrupted"
+
+
+def test_a_newer_schema_is_refused_rather_than_opened_blindly(tmp_path):
+    """Scenario: an update was rolled back, leaving a newer survey.db behind.
+
+    Expected behaviour: opening it raises a readable error, rather than running
+    an empty migration slice and reading columns this build does not understand.
+    """
+    from deepreefmap_gui.survey.store import _MIGRATIONS
+
+    path = tmp_path / "survey.db"
+    SurveyStore(path).close()
+    conn = sqlite3.connect(path)
+    conn.execute(f"PRAGMA user_version = {len(_MIGRATIONS) + 5}")
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(RuntimeError, match="schema v"):
+        SurveyStore(path)
+
+
 def test_run_status_rejects_unknown_run_and_status(store):
     _, _, pass_ = seed_pass(store)
     with pytest.raises(KeyError):
@@ -309,3 +367,77 @@ def test_batches_are_readable_after_being_added(store):
     assert store.get_batch(batch.id) == batch
     assert [b.name for b in store.list_batches()] == ["Day 1"]
     assert store.get_batch(uuid.uuid4()) is None
+
+
+def test_pass_chapters_round_trip(store):
+    transect, video, _ = seed_pass(store)
+    second = store.upsert_video(
+        make_video("cd" * 16, file_name="GX020001.MP4", path="/data/GX020001.MP4")
+    )
+    chaptered = TransectPass(
+        transect_id=transect.id,
+        video_id=video.id,
+        extra_video_ids=[second.id],
+        begin_s=0.0,
+        end_s=600.0,
+    )
+    store.add_pass(chaptered)
+    assert store.get_pass(chaptered.id).video_ids() == [video.id, second.id]
+
+    chaptered.extra_video_ids = []
+    store.update_pass(chaptered)
+    assert store.get_pass(chaptered.id).extra_video_ids == []
+
+
+def test_a_database_written_before_chapters_migrates(tmp_path):
+    """A survey.db from an earlier build opens, and its passes read back."""
+    from deepreefmap_gui.survey.store import _MIGRATIONS
+
+    pass_id, transect_id, video_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    db_path = tmp_path / "old.db"
+    conn = sqlite3.connect(db_path)
+    with conn:
+        conn.executescript(_MIGRATIONS[0])
+        conn.execute("PRAGMA user_version = 1")
+        # foreign_keys is off on a raw connection, so the pass can stand alone.
+        conn.execute(
+            "INSERT INTO transect_pass (id, transect_id, video_id, direction, begin_s, end_s,"
+            " notes, created_at) VALUES (?, ?, ?, 'forward', 0.0, 60.0, '', ?)",
+            (str(pass_id), str(transect_id), str(video_id), "2026-07-01T00:00:00+00:00"),
+        )
+    conn.close()
+
+    restored = SurveyStore(db_path).get_pass(pass_id)
+    assert restored is not None
+    assert restored.video_ids() == [video_id]
+    version = sqlite3.connect(db_path).execute("PRAGMA user_version").fetchone()[0]
+    assert version == len(_MIGRATIONS)
+
+
+def test_rebuild_restores_every_chapter_of_a_pass(store, tmp_path):
+    """A pass that spanned GoPro chapters comes back naming all of them."""
+    transect, video, pass_ = seed_pass(store)
+    second = store.upsert_video(
+        make_video("cd" * 16, file_name="GX020001.MP4", path="/data/GX020001.MP4")
+    )
+    pass_.extra_video_ids = [second.id]
+    store.update_pass(pass_)
+    run = RunRecord(pass_id=pass_.id, run_dir_name="t1__p01")
+    store.add_run(run)
+
+    out_root = tmp_path / "out"
+    run_dir = out_root / "t1__p01"
+    run_dir.mkdir(parents=True)
+    (run_dir / "run_manifest.json").write_text(json.dumps({
+        "input_videos": [video.path, second.path],
+        "video_hashes": [video.hash, second.hash],
+        "survey": survey_manifest_block(run, pass_, transect, None),
+    }))
+
+    fresh = SurveyStore(tmp_path / "rebuilt.db")
+    report = fresh.rebuild_from_scan(out_root)
+    assert report.videos == 2
+    restored = fresh.get_pass(pass_.id)
+    assert [fresh.get_video(v).file_name for v in restored.video_ids()] == [
+        "GX010001.MP4", "GX020001.MP4"
+    ]

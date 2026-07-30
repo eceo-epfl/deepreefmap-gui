@@ -69,30 +69,16 @@ class RunLoadingMixin(MixinBase):
         """Carry the resume cache from a matching prior run into this fresh dir."""
         # GUI run names default to a timestamp, so no two runs share a directory and
         # the orchestrator's always-on cache would never hit on its own.
-        try:
-            from deepreefmap.pipeline import resume as resume_mod
+        from deepreefmap_gui.runs.seeding import seed_from_settings
 
-            from deepreefmap_gui.runs.seeding import seed_run_dir_from_match
-
-            prep_key = resume_mod.preprocess_key(
-                video_paths=[video_path],
-                fps=self._fps_spin.value(),
-                begin_s=begin_s,
-                end_s=end_s,
-                camera_profile_name=self._profile_combo.currentText(),
-                segmentation_name=(
-                    "__skip__" if self._skip_seg_check.isChecked() else self._seg_combo.currentText()
-                ),
-                classes_path=self._classes_path,
-                processing_width=self._proc_width_spin.value(),
-                processing_height=self._proc_height_spin.value(),
-            )
-            seeded = seed_run_dir_from_match(out_dir, out_dir.parent, prep_key)
-        except Exception:
-            logger.warning("Cache seeding failed; running from scratch", exc_info=True)
-            return
-        if seeded is not None:
-            logger.info("Seeded cache from %s", seeded)
+        seed_from_settings(
+            out_dir,
+            out_dir.parent,
+            self._collect_run_settings(),
+            [video_path],
+            begin_s,
+            end_s,
+        )
 
     def _on_submit(self) -> None:
         video = self._video_input.text().strip()

@@ -19,18 +19,30 @@ BLOCKED = "blocked"  # the step's action is disabled until you act
 
 SECTION_STATES = (TODO, OK, ATTENTION, BLOCKED)
 
+# Where a blocker is fixed. A reason that names a destination is only useful if
+# the user can get there, so the verdict carries the destination rather than
+# spelling out directions the page cannot follow for them.
+FIX_HERE = ""  # fixed on the page that shows it, so no destination
+FIX_SETUP = "setup"  # this laptop is not ready, and setup holds the actions
+FIX_SETTINGS = "settings"  # the run settings are at fault, and the dialog holds them
+
+FIX_DESTINATIONS = (FIX_HERE, FIX_SETUP, FIX_SETTINGS)
+
 
 @dataclass(frozen=True)
 class SectionState:
-    """A step's verdict: how it paints, what it counts, and why."""
+    """A step's verdict: how it paints, what it counts, why, and where to go."""
 
     state: str
     count: str
     reason: str = ""
+    fix: str = FIX_HERE
 
     def __post_init__(self) -> None:
         if self.state not in SECTION_STATES:
             raise ValueError(f"Unknown section state: {self.state!r}")
+        if self.fix not in FIX_DESTINATIONS:
+            raise ValueError(f"Unknown fix destination: {self.fix!r}")
 
 
 def _plural(count: int, singular: str, plural: str = "") -> str:
@@ -85,11 +97,14 @@ def run_gate(
     failed: int,
     has_preset: bool,
     missing_models: list[str],
+    gpu_only_mapper: str = "",
 ) -> SectionState:
     """Run's verdict, and by construction the Process button's.
 
     Order matters: the blockers come first and in the order the user can act on
-    them, since only the first one is shown.
+    them, since only the first one is shown. The graphics card outranks the
+    models because changing the processing method changes which models a pass
+    needs, so a download chased first can turn out to have been the wrong one.
     """
     if pass_count == 0:
         return SectionState(TODO, "no videos yet", "Add the videos you want processed.")
@@ -103,13 +118,26 @@ def run_gate(
         )
     if not has_preset:
         return SectionState(
-            BLOCKED, counts, "The run settings could not be loaded; open Edit settings to fix them."
+            BLOCKED,
+            counts,
+            "The run settings could not be loaded, so this batch cannot run.",
+            fix=FIX_SETTINGS,
+        )
+    if gpu_only_mapper:
+        return SectionState(
+            BLOCKED,
+            counts,
+            f"The {gpu_only_mapper} processing method needs a graphics card, and "
+            "none was found on this computer.",
+            fix=FIX_SETUP,
         )
     if missing_models:
         return SectionState(
             BLOCKED,
             counts,
-            f"Download {', '.join(missing_models)} first: switch to Advanced and open Models.",
+            f"This computer is missing {_plural(len(missing_models), 'model')} it needs "
+            f"to process video ({', '.join(missing_models)}).",
+            fix=FIX_SETUP,
         )
     if failed:
         return SectionState(

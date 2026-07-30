@@ -88,19 +88,38 @@ def test_entering_advanced_expands_the_preset(window):
     assert window._map_combo.currentText() == preset["mapping_name"]
 
 
-def test_returning_to_simple_persists_tweaks(window, tmp_path, monkeypatch):
-    from deepreefmap_gui.survey.preset import parse_preset
+def test_returning_to_simple_persists_a_machine_setting(window, machine_preset_path):
+    """An allow-listed setting describes the computer, so it survives a restart."""
+    import yaml
 
-    target = tmp_path / "survey_preset.yaml"
-    monkeypatch.setattr("deepreefmap_gui.survey.preset.survey_preset_path", lambda: target)
+    window._mode_buttons["advanced"].click()
+    window._batch_size_spin.setValue(1)
+    window._mode_buttons["simple"].click()
+    assert window._ui_mode == "simple"
+    assert window._survey_preset["preprocess_batch_size"] == 1
+    assert yaml.safe_load(machine_preset_path.read_text())["overrides"] == {
+        "preprocess_batch_size": 1
+    }
+
+
+def test_returning_to_simple_does_not_rewrite_the_organisation_preset(
+    window, machine_preset_path
+):
+    """Scenario: a curious diver changes the method in advanced mode.
+
+    Expected behaviour: this session runs what they typed, but nothing is written
+    back, so the next launch measures the way the organisation asked. Writing the
+    whole preset here is what used to let one dive rebrand the machine for good.
+    """
     window._mode_buttons["advanced"].click()
     window._fps_spin.setValue(3)
     window._seg_combo.setCurrentText("segformer-b2")
     window._mode_buttons["simple"].click()
-    assert window._ui_mode == "simple"
     assert window._survey_preset["fps"] == 3
-    assert window._survey_preset["segmentation_name"] == "segformer-b2"
-    assert parse_preset(target.read_text())["fps"] == 3
+    assert not machine_preset_path.exists()
+    label = window._survey_preset_label.text()
+    assert "Changed for this batch only" in label
+    assert "go back to standard next launch" in label
 
 
 def test_crop_width_zero_means_disabled(window):
@@ -110,3 +129,20 @@ def test_crop_width_zero_means_disabled(window):
         {**window._collect_preset_from_form(), "transect_crop_width": 1.5}
     )
     assert window._crop_width.value() == 1.5
+
+
+def test_bundled_preset_reaches_the_run_settings(window):
+    """A fresh simple-mode window must carry the saved preset into the run.
+
+    The survey batch runs from _collect_run_settings(), so populating only the
+    preset dict is not enough: the form has to hold the preset's values on
+    startup. transect_crop_width is the tell -- the form default is 0.0, which
+    _collect_run_settings maps to None (crop disabled), while the bundled preset
+    asks for 1.0.
+    """
+    assert window._ui_mode == "simple"
+    settings = window._collect_run_settings()
+    assert settings["transect_crop_width"] == window._survey_preset["transect_crop_width"]
+    assert settings["transect_crop_width"] == 1.0
+    assert settings["fps"] == window._survey_preset["fps"]
+    assert settings["segmentation_name"] == window._survey_preset["segmentation_name"]

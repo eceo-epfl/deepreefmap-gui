@@ -30,10 +30,10 @@ def _reset_ui_mode(qapp):
     from PySide6.QtCore import QSettings
 
     settings = QSettings("ECEO", "deepreefmap")
-    for key in ("ui_mode", "preview_3d"):
+    for key in ("ui_mode", "preview_3d", "setup_complete"):
         settings.remove(key)
     yield
-    for key in ("ui_mode", "preview_3d"):
+    for key in ("ui_mode", "preview_3d", "setup_complete"):
         settings.remove(key)
 
 
@@ -51,6 +51,34 @@ def _tmp_output_root(qapp, tmp_path):
         settings.remove("output_root_dir")
     else:
         settings.setValue("output_root_dir", old)
+
+
+def _machine_preset_path(tmp_path):
+    return tmp_path / "machine-settings" / "survey_preset.yaml"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_survey_preset(tmp_path, monkeypatch):
+    """Keep GUI tests off the developer's real survey settings.
+
+    Windows build in simple mode and load the settings at construction, and
+    _adopt_form_as_preset writes the machine override back on the return to
+    simple mode, so an unguarded test would both read and overwrite the file at
+    ~/.local/share/deepreefmap/survey_preset.yaml. Point it at a tmp path that
+    does not exist and clear the admin override so the bundled preset loads.
+    Follows the pattern in tests/survey/conftest.py.
+    """
+    monkeypatch.delenv("DEEPREEFMAP_SURVEY_PRESET", raising=False)
+    monkeypatch.setattr(
+        "deepreefmap_gui.survey.preset.survey_preset_path",
+        lambda: _machine_preset_path(tmp_path),
+    )
+
+
+@pytest.fixture
+def machine_preset_path(tmp_path):
+    """Where the isolation fixture sends this machine's override."""
+    return _machine_preset_path(tmp_path)
 
 
 @pytest.fixture(autouse=True)

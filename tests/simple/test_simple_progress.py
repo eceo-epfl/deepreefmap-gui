@@ -7,6 +7,9 @@ import pytest
 from deepreefmap_gui.simple.progress import (
     ATTENTION,
     BLOCKED,
+    FIX_HERE,
+    FIX_SETTINGS,
+    FIX_SETUP,
     OK,
     TODO,
     SectionState,
@@ -55,6 +58,7 @@ def test_empty_run_step_is_todo_not_blocked():
         ({"unassigned": 2}, "need a transect"),
         ({"has_preset": False}, "run settings"),
         ({"missing_models": ["coralscapes-vit-b-dpt"]}, "coralscapes-vit-b-dpt"),
+        ({"gpu_only_mapper": "loger_star"}, "loger_star"),
     ],
 )
 def test_blockers_name_themselves(overrides, fragment):
@@ -65,8 +69,58 @@ def test_blockers_name_themselves(overrides, fragment):
 
 def test_unassigned_outranks_the_other_blockers():
     """Only one reason is shown, so it must be the one the user can act on first."""
-    state = gate(pass_count=3, unassigned=1, has_preset=False, missing_models=["x"])
+    state = gate(
+        pass_count=3,
+        unassigned=1,
+        has_preset=False,
+        missing_models=["x"],
+        gpu_only_mapper="loger",
+    )
     assert "need a transect" in state.reason
+
+
+def test_a_gpu_only_method_on_a_cpu_laptop_blocks():
+    """Without this the batch enables Process and every pass fails in turn."""
+    state = gate(pass_count=2, gpu_only_mapper="loger_star")
+    assert state.state == BLOCKED
+    assert "graphics card" in state.reason
+
+
+def test_the_missing_card_outranks_the_missing_models():
+    """Changing the method changes what to download, so it is asked about first."""
+    state = gate(pass_count=2, gpu_only_mapper="loger", missing_models=["LoGeR"])
+    assert "graphics card" in state.reason
+
+
+@pytest.mark.parametrize(
+    "overrides, destination",
+    [
+        ({"unassigned": 1}, FIX_HERE),
+        ({"has_preset": False}, FIX_SETTINGS),
+        ({"gpu_only_mapper": "loger"}, FIX_SETUP),
+        ({"missing_models": ["x"]}, FIX_SETUP),
+    ],
+)
+def test_each_blocker_says_where_it_is_fixed(overrides, destination):
+    """The strip's button reads this, so a blocker with nowhere to go says so."""
+    assert gate(pass_count=2, **overrides).fix == destination
+
+
+def test_no_blocker_tells_the_user_to_change_modes():
+    """Simple mode cannot follow directions into the advanced sidebar."""
+    for overrides in (
+        {"has_preset": False},
+        {"gpu_only_mapper": "loger"},
+        {"missing_models": ["coralscapes-vit-b-dpt"]},
+    ):
+        reason = gate(pass_count=2, **overrides).reason.lower()
+        assert "advanced" not in reason
+        assert "tab" not in reason
+
+
+def test_an_unknown_fix_destination_is_rejected():
+    with pytest.raises(ValueError):
+        SectionState(BLOCKED, "2 passes", "nowhere to go", fix="somewhere")
 
 
 def test_failed_passes_warn_without_blocking():

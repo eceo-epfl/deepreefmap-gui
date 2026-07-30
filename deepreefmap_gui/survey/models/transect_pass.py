@@ -1,4 +1,4 @@
-"""One traversal of a transect: a time-trimmed segment of a single video."""
+"""One traversal of a transect: a time-trimmed segment of one or more videos."""
 
 from __future__ import annotations
 
@@ -12,7 +12,15 @@ PASS_DIRECTIONS = ("forward", "reverse")
 
 @dataclass(slots=True)
 class TransectPass:
-    """A pass never spans videos; one video may contain several passes."""
+    """One swim, which one video may hold several of, or several videos hold one of.
+
+    A GoPro splits a recording at about 4 GB, so a long swim arrives as
+    chapters. ``video_id`` is the first of them and stays the pass's video
+    identity for everything that groups by clip; ``extra_video_ids`` holds the
+    rest in playing order. ``begin_s`` and ``end_s`` are offsets into the
+    chapters played back to back, which is how the pipeline reads a list of
+    videos.
+    """
 
     transect_id: uuid.UUID
     video_id: uuid.UUID
@@ -21,6 +29,7 @@ class TransectPass:
     direction: str = "forward"
     batch_id: uuid.UUID | None = None
     notes: str = ""
+    extra_video_ids: list[uuid.UUID] = field(default_factory=list)
     id: uuid.UUID = field(default_factory=uuid.uuid4)
     created_at: str = field(default_factory=utc_now_iso)
 
@@ -31,6 +40,12 @@ class TransectPass:
             raise ValueError(f"begin_s must be >= 0, got {self.begin_s}")
         if self.end_s <= self.begin_s:
             raise ValueError(f"end_s must be greater than begin_s ({self.begin_s})")
+        if self.video_id in self.extra_video_ids:
+            raise ValueError("extra_video_ids must not repeat video_id")
+
+    def video_ids(self) -> list[uuid.UUID]:
+        """Every chapter of the pass, in playing order."""
+        return [self.video_id, *self.extra_video_ids]
 
     def duration_s(self) -> float:
         return self.end_s - self.begin_s
