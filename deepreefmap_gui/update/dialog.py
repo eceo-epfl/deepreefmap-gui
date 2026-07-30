@@ -32,7 +32,7 @@ _LOG_LINE_CAP = 5000
 
 class UpdateProgressDialog(QDialog):
     _sig_line = Signal(str)
-    _sig_progress = Signal(int, int)
+    _sig_progress = Signal("qint64", "qint64")  # type: ignore[arg-type]
     _sig_done = Signal(bool, str)
 
     def __init__(
@@ -97,12 +97,13 @@ class UpdateProgressDialog(QDialog):
         if line:
             self._status_label.setText(line)
 
-    @Slot(int, int)
+    @Slot("qint64", "qint64")
     def _on_progress(self, done: int, total: int) -> None:
+        # Percent, not bytes: a multi-GB download overflows the bar's 32-bit range.
         if total > 0:
             if self._progress.maximum() == 0:
-                self._progress.setRange(0, total)
-            self._progress.setValue(min(done, total))
+                self._progress.setRange(0, 100)
+            self._progress.setValue(min(round(100 * done / total), 100))
 
     @Slot(bool, str)
     def _on_done(self, success: bool, message: str) -> None:

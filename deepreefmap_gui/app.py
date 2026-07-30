@@ -69,7 +69,8 @@ class DeepReefMapWindow(
     _sig_status_text = Signal(str)
     _sig_hf_auth_done = Signal(object, str)
     _sig_download_progress = Signal(str, int)
-    _sig_pack_progress = Signal(str, int, int)
+    # Byte counts, so qint64: a 15 GB pack overflows Qt's 32-bit int.
+    _sig_pack_progress = Signal(str, str, "qint64", "qint64")  # type: ignore[arg-type]
     _sig_pack_done = Signal(bool, str)
     _sig_run_loaded = Signal(object, str, str, int)
     _sig_load_progress = Signal(str, int, int)

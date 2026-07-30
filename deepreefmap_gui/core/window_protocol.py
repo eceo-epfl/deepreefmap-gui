@@ -22,7 +22,6 @@ if TYPE_CHECKING:
         QLineEdit,
         QListWidget,
         QProgressBar,
-        QProgressDialog,
         QPushButton,
         QSlider,
         QSpinBox,
@@ -54,6 +53,7 @@ if TYPE_CHECKING:
     from deepreefmap_gui.simple.plan import NotesEdit
     from deepreefmap_gui.survey.models import SurveyBatch
     from deepreefmap_gui.survey.store import SurveyStore
+    from deepreefmap_gui.models.library_ui import PackProgressDialog
 
     # QWidget, not QMainWindow: DeepReefMapWindow lists QMainWindow first among
     # its bases, so a QMainWindow base here breaks C3 linearisation.
@@ -101,7 +101,8 @@ if TYPE_CHECKING:
         _model_actions: dict[str, QWidget]
         _model_rows: dict[str, QWidget]
         _last_model_states: list
-        _pack_progress_dialog: QProgressDialog | None
+        _pack_progress_dialog: PackProgressDialog | None
+        _pack_cancel_event: threading.Event
         _run_warnings: list[str]
 
         # --- composite widgets / models ----------------------------------
@@ -299,7 +300,7 @@ if TYPE_CHECKING:
         _sig_status_text = Signal(str)
         _sig_hf_auth_done = Signal(object, str)
         _sig_download_progress = Signal(str, int)
-        _sig_pack_progress = Signal(str, int, int)
+        _sig_pack_progress = Signal(str, str, "qint64", "qint64")  # type: ignore[arg-type]
         _sig_pack_done = Signal(bool, str)
         _sig_run_loaded = Signal(object, str, str, int)
         _sig_load_progress = Signal(str, int, int)
@@ -428,7 +429,9 @@ if TYPE_CHECKING:
         def _open_model_library(self) -> None: ...
         def _on_export_models(self) -> None: ...
         def _on_import_model_pack(self) -> None: ...
-        def _on_pack_progress(self, phase: str, current: int, total: int) -> None: ...
+        def _on_pack_progress(
+            self, phase: str, label: str, current: int, total: int
+        ) -> None: ...
         def _on_pack_done(self, ok: bool, message: str) -> None: ...
         def _on_pause_toggled(self, paused: bool) -> None: ...
         def _on_play_fps_changed(self) -> None: ...
