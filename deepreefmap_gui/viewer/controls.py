@@ -46,15 +46,6 @@ class ViewerControlsMixin(MixinBase):
             self._sidebar_tabs.setCurrentIndex(
                 self._TAB_RESULTS if mode == "VIEWING" else self._TAB_RUN
             )
-        # A loaded run with the canvas gated off would show an idle progress
-        # panel; surface the cloud and let the user toggle it back off. Signals
-        # are blocked so opening one run does not silently make 3D preview the
-        # persisted default for every future session.
-        if mode == "VIEWING" and hasattr(self, "_preview_toggle_btn"):
-            self._preview_toggle_btn.blockSignals(True)
-            self._preview_toggle_btn.setChecked(True)
-            self._preview_toggle_btn.blockSignals(False)
-            self._viewer.set_canvas_allowed(True)
         self._update_work_area()
 
     def _refresh_run_warnings_view(self) -> None:

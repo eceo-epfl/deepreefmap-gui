@@ -161,9 +161,6 @@ class DeepReefMapWindow(
         form_panel = self._build_form_panel()
         self._capture_form_defaults()
         top_bar = self._build_top_bar()
-        # The preview toggle gates the viewer canvas, so it docks onto the
-        # viewer's header rather than the global toolbar.
-        self._viewer.add_header_widget(self._build_preview_toggle())
         log_panel = self._build_log_panel()
 
         # The left pane is either the advanced sidebar (page 0) or the simple

@@ -46,37 +46,45 @@ def test_custom_processing_size_round_trips(window):
     assert (window._proc_width_spin.value(), window._proc_height_spin.value()) == (800, 600)
 
 
-def test_preview_defaults_off_and_gates_canvas(window):
-    viewer = window._viewer
-    assert not window._preview_toggle_btn.isChecked()
-    assert viewer._canvas_stack.currentWidget() is viewer._placeholder_container
-    viewer._reveal_canvas()
-    assert viewer._canvas_wanted
-    assert viewer._canvas_stack.currentWidget() is viewer._placeholder_container
+def test_processing_never_shows_the_viewer(window):
+    """Scenario: a batch is running on the Run step.
+
+    Expected behaviour: the page stays whole. The cloud belongs to Browse, so the
+    queue is not made to share the window with whichever pass finished last.
+    """
+    assert window._ui_mode == "simple"
+    window._set_simple_section("run")
+    window._set_app_mode("RUNNING")
+    assert window._viewer.isHidden()
 
 
-def test_allowing_preview_reveals_pending_scene(window, monkeypatch):
+def test_browse_shows_the_viewer_for_an_open_run(window):
+    window._set_simple_section("browse")
+    window._set_app_mode("VIEWING")
+    assert not window._viewer.isHidden()
+
+
+def test_viewing_outside_browse_keeps_the_viewer_hidden(window):
+    """Opening a run is not enough on its own: the section has to be Browse."""
+    window._set_simple_section("run")
+    window._set_app_mode("VIEWING")
+    assert window._viewer.isHidden()
+
+
+def test_advanced_mode_keeps_the_viewer_throughout(window):
+    window._mode_buttons["advanced"].click()
+    window._set_app_mode("RUNNING")
+    assert not window._viewer.isHidden()
+
+
+def test_revealing_the_canvas_needs_no_permission(window, monkeypatch):
+    """The canvas gate is gone: scene data arriving is what reveals the cloud."""
     viewer = window._viewer
     monkeypatch.setattr(viewer, "_ensure_plotter", lambda: None)
     viewer._reveal_canvas()
-    window._preview_toggle_btn.setChecked(True)
     assert viewer._canvas_stack.currentWidget() is viewer._canvas_container
-    window._preview_toggle_btn.setChecked(False)
+    viewer._hide_canvas()
     assert viewer._canvas_stack.currentWidget() is viewer._placeholder_container
-    assert viewer._canvas_wanted
-
-
-def test_preview_setting_persists(window, make_window):
-    window._preview_toggle_btn.setChecked(True)
-    other = make_window()
-    assert other._preview_toggle_btn.isChecked()
-
-
-def test_viewing_forces_preview_on(window, monkeypatch):
-    monkeypatch.setattr(window._viewer, "_ensure_plotter", lambda: None)
-    assert not window._preview_toggle_btn.isChecked()
-    window._set_app_mode("VIEWING")
-    assert window._preview_toggle_btn.isChecked()
 
 
 def test_entering_advanced_expands_the_preset(window):

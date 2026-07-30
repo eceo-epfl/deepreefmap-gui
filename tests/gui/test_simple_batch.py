@@ -5,8 +5,10 @@ import time
 import pytest
 from _factories import make_transect
 from _qt_wait import wait_until
+from deepreefmap.pipeline.orchestrator import ReconstructionCancelled
 from PySide6.QtWidgets import QDialog, QMessageBox
 
+from deepreefmap_gui.core.widgets import PASS_PERCENT_ROLE
 from deepreefmap_gui.simple.batch import (
     _COL_ACTION,
     _COL_DIRECTION,
@@ -15,8 +17,10 @@ from deepreefmap_gui.simple.batch import (
     _COL_TRIM,
     _COL_VIDEO,
     _diagnose_failure,
+    _median_pass_seconds,
     _rough_batch_time,
 )
+from deepreefmap_gui.simple.batch_progress import BatchProgressCard
 
 
 def test_diagnose_failure_speaks_plainly_and_advises():
@@ -357,7 +361,9 @@ def test_failed_run_keeps_pass_remaining(batch_window, tmp_path, monkeypatch, qa
     assert [r.status for r in runs] == ["failed"]
     assert "boom" in runs[0].error
     assert batch_window._survey_start_btn.isEnabled()
-    assert batch_window._survey_start_btn.text() == "Next: Process (1) →"
+    # The pass has been through a run, so pressing again continues the batch
+    # rather than starting it.
+    assert batch_window._survey_start_btn.text() == "Continue batch (1) →"
 
 
 def test_failed_pass_keeps_its_cause_on_the_row(batch_window, tmp_path, monkeypatch, qapp):
@@ -1139,3 +1145,161 @@ def test_each_row_carries_the_one_move_it_can_make(batch_window, tmp_path, monke
         batch_window._table_row_of(0), _COL_ACTION
     ).click()
     assert batch_window._survey_rows[0].held
+
+
+def test_median_pass_seconds_is_silent_without_history(monkeypatch):
+    monkeypatch.setattr(
+        "deepreefmap_gui.profiling.run_history.summarise_recorded_runs", list
+    )
+    assert _median_pass_seconds() is None
+
+
+def test_batch_card_spans_the_passes_still_queued():
+    """Scenario: pass 2 of 10 is half done, and a pass has historically cost 20 min.
+
+    Expected behaviour: the estimate covers the eight passes after this one, not
+    just the remainder of the one in flight.
+    """
+    card = BatchProgressCard()
+    card.set_batch_plan(10, 1200.0)
+    card.set_batch_context(2, 10, "North_reef")
+    card.set_percent(50)
+    card.set_eta_seconds(600.0)
+    assert card.batch_remaining_s() == 600.0 + 8 * 1200.0
+
+
+def test_batch_card_infers_a_pass_cost_without_history():
+    """A first-ever batch has no median, so the pass in flight supplies the scale."""
+    card = BatchProgressCard()
+    card.set_batch_plan(4, None)
+    card.set_batch_context(1, 4, "North_reef")
+    card.set_percent(50)
+    card.set_eta_seconds(300.0)
+    # Half a pass has 300s left, so a whole one is 600s, and three follow it.
+    assert card.batch_remaining_s() == 300.0 + 3 * 600.0
+
+
+def test_batch_card_says_nothing_too_early():
+    card = BatchProgressCard()
+    card.set_batch_plan(4, None)
+    card.set_batch_context(1, 4, "North_reef")
+    card.set_percent(1)
+    card.set_eta_seconds(300.0)
+    assert card.batch_remaining_s() is None
+
+
+def test_batch_card_counts_the_last_pass_alone():
+    card = BatchProgressCard()
+    card.set_batch_plan(3, 1200.0)
+    card.set_batch_context(3, 3, "North_reef")
+    card.set_eta_seconds(90.0)
+    assert card.batch_remaining_s() == 90.0
+
+
+def test_running_row_carries_its_own_progress(batch_window, tmp_path, monkeypatch):
+    """The queue is where a pass reports itself now that the Run step has no viewer."""
+    add_video(batch_window, tmp_path, monkeypatch)
+    assign_transect(batch_window, 0)
+    pass_id = batch_window._survey_rows[0].pass_id
+    batch_window._survey_job_pass_ids = [pass_id]
+    batch_window._survey_running_index = 0
+
+    batch_window._on_pass_percent(42)
+    item = batch_window._survey_pass_table.item(batch_window._table_row_of(0), _COL_STATUS)
+    assert item.text() == "Running 42%"
+    assert item.data(PASS_PERCENT_ROLE) == 42
+
+    # A pass that has stopped running loses the fill rather than freezing at it.
+    batch_window._survey_running_index = None
+    batch_window._refresh_survey_pass_statuses()
+    assert item.data(PASS_PERCENT_ROLE) is None
+
+
+def test_stopping_a_batch_leaves_it_continuable(batch_window, tmp_path, monkeypatch, qapp):
+    """Scenario: two passes queued, the batch is cancelled before either runs.
+
+    Expected behaviour: nothing is lost. Both stay queued and the button offers to
+    continue rather than pretending this is a fresh batch.
+    """
+    for name in ("GX010001.MP4", "GX010002.MP4"):
+        add_video(batch_window, tmp_path, monkeypatch, name=name)
+    assign_transect(batch_window, 0)
+    assign_transect(batch_window, 1)
+
+    def cancel_immediately(**kwargs):
+        batch_window._survey_cancel_event.set()
+        raise ReconstructionCancelled
+
+    monkeypatch.setattr(
+        "deepreefmap.pipeline.orchestrator.run_reconstruction", cancel_immediately
+    )
+    batch_window._on_survey_start()
+    await_batch(batch_window, qapp)
+
+    assert [r.status for r in batch_window._survey_store().list_runs()] == [
+        "cancelled",
+        "cancelled",
+    ]
+    assert len(batch_window._survey_remaining_rows()) == 2
+    assert batch_window._survey_start_btn.text() == "Continue batch (2) →"
+
+
+def test_batch_standing_reports_what_is_behind_you(batch_window, tmp_path, monkeypatch, qapp):
+    for name in ("GX010001.MP4", "GX010002.MP4"):
+        add_video(batch_window, tmp_path, monkeypatch, name=name)
+    assign_transect(batch_window, 0)
+    assign_transect(batch_window, 1)
+    # A fresh batch has nothing behind it, so the line stays out of the way.
+    assert not batch_window._survey_standing_label.isVisibleTo(batch_window)
+
+    batch_window._move_rows([1], hold=True)
+    batch_window._recompute_survey_start()
+    text = batch_window._survey_standing_label.text()
+    assert "1 remaining" in text
+    assert "1 held back" in text
+
+
+def test_batch_assembly_freezes_while_processing(batch_window, tmp_path, monkeypatch):
+    """Scenario: a batch is running and the diver reaches for the table.
+
+    Expected behaviour: nothing about what the batch *is* can still be changed. An
+    edit here would never reach the pass in flight, so the table would end up
+    claiming something the run did not do.
+    """
+    for name in ("GX010001.MP4", "GX010002.MP4"):
+        add_video(batch_window, tmp_path, monkeypatch, name=name)
+    assign_transect(batch_window, 0)
+    table_row = batch_window._table_row_of(0)
+    editors = [
+        batch_window._survey_pass_table.cellWidget(table_row, column)
+        for column in (_COL_TRANSECT, _COL_DIRECTION, _COL_TRIM, _COL_ACTION)
+    ]
+    controls = [
+        batch_window._survey_batch_name,
+        batch_window._survey_new_batch_btn,
+        batch_window._survey_settings_btn,
+        batch_window._survey_audit_btn,
+        batch_window._survey_add_btn,
+        batch_window._survey_import_btn,
+        batch_window._survey_sort_btn,
+    ]
+    assert all(widget.isEnabled() for widget in controls + editors)
+
+    batch_window._survey_worker_running = True
+    batch_window._recompute_row_actions()
+    assert not any(widget.isEnabled() for widget in controls + editors)
+
+    batch_window._survey_worker_running = False
+    batch_window._recompute_row_actions()
+    assert all(widget.isEnabled() for widget in controls + editors)
+
+
+def test_dropping_videos_is_refused_while_processing(batch_window, tmp_path, monkeypatch):
+    """A drop lands on the table, not the greyed-out button, so it needs its own guard."""
+    add_video(batch_window, tmp_path, monkeypatch)
+    batch_window._survey_worker_running = True
+    path = tmp_path / "GX010099.MP4"
+    path.write_bytes(b"x" * 4096)
+    batch_window._add_video_paths([str(path)])
+    assert len(batch_window._survey_rows) == 1
+    assert batch_window._status_label.text() == "Unavailable while processing."

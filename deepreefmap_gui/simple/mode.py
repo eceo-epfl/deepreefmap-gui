@@ -396,24 +396,6 @@ class UiModeMixin(MixinBase):
         else:
             self._reset_form_defaults()
 
-    def _build_preview_toggle(self) -> QToolButton:
-        self._preview_toggle_btn = QToolButton()
-        self._preview_toggle_btn.setText("3D preview")
-        self._preview_toggle_btn.setCheckable(True)
-        self._preview_toggle_btn.setToolTip(
-            "Show the live 3D point cloud. When off, run progress and frame "
-            "previews are shown instead."
-        )
-        checked = str(self._settings.value("preview_3d", "false")).lower() == "true"
-        self._preview_toggle_btn.setChecked(checked)
-        self._viewer.set_canvas_allowed(checked)
-        self._preview_toggle_btn.toggled.connect(self._on_preview_toggled)
-        return self._preview_toggle_btn
-
-    def _on_preview_toggled(self, checked: bool) -> None:
-        self._settings.setValue("preview_3d", checked)
-        self._viewer.set_canvas_allowed(checked)
-
     def _init_ui_mode(self) -> None:
         mode = str(self._settings.value("ui_mode", "simple"))
         if mode not in UI_MODES:
@@ -742,12 +724,10 @@ class UiModeMixin(MixinBase):
         simple = getattr(self, "_ui_mode", "advanced") == "simple"
         app_mode = getattr(self, "_app_mode", "SETUP")
         section = self._current_section() if hasattr(self, "_simple_stack") else "plan"
-        # Browse is a reading surface: a run opened from it wants the viewer, but
-        # a batch running in the background must not shove 3D onto the page you
-        # went there to read.
-        show_viewer = not simple or (
-            app_mode == "VIEWING" or (app_mode == "RUNNING" and section != "browse")
-        )
+        # In simple mode the point cloud belongs to Browse alone. The Run step is a
+        # queue you watch, so it reports per-pass progress in the table rather than
+        # borrowing half the window for a cloud from whichever pass finished last.
+        show_viewer = not simple or (app_mode == "VIEWING" and section == "browse")
         state = (simple, show_viewer, section)
         if getattr(self, "_work_area_state", None) == state:
             return

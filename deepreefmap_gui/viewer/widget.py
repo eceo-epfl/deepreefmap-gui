@@ -209,19 +209,9 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         self._main_splitter.setStretchFactor(0, 3)
         self._main_splitter.setStretchFactor(1, 1)
         self._canvas_revealed = False
-        self._canvas_wanted = False
-        self._canvas_allowed = True
-
-        # Slim header row above the canvas for controls that belong to the
-        # viewer itself (the 3D preview toggle). A header rather than a canvas
-        # overlay so the controls stay reachable while the placeholder shows.
-        self._header_row = QHBoxLayout()
-        self._header_row.setContentsMargins(4, 2, 4, 2)
-        self._header_row.addStretch(1)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addLayout(self._header_row)
         layout.addWidget(self._main_splitter)
 
         # Floating legend pinned to the canvas's top-right corner. Hidden until
@@ -524,24 +514,7 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         assert layout is not None
         layout.addWidget(widget)
 
-    def add_header_widget(self, widget: QWidget) -> None:
-        """Dock a control into the viewer's slim header row, right-aligned."""
-        self._header_row.addWidget(widget)
-
-    def set_canvas_allowed(self, allowed: bool) -> None:
-        """Gate the 3D canvas. Scene data keeps flowing while disallowed; allowing
-        mid-run reveals a canvas that has been fed all along."""
-        self._canvas_allowed = allowed
-        if allowed and self._canvas_wanted:
-            self._reveal_canvas()
-        elif not allowed:
-            self._canvas_revealed = False
-            self._canvas_stack.setCurrentWidget(self._placeholder_container)
-
     def _reveal_canvas(self) -> None:
-        self._canvas_wanted = True
-        if not self._canvas_allowed:
-            return
         self._ensure_plotter()
         self._canvas_revealed = True
         self._canvas_stack.setCurrentWidget(self._canvas_container)
@@ -552,7 +525,6 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         self._main_splitter.setSizes([int(total * 0.75), int(total * 0.25)])
 
     def _hide_canvas(self) -> None:
-        self._canvas_wanted = False
         self._canvas_revealed = False
         self._canvas_stack.setCurrentWidget(self._placeholder_container)
 

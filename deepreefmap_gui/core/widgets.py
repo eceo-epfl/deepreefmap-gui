@@ -150,11 +150,17 @@ _STATUS_COLORS = {
 }
 
 
+# Percent complete of the pass a status cell describes, 0-100. Absent on every
+# row but the one being processed, which is what makes the pill a progress bar.
+PASS_PERCENT_ROLE = Qt.ItemDataRole.UserRole + 1
+
+
 class StatusPillDelegate(QStyledItemDelegate):
     """Paints a run status as a tinted pill, readable across the table.
 
     A delegate rather than a cell widget so the QTableWidgetItem stays the
-    source of truth for the status text.
+    source of truth for the status text. The running row's pill doubles as its
+    progress bar: PASS_PERCENT_ROLE fills it from the left.
     """
 
     def paint(self, painter, option: QStyleOptionViewItem, index) -> None:
@@ -192,6 +198,21 @@ class StatusPillDelegate(QStyledItemDelegate):
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(fill)
         painter.drawRoundedRect(pill, height / 2, height / 2)
+
+        # A running pass fills its own pill rather than growing a second widget in
+        # the row: the pill is already the thing the eye goes to for that pass.
+        percent = index.data(PASS_PERCENT_ROLE)
+        if percent is not None:
+            done = QColor(color)
+            done.setAlpha(120)
+            painter.setBrush(done)
+            painter.save()
+            clip = QRectF(pill)
+            clip.setWidth(pill.width() * max(0.0, min(100.0, float(percent))) / 100.0)
+            painter.setClipRect(clip)
+            painter.drawRoundedRect(pill, height / 2, height / 2)
+            painter.restore()
+
         painter.setPen(color)
         painter.drawText(
             pill,

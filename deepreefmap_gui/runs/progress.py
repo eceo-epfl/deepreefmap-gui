@@ -236,6 +236,21 @@ class ProgressBarsMixin(MixinBase):
             self._progress_stack.hovered.connect(self._on_total_bar_hover)
             self._hover_connected = True
 
+    def _progress_sinks(self) -> list:
+        """Every widget mirroring the run in flight.
+
+        Advanced mode has the viewer's placeholder panel, simple mode the Run
+        step's batch card, and a window under construction has neither.
+        """
+        return [
+            sink
+            for sink in (
+                getattr(self, "_progress_panel", None),
+                getattr(self, "_batch_progress", None),
+            )
+            if sink is not None
+        ]
+
     def _begin_progress(self, model: ProgressModel) -> None:
         """Switch the active progress model and light up both bars from zero."""
         self._connect_bar_hover()
@@ -304,9 +319,8 @@ class ProgressBarsMixin(MixinBase):
         self._status_count_text = ""
         self._status_phase_key = None
         self._stage_fill = {}
-        panel = getattr(self, "_progress_panel", None)
-        if panel is not None:
-            panel.set_idle("No run in progress.")
+        for sink in self._progress_sinks():
+            sink.set_idle("No run in progress.")
 
     def _render_status(self) -> None:
         """Recompose the status label: colored stage + label, then a metrics line."""
@@ -347,9 +361,8 @@ class ProgressBarsMixin(MixinBase):
             first = base
         text = f"{first}<br>{metrics}" if metrics else first
         self._status_label.setText(text)
-        panel = getattr(self, "_progress_panel", None)
-        if panel is not None:
-            panel.set_status_html(text)
+        for sink in self._progress_sinks():
+            sink.set_status_html(text)
 
     def _render_eta(self) -> None:
         """Refresh the visible overall-estimate label and the breakdown popup."""
@@ -362,9 +375,9 @@ class ProgressBarsMixin(MixinBase):
         # means no trustworthy figure yet (a first run still calibrating).
         eta_text = f"{format_remaining(visible)} left" if visible is not None else "estimating…"
         self._eta_total_label.setText(eta_text)
-        panel = getattr(self, "_progress_panel", None)
-        if panel is not None:
-            panel.set_eta(eta_text)
+        for sink in self._progress_sinks():
+            sink.set_eta(eta_text)
+            sink.set_eta_seconds(visible)
         popup = getattr(self, "_timing_popup", None)
         if popup is not None and popup.isVisible():
             popup.set_rows(est.stage_rows(now), est.total_remaining_s(now), est.has_history)
@@ -473,9 +486,8 @@ class ProgressBarsMixin(MixinBase):
             self._total_progress_bar.setValue(pct)
             self._total_progress_bar.setEnabled(True)
             self._bottom_progress_bar.setValue(pct)
-            panel = getattr(self, "_progress_panel", None)
-            if panel is not None:
-                panel.set_percent(pct)
+            for sink in self._progress_sinks():
+                sink.set_percent(pct)
 
         if flush:
             QApplication.processEvents()

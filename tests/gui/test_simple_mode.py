@@ -71,13 +71,17 @@ def test_app_mode_targets_sections_in_simple(window, monkeypatch):
     assert window._simple_stack.currentIndex() == 2
 
 
-def test_viewer_pane_follows_app_mode_in_simple(window, monkeypatch):
+def test_viewer_pane_follows_section_in_simple(window, monkeypatch):
+    """The cloud belongs to Browse: no app mode brings it onto another step."""
     monkeypatch.setattr(window._viewer, "_ensure_plotter", lambda: None)
     assert not window._viewer.isVisibleTo(window)
-    window._set_app_mode("RUNNING")
+    window._set_simple_section("run")
+    for mode in ("RUNNING", "VIEWING", "SETUP"):
+        window._set_app_mode(mode)
+        assert not window._viewer.isVisibleTo(window)
+    window._set_simple_section("browse")
+    window._set_app_mode("VIEWING")
     assert window._viewer.isVisibleTo(window)
-    window._set_app_mode("SETUP")
-    assert not window._viewer.isVisibleTo(window)
 
 
 def test_advanced_run_controls_hidden_in_simple(window):

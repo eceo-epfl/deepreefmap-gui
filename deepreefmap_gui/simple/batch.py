@@ -44,6 +44,7 @@ from deepreefmap_gui.core.theme import (
     WARN_TEXT,
 )
 from deepreefmap_gui.core.widgets import (
+    PASS_PERCENT_ROLE,
     EmptyState,
     NotReadyStrip,
     StatusPillDelegate,
@@ -51,6 +52,7 @@ from deepreefmap_gui.core.widgets import (
 )
 from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.form.video_scrub import VideoScrubDialog
+from deepreefmap_gui.simple.batch_progress import BatchProgressCard
 from deepreefmap_gui.simple.progress import (
     ATTENTION,
     BLOCKED,
@@ -146,10 +148,10 @@ def _diagnose_failure(text: str) -> str:
     return _one_sentence(text) or "The run failed. No cause was recorded."
 
 
-def _rough_batch_time(pass_count: int) -> str | None:
-    """A plain "about N hours" from past run durations, or None with no history.
+def _median_pass_seconds() -> float | None:
+    """What one pass has typically cost on this machine, or None with no history.
 
-    Rough on purpose: the median of every recorded run on this machine, not the
+    Rough on purpose: the median of every recorded run, not of runs matching the
     current config, so a first-ever run says nothing rather than guessing.
     """
     import statistics
@@ -157,9 +159,15 @@ def _rough_batch_time(pass_count: int) -> str | None:
     from deepreefmap_gui.profiling.run_history import summarise_recorded_runs
 
     seconds = [r["run_seconds"] for r in summarise_recorded_runs() if r.get("run_seconds")]
-    if not seconds:
+    return statistics.median(seconds) if seconds else None
+
+
+def _rough_batch_time(pass_count: int) -> str | None:
+    """A plain "about N hours" for a batch that has not started yet."""
+    median = _median_pass_seconds()
+    if median is None:
         return None
-    total = statistics.median(seconds) * pass_count
+    total = median * pass_count
     if total < 5400:
         return f"about {max(1, round(total / 60))} minutes"
     hours = round(total / 3600)
@@ -369,6 +377,11 @@ class SimpleBatchMixin(MixinBase):
         self._survey_batch = None
         self._survey_cancel_event = None
         self._survey_worker_running = False
+        # Which job the worker is on, and the pass behind each job, so a percent
+        # arriving from the pipeline can find the row it belongs to.
+        self._survey_running_index: int | None = None
+        self._survey_job_pass_ids: list[uuid.UUID] = []
+        self._survey_pass_percent = 0
         self._reload_active_preset()
 
         layout.setSpacing(GUTTER)
@@ -387,10 +400,12 @@ class SimpleBatchMixin(MixinBase):
         name_row.addWidget(QLabel("Batch"))
         self._survey_batch_name = QLineEdit(datetime.now().strftime("%Y-%m-%d"))  # noqa: DTZ005 (local time is intended: this is a user-facing default name)
         name_row.addWidget(self._survey_batch_name, 1)
-        new_batch_btn = QPushButton("New")
-        new_batch_btn.setToolTip("Start a new batch. The current one is retained in the database.")
-        new_batch_btn.clicked.connect(self._on_survey_new_batch)
-        name_row.addWidget(new_batch_btn)
+        self._survey_new_batch_btn = QPushButton("New")
+        self._survey_new_batch_btn.setToolTip(
+            "Start a new batch. The current one is retained in the database."
+        )
+        self._survey_new_batch_btn.clicked.connect(self._on_survey_new_batch)
+        name_row.addWidget(self._survey_new_batch_btn)
         header_layout.addLayout(name_row)
 
         preset_row = QHBoxLayout()
@@ -420,6 +435,13 @@ class SimpleBatchMixin(MixinBase):
         preset_row.addWidget(self._survey_audit_btn)
         header_layout.addLayout(preset_row)
         layout.addWidget(header_card)
+
+        # Where the run reports itself now that the Run step has no viewer beside
+        # it. Hidden until a batch starts: an idle card is a row of blanks.
+        self._batch_progress = BatchProgressCard()
+        self._batch_progress.pass_percent_changed.connect(self._on_pass_percent)
+        self._batch_progress.setVisible(False)
+        layout.addWidget(self._batch_progress)
 
         self._survey_pass_table = QTableWidget(0, 6)
         self._survey_pass_table.setHorizontalHeaderLabels(
@@ -473,6 +495,13 @@ class SimpleBatchMixin(MixinBase):
         )
         passes_card, passes_layout = section_card("Passes")
         passes_layout.addWidget(self._survey_table_stack, 1)
+        # How much of the batch is behind you. Sits with the table rather than in
+        # the status bar because it is what you read before deciding to stop.
+        self._survey_standing_label = QLabel("")
+        self._survey_standing_label.setWordWrap(True)
+        self._survey_standing_label.setStyleSheet(f"color: {TEXT_MUTED};")
+        self._survey_standing_label.setVisible(False)
+        passes_layout.addWidget(self._survey_standing_label)
         # Outcome of the last batch, kept on the page rather than written to the
         # status bar, which the next thing to happen overwrites.
         self._survey_summary_label = QLabel("")
@@ -485,8 +514,8 @@ class SimpleBatchMixin(MixinBase):
         # Two rows: what you do to the whole batch, then what you do to one pass.
         bulk_buttons = QHBoxLayout()
         bulk_buttons.setSpacing(6)
-        add_btn = QPushButton("Add videos…")
-        add_btn.clicked.connect(self._on_survey_add_videos)
+        self._survey_add_btn = QPushButton("Add videos…")
+        self._survey_add_btn.clicked.connect(self._on_survey_add_videos)
         self._survey_assign_btn = QPushButton("Assign selected to…")
         self._survey_assign_btn.setToolTip(
             "Set the transect on every selected row at once. Shift-click or "
@@ -505,7 +534,7 @@ class SimpleBatchMixin(MixinBase):
         self._survey_sort_btn.setToolTip("Order the rows by when each clip was recorded.")
         self._survey_sort_btn.clicked.connect(self._on_survey_sort_by_time)
         for widget in (
-            add_btn,
+            self._survey_add_btn,
             self._survey_assign_btn,
             self._survey_alternate_check,
             self._survey_sort_btn,
@@ -554,19 +583,46 @@ class SimpleBatchMixin(MixinBase):
         self._survey_start_btn.clicked.connect(self._on_survey_start)
         return page
 
+    def _set_batch_editing_enabled(self, enabled: bool) -> None:
+        """Freeze what a batch is made of while that batch is being processed.
+
+        Assembling a batch and watching it run share this page, and only the
+        second is available once the worker starts: a transect or trim edited
+        mid-run would never reach the pass in flight, leaving the table claiming
+        something the run did not do.
+        """
+        for widget in (
+            self._survey_batch_name,
+            self._survey_new_batch_btn,
+            self._survey_settings_btn,
+            self._survey_audit_btn,
+            self._survey_add_btn,
+            self._survey_import_btn,
+        ):
+            widget.setEnabled(enabled)
+        for table_row, model_index in enumerate(self._survey_table_index):
+            if model_index is None:
+                continue
+            for column in (_COL_TRANSECT, _COL_DIRECTION, _COL_TRIM, _COL_ACTION):
+                cell = self._survey_pass_table.cellWidget(table_row, column)
+                if cell is not None:
+                    cell.setEnabled(enabled)
+
     def _recompute_row_actions(self) -> None:
         """Split and remove act on a selected row, so they say when there isn't one."""
+        running = self._survey_worker_running
         selected = self._model_index(self._survey_pass_table.currentRow()) is not None
         for btn in (self._survey_split_btn, self._survey_remove_btn):
-            btn.setEnabled(selected)
+            btn.setEnabled(selected and not running)
         # Assigning needs both a selection and somewhere to assign it to.
         can_assign = bool(self._selected_survey_rows()) and bool(self._survey_transects)
-        self._survey_assign_btn.setEnabled(can_assign)
+        self._survey_assign_btn.setEnabled(can_assign and not running)
         # Greyed out with Assign, so the two read as one control rather than as a
         # button and an unrelated checkbox beside it.
-        self._survey_alternate_check.setEnabled(can_assign)
-        self._survey_sort_btn.setEnabled(len(self._survey_rows) > 1)
+        self._survey_alternate_check.setEnabled(can_assign and not running)
+        self._survey_sort_btn.setEnabled(len(self._survey_rows) > 1 and not running)
         self._survey_table_stack.setCurrentIndex(0 if self._survey_rows else 1)
+        self._set_batch_editing_enabled(not running)
 
     def _selected_survey_rows(self) -> list[int]:
         """Indices of every selected row, in table order.
@@ -579,7 +635,11 @@ class SimpleBatchMixin(MixinBase):
         return sorted(index for index in models if index is not None)
 
     def _on_survey_pass_activated(self, table_row: int, _column: int) -> None:
-        """Open the run this pass produced, without leaving the Run step."""
+        """Open the run this pass produced, over in Browse.
+
+        The point cloud lives in Browse and nowhere else, so activating a finished
+        row travels there rather than opening a viewer beside the queue.
+        """
         if self._run_in_flight():
             self._status_label.setText("Unavailable while processing.")
             return
@@ -606,6 +666,9 @@ class SimpleBatchMixin(MixinBase):
         if not run_dir.is_dir():
             self._status_label.setText(f"Run folder is missing: {run_dir.name}")
             return
+        # Travel first: _update_work_area only reveals the viewer in Browse, so
+        # loading from the Run step would leave the cloud with nowhere to render.
+        self._go_to_step("browse")
         self._auto_load_run(run_dir)
 
     def _on_edit_run_settings(self) -> None:
@@ -926,6 +989,11 @@ class SimpleBatchMixin(MixinBase):
         worker reports back.
         """
         if not paths:
+            return
+        # Dropping onto the table bypasses the greyed-out Add videos button, so
+        # the freeze is enforced here as well as on the controls.
+        if self._survey_worker_running:
+            self._status_label.setText("Unavailable while processing.")
             return
         self._status_label.setText(f"Reading {len(paths)} video(s)…")
 
@@ -1432,6 +1500,7 @@ class SimpleBatchMixin(MixinBase):
             if deviated
             else "Already on the standard settings."
         )
+        self._refresh_batch_standing()
         if self._survey_worker_running:
             self._survey_start_btn.setEnabled(False)
             self._refresh_section_state()
@@ -1513,8 +1582,43 @@ class SimpleBatchMixin(MixinBase):
             self._survey_start_btn.setText("Open Browse →")
             self._survey_start_btn.clicked.connect(partial(self._go_to_step, "browse"))
         else:
-            self._survey_start_btn.setText(f"Next: Process ({count}) →")
+            # A batch that has already run some of its passes is continued, not
+            # started: the word is the promise that the finished ones stay done
+            # and the half-processed one picks up from its cached frames.
+            verb = "Continue batch" if self._survey_processed_count() else "Next: Process"
+            self._survey_start_btn.setText(f"{verb} ({count}) →")
             self._survey_start_btn.clicked.connect(self._on_survey_start)
+
+    def _survey_processed_count(self) -> int:
+        """Passes in this batch that have already been through a run of any outcome."""
+        store = self._survey_store()
+        return sum(
+            1
+            for row in self._survey_rows
+            if row.pass_id is not None and store.runs_for_pass(row.pass_id)
+        )
+
+    def _refresh_batch_standing(self) -> None:
+        """Say how much of the batch is behind you, so stopping is safe to do.
+
+        Without this a resumed batch looks identical to a fresh one: the button
+        counts what is left but nothing counts what is done.
+        """
+        states = self._survey_row_states()
+        done = sum(1 for state in states if state == DONE)
+        remaining = len(self._survey_remaining_rows())
+        held = sum(1 for state in states if state == HELD)
+        if not states or (not done and not held):
+            self._survey_standing_label.setVisible(False)
+            return
+        parts = [f"{done} done", f"{remaining} remaining"]
+        if held:
+            parts.append(f"{held} held back")
+        text = " · ".join(parts)
+        if done and remaining:
+            text += ". Processing again continues where it stopped."
+        self._survey_standing_label.setText(text)
+        self._survey_standing_label.setVisible(True)
 
     def _confirm_batch_space(self, pass_count: int) -> bool:
         """Pre-flight the disk before a batch: only interrupt when it may not fit.
@@ -1605,6 +1709,11 @@ class SimpleBatchMixin(MixinBase):
             ))
         if not jobs:
             return
+        self._survey_job_pass_ids = [job.pass_.id for job in jobs]
+        self._survey_running_index = None
+        self._batch_progress.set_batch_plan(len(jobs), _median_pass_seconds())
+        self._batch_progress.set_idle("Starting…")
+        self._batch_progress.setVisible(True)
         self._survey_worker_running = True
         # Share the window's cancel and pause events so the bottom-bar transport
         # controls drive a survey batch exactly as they drive a single run.
@@ -1615,6 +1724,7 @@ class SimpleBatchMixin(MixinBase):
         self._survey_start_btn.setEnabled(False)
         self._begin_run_controls()
         self._set_wizard_navigation_enabled(False)
+        self._recompute_row_actions()
         self._refresh_survey_pass_statuses()
         self._set_app_mode("RUNNING")
         out_root = Path(self._out_root_input.text()).expanduser()
@@ -1739,11 +1849,12 @@ class SimpleBatchMixin(MixinBase):
 
     def _on_survey_progress(self, index: int, total: int, name: str) -> None:
         self._status_label.setText(f"Batch: pass {index} of {total}: {name}")
-        # Fresh estimator per pass so the ETA does not blend across passes.
+        # Fresh estimator per pass so the ETA does not blend across passes. The
+        # batch card spans them instead, from the median of past runs.
         self._begin_progress(self._recon_model)
-        panel = getattr(self, "_progress_panel", None)
-        if panel is not None:
-            panel.set_batch_context(index, total, name)
+        for sink in self._progress_sinks():
+            sink.set_batch_context(index, total, name)
+        self._survey_running_index = index - 1
         self._refresh_survey_pass_statuses()
 
     def _on_survey_done(self, ok: int, total: int, last_error: str) -> None:
@@ -1758,9 +1869,12 @@ class SimpleBatchMixin(MixinBase):
         self._end_run_controls()
         self._set_wizard_navigation_enabled(True)
         self._reset_progress_bars()
-        panel = getattr(self, "_progress_panel", None)
-        if panel is not None:
-            panel.clear_batch_context()
+        for sink in self._progress_sinks():
+            sink.clear_batch_context()
+        self._batch_progress.setVisible(False)
+        self._survey_running_index = None
+        self._survey_job_pass_ids = []
+        self._recompute_row_actions()
         self._set_app_mode("SETUP")
         # The outcome goes on the page and stays there. The status bar is the
         # wrong home for it: the next thing that happens overwrites it, and a
@@ -1804,12 +1918,37 @@ class SimpleBatchMixin(MixinBase):
                 self._pause_event.set()
             self._status_label.setText("Stopping survey batch…")
 
+    def _running_status_item(self) -> QTableWidgetItem | None:
+        """The status cell of the pass being processed, if one is."""
+        index = self._survey_running_index
+        if index is None or not 0 <= index < len(self._survey_job_pass_ids):
+            return None
+        pass_id = self._survey_job_pass_ids[index]
+        for model_index, row in enumerate(self._survey_rows):
+            if row.pass_id != pass_id:
+                continue
+            table_row = self._table_row_of(model_index)
+            return None if table_row < 0 else self._survey_pass_table.item(table_row, _COL_STATUS)
+        return None
+
+    def _on_pass_percent(self, percent: int) -> None:
+        """Move the running row's own progress, so the queue shows where it is."""
+        self._survey_pass_percent = percent
+        item = self._running_status_item()
+        if item is None:
+            return
+        item.setData(PASS_PERCENT_ROLE, percent)
+        item.setText(f"Running {percent}%")
+
     def _refresh_survey_pass_statuses(self) -> None:
         store = self._survey_store()
         for index, row in enumerate(self._survey_rows):
             item = self._survey_pass_table.item(self._table_row_of(index), _COL_STATUS)
             if item is None:
                 continue
+            # Cleared for every row and re-applied below to the one in flight, so
+            # a finished pass does not keep the fill it had while running.
+            item.setData(PASS_PERCENT_ROLE, None)
             if row.held:
                 item.setText("Held")
                 item.setToolTip("Held back: every batch skips this pass until it is returned.")
@@ -1835,6 +1974,8 @@ class SimpleBatchMixin(MixinBase):
                     item.setToolTip("")
             else:
                 item.setToolTip("")
+        if self._survey_worker_running:
+            self._on_pass_percent(self._survey_pass_percent)
 
     def _pass_quality_warnings(self, run_dir_name: str) -> list[str]:
         """Non-fatal warnings a succeeded run recorded in its manifest, if any."""

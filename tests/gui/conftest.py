@@ -26,14 +26,14 @@ def require_torch() -> None:
 
 @pytest.fixture(autouse=True)
 def _reset_ui_mode(qapp):
-    """Keep the persisted mode and preview toggles from leaking between tests."""
+    """Keep the persisted UI mode from leaking between tests."""
     from PySide6.QtCore import QSettings
 
     settings = QSettings("ECEO", "deepreefmap")
-    for key in ("ui_mode", "preview_3d", "setup_complete"):
+    for key in ("ui_mode", "setup_complete"):
         settings.remove(key)
     yield
-    for key in ("ui_mode", "preview_3d", "setup_complete"):
+    for key in ("ui_mode", "setup_complete"):
         settings.remove(key)
 
 
