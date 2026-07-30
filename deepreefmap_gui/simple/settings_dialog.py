@@ -4,6 +4,11 @@ Rather than keep a second copy of the run form, the dialog borrows the real one
 out of the advanced sidebar and hands it back when it closes. Simple mode never
 shows that sidebar, so there is nothing to take it from, and every setting stays
 a single widget with a single value.
+
+Borrowing the live form means the widgets are edited in place, so Cancel cannot
+simply drop a pending copy. The caller snapshots the settings before opening and
+puts them back when the dialog is rejected, which is why the dialog only reports
+its result and never persists anything itself.
 """
 
 from __future__ import annotations
@@ -42,13 +47,24 @@ class RunSettingsDialog(QDialog):
         layout.addWidget(scroll, 1)
 
         buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Reset
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+            | QDialogButtonBox.StandardButton.Reset
         )
-        buttons.button(QDialogButtonBox.StandardButton.Reset).setText("Reset defaults")
+        reset = buttons.button(QDialogButtonBox.StandardButton.Reset)
+        # The standard is the organisation preset, not the values a fresh window
+        # happens to construct: those two drifted apart the moment a preset
+        # shipped, and only one of them is the configuration anybody blessed.
+        reset.setText("Restore standard settings")
+        reset.setToolTip("Put every setting back to the standard for this survey.")
+        # Restore writes into the live form like every other edit here, so Cancel
+        # still undoes it, and only OK persists the machine override.
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setToolTip(
+            "Close without keeping any of these changes."
+        )
         buttons.accepted.connect(self.accept)
-        buttons.button(QDialogButtonBox.StandardButton.Reset).clicked.connect(
-            self._window._reset_form_defaults
-        )
+        buttons.rejected.connect(self.reject)
+        reset.clicked.connect(self._window._load_standard_into_form)
         layout.addWidget(buttons)
         self.resize(560, 640)
 
