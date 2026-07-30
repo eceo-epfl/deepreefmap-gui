@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -243,8 +242,10 @@ def env_is_healthy(purelib: str | os.PathLike[str] | None = None) -> bool:
 
 
 def self_restore(binary_path: str | os.PathLike[str]) -> bool:
-    """Reinstall the project into the env from the shared uv cache via PyApp's
-    ``self restore``. Returns True on success."""
+    """Repair a broken env via PyApp's ``self restore`` (wipe + reinstall from the
+    warm uv cache). Used only by the self-heal path, which fires solely when
+    ``env_is_healthy`` is False, so it never touches a good environment. Returns
+    True on success."""
     try:
         subprocess.run([str(binary_path), "self", "restore"], check=True)
         return True
@@ -253,99 +254,112 @@ def self_restore(binary_path: str | os.PathLike[str]) -> bool:
         return False
 
 
-# --- Stale-environment pruning ------------------------------------------------
-# Each version's env is a multi-GB directory PyApp never removes, and installer
-# reinstalls leave the previous version's env behind. Sweep them on every launch.
+# --- Retained binaries for rollback -------------------------------------------
+# Every version change keeps the outgoing binary next to the installed one, so a
+# later rollback needs no download. Each version keeps its own environment, so if
+# that version's env is still on disk the rollback is instant; if the user has
+# deleted it from the System tab, the next launch re-provisions it from the cache.
 
 
-def _env_dir_for_prefix(prefix: str | os.PathLike[str]) -> Path:
-    # sys.prefix is ``.../<version>/python``; the version dir is its parent.
-    return Path(prefix).parent
+def _versioned_name(binary_path: Path, version: str) -> str:
+    """`deepreefmap-gui-linux-x64` + `1.1.0` -> `deepreefmap-gui-linux-x64-1.1.0`,
+    preserving a `.exe` suffix so a kept Windows binary stays runnable."""
+    if binary_path.suffix:
+        return f"{binary_path.stem}-{version}{binary_path.suffix}"
+    return f"{binary_path.name}-{version}"
 
 
-def prune_stale_envs(current_prefix: str | os.PathLike[str] | None = None) -> list[Path]:
-    """Remove old version envs, keeping the running one plus one fallback.
+def previous_dir(binary_path: str | os.PathLike[str]) -> Path:
+    return Path(binary_path).parent / "previous"
 
-    PyApp lays envs out as ``.../pyapp/deepreefmap-gui/<version>/python``, so the running
-    env's siblings are past versions. Outside a PyApp env (a dev venv) only the
-    legacy-marker cleanup happens.
+
+def retain_previous_binary(
+    binary_path: str | os.PathLike[str], version: str | None
+) -> Path | None:
+    """Copy the current binary into ``previous/`` before it is overwritten.
+
+    Returns the kept path, or None when there is nothing to keep (no version
+    known, or the binary is missing).
     """
-    from deepreefmap_gui.paths import env_prune_marker_path
-
-    # Legacy marker from the pre-sweep prune mechanism.
-    env_prune_marker_path().unlink(missing_ok=True)
-
-    current = _env_dir_for_prefix(current_prefix or sys.prefix)
-    if "pyapp" not in current.parts or not current.is_dir():
-        return []
-    siblings = [p for p in current.parent.iterdir() if p != current and p.is_dir()]
-    siblings.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-    removed: list[Path] = []
-    # The newest sibling survives as a rollback target. Re-provisioning needs the
-    # package index, so on an offline field laptop a deleted env is unrecoverable,
-    # and a new version that provisions cleanly can still be broken at runtime.
-    for stale in siblings[1:]:
-        shutil.rmtree(stale, ignore_errors=True)
-        removed.append(stale)
-        logger.info("Pruned stale environment %s", stale)
-    return removed
+    binary_path = Path(binary_path)
+    if not version or not binary_path.exists():
+        return None
+    dest_dir = previous_dir(binary_path)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / _versioned_name(binary_path, version)
+    if dest.resolve() == binary_path.resolve():
+        return None
+    shutil.copy2(binary_path, dest)
+    return dest
 
 
-_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
-
-
-def provision_env(
+def available_previous_versions(
     binary_path: str | os.PathLike[str],
-    line_cb: Callable[[str], None] | None = None,
-) -> bool:
-    """Provision the new binary's environment via ``self restore``, streaming
-    install output to ``line_cb``. Returns False on failure instead of raising
-    (the binary is already swapped; the next launch retries provisioning).
+) -> dict[str, Path]:
+    """Versions whose binary is kept locally, mapped to their file.
+
+    These are the versions a rollback can reach with no network at all.
     """
-    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    binary_path = Path(binary_path)
+    result: dict[str, Path] = {}
+    directory = previous_dir(binary_path)
+    if not directory.is_dir():
+        return result
+    stem = binary_path.stem if binary_path.suffix else binary_path.name
+    suffix = binary_path.suffix
+    prefix = f"{stem}-"
+    for kept in directory.iterdir():
+        if not kept.is_file():
+            continue
+        name = kept.name
+        if suffix:
+            if not name.endswith(suffix):
+                continue
+            name = name[: -len(suffix)]
+        if not name.startswith(prefix):
+            continue
+        version = name[len(prefix):]
+        if version:
+            result[version] = kept
+    return result
 
-    def log(message: str) -> None:
-        if line_cb is not None:
-            line_cb(message)
 
-    try:
-        proc = subprocess.Popen(
-            [str(binary_path), "self", "restore"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            errors="replace",
-            creationflags=creationflags,
-        )
-        assert proc.stdout is not None
-        for raw in proc.stdout:
-            # uv redraws progress with \r and ANSI escapes; keep the final
-            # segment of each line as the log entry.
-            segment = _ANSI_RE.sub("", raw).split("\r")[-1].strip()
-            if segment:
-                log(segment)
-        code = proc.wait()
-    except Exception:
-        logger.exception("Provisioning failed for %s", binary_path)
-        log("Environment preparation failed; it will be retried on next launch.")
-        return False
-    if code != 0:
-        logger.warning("`self restore` exited with %d for %s", code, binary_path)
-        log("Environment preparation failed; it will be retried on next launch.")
-        return False
-    return True
+def prune_previous_binaries(
+    binary_path: str | os.PathLike[str], keep: int = 3
+) -> list[Path]:
+    """Cap the retained-binary store, newest kept. Each is tens of MB, so a small
+    ring is cheap insurance against an update that provisions but runs badly."""
+    kept = available_previous_versions(binary_path)
+    if len(kept) <= keep:
+        return []
+    by_mtime = sorted(kept.values(), key=lambda p: p.stat().st_mtime, reverse=True)
+    removed: list[Path] = []
+    for stale in by_mtime[keep:]:
+        try:
+            stale.unlink()
+            removed.append(stale)
+        except OSError:
+            logger.debug("Could not prune retained binary %s", stale, exc_info=True)
+    return removed
 
 
 def perform_update(
     release: dict,
     binary_path: Path,
     target_version: str,
+    current_version: str | None = None,
     progress_cb: Callable[[int, int], None] | None = None,
     line_cb: Callable[[str], None] | None = None,
 ) -> None:
-    """Download the release's asset, swap it in, then provision its environment.
+    """Download the release's asset and swap it in.
 
-    The old version's env is swept on the new version's first launch.
+    Provisioning is left to PyApp: the new version's environment is built from the
+    warm uv cache on the next launch (its wheels are already cached, so nothing
+    bulky is re-downloaded). This never touches the running env, which on Windows
+    holds file locks anyway.
+
+    The outgoing binary is copied into ``previous/`` first, so a later rollback
+    to ``current_version`` needs no download.
     """
     binary_path = Path(binary_path)
 
@@ -367,8 +381,48 @@ def perform_update(
         log(f"Downloaded {size} bytes, matching the size recorded for the release.")
     else:
         log(f"Downloaded {size} bytes; the release records no size to check it against.")
+    kept = retain_previous_binary(binary_path, current_version)
+    if kept is not None:
+        log(f"Kept the current binary for offline rollback: {kept.name}")
     log(f"Replacing binary at {binary_path}")
     replace_binary(binary_path, staged)
-    log("Preparing the new version's environment…")
-    provision_env(binary_path, line_cb=line_cb)
-    log("Done. Relaunch to use the new version.")
+    log(f"Installed {target_version}. Restart to apply; its environment is prepared on the first launch.")
+
+
+def perform_rollback(
+    binary_path: Path,
+    target_version: str,
+    current_version: str | None = None,
+    line_cb: Callable[[str], None] | None = None,
+) -> None:
+    """Swap in a locally kept binary with no download.
+
+    That version keeps its own environment, so if it still exists the next launch
+    is instant; if it was deleted from the System tab, PyApp re-provisions it from
+    the warm cache. Raises BinarySwapError when ``target_version`` was not retained.
+    """
+    binary_path = Path(binary_path)
+
+    def log(message: str) -> None:
+        if line_cb is not None:
+            line_cb(message)
+
+    kept = available_previous_versions(binary_path).get(target_version)
+    if kept is None:
+        raise BinarySwapError(
+            f"No locally kept binary for {target_version}. "
+            "Roll back over the network instead, or pick a version marked offline."
+        )
+    log(f"Restoring the kept binary for {target_version}: {kept.name}")
+    staged = binary_path.with_name(binary_path.name + ".new")
+    if staged.exists():
+        staged.unlink()
+    # Copy rather than move: the kept binary must survive so this version can be
+    # rolled back to again later.
+    shutil.copy2(kept, staged)
+    retained = retain_previous_binary(binary_path, current_version)
+    if retained is not None:
+        log(f"Kept the current binary for offline rollback: {retained.name}")
+    log(f"Replacing binary at {binary_path}")
+    replace_binary(binary_path, staged)
+    log(f"Rolled back to {target_version}. Restart to apply.")

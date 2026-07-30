@@ -83,6 +83,7 @@ class DeepReefMapWindow(
     _sig_survey_progress = Signal(int, int, str)
     _sig_survey_done = Signal(int, int, str)
     _sig_run_sizes_done = Signal(object)
+    _sig_storage_done = Signal(object)
 
     def __init__(self, classes_config: ClassConfig, classes_path: Path | None) -> None:
         super().__init__()
@@ -93,6 +94,7 @@ class DeepReefMapWindow(
         self._playback_timer.timeout.connect(self._on_playback_tick)
 
         self._sig_update_check_done.connect(self._apply_update_check)
+        self._sig_storage_done.connect(self._apply_storage)
         self._sig_model_status_done.connect(self._apply_model_status)
         self._sig_pipeline_error.connect(self._on_pipeline_error)
         self._sig_pipeline_cancelled.connect(self._on_pipeline_cancelled)

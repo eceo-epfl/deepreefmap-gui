@@ -2,9 +2,11 @@
 # Headless end-to-end test of the in-app update method against real binaries.
 #
 # Builds an old and a new version, performs the real download + binary swap,
-# relaunches, and asserts stale environments are pruned (keeping the newest as an
-# offline rollback target) while the shared uv cache survives. No Docker: a PyApp binary bootstraps its own interpreter, so the
-# host needs no project dependencies. Runs locally and on a CI runner.
+# relaunches, and asserts each version keeps its own environment (both persist --
+# nothing is auto-pruned), the outgoing binary is kept for rollback, a rollback
+# reuses the old version's surviving env instantly, and the uv cache survives. No
+# Docker: a PyApp binary bootstraps its own interpreter, so the host needs no
+# project dependencies. Runs locally and on a CI runner.
 #
 # Cross-platform: exercises the real per-OS replace_binary branch (Windows renames
 # the running .exe to .old; unix chmod+rename). On macOS it also swaps the binary
@@ -203,15 +205,14 @@ asset=$(py "$bin_old" -c 'from deepreefmap_gui.packaging.binary_swap import reso
 serve="$work/serve"; mkdir -p "$serve"
 cp "$bin_new" "$serve/$asset"
 
-# Provision the new binary now so its interpreter can serve immediately below (a
-# fresh env's first run installs for minutes, which the readiness wait won't cover).
-# This is the env the relaunch keeps, so it is not wasted work.
+# Warm the new version's env now so its interpreter can serve immediately below (a
+# first provision installs for minutes, which the readiness wait won't cover).
+# Each version keeps its own env, so this is not wasted work.
 echo "==> Provisioning the new binary"
 py "$bin_new" -c 'import deepreefmap; print("  new binary provisioned")'
 
-# Serve with the NEW binary's interpreter, not the old one: the server holds its
-# env's files open for the whole run, and Windows cannot delete open files. Pinning
-# it to the new (kept) env leaves the old env free to prune below on every OS.
+# Serve with the NEW binary's interpreter. Environments are never auto-pruned, so
+# nothing below deletes an open env and the Windows open-file limit is irrelevant.
 echo "==> Serving the new binary on 127.0.0.1:$port"
 ( cd "$serve" && exec "$bin_new" self python -m http.server "$port" ) >/dev/null 2>&1 &
 http_pid=$!
@@ -222,30 +223,42 @@ for _ in $(seq 1 50); do
     sleep 0.2
 done
 
-echo "==> Performing the real update (download + swap)"
+echo "==> Performing the real update (download + swap, keeping the old binary)"
 swap_binary "$bin_old"
 
-# $bin_old now contains the new version's bytes; relaunching it prunes old envs
-# but keeps the newest one as an offline rollback target. Fabricate an even older
-# env so the prune has something to remove while the real old env must survive.
-env_root=$(dirname "$env_old")
-env_stale="$env_root/0.9.0"
-mkdir -p "$env_stale/python"
-touch -d '2000-01-01' "$env_stale" 2>/dev/null || touch -t 200001010000 "$env_stale"
-
-echo "==> Relaunching the new binary: provision + prune"
-py "$bin_old" -c 'import deepreefmap; from deepreefmap_gui.packaging.binary_swap import prune_stale_envs; print("  pruned:", prune_stale_envs())'
+echo "==> Relaunching the updated binary (provisions the new version's env)"
+py "$bin_old" -c 'import deepreefmap; print("  updated binary ran")'
 env_new=$(posix "$(py "$bin_old" -c 'import os, sys; print(os.path.dirname(sys.prefix))')")
 echo "  new env: $env_new"
 
-echo "==> Assertions"
-[ "$env_old" != "$env_new" ] || { echo "old and new env share a dir (versions not isolated)" >&2; exit 1; }
-[ ! -d "$env_stale" ] || { echo "stale env was NOT pruned: $env_stale" >&2; exit 1; }
-[ -d "$env_old" ] || { echo "old env missing (must be kept as rollback target): $env_old" >&2; exit 1; }
-[ -d "$env_new" ] || { echo "new env missing: $env_new" >&2; exit 1; }
-[ -d "$uv_cache" ] || { echo "uv download cache missing (must survive prune): $uv_cache" >&2; exit 1; }
+# The outgoing binary must have been kept so a rollback needs no download.
+rolled_back=$(py "$bin_old" - "$(native "$bin_old")" <<'PY'
+import sys
+from deepreefmap_gui.packaging.binary_swap import available_previous_versions
+print(",".join(sorted(available_previous_versions(sys.argv[1]))))
+PY
+)
 
-echo "UPDATE E2E PASS: smoke ok, stale env pruned, rollback env kept, new env live, uv cache intact"
+echo "==> Assertions (update)"
+[ "$env_old" != "$env_new" ] || { echo "per-version envs not isolated: $env_old vs $env_new" >&2; exit 1; }
+[ -d "$env_old" ] || { echo "old env was removed (must persist -- no auto-cleanup): $env_old" >&2; exit 1; }
+[ -d "$env_new" ] || { echo "new env missing: $env_new" >&2; exit 1; }
+echo "$rolled_back" | grep -q "$old_version" || { echo "old binary not kept for rollback (have: $rolled_back)" >&2; exit 1; }
+[ -d "$uv_cache" ] || { echo "uv download cache missing: $uv_cache" >&2; exit 1; }
+
+# Roll back to the old version. Its binary is kept and its env still exists, so
+# this needs no download and the next launch reuses the old env instantly.
+echo "==> Rolling back to $old_version"
+py "$bin_old" - "$(native "$bin_old")" "$old_version" "$new_version" <<'PY'
+import sys
+from pathlib import Path
+from deepreefmap_gui.packaging.binary_swap import perform_rollback
+perform_rollback(Path(sys.argv[1]), sys.argv[2], current_version=sys.argv[3], line_cb=print)
+PY
+env_after=$(posix "$(py "$bin_old" -c 'import os, sys; print(os.path.dirname(sys.prefix))')")
+[ "$env_after" = "$env_old" ] || { echo "rollback did not reuse the old env: $env_after vs $env_old" >&2; exit 1; }
+
+echo "UPDATE E2E PASS: per-version envs isolated + persisted, old binary kept, rollback reused the old env, uv cache intact"
 
 # macOS ships the binary inside DeepReefMap.app/Contents/MacOS/. We do not sign, so
 # an in-app update swaps that inner binary directly -- there is no signed bundle to

@@ -78,6 +78,13 @@ def _refresh_uninstall_display_version() -> None:
 
 def main() -> None:
     args = sys.argv[1:]
+    if args == ["__provision__"]:
+        # PyApp provisions this version's env (if missing) before Python starts,
+        # so by now it is ready. This arg exists only to give the installer a
+        # provision-then-exit invocation that never opens the GUI, and because
+        # PyApp only acts when the env dir is absent, re-running the installer
+        # over an existing version reuses its env instead of rebuilding it.
+        return
     if args:
         _attach_parent_console()
     _ensure_stdio_streams()
@@ -85,26 +92,28 @@ def main() -> None:
     from deepreefmap_gui.packaging.binary_swap import (
         cleanup_stale_backups,
         env_is_healthy,
-        prune_stale_envs,
+        prune_previous_binaries,
         pyapp_binary,
         self_restore,
     )
 
     binary = pyapp_binary()
     if binary and not os.environ.get(_HEAL_GUARD) and not env_is_healthy() and self_restore(binary):
+        # The env looks damaged (missing/emptied torch or PySide6). `self restore`
+        # wipes this one broken version's env and reinstalls it from the warm
+        # cache; re-exec into the repaired env. This only fires when the env is
+        # unhealthy, so a good env is never touched.
         os.environ[_HEAL_GUARD] = "1"
         os.execv(binary, [binary, *sys.argv[1:]])
-        # Restore failed: fall through so launch surfaces the real error.
+        # Restore failed to fix things: fall through so launch surfaces the error.
 
     if binary:
         from pathlib import Path
 
         cleanup_stale_backups(Path(binary))
-
-    # This version has provisioned successfully (we got here), so old version envs,
-    # left by in-app updates or installer reinstalls, can go. The newest one is kept
-    # as an offline rollback target.
-    prune_stale_envs()
+        # Cap the tiny retained rollback binaries. Environments themselves are
+        # never auto-pruned -- the user manages those from the System tab.
+        prune_previous_binaries(Path(binary))
 
     _refresh_uninstall_display_version()
 

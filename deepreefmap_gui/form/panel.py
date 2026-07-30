@@ -1209,9 +1209,43 @@ class FormPanelMixin(MixinBase):
         self._refresh_desktop_entry_button()
         updates_layout.addWidget(self._desktop_entry_btn)
 
+        self._build_storage_section(updates_layout)
+
         threading.Thread(target=self._check_for_update, daemon=True).start()
 
         updates_layout.addStretch()
+
+    def _build_storage_section(self, layout: QVBoxLayout) -> None:
+        """Per-version environments (with real, hardlink-aware sizes) and the model
+        cache total. Only shown when running from an installed binary; environments
+        are never pruned automatically, they are managed here by hand.
+        """
+        if pyapp_binary_path() is None:
+            return
+        layout.addWidget(QLabel("<b>Storage</b>"))
+        caption = QLabel(
+            "Each version keeps its own environment. Sizes are what deleting frees; "
+            "most of an environment is shared with the package cache."
+        )
+        caption.setWordWrap(True)
+        caption.setStyleSheet(f"color: {TEXT_MUTED};")
+        layout.addWidget(caption)
+
+        self._env_list_container = QWidget()
+        self._env_list_layout = QVBoxLayout(self._env_list_container)
+        self._env_list_layout.setContentsMargins(0, 0, 0, 0)
+        self._env_list_layout.addWidget(QLabel("Measuring environments…"))
+        layout.addWidget(self._env_list_container)
+
+        self._model_cache_label = QLabel("Measuring downloaded models…")
+        self._model_cache_label.setWordWrap(True)
+        self._model_cache_label.setStyleSheet(f"color: {TEXT_MUTED};")
+        layout.addWidget(self._model_cache_label)
+        self._models_tab_btn = QPushButton("Manage models in the Models tab")
+        self._models_tab_btn.clicked.connect(self._go_to_models_tab)
+        layout.addWidget(self._models_tab_btn)
+
+        self._refresh_storage()
 
     def _build_top_bar(self) -> QWidget:
         bar = QWidget()
