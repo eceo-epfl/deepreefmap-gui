@@ -344,10 +344,19 @@ class ResultsMixin(MixinBase):
             self._status_label.setText("No frames available to export.")
             return
         frame_idx = int(self._frame_slider.value())
-        try:
-            stack = self._viewer.current_frame_stack()
-        except AttributeError:
+        # The capability is checked by looking for the method, not by catching
+        # what calling it raises. Catching AttributeError swallowed any raised
+        # *inside* current_frame_stack as well, and reported a missing feature
+        # for what was a bug several frames down.
+        stack_fn = getattr(self._viewer, "current_frame_stack", None)
+        if stack_fn is None:
             self._status_label.setText("Viewer doesn't support frame export.")
+            return
+        try:
+            stack = stack_fn()
+        except Exception as exc:
+            self._status_label.setText(f"Export failed: {exc}")
+            logger.exception("Failed to read the current frame stack")
             return
         if stack is None:
             self._status_label.setText("Current frame is not available.")
