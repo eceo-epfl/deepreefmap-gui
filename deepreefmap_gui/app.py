@@ -326,6 +326,26 @@ class DeepReefMapWindow(
 
 
 
+def prefer_portal_file_dialogs() -> None:
+    # QFileDialog only draws a native dialog when a platform theme plugin offers
+    # one. The PySide6 wheel bundles its own Qt and ships no desktop-specific
+    # theme, so Qt finds nothing on KDE/GNOME/XFCE alike and falls back to its
+    # own picker. The portal theme is bundled, and it degrades to that same
+    # picker when no xdg-desktop-portal is running.
+    if not sys.platform.startswith("linux"):
+        return
+    if os.environ.get("QT_QPA_PLATFORMTHEME"):
+        return
+    import PySide6
+
+    themes = Path(PySide6.__file__).parent / "Qt" / "plugins" / "platformthemes"
+    # Absent under a distro-packaged PySide6, which uses the system Qt plugins
+    # and so already has a working native theme.
+    if not (themes / "libqxdgdesktopportal.so").exists():
+        return
+    os.environ["QT_QPA_PLATFORMTHEME"] = "xdgdesktopportal"
+
+
 def launch(classes_path: Path | None = None, view_run_dir: Path | None = None) -> None:
     from deepreefmap.config.classes import load_classes
 
@@ -342,6 +362,7 @@ def launch(classes_path: Path | None = None, view_run_dir: Path | None = None) -
     if os.environ.get("WAYLAND_DISPLAY") and not os.environ.get("QT_QPA_PLATFORM"):
         os.environ["QT_QPA_PLATFORM"] = "xcb"
     os.environ.setdefault("QT_OPENGL", "desktop")
+    prefer_portal_file_dialogs()
     fmt = QSurfaceFormat()
     fmt.setRenderableType(QSurfaceFormat.RenderableType.OpenGL)
     # VTK 9's OpenGL2 backend needs >=3.2 core. macOS only exposes >2.1 through a
