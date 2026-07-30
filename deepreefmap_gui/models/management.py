@@ -198,7 +198,12 @@ class ModelManagementMixin(MixinBase):
         auth_user, can_gated = check_hf_auth()
         self._can_read_gated = can_gated
         model_states = [(m, is_model_cached(m)) for m in all_known_models()]
-        self._sig_model_status_done.emit(auth_user, model_states)
+        try:
+            self._sig_model_status_done.emit(auth_user, model_states)
+        except RuntimeError:
+            # The window was destroyed while this ran (a quit during the startup
+            # check, or a test tearing the window down); nothing to deliver to.
+            pass
 
     def _on_discover_clicked(self) -> None:
         self._discover_btn.setEnabled(False)
