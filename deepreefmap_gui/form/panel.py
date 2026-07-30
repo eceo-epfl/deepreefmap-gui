@@ -9,7 +9,16 @@ import threading
 from pathlib import Path
 from typing import cast
 
-from PySide6.QtCore import QFileSystemWatcher, QSettings, QSize, QStandardPaths, Qt, QUrl, Signal
+from PySide6.QtCore import (
+    QFileSystemWatcher,
+    QSettings,
+    QSize,
+    QStandardPaths,
+    Qt,
+    QTimer,
+    QUrl,
+    Signal,
+)
 from PySide6.QtGui import QDesktopServices, QIcon, QStandardItemModel
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -1057,6 +1066,16 @@ class FormPanelMixin(MixinBase):
         self._out_root_input.textChanged.connect(self._on_output_root_changed)
         self._run_name_input.textChanged.connect(self._on_run_name_changed)
 
+        # Editing the output root is debounced because the expensive half of
+        # reacting to it walks the tree and opens a SurveyStore, and SurveyStore
+        # creates its database under whatever path it is handed. Run per
+        # keystroke, that leaves a survey.db under every prefix of what the user
+        # typed on the way to the path they meant.
+        self._out_root_commit_timer = QTimer(self)
+        self._out_root_commit_timer.setSingleShot(True)
+        self._out_root_commit_timer.setInterval(300)
+        self._out_root_commit_timer.timeout.connect(self._commit_output_root)
+
         # Watch the output root directory so Browse reflects new manifests
         # appearing on disk (e.g. a sibling process completes a run) in addition
         # to user edits of the path text.
@@ -1718,8 +1737,14 @@ class FormPanelMixin(MixinBase):
             self._effective_dir_label.setText(f"→ {target}")
 
     def _on_output_root_changed(self, _text: str = "") -> None:
+        # Immediate: both are derived from the text alone, and the user is
+        # watching them as they type.
         self._update_effective_dir_label()
         self._recompute_submit_state()
+        self._out_root_commit_timer.start()
+
+    def _commit_output_root(self) -> None:
+        """Persist the root and rescan it, once the path has stopped changing."""
         self._settings.setValue("output_root_dir", self._out_root_input.text())
         self._refresh_data_manager()
         self._update_out_root_watch()

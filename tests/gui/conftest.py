@@ -109,10 +109,20 @@ def make_window(qapp):
     """Factory building a fresh DeepReefMapWindow with the built-in classes.
 
     A factory rather than an instance so tests can set env vars (mock PyApp,
-    timing-profile path) before construction. Windows are destroyed on teardown:
-    each installs event filters on its widgets, and a leaked window makes a later
-    global setStyleSheet re-polish it through those filters, which hangs the suite.
-    deleteLater rather than close() so the quit-confirmation modal never fires.
+    timing-profile path) before construction.
+
+    Every window it builds is drained, stopped and destroyed on teardown, in that
+    order. Some work is queued rather than armed: deleting a run directory fires
+    QFileSystemWatcher.directoryChanged asynchronously, and a batch worker emits
+    its done signal across threads. Neither has been delivered by teardown, so
+    stopping timers first misses them entirely (the delivery happens later and
+    arms a timer on a window nothing is watching any more). Draining first lets
+    them land, then the stop catches what they armed.
+
+    Windows are then destroyed: each installs event filters on its widgets, and a
+    leaked window makes a later global setStyleSheet re-polish it through those
+    filters, which hangs the suite. deleteLater rather than close() so the
+    quit-confirmation modal never fires.
     """
     from PySide6.QtCore import QEvent
 
@@ -128,8 +138,11 @@ def make_window(qapp):
         return window
 
     yield _make
-    # Stop the periodic timers and drain queued signals before deleting, so a
-    # tick does not fire against a half-deleted window ("signal source deleted").
+    # Drain queued deliveries first so they land while the window still has its
+    # timers, then stop the timers they armed, then delete: a tick must not
+    # fire against a half-deleted window ("signal source deleted").
+    if created:
+        qapp.processEvents()
     for window in created:
         window._stop_window_timers()
         window.hide()
