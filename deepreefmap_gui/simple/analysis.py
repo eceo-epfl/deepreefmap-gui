@@ -35,12 +35,16 @@ from deepreefmap_gui.map.overlays import OverlayTransect
 from deepreefmap_gui.map.widget import SlippyMapWidget
 from deepreefmap_gui.simple.charts import GroupedBarChart, pass_color
 from deepreefmap_gui.survey.analysis import (
+    PooledCover,
     assemble_transect_covers,
+    collate_long_format,
     cover_labels,
+    latest_run_per_pass,
+    pooled_transect_cover,
     repeatability_stats,
     reproducibility_groups,
 )
-from deepreefmap_gui.survey.models.exporters import save_repeatability_csv
+from deepreefmap_gui.survey.models.exporters import save_long_format_csv, save_repeatability_csv
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +70,7 @@ class SimpleAnalysisMixin(MixinBase):
         """Full-page Analyse section: transect map beside the cover chart, with
         repeatability stats and the run list below."""
         self._analysis_covers = []
+        self._analysis_all_covers = []
 
         page = QWidget()
         layout = QVBoxLayout(page)
@@ -108,6 +113,12 @@ class SimpleAnalysisMixin(MixinBase):
         )
         selector.addWidget(self._analysis_level_combo)
         chart_layout.addLayout(selector)
+        # The defensible headline: the count-weighted pool and how many passes
+        # it rests on. The per-pass bars below are the spread, not the estimate.
+        self._analysis_estimate_label = QLabel("")
+        self._analysis_estimate_label.setWordWrap(True)
+        self._analysis_estimate_label.setStyleSheet(f"color: {TEXT_MUTED};")
+        chart_layout.addWidget(self._analysis_estimate_label)
         self._analysis_chart = GroupedBarChart()
         chart_layout.addWidget(self._analysis_chart, 1)
         top.addWidget(chart_card)
@@ -121,10 +132,13 @@ class SimpleAnalysisMixin(MixinBase):
 
         bottom = QSplitter(Qt.Orientation.Horizontal)
         bottom.setHandleWidth(GUTTER)
-        stats_card, stats_layout = section_card("Repeatability by class")
-        self._analysis_stats_table = QTableWidget(0, 5)
+        stats_card, stats_layout = section_card("Cover estimate and repeatability by class")
+        self._analysis_stats_table = QTableWidget(0, 6)
+        # "Cover" is the count-weighted transect estimate. "Mean of passes" is
+        # the unweighted average of per-pass fractions, kept only as a spread
+        # reference so it is never read as the cover figure.
         self._analysis_stats_table.setHorizontalHeaderLabels(
-            ["Class", "Mean", "Std", "CV", "Range"]
+            ["Class", "Cover", "Mean of passes", "Std", "CV", "Range"]
         )
         self._analysis_stats_table.verticalHeader().setVisible(False)
         self._analysis_stats_table.setShowGrid(False)
@@ -165,6 +179,9 @@ class SimpleAnalysisMixin(MixinBase):
         self._analysis_export_btn = QPushButton("Export repeatability CSV")
         self._analysis_export_btn.clicked.connect(self._on_analysis_export_csv)
         export_row.addWidget(self._analysis_export_btn)
+        self._analysis_collated_btn = QPushButton("Export collated cover CSV")
+        self._analysis_collated_btn.clicked.connect(self._on_analysis_export_collated)
+        export_row.addWidget(self._analysis_collated_btn)
         export_row.addStretch(1)
         layout.addLayout(export_row)
         self._update_analysis_export_button()
@@ -178,6 +195,13 @@ class SimpleAnalysisMixin(MixinBase):
             "Write mean, standard deviation, CV and range per class to a CSV."
             if ready
             else "Nothing to export yet: this transect has no completed passes."
+        )
+        self._analysis_collated_btn.setEnabled(ready)
+        self._analysis_collated_btn.setToolTip(
+            "Write one long-format row per transect/pass/class/level, plus the "
+            "count-weighted pooled estimate, with GUI and taxonomy provenance."
+            if ready
+            else "Nothing to export yet: no completed passes."
         )
 
     def _analysis_transect_id(self) -> uuid.UUID | None:
@@ -205,22 +229,32 @@ class SimpleAnalysisMixin(MixinBase):
         self._refresh_analysis_map(store, transect_id)
         if transect_id is None:
             self._analysis_covers = []
+            self._analysis_all_covers = []
             self._analysis_chart.set_data([], [])
             self._analysis_stats_table.setRowCount(0)
             self._analysis_repro_label.setText("")
+            self._analysis_estimate_label.setText("")
             self._analysis_runs_list.clear()
             self._refresh_analysis_empty_states()
             return
 
         out_root = Path(self._out_root_input.text()).expanduser()
-        covers = assemble_transect_covers(
+        # Read every succeeded run once, then split: the deduped set (one latest
+        # run per pass) drives the estimate and the chart, the full set feeds
+        # reproducibility, whose whole point is the reruns dedupe removes.
+        all_covers = assemble_transect_covers(
             store,
             out_root,
             transect_id,
             self._classes_config,
             level=self._analysis_level_combo.currentText(),
+            dedupe=False,
         )
+        covers = latest_run_per_pass(all_covers)
+        self._analysis_all_covers = all_covers
         self._analysis_covers = covers
+        expected = len(store.list_passes(transect_id=transect_id))
+        pooled = pooled_transect_cover(covers, expected_passes=expected)
         series = [
             (
                 f"{index} {'fwd' if c.direction == 'forward' else 'rev'}",
@@ -230,10 +264,25 @@ class SimpleAnalysisMixin(MixinBase):
             for index, c in enumerate(covers, start=1)
         ]
         self._analysis_chart.set_data(cover_labels(covers, _CHART_MIN_FRACTION), series)
-        self._fill_analysis_stats(covers)
-        self._fill_analysis_repro(covers)
+        self._update_analysis_estimate_label(pooled)
+        self._fill_analysis_stats(covers, pooled)
+        self._fill_analysis_repro(all_covers)
         self._fill_analysis_runs(store, out_root, transect_id)
         self._refresh_analysis_empty_states()
+
+    def _update_analysis_estimate_label(self, pooled: PooledCover) -> None:
+        """State the estimator and how many passes back the number, up front."""
+        if not pooled.counts:
+            self._analysis_estimate_label.setText("")
+            return
+        passes = (
+            f"{pooled.contributing_passes} of {pooled.expected_passes} "
+            f"pass{'es' if pooled.expected_passes != 1 else ''}"
+        )
+        self._analysis_estimate_label.setText(
+            f"Transect cover estimate: count-weighted pool of {passes}. "
+            "Bars below show each pass, not the estimate."
+        )
 
     def _refresh_analysis_empty_states(self) -> None:
         """Show each pane's placeholder while it has nothing to say."""
@@ -265,7 +314,7 @@ class SimpleAnalysisMixin(MixinBase):
     def _transect_tooltip(self, store, transect, runs: list) -> str:
         """What has actually been surveyed here, without opening the transect."""
         passes = store.list_passes(transect_id=transect.id)
-        videos = {p.video_id for p in passes}
+        videos = {video_id for p in passes for video_id in p.video_ids()}
         done = sum(1 for run in runs if run.status == "succeeded")
         failed = sum(1 for run in runs if run.status == "failed")
         lines = [f"<b>{transect.name}</b>"]
@@ -292,7 +341,7 @@ class SimpleAnalysisMixin(MixinBase):
                 combo.setCurrentIndex(index)
                 return
 
-    def _fill_analysis_stats(self, covers: list) -> None:
+    def _fill_analysis_stats(self, covers: list, pooled: PooledCover) -> None:
         stats = repeatability_stats(covers)
         labels = cover_labels(covers)
         table = self._analysis_stats_table
@@ -301,6 +350,7 @@ class SimpleAnalysisMixin(MixinBase):
             entry = stats[label]
             cells = [
                 label,
+                f"{pooled.cover.get(label, 0.0) * 100:.1f}%",
                 f"{entry['mean'] * 100:.1f}%",
                 f"{entry['std'] * 100:.1f}%",
                 f"{entry['cv']:.2f}",
@@ -363,3 +413,22 @@ class SimpleAnalysisMixin(MixinBase):
             Path(path_str), cover_labels(covers), repeatability_stats(covers), covers
         )
         self._status_label.setText(f"Exported repeatability CSV for {name}.")
+
+    def _on_analysis_export_collated(self) -> None:
+        """Collate every transect into one long-format CSV with provenance."""
+        store = self._survey_store()
+        out_root = Path(self._out_root_input.text()).expanduser()
+        path_str, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export collated cover CSV",
+            str(out_root / "survey_cover_long.csv"),
+            "CSV files (*.csv)",
+        )
+        if not path_str:
+            return
+        rows = collate_long_format(store, out_root, self._classes_config)
+        save_long_format_csv(Path(path_str), rows)
+        transects = len({row.transect_id for row in rows})
+        self._status_label.setText(
+            f"Exported collated cover CSV: {len(rows)} rows across {transects} transects."
+        )

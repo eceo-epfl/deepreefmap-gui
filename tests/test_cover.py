@@ -10,6 +10,8 @@ from deepreefmap_gui.cover import (
     group_name_for_id,
     save_cover_csv,
     save_cover_csv_levels,
+    taxonomy_hash,
+    taxonomy_version,
 )
 
 
@@ -150,3 +152,13 @@ def test_save_cover_csv_levels_creates_a_missing_directory(tmp_path) -> None:
     written = save_cover_csv_levels(tmp_path / "a" / "b", _cover(), _classes(), prefix="run42")
     assert written["fine"].name == "run42_fine.csv"
     assert written["fine"].exists()
+
+
+def test_taxonomy_version_and_hash_identify_the_grouping() -> None:
+    """A grouped cover number is only reproducible if the taxonomy is pinned."""
+    assert taxonomy_version() == 1
+    digest = taxonomy_hash()
+    assert len(digest) == 64
+    assert all(c in "0123456789abcdef" for c in digest)
+    # A version key must not leak into the id -> group mapping.
+    assert group_name_for_id(_classes(), 22, "coarse") == "coral alive"
