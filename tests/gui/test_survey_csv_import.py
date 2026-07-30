@@ -119,7 +119,7 @@ def test_an_unknown_transect_lands_unassigned_and_says_so(import_window, tmp_pat
     do_import(window, csv_path, monkeypatch)
 
     assert window._survey_rows[0].transect_id is None
-    assert "not planned yet" in window._status_label.text()
+    assert "not yet planned" in window._status_label.text()
     assert not window._survey_start_btn.isEnabled()
 
 
@@ -142,4 +142,4 @@ def test_import_is_refused_mid_batch(import_window, tmp_path, monkeypatch):
     do_import(window, csv_path, monkeypatch)
 
     assert window._survey_pass_table.rowCount() == 0
-    assert "Wait for the current batch" in window._status_label.text()
+    assert "Unavailable while processing" in window._status_label.text()

@@ -74,7 +74,7 @@ def test_the_strip_goes_to_the_setup_step(queued_window, monkeypatch):
     monkeypatch.setattr(window, "_gpu_only_mapper", lambda: "loger")
     window._recompute_survey_start()
 
-    assert strip_action(window) == "Set up laptop"
+    assert strip_action(window) == "Open Environment"
     window._survey_not_ready._action.click()
     assert window._current_section() == "setup"
 
@@ -85,7 +85,7 @@ def test_missing_models_send_the_diver_to_setup(queued_window, monkeypatch):
     window._recompute_survey_start()
 
     assert "coralscapes-vit-b-dpt" in strip_reason(window)
-    assert strip_action(window) == "Set up laptop"
+    assert strip_action(window) == "Open Environment"
 
 
 def test_a_broken_preset_sends_the_diver_to_the_settings(queued_window, monkeypatch):

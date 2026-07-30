@@ -297,7 +297,7 @@ class UiModeMixin(MixinBase):
         try:
             result = save_machine_override(self._collect_preset_from_form(), org)
         except OSError as exc:
-            logger.warning("Could not save the settings for this computer: %s", exc)
+            logger.warning("Could not save the settings for this machine: %s", exc)
             self._status_label.setText(f"Settings not saved: {exc}")
             return
         self._active_preset = ActivePreset(org=org, overrides=result.saved)
@@ -322,7 +322,7 @@ class UiModeMixin(MixinBase):
             )
         elif result.saved:
             self._status_label.setText(
-                f"Saved for this computer: {describe_keys(result.saved)}."
+                f"Saved for this machine: {describe_keys(result.saved)}."
             )
 
     def _survey_deviations(self) -> dict[str, Any]:
@@ -357,7 +357,7 @@ class UiModeMixin(MixinBase):
     def _restore_standard_settings(self) -> None:
         """Drop this machine's changes and go back to the organisation preset."""
         if self._survey_worker_running:
-            self._status_label.setText("Wait for the current batch to finish.")
+            self._status_label.setText("Unavailable while processing.")
             return
         # Ask before restoring, or the answer is always "nothing changed".
         deviated = bool(self._survey_deviations())
@@ -372,7 +372,7 @@ class UiModeMixin(MixinBase):
         self._recompute_survey_start()
         if self._active_preset is None:
             self._status_label.setText(
-                "The settings could not be read, so the form went back to its own defaults."
+                "Settings could not be read. The form has reverted to its defaults."
             )
         elif had_override or deviated:
             self._status_label.setText(

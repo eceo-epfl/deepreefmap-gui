@@ -80,7 +80,7 @@ PRESET_META_KEYS = ("preset_name", "preset_version")
 # with the organisation, because repeat passes are only comparable if every
 # laptop measured them the same way.
 #
-#   mapping_name          a laptop with no graphics card cannot run the standard
+#   mapping_name          a machine with no graphics card cannot run the standard
 #                         method at all, so it may fall back to one that works
 #   preprocess_batch_size how many frames this machine's memory holds at once
 #   camera_profile_name   which camera this team actually dives with

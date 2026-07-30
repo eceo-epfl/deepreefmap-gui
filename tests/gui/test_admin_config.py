@@ -66,7 +66,7 @@ def test_a_deviation_is_named_on_the_run_step(simple_window):
     window = simple_window
     window._batch_size_spin.setValue(1)
     window._recompute_survey_start()
-    assert "Changed on this computer: frames processed at once." in (
+    assert "Changed on this machine: frames processed at once." in (
         window._survey_preset_label.text()
     )
     assert window._survey_restore_btn.isEnabled()
@@ -75,7 +75,7 @@ def test_a_deviation_is_named_on_the_run_step(simple_window):
 def test_restore_is_offered_only_when_something_deviates(simple_window):
     window = simple_window
     assert not window._survey_restore_btn.isEnabled()
-    assert "already on the standard" in window._survey_restore_btn.toolTip()
+    assert "Already on the standard" in window._survey_restore_btn.toolTip()
     window._batch_size_spin.setValue(1)
     window._recompute_survey_start()
     assert window._survey_restore_btn.isEnabled()
@@ -108,7 +108,7 @@ def test_locked_preset_still_allows_a_machine_setting(
     assert yaml.safe_load(machine_preset_path.read_text())["overrides"] == {
         "preprocess_batch_size": 1
     }
-    assert "Saved for this computer: frames processed at once." in window._status_label.text()
+    assert "Saved for this machine: frames processed at once." in window._status_label.text()
 
 
 def test_admin_preset_drives_the_run(simple_window, tmp_path, monkeypatch):

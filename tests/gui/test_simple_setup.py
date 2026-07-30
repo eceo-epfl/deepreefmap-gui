@@ -1,7 +1,8 @@
-"""First-run laptop setup step: pass/fail logic, gating, and provisioning wiring."""
+"""First-run environment step: pass/fail logic, gating, and provisioning wiring."""
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 from deepreefmap_gui.profiling.system_probe import GPU_CUDA, GPU_NONE
@@ -22,13 +23,13 @@ def test_graphics_passes_with_a_card():
 def test_graphics_passes_on_cpu_when_the_method_allows_it():
     check = S.graphics_check(gpu_name=None, requires_gpu=False)
     assert check.ok
-    assert "main processor" in check.detail
+    assert "CPU" in check.detail
 
 
 def test_graphics_fails_when_the_method_needs_a_card():
     check = S.graphics_check(gpu_name=None, requires_gpu=True)
     assert not check.ok
-    assert "graphics card" in check.detail
+    assert "requires one" in check.detail
 
 
 def test_models_row_names_what_is_missing():
@@ -41,6 +42,51 @@ def test_models_row_names_what_is_missing():
 def test_space_row_compares_against_the_threshold():
     assert S.space_check(20 * _GB, 10 * _GB).ok
     assert not S.space_check(1 * _GB, 10 * _GB).ok
+
+
+def test_space_row_quotes_capacity_only_once_runs_can_size_it():
+    """Scenario: nothing has been processed on this machine yet.
+
+    Expected behaviour: the row reports free space and says capacity is not yet
+    known, rather than converting the unmeasured per-pass fallback into a
+    footage figure the user would read as measured.
+    """
+    unmeasured = S.space_check(20 * _GB, 10 * _GB)
+    assert "estimated once a run is recorded" in unmeasured.detail
+
+    measured = S.space_check(20 * _GB, 10 * _GB, bytes_per_footage_minute=_GB / 6)
+    assert "2 hours of footage" in measured.detail
+
+
+def _write_run(root, name, *, size_bytes, frames, fps):
+    run_dir = root / name
+    run_dir.mkdir(parents=True)
+    (run_dir / "run_manifest.json").write_text(
+        json.dumps({"frames_processed": frames, "fps": fps}), encoding="utf-8"
+    )
+    (run_dir / "cloud.ply").write_bytes(b"x" * size_bytes)
+
+
+def test_footage_rate_is_measured_from_run_output(tmp_path):
+    # 600 frames at 5 fps is 2 minutes of footage; 4 MB of output is 2 MB/minute.
+    _write_run(tmp_path, "run_a", size_bytes=4 * 1024**2, frames=600, fps=5)
+
+    rate = S.measure_bytes_per_footage_minute(tmp_path)
+
+    assert rate is not None
+    # The manifest itself lands in the directory too, so allow for its bytes.
+    assert 2 * 1024**2 <= rate < 2.1 * 1024**2
+
+
+def test_footage_rate_is_unknown_without_runs(tmp_path):
+    assert S.measure_bytes_per_footage_minute(tmp_path) is None
+
+
+def test_a_run_with_no_usable_footage_length_is_skipped(tmp_path):
+    """A zero frame count or fps would divide by zero, and says nothing anyway."""
+    _write_run(tmp_path, "empty", size_bytes=1024, frames=0, fps=5)
+
+    assert S.measure_bytes_per_footage_minute(tmp_path) is None
 
 
 def test_setup_ready_needs_all_three():
@@ -90,7 +136,7 @@ def test_setup_is_a_reachable_section(window):
 
 def test_ready_when_all_three_pass(window, monkeypatch):
     _force(window, monkeypatch, gpu_name="GPU", free=50 * _GB, missing=())
-    assert window._setup_summary.text() == "Ready to survey."
+    assert window._setup_summary.text() == "All requirements met."
     for _icon, _detail, actions in window._setup_check_rows.values():
         assert all(a.isHidden() for a in actions)
 
@@ -100,23 +146,23 @@ def test_missing_models_crosses_the_row_and_offers_provisioning(window, monkeypa
     _icon, detail, actions = window._setup_check_rows["models"]
     assert "scsfmlearner" in detail.text()
     assert all(not a.isHidden() for a in actions)
-    assert window._setup_summary.text() != "Ready to survey."
+    assert window._setup_summary.text() == "1 requirement not met."
 
 
-def test_cpu_only_laptop_still_reaches_ready_with_the_standard_method(window, monkeypatch):
+def test_cpu_only_machine_still_reaches_ready_with_the_standard_method(window, monkeypatch):
     _force(window, monkeypatch, gpu_name=None, mapping="scsfmlearner", missing=())
     _icon, detail, actions = window._setup_check_rows["graphics"]
-    assert "main processor" in detail.text()
+    assert "CPU" in detail.text()
     assert all(a.isHidden() for a in actions)
-    assert window._setup_summary.text() == "Ready to survey."
+    assert window._setup_summary.text() == "All requirements met."
 
 
 def test_gpu_only_method_without_a_card_fails_the_graphics_row(window, monkeypatch):
     _force(window, monkeypatch, gpu_name=None, mapping="loger", missing=())
     _icon, detail, actions = window._setup_check_rows["graphics"]
-    assert "graphics card" in detail.text()
+    assert "requires one" in detail.text()
     assert not actions[0].isHidden()
-    assert window._setup_summary.text() != "Ready to survey."
+    assert window._setup_summary.text() == "1 requirement not met."
 
 
 def test_low_space_crosses_the_row(window, monkeypatch):
@@ -140,7 +186,7 @@ def test_no_jargon_on_the_setup_step(window, monkeypatch):
 
 
 def test_first_launch_leads_to_setup_when_not_ready(make_window, monkeypatch):
-    # Too little space makes the laptop not-ready regardless of models or card.
+    # Too little space makes the machine not-ready regardless of models or card.
     monkeypatch.setattr(S, "probe_system", lambda *_a, **_k: _prof(gpu_name="GPU", free=1 * _GB))
     window = make_window()
     assert window._current_section() == "setup"
@@ -195,7 +241,7 @@ def test_usb_import_waits_for_a_running_batch(window, monkeypatch):
     window._survey_worker_running = True
     window._on_setup_import_pack()
     assert called == []
-    assert "Wait for processing" in window._status_label.text()
+    assert "Unavailable while processing" in window._status_label.text()
 
 
 def test_download_starts_for_ungated_models(window, monkeypatch):

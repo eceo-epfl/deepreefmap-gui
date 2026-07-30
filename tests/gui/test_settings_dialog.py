@@ -119,7 +119,7 @@ def test_restore_is_refused_mid_batch(simple_window, monkeypatch, machine_preset
     window._survey_worker_running = True
     window._restore_standard_settings()
     assert machine_preset_path.exists()
-    assert "Wait for the current batch" in window._status_label.text()
+    assert "Unavailable while processing" in window._status_label.text()
 
 
 def test_cancel_abandons_the_edit(simple_window, monkeypatch):
@@ -213,4 +213,4 @@ def test_settings_cannot_be_edited_mid_batch(simple_window):
     window._survey_worker_running = True
     window._on_edit_run_settings()
     assert window._run_tab.isAncestorOf(window._setup_page)
-    assert "Wait for the current batch" in window._status_label.text()
+    assert "Unavailable while processing" in window._status_label.text()

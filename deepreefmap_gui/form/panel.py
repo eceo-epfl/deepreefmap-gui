@@ -1495,18 +1495,16 @@ class FormPanelMixin(MixinBase):
         # Icon by the play button: a plain span so the color tracks the grade
         # (amber warn / red block); the tooltip word-wraps into multiple lines.
         icon.setText(f'<span style="color:{color}; font-size:16px;">&#9888;</span>')
-        icon.setToolTip(
-            f"<b>{headline}</b><br>{verdict.message}<br><i>The run will proceed anyway.</i>"
-        )
+        icon.setToolTip(f"<b>{headline}</b><br>{verdict.message}<br><i>The run will proceed.</i>")
         icon.setVisible(True)
 
-        # Setup step: the same warning in a plain sentence, no jargon, for the
-        # diver who never opens the System tab.
+        # Setup step: the same warning without the System tab's jargon, for the
+        # diver who never opens it.
         if setup_label is not None:
             setup_label.setStyleSheet(f"color: {color}; font-size: 11px;")
             setup_label.setText(
-                "This survey may run this computer low on memory while "
-                "processing. It will still try, but a pass could stop."
+                "This batch may exhaust memory on this machine. Processing will "
+                "proceed; a pass may stop."
             )
             setup_label.setVisible(True)
 

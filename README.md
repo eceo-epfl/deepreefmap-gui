@@ -16,10 +16,34 @@ Grab the latest build for your platform from the [releases page](https://github.
 
 On macOS the app is unsigned, so the first launch needs System Settings > Privacy & Security > "Open Anyway". On Linux, `chmod +x` the binary and run it. The first launch installs a private Python environment (several GB); after that, update or roll back from the Updates tab.
 
+## Changing survey settings
+
+Survey mode processes every pass with one set of run settings. To change them on
+a machine, open the Run step and click **Edit settings…**, which opens the full
+run form. Accepting it keeps the change; the Run step names anything that differs
+from the standard.
+
+To change them for a whole programme, edit the preset YAML. The models are set by
+two keys:
+
+| Key | Selects | Values |
+|---|---|---|
+| `segmentation_name` | coral identification model | `coralscapes-vit-{s,b,l}-dpt`, `segformer-b{2,5}` |
+| `mapping_name` | processing method | `loger_star`, `loger`, `scsfmlearner` |
+
+`loger` and `loger_star` need a graphics card; `scsfmlearner` runs on CPU. The
+`coralscapes-*` models are gated on Hugging Face and need a free account to
+download. `fps`, `camera_profile_name` and `transect_crop_width` sit alongside
+these; per-pass values (transect length, time trim) come from the survey
+database, never the preset.
+
+Any model named here must also be downloaded. The Environment step lists what the
+current settings need and offers both a download and a USB import.
+
 ## Administering survey settings
 
 Survey mode runs from an **organisation preset**: the blessed run settings, named
-and versioned, that every laptop in a programme measures with. The shipped one is
+and versioned, that every machine in a programme measures with. The shipped one is
 `deepreefmap_gui/resources/configs/survey_preset.yaml`.
 
 To publish your own, copy that file, set `preset_name` and `preset_version`, and
@@ -35,7 +59,7 @@ the computer rather than the method:
 
 | Setting | Why a machine may change it |
 |---|---|
-| Processing method (`mapping_name`) | a laptop with no graphics card cannot run the standard method |
+| Processing method (`mapping_name`) | a machine with no graphics card cannot run the standard method |
 | Frames processed at once (`preprocess_batch_size`) | how much this machine's memory holds |
 | Camera (`camera_profile_name`) | which camera this team dives with |
 | `loger_model_path`, `scs_checkpoint_path` | where the weights sit on this disk |

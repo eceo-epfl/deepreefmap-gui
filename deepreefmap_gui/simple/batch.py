@@ -88,7 +88,7 @@ _ProbedClip = tuple[str, tuple[float, float]]
 
 # Button text per fix destination, so the strip names the place it goes rather
 # than describing the journey. The header entry point uses the same words.
-_FIX_ACTIONS = {FIX_SETUP: "Set up laptop", FIX_SETTINGS: "Edit settings…"}
+_FIX_ACTIONS = {FIX_SETUP: "Open Environment", FIX_SETTINGS: "Edit settings…"}
 
 def _mmss(seconds: float) -> str:
     return f"{int(seconds) // 60}:{int(seconds) % 60:02d}"
@@ -110,15 +110,15 @@ def _diagnose_failure(text: str) -> str:
     low = (text or "").lower()
     if "out of memory" in low or "cuda" in low and "memory" in low:
         return (
-            "Ran out of graphics memory. Try again with a smaller processing size, "
-            "or ask your admin to lower the batch size."
+            "Out of graphics memory. Retry with a smaller processing size, or a "
+            "lower batch size."
         )
     if "no space left" in low or "disk" in low and "full" in low:
-        return "The drive filled up. Free some space and process the pass again."
+        return "Out of disk space. Free space and process the pass again."
     if "not found" in low and ("model" in low or "checkpoint" in low or ".pt" in low):
-        return "A model is missing. Open Set up laptop and get the models first."
+        return "A required model is not installed. Install it under Environment."
     if any(word in low for word in ("decode", "codec", "corrupt", "unreadable")):
-        return "The video could not be read. Check the clip copied off the camera cleanly."
+        return "The video could not be read. Check the clip copied off the camera intact."
     return _one_sentence(text) or "The run failed. No cause was recorded."
 
 
@@ -146,9 +146,9 @@ def _import_summary(file_name: str, queued: int, skipped: int, unmatched: int) -
     """What a CSV import did, including the rows it could not place."""
     parts = [f"Queued {queued} pass(es) from {file_name}."]
     if skipped:
-        parts.append(f"{skipped} video(s) would not open and were left out.")
+        parts.append(f"{skipped} video(s) could not be opened and were excluded.")
     if unmatched:
-        parts.append(f"{unmatched} named a transect that is not planned yet.")
+        parts.append(f"{unmatched} named a transect that is not yet planned.")
     return " ".join(parts)
 
 
@@ -351,7 +351,7 @@ class SimpleBatchMixin(MixinBase):
         self._survey_batch_name = QLineEdit(datetime.now().strftime("%Y-%m-%d"))  # noqa: DTZ005 (local time is intended: this is a user-facing default name)
         name_row.addWidget(self._survey_batch_name, 1)
         new_batch_btn = QPushButton("New")
-        new_batch_btn.setToolTip("Start a fresh batch; the current one stays in the database.")
+        new_batch_btn.setToolTip("Start a new batch. The current one is retained in the database.")
         new_batch_btn.clicked.connect(self._on_survey_new_batch)
         name_row.addWidget(new_batch_btn)
         header_layout.addLayout(name_row)
@@ -368,11 +368,11 @@ class SimpleBatchMixin(MixinBase):
         self._survey_settings_btn.clicked.connect(self._on_edit_run_settings)
         preset_row.addWidget(self._survey_settings_btn)
         # Beside the name of the settings, because that is where you look when you
-        # want to know whether this computer is still on the standard.
+        # want to know whether this machine is still on the standard.
         self._survey_restore_btn = QPushButton("Restore standard settings")
         self._survey_restore_btn.setProperty("quiet", "true")
         self._survey_restore_btn.setToolTip(
-            "Drop the changes made on this computer and use the standard settings again."
+            "Discard this machine's changes and return to the standard settings."
         )
         self._survey_restore_btn.clicked.connect(self._restore_standard_settings)
         preset_row.addWidget(self._survey_restore_btn)
@@ -545,13 +545,13 @@ class SimpleBatchMixin(MixinBase):
     def _on_survey_pass_activated(self, row_index: int, _column: int) -> None:
         """Open the run this pass produced, without leaving the Run step."""
         if self._run_in_flight():
-            self._status_label.setText("Wait for the batch to finish before opening a run.")
+            self._status_label.setText("Unavailable while processing.")
             return
         if not 0 <= row_index < len(self._survey_rows):
             return
         row = self._survey_rows[row_index]
         if row.pass_id is None:
-            self._status_label.setText("This pass has not been processed yet.")
+            self._status_label.setText("Pass not yet processed.")
             return
         runs = self._survey_store().runs_for_pass(row.pass_id)
         # The last run that actually succeeded, not simply the last one: a pass
@@ -561,9 +561,9 @@ class SimpleBatchMixin(MixinBase):
         if not succeeded:
             last = runs[-1] if runs else None
             if last is not None and last.status == "failed":
-                self._status_label.setText(f"This pass failed: {_diagnose_failure(last.error)}")
+                self._status_label.setText(f"Pass failed: {_diagnose_failure(last.error)}")
             else:
-                self._status_label.setText("This pass has no successful run to open.")
+                self._status_label.setText("Pass has no successful run to open.")
             return
         run_dir = Path(self._out_root_input.text()).expanduser() / succeeded[-1].run_dir_name
         if not run_dir.is_dir():
@@ -576,7 +576,7 @@ class SimpleBatchMixin(MixinBase):
         from deepreefmap_gui.simple.settings_dialog import RunSettingsDialog
 
         if self._survey_worker_running:
-            self._status_label.setText("Wait for the current batch to finish.")
+            self._status_label.setText("Unavailable while processing.")
             return
         per_run = [
             self._video_row_widget,
@@ -610,7 +610,7 @@ class SimpleBatchMixin(MixinBase):
         so the label must describe the values the run will actually use.
         """
         if self._survey_preset is None or self._active_preset is None:
-            return "The settings could not be loaded; fix the settings file to run batches."
+            return "Settings could not be loaded. Correct the settings file to run batches."
         org = self._active_preset.org
         lines = [f"Settings: {org.label}"]
         if org.locked:
@@ -623,7 +623,7 @@ class SimpleBatchMixin(MixinBase):
         machine = [key for key in deviations if key in MACHINE_OVERRIDABLE_KEYS]
         organisation = [key for key in deviations if key not in MACHINE_OVERRIDABLE_KEYS]
         if machine:
-            lines.append(f"Changed on this computer: {describe_keys(machine)}.")
+            lines.append(f"Changed on this machine: {describe_keys(machine)}.")
         if organisation:
             lines.append(
                 f"Changed for this batch only: {describe_keys(organisation)}."
@@ -954,7 +954,7 @@ class SimpleBatchMixin(MixinBase):
         from deepreefmap_gui.form.batch import load_batch_csv
 
         if self._survey_worker_running:
-            self._status_label.setText("Wait for the current batch to finish.")
+            self._status_label.setText("Unavailable while processing.")
             return
         path_str, _ = QFileDialog.getOpenFileName(
             self,
@@ -1157,7 +1157,7 @@ class SimpleBatchMixin(MixinBase):
             if len(values) < 2 or len(set(values)) != 1:
                 continue
             name = names.get(transect_id, "Unnamed transect")
-            warnings.append(f"{name}: {len(values)} passes, all {values[0]}. Is that right?")
+            warnings.append(f"{name}: {len(values)} passes, all {values[0]}.")
         return sorted(warnings)
 
     def _refresh_direction_notice(self) -> None:
@@ -1243,9 +1243,9 @@ class SimpleBatchMixin(MixinBase):
         deviated = bool(self._survey_deviations())
         self._survey_restore_btn.setEnabled(deviated and not self._survey_worker_running)
         self._survey_restore_btn.setToolTip(
-            "Drop the changes made on this computer and use the standard settings again."
+            "Discard this machine's changes and return to the standard settings."
             if deviated
-            else "This computer is already on the standard settings."
+            else "Already on the standard settings."
         )
         if self._survey_worker_running:
             self._survey_start_btn.setEnabled(False)
@@ -1357,15 +1357,15 @@ class SimpleBatchMixin(MixinBase):
         from deepreefmap_gui.profiling.system_probe import format_bytes
 
         time_str = _rough_batch_time(pass_count)
-        opening = f"About to process {pass_count} pass{'' if pass_count == 1 else 'es'}"
+        opening = f"{pass_count} pass{'' if pass_count == 1 else 'es'} queued"
         opening += f", {time_str}." if time_str else "."
         answer = QMessageBox.question(
             self,
-            "Enough space?",
+            "Insufficient disk space",
             f"{opening}\n\n"
-            f"That may need around {format_bytes(estimate.need_bytes)}, and only "
-            f"{format_bytes(estimate.free_bytes)} is free. Processing could stop "
-            "part way and leave some passes unfinished.\n\nStart anyway?",
+            f"Estimated {format_bytes(estimate.need_bytes)} required against "
+            f"{format_bytes(estimate.free_bytes)} free. Processing may stop part "
+            "way and leave passes unfinished.\n\nStart anyway?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -1563,6 +1563,9 @@ class SimpleBatchMixin(MixinBase):
 
     def _on_survey_done(self, ok: int, total: int, last_error: str) -> None:
         self._survey_worker_running = False
+        # These passes are the newest evidence of what a run costs on disk, so
+        # the setup step's footage capacity is measured again rather than kept.
+        self._footage_rate_cache = None
         self._end_run_controls()
         self._set_wizard_navigation_enabled(True)
         self._reset_progress_bars()

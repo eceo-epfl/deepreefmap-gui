@@ -1,9 +1,8 @@
-"""First-run laptop setup: the guided check a field diver sees before planning.
+"""First-run environment check, shown before planning.
 
-Three plain-language rows say whether this computer can process a dive: the
-graphics card, the models it needs, and free space. Each failing row carries the
-one action that fixes it. When all three pass the step reads "Ready to survey"
-and stops leading on launch.
+Three rows say whether this machine can process a dive: the graphics card, the
+models it needs, and disk space. Each failing row carries the one action that
+fixes it. When all three pass the step stops leading on launch.
 
 The verdict functions are pure and Qt-free so the pass/fail logic is tested
 without a window, the same split progress.py uses for the step badges.
@@ -11,7 +10,9 @@ without a window, the same split progress.py uses for the step badges.
 
 from __future__ import annotations
 
+import json
 import logging
+import statistics
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -33,11 +34,50 @@ from deepreefmap_gui.profiling.system_probe import GPU_NONE, format_bytes, probe
 
 logger = logging.getLogger(__name__)
 
-# A processed pass leaves frame caches, a point cloud and a manifest behind, and
-# there is no cheap way to know the real figure before the run. This is a
-# deliberately generous per-pass estimate: warning early beats filling the disk
-# halfway through a batch a diver walked away from.
+# Fallback per-pass size, used only until this machine has processed a run of its
+# own. Nothing measured it: a pass leaves frame caches, a point cloud and a
+# manifest behind, and the total depends on clip length, fps and resolution. It
+# is deliberately generous, because warning early beats filling the disk halfway
+# through a batch nobody is watching. measure_bytes_per_footage_minute replaces
+# it with a figure from real output as soon as there is one.
 ROUGH_PASS_BYTES = 3 * 1024**3
+
+# Sizing a run means walking every cached frame in it, and this runs whenever the
+# setup page repaints, so only the most recent runs are measured.
+_SIZED_RUNS = 5
+
+
+def measure_bytes_per_footage_minute(out_root: Path, limit: int = _SIZED_RUNS) -> float | None:
+    """Output bytes per minute of footage, measured from recent runs.
+
+    None until this machine has processed something, which is the honest answer
+    before then: per-pass size varies with clip length, fps and resolution, so
+    there is nothing to extrapolate from. Manifests carry the frame count and the
+    rate they were sampled at, which is the footage duration the run consumed.
+    """
+    from deepreefmap_gui.survey.catalogue import dir_size_bytes
+
+    try:
+        manifests = sorted(
+            out_root.glob("*/run_manifest.json"), key=lambda p: p.stat().st_mtime, reverse=True
+        )
+    except OSError:
+        return None
+    rates: list[float] = []
+    for manifest_path in manifests[:limit]:
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            frames = int(manifest.get("frames_processed") or 0)
+            fps = float(manifest.get("fps") or 0)
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            continue
+        if frames <= 0 or fps <= 0:
+            continue
+        size = dir_size_bytes(manifest_path.parent)
+        if size <= 0:
+            continue
+        rates.append(size / (frames / fps / 60))
+    return statistics.median(rates) if rates else None
 
 
 @dataclass(frozen=True)
@@ -53,52 +93,78 @@ class SetupCheck:
 def graphics_check(*, gpu_name: str | None, requires_gpu: bool) -> SetupCheck:
     """Graphics card row. Passes unless the chosen method needs a card and none exists."""
     if gpu_name is not None:
-        return SetupCheck("graphics", True, "Graphics card", f"Ready to use {gpu_name}.")
+        return SetupCheck("graphics", True, "Graphics card", gpu_name)
     if requires_gpu:
         return SetupCheck(
             "graphics",
             False,
             "Graphics card",
-            "The chosen processing method needs a graphics card, and none was "
-            "found. Open settings to pick the standard method.",
+            "None detected. The selected processing method requires one; "
+            "select the standard method in settings.",
         )
     return SetupCheck(
         "graphics",
         True,
         "Graphics card",
-        "No graphics card found. Processing will use the computer's main "
-        "processor, which still works but takes longer.",
+        "None detected. Processing will run on the CPU, which is slower.",
     )
 
 
 def models_check(missing_models: list[str]) -> SetupCheck:
     """Models row. Passes when nothing the current settings need is absent."""
     if not missing_models:
-        return SetupCheck(
-            "models", True, "Models ready", "All the models this survey needs are on this computer."
-        )
+        return SetupCheck("models", True, "Models", "All models required by these settings are installed.")
     names = ", ".join(missing_models)
     count = len(missing_models)
     noun = "model" if count == 1 else "models"
     return SetupCheck(
         "models",
         False,
-        "Models ready",
-        f"This computer is missing {count} {noun} it needs to process video "
-        f"({names}). Get them from a USB drive, or download them.",
+        "Models",
+        f"{count} required {noun} not installed ({names}). Import from a USB drive, or download.",
     )
 
 
-def space_check(free_bytes: int, min_free_bytes: int) -> SetupCheck:
-    """Free space row. Passes when there is comfortable room to work."""
+def _coarse_footage(minutes: float) -> str:
+    """Round a capacity to the precision it actually carries.
+
+    Extrapolated from a handful of runs, so a figure like "157h 51m" would claim
+    an accuracy the estimate does not have.
+    """
+    if minutes < 90:
+        return f"{max(5, round(minutes / 5) * 5)} minutes"
+    hours = minutes / 60
+    if hours < 10:
+        return f"{hours:.0f} hours"
+    return f"{round(hours / 10) * 10} hours"
+
+
+def space_check(
+    free_bytes: int, min_free_bytes: int, bytes_per_footage_minute: float | None = None
+) -> SetupCheck:
+    """Disk space row, sized in footage where this machine has runs to measure."""
     free = format_bytes(free_bytes)
-    if free_bytes >= min_free_bytes:
-        return SetupCheck("space", True, "Space free", f"{free} free. That is enough to process today's dives.")
+    if free_bytes < min_free_bytes:
+        return SetupCheck(
+            "space",
+            False,
+            "Disk space",
+            f"{free} free, below the {format_bytes(min_free_bytes)} required. "
+            "Delete old surveys to make room.",
+        )
+    if bytes_per_footage_minute:
+        capacity = _coarse_footage(free_bytes / bytes_per_footage_minute)
+        return SetupCheck(
+            "space",
+            True,
+            "Disk space",
+            f"{free} free, about {capacity} of footage at recent run sizes.",
+        )
+    # Deliberately no capacity figure: nothing has been processed here to size
+    # against, and ROUGH_PASS_BYTES is a fallback for blocking a doomed batch,
+    # not a number to quote at someone.
     return SetupCheck(
-        "space",
-        False,
-        "Space free",
-        f"Only {free} free. Delete old surveys to make room before processing.",
+        "space", True, "Disk space", f"{free} free. Capacity is estimated once a run is recorded."
     )
 
 
@@ -109,12 +175,13 @@ def evaluate_setup(
     missing_models: list[str],
     free_bytes: int,
     min_free_bytes: int,
+    bytes_per_footage_minute: float | None = None,
 ) -> list[SetupCheck]:
     """The three setup rows, in the order they are shown."""
     return [
         graphics_check(gpu_name=gpu_name, requires_gpu=requires_gpu),
         models_check(missing_models),
-        space_check(free_bytes, min_free_bytes),
+        space_check(free_bytes, min_free_bytes, bytes_per_footage_minute),
     ]
 
 
@@ -159,8 +226,8 @@ class SimpleSetupMixin(MixinBase):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(GUTTER)
 
-        card, card_layout = section_card("Set up this laptop")
-        intro = QLabel("A quick check that this computer is ready to process a dive.")
+        card, card_layout = section_card("Environment")
+        intro = QLabel("Requirements for processing a dive on this machine.")
         intro.setWordWrap(True)
         intro.setStyleSheet(f"color: {TEXT_MUTED};")
         card_layout.addWidget(intro)
@@ -171,9 +238,9 @@ class SimpleSetupMixin(MixinBase):
         graphics_settings.clicked.connect(self._on_edit_run_settings)
         card_layout.addWidget(self._build_setup_row("graphics", [graphics_settings]))
 
-        self._setup_usb_btn = QPushButton("Get models from a USB drive…")
+        self._setup_usb_btn = QPushButton("Import from USB drive…")
         self._setup_usb_btn.clicked.connect(self._on_setup_import_pack)
-        self._setup_download_btn = QPushButton("Download models (needs internet)")
+        self._setup_download_btn = QPushButton("Download models (requires internet)")
         self._setup_download_btn.setProperty("cta", "true")
         self._setup_download_btn.clicked.connect(self._on_setup_download_models)
         card_layout.addWidget(
@@ -238,15 +305,15 @@ class SimpleSetupMixin(MixinBase):
 
         self._setup_check_rows[key] = (icon, detail, actions)
         # Seed the static title once from a passing check of the same key.
-        title.setText({"graphics": "Graphics card", "models": "Models ready", "space": "Space free"}[key])
+        title.setText({"graphics": "Graphics card", "models": "Models", "space": "Disk space"}[key])
         return row
 
     def _build_setup_nav_button(self) -> QToolButton:
         """Header entry point, so the step is reopenable after the first launch."""
         button = QToolButton()
-        button.setText("Set up laptop")
+        button.setText("Environment")
         button.setProperty("quiet", "true")
-        button.setToolTip("Check this computer is ready to process a dive.")
+        button.setToolTip("Check this machine meets the requirements for processing.")
         button.clicked.connect(lambda: self._set_simple_section("setup"))
         self._setup_nav_button = button
         return button
@@ -266,7 +333,22 @@ class SimpleSetupMixin(MixinBase):
             missing_models=self._survey_missing_models(),
             free_bytes=profile.disk_free_bytes,
             min_free_bytes=_MIN_FREE_BYTES,
+            bytes_per_footage_minute=self._footage_size_rate(out_root),
         )
+
+    def _footage_size_rate(self, out_root: Path) -> float | None:
+        """Measured output bytes per footage minute, remeasured when the root moves.
+
+        Cached because the page repaints on every batch change and measuring walks
+        the frame caches of several runs. _on_survey_done clears the cache, so a
+        finished batch is measured in without re-walking on every keystroke.
+        """
+        cache = getattr(self, "_footage_rate_cache", None)
+        if cache is not None and cache[0] == out_root:
+            return cache[1]
+        rate = measure_bytes_per_footage_minute(out_root)
+        self._footage_rate_cache = (out_root, rate)
+        return rate
 
     def _refresh_setup_page(self) -> None:
         """Repaint the rows from a fresh probe, and record readiness once reached."""
@@ -281,11 +363,14 @@ class SimpleSetupMixin(MixinBase):
             for action in actions:
                 action.setVisible(not check.ok)
         ready = setup_ready(checks)
+        unmet = sum(1 for check in checks if not check.ok)
         self._setup_summary.setText(
-            "Ready to survey." if ready else "A few things to sort out before your first survey."
+            "All requirements met."
+            if ready
+            else f"{unmet} requirement{'' if unmet == 1 else 's'} not met."
         )
         if ready:
-            # Once the laptop can run, setup stops leading on launch.
+            # Once the machine can run, setup stops leading on launch.
             self._settings.setValue("setup_complete", True)
 
     def _initial_simple_section(self) -> str:
@@ -305,18 +390,18 @@ class SimpleSetupMixin(MixinBase):
 
     def _on_setup_import_pack(self) -> None:
         if self._survey_worker_running:
-            self._status_label.setText("Wait for processing to finish before adding models.")
+            self._status_label.setText("Unavailable while processing.")
             return
         self._on_import_model_pack()
 
     def _on_setup_download_models(self) -> None:
         """Download the models the current settings need, signing in first if asked."""
         if self._survey_worker_running:
-            self._status_label.setText("Wait for processing to finish before downloading.")
+            self._status_label.setText("Unavailable while processing.")
             return
         missing = self._survey_missing_models()
         if not missing:
-            self._status_label.setText("All the models this survey needs are already here.")
+            self._status_label.setText("All required models are already installed.")
             self._refresh_setup_page()
             return
         from deepreefmap_gui.models.manager import all_known_models
@@ -327,9 +412,9 @@ class SimpleSetupMixin(MixinBase):
             and any(catalogue[name].gated for name in missing if name in catalogue)
         )
         if needs_account:
-            # Fold the sign-in into the one download action, in plain words.
+            # Fold the sign-in into the one download action.
             self._status_label.setText(
-                "Some models need a free online account. Sign in, then press Download again."
+                "Some models require a free Hugging Face account. Sign in, then download again."
             )
             self._on_hf_auth_button()
             return

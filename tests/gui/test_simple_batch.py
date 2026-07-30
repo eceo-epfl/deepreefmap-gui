@@ -20,7 +20,7 @@ from deepreefmap_gui.simple.batch import (
 
 def test_diagnose_failure_speaks_plainly_and_advises():
     assert "graphics memory" in _diagnose_failure("RuntimeError: CUDA out of memory")
-    assert "model is missing" in _diagnose_failure("FileNotFoundError: checkpoint not found")
+    assert "not installed" in _diagnose_failure("FileNotFoundError: checkpoint not found")
     assert "could not be read" in _diagnose_failure("Failed to decode video stream")
     # An unrecognised error keeps its own first line rather than inventing advice.
     assert _diagnose_failure("Weird thing: 42\nsecond line") == "Weird thing: 42"
@@ -561,7 +561,7 @@ def test_double_click_is_refused_while_a_batch_runs(batch_window, tmp_path, monk
     monkeypatch.setattr(batch_window, "_run_in_flight", lambda: True)
     batch_window._on_survey_pass_activated(0, 0)
     assert opened == []
-    assert "Wait for the batch" in batch_window._status_label.text()
+    assert "Unavailable while processing" in batch_window._status_label.text()
 
 
 def test_unprocessed_row_says_so_rather_than_doing_nothing(batch_window, tmp_path, monkeypatch):
@@ -699,13 +699,13 @@ def test_alternate_direction_walks_down_the_selection(batch_window, tmp_path, mo
     assert table.cellWidget(1, _COL_DIRECTION).currentText() == "reverse"
 
 
-def test_one_way_transect_asks_whether_that_is_right(batch_window, tmp_path, monkeypatch):
+def test_one_way_transect_is_flagged(batch_window, tmp_path, monkeypatch):
     """Nothing downstream can tell a one-way survey from forgotten dropdowns."""
     for name in ("GX010001.MP4", "GX010002.MP4"):
         add_video(batch_window, tmp_path, monkeypatch, name=name)
     notice = batch_window._survey_direction_notice
     assert not notice.isHidden()
-    assert notice.text() == "T1: 2 passes, all forward. Is that right?"
+    assert notice.text() == "T1: 2 passes, all forward."
 
     batch_window._survey_pass_table.cellWidget(1, _COL_DIRECTION).setCurrentText("reverse")
     assert notice.isHidden()

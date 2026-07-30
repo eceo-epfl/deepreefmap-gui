@@ -23,7 +23,7 @@ SECTION_STATES = (TODO, OK, ATTENTION, BLOCKED)
 # the user can get there, so the verdict carries the destination rather than
 # spelling out directions the page cannot follow for them.
 FIX_HERE = ""  # fixed on the page that shows it, so no destination
-FIX_SETUP = "setup"  # this laptop is not ready, and setup holds the actions
+FIX_SETUP = "setup"  # this machine is not ready, and setup holds the actions
 FIX_SETTINGS = "settings"  # the run settings are at fault, and the dialog holds them
 
 FIX_DESTINATIONS = (FIX_HERE, FIX_SETUP, FIX_SETTINGS)
@@ -127,23 +127,23 @@ def run_gate(
         return SectionState(
             BLOCKED,
             counts,
-            f"The {gpu_only_mapper} processing method needs a graphics card, and "
-            "none was found on this computer.",
+            f"The {gpu_only_mapper} processing method requires a graphics card, "
+            "and none was detected.",
             fix=FIX_SETUP,
         )
     if missing_models:
         return SectionState(
             BLOCKED,
             counts,
-            f"This computer is missing {_plural(len(missing_models), 'model')} it needs "
-            f"to process video ({', '.join(missing_models)}).",
+            f"{_plural(len(missing_models), 'required model')} not installed "
+            f"({', '.join(missing_models)}).",
             fix=FIX_SETUP,
         )
     if failed:
         return SectionState(
             ATTENTION,
             f"{counts} · {failed} failed",
-            f"{_passes(failed)} failed. The log has the error; the batch can be run again.",
+            f"{_passes(failed)} failed. The log holds the error; the batch can be run again.",
         )
     if remaining:
         return SectionState(OK, f"{counts} · {remaining} to process")

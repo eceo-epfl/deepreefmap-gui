@@ -230,6 +230,8 @@ if TYPE_CHECKING:
         _data_rebuilt_root: Path | None
         _data_store_ok: bool
         _run_size_cache: dict[str, int]
+        # (output root, measured bytes per footage minute); None until measured.
+        _footage_rate_cache: tuple[Path, float | None] | None
         _data_sizes_scan_running: bool
 
         # --- survey mode -------------------------------------------------
