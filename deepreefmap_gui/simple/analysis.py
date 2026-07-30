@@ -44,6 +44,7 @@ from deepreefmap_gui.survey.analysis import (
     repeatability_stats,
     reproducibility_groups,
 )
+from deepreefmap_gui.survey.catalogue import parse_run_timestamp
 from deepreefmap_gui.survey.models.exporters import save_long_format_csv, save_repeatability_csv
 
 logger = logging.getLogger(__name__)
@@ -325,9 +326,15 @@ class SimpleAnalysisMixin(MixinBase):
             if failed:
                 summary += f", {failed} failed"
             lines.append(summary)
-            last = max((run.started_at or run.created_at for run in runs), default="")
-            if last:
-                lines.append(f"Last run {last[:10]}")
+            # Parsed rather than compared as text: the two fields can carry a UTC
+            # offset or not, and "...T10:00:00+00:00" sorts after "...T23:00:00"
+            # as a string while being the earlier instant.
+            stamps = [
+                parse_run_timestamp(run.started_at or run.created_at) for run in runs
+            ]
+            latest = max((s for s in stamps if s is not None), default=None)
+            if latest is not None:
+                lines.append(f"Last run {latest.date().isoformat()}")
         else:
             lines.append("Not processed yet")
         if transect.length_m:

@@ -337,6 +337,13 @@ def _slice_at_angle(slices: Sequence[_Slice], angle_deg: float) -> _Slice | None
     # QPainter angles increase counter-clockwise; our spans are negative
     # (clockwise). Reduce both to a normalized [0, 360) frame and test.
     for slc in slices:
+        # A slice covering the whole circle reduces to lo == hi, exactly as an
+        # empty one does, and was skipped with it -- so a run with a single class
+        # at 100% had no clickable slice and no tooltip anywhere on the chart.
+        # The two cases are opposites: 360 degrees contains every angle, 0
+        # contains none.
+        if abs(slc.span_deg) >= 360.0:
+            return slc
         end = slc.start_deg + slc.span_deg
         lo = min(slc.start_deg, end) % 360.0
         hi = max(slc.start_deg, end) % 360.0

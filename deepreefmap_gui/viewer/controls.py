@@ -1044,7 +1044,7 @@ class ViewerControlsMixin(MixinBase):
                 manifest_path = self._active_run_dir / "run_manifest.json"
                 if manifest_path.exists():
                     try:
-                        self._active_run_manifest = json.loads(manifest_path.read_text())
+                        self._active_run_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                     except Exception:
                         self._active_run_manifest = None
                 self._settings.setValue("last_run_dir", str(self._active_run_dir))

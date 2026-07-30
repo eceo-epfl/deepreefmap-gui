@@ -53,11 +53,11 @@ from deepreefmap_gui.runs.run_cards import (
     RUN_META_ROLE,
     RunCardDelegate,
     build_run_card_meta,
-    format_bytes,
     format_run_metadata,
     related_run_counts,
 )
 from deepreefmap_gui.profiling.eta import format_duration
+from deepreefmap_gui.profiling.system_probe import format_bytes
 from deepreefmap_gui.survey import catalogue
 from deepreefmap_gui.survey.catalogue import FacetGroup, RunEntry
 from deepreefmap_gui.survey.models.transect_pass import PASS_DIRECTIONS
@@ -628,7 +628,7 @@ class DataManagerMixin(MixinBase):
         manifest_path = path / "run_manifest.json"
         if manifest_path.exists():
             try:
-                manifest = json.loads(manifest_path.read_text())
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                 self._show_run_meta_banner(manifest, path, include_disk_size=False)
             except Exception:
                 self._hide_run_meta_banner()

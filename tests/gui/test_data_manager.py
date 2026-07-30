@@ -203,10 +203,10 @@ def test_size_scan_slot_updates_label_and_cards(tmp_path, make_window):
     write_run(root, "run_a")
     window = make_window()
     window._apply_run_sizes({"run_a": 2_000_000_000})
-    assert "2.00 GB" in window._data_disk_label.text()
+    assert "1.9 GB" in window._data_disk_label.text()
     assert "Space used" in window._data_disk_label.text()
     meta = window._data_run_list.item(0).data(RUN_META_ROLE)
-    assert "2.00 GB" in meta["facts"]
+    assert "1.9 GB" in meta["facts"]
 
 
 def test_rescan_reruns_the_manifest_rebuild(tmp_path, make_window, monkeypatch):

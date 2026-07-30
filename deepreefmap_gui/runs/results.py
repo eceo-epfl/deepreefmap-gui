@@ -24,6 +24,23 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _write_image(path: str, bgr) -> None:
+    """cv2.imwrite, with the failure it reports actually read.
+
+    imwrite returns False instead of raising, and returns it for every path
+    OpenCV cannot encode. On Windows that is any path outside the active code
+    page, so a user whose name carries an accent gets "Saved to ..." and no
+    file. Turn it into the error the caller already knows how to report.
+    """
+    import cv2
+
+    if not cv2.imwrite(path, bgr):
+        raise OSError(
+            f"OpenCV could not write {path}. On Windows this usually means the path "
+            "contains characters outside the system code page."
+        )
+
+
 class ResultsMixin(MixinBase):
     """DeepReefMapWindow methods for the results panel: ortho preview, crop, exports, cover."""
 
@@ -40,7 +57,7 @@ class ResultsMixin(MixinBase):
         manifest_path = out / "run_manifest.json"
         if manifest_path.exists():
             try:
-                manifest = json.loads(manifest_path.read_text())
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                 self._show_run_meta_banner(manifest, out, include_disk_size=True)
             except Exception:
                 pass
@@ -75,7 +92,7 @@ class ResultsMixin(MixinBase):
         if path is None:
             return None
         try:
-            return json.loads(path.read_text())
+            return json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             logger.debug("Unreadable benthic cover report: %s", path, exc_info=True)
             return None
@@ -287,7 +304,7 @@ class ResultsMixin(MixinBase):
             composite = np.concatenate([rgb, seg_rgb], axis=1)
             import cv2
 
-            cv2.imwrite(path, cv2.cvtColor(composite, cv2.COLOR_RGB2BGR))
+            _write_image(path, cv2.cvtColor(composite, cv2.COLOR_RGB2BGR))
             self._status_label.setText(f"Saved ortho preview to {path}")
         except Exception as exc:
             self._status_label.setText(f"Export failed: {exc}")
@@ -374,7 +391,7 @@ class ResultsMixin(MixinBase):
                 bgr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
             else:
                 bgr = arr
-            cv2.imwrite(path, bgr)
+            _write_image(path, bgr)
             self._status_label.setText(f"Saved frame PNG to {path}")
         except Exception as exc:
             self._status_label.setText(f"Export failed: {exc}")

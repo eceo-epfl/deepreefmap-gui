@@ -15,7 +15,7 @@ import uuid
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from deepreefmap_gui.io.atomic import atomic_write_json
@@ -106,15 +106,29 @@ class FacetGroup:
         return collected
 
 
+def parse_run_timestamp(ts: object) -> datetime | None:
+    """An ISO-8601 run timestamp as an aware datetime, or None if unusable.
+
+    A timestamp with no offset is read as UTC, which is what writes it: the
+    pipeline uses datetime.now(timezone.utc) and the survey store records the
+    same value. Left alone, fromisoformat gives a naive datetime whose
+    .timestamp() assumes local time, so an older naive manifest sorts against a
+    newer offset-carrying one by the local UTC offset -- hours out, and in the
+    wrong direction depending on which side of UTC the machine sits.
+    """
+    if not isinstance(ts, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(ts)
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
+
+
 def run_sort_key(manifest: dict, mtime: float) -> float:
     """Prefer the recorded run timestamp; fall back to the manifest file mtime."""
-    ts = manifest.get("run_timestamp")
-    if isinstance(ts, str):
-        try:
-            return datetime.fromisoformat(ts).timestamp()
-        except ValueError:
-            pass
-    return mtime
+    parsed = parse_run_timestamp(manifest.get("run_timestamp"))
+    return parsed.timestamp() if parsed is not None else mtime
 
 
 def run_duration_s(manifest: dict) -> float | None:
@@ -138,7 +152,7 @@ def scan_out_root(out_root: Path) -> list[RunEntry]:
             continue
         manifest: dict = {}
         try:
-            manifest = json.loads(manifest_path.read_text())
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             logger.warning("Unreadable manifest in %s", child)
         entries.append(_entry_from_manifest(child, manifest, manifest_path.stat().st_mtime))
@@ -433,7 +447,7 @@ def dir_size_bytes(run_dir: Path) -> int:
 def rename_run(run_dir: Path, new_name: str) -> dict:
     """Set the display name in the run manifest, atomically."""
     manifest_path = run_dir / "run_manifest.json"
-    manifest = json.loads(manifest_path.read_text())
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["name"] = new_name.strip()
     atomic_write_json(manifest_path, manifest)
     return manifest

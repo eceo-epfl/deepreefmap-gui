@@ -190,7 +190,8 @@ def describe_keys(keys: Iterable[str]) -> str:
 
 
 def _bundled_text() -> str:
-    return resources.files("deepreefmap_gui.resources").joinpath("configs/survey_preset.yaml").read_text()
+    bundled = resources.files("deepreefmap_gui.resources").joinpath("configs/survey_preset.yaml")
+    return bundled.read_text(encoding="utf-8")
 
 
 def _bundled_defaults() -> dict[str, Any]:
@@ -213,7 +214,7 @@ def load_org_preset() -> OrgPreset:
     """
     override = os.environ.get("DEEPREEFMAP_SURVEY_PRESET")
     if override:
-        text = Path(override).read_text()
+        text = Path(override).read_text(encoding="utf-8")
         name, version = parse_preset_identity(text, default_name=_UNNAMED_ADMIN_PRESET)
         return OrgPreset(name=name, version=version, settings=parse_preset(text), locked=True)
     text = _bundled_text()
@@ -232,7 +233,7 @@ def load_machine_override(org: OrgPreset) -> dict[str, Any]:
     if not path.is_file():
         return {}
     try:
-        return parse_machine_override(path.read_text(), org)
+        return parse_machine_override(path.read_text(encoding="utf-8"), org)
     except (OSError, ValueError, yaml.YAMLError):
         _quarantine_preset(path)
         return {}

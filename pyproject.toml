@@ -183,6 +183,11 @@ extend-select = [
   "T20",     # stray print()
   "PLW", "PLC0207", "PLR1714", "PLR1730", "PLR5501",
 ]
+# PLW1514 (open without an explicit encoding) is selected by the PLW above but
+# only fires under --preview, which currently reports 305 unrelated errors. The
+# tree is already clean under it, so it starts green the day it graduates rather
+# than arriving as a backlog. Check with:
+#   uv run ruff check --preview --select PLW1514 deepreefmap_gui tests
 # RUF100 (unused noqa) is deliberately NOT here yet. It only knows about enabled
 # rules, so turning it on before N and S would delete the `# noqa: N802 (Qt
 # override)` and `# noqa: S310` comments this codebase already carries — real

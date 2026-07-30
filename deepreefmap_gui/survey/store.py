@@ -413,7 +413,7 @@ class SurveyStore:
         for manifest_path in sorted(out_root.glob("*/run_manifest.json")):
             run_dir_name = manifest_path.parent.name
             try:
-                manifest = json.loads(manifest_path.read_text())
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 report.skipped.append(run_dir_name)
                 continue

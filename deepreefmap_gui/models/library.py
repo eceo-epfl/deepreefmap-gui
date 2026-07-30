@@ -356,8 +356,10 @@ def _write_repo_folder(
     }
     refs = staging / "refs"
     refs.mkdir(parents=True, exist_ok=True)
-    (refs / "main").write_text(rexp.commit)
-    (staging / REPO_MANIFEST_NAME).write_text(json.dumps(payload, indent=2))
+    (refs / "main").write_text(rexp.commit, encoding="utf-8")
+    (staging / REPO_MANIFEST_NAME).write_text(
+        json.dumps(payload, indent=2), encoding="utf-8"
+    )
     return payload
 
 
@@ -401,7 +403,7 @@ def _reuse_existing_repo(
     if not manifest.is_file():
         return None
     try:
-        payload = json.loads(manifest.read_text())
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
     if payload.get("commit") != rexp.commit or not payload.get("sha256"):
@@ -528,7 +530,7 @@ def export_model_pack(
         raise
 
     manifest = build_pack_manifest(models, repo_exports)
-    sidecar.write_text(json.dumps(manifest, indent=2))
+    sidecar.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     if progress_cb is not None:
         progress_cb("verify", "", total, total)
     logger.info("Exported %d repo(s) to %s", len(repo_exports), pack_dir)
@@ -544,7 +546,7 @@ def read_pack_manifest(pack_dir: str | Path) -> dict:
     pack_dir = Path(pack_dir)
     sidecar = pack_dir / MANIFEST_NAME
     if sidecar.exists():
-        return json.loads(sidecar.read_text())
+        return json.loads(sidecar.read_text(encoding="utf-8"))
     if (pack_dir / TAR_NAME).exists():
         return _read_legacy_tar_manifest(pack_dir)
 
@@ -578,7 +580,7 @@ def read_repo_manifests(pack_dir: str | Path) -> dict[str, dict]:
         if not child.is_dir() or not manifest.is_file():
             continue
         try:
-            payload = json.loads(manifest.read_text())
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise PackError(f"{manifest} is unreadable: {exc}") from exc
         if repo_dir_name(str(payload.get("repo_id", ""))) != child.name:
@@ -712,7 +714,7 @@ def _import_repo_folder(
 
     refs = dest / "refs"
     refs.mkdir(parents=True, exist_ok=True)
-    (refs / "main").write_text(commit)
+    (refs / "main").write_text(commit, encoding="utf-8")
 
 
 def import_model_pack(

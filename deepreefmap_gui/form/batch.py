@@ -64,6 +64,27 @@ def _parse_timestamp_range(raw: str) -> tuple[float | None, float | None]:
     return _parse_optional_float(head), _parse_optional_float(tail)
 
 
+def _open_csv(path: Path):
+    """Open a batch CSV, naming an encoding rather than taking the platform's.
+
+    Without this the default is the locale encoding, which on Windows is a code
+    page: a path with an accent in it comes back as mojibake or raises. utf-8-sig
+    covers plain UTF-8 and the BOM Excel writes. Anything else is decoded
+    permissively rather than refused: a mangled character in one row should not
+    cost the user the whole batch, and a wrong video path fails per row with a
+    message naming it.
+    """
+    handle = path.open(newline="", encoding="utf-8-sig")
+    try:
+        handle.read()
+    except UnicodeDecodeError:
+        handle.close()
+        logger.warning("Batch CSV %s is not UTF-8; decoding leniently", path)
+        return path.open(newline="", encoding="utf-8", errors="replace")
+    handle.seek(0)
+    return handle
+
+
 def load_batch_csv(path: Path) -> list[BatchJob]:
     """Read a CSV with case-insensitive columns and return parsed rows.
 
@@ -81,7 +102,7 @@ def load_batch_csv(path: Path) -> list[BatchJob]:
         )
     required = {"videos", "timestamps", "transect_length", "crop_width"}
     jobs: list[BatchJob] = []
-    with path.open(newline="") as f:
+    with _open_csv(path) as f:
         reader = csv.DictReader(f)
         if reader.fieldnames is None:
             raise ValueError("CSV has no header row.")
