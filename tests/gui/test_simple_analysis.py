@@ -24,14 +24,14 @@ def analysis_window(simple_window, tmp_path):
     return window
 
 
-def test_analysis_populates_chart_table_and_runs(analysis_window):
+def test_analysis_populates_chart_and_table(analysis_window):
+    """The runs behind these numbers are the list beside the pane, not a second copy."""
     w = analysis_window
     assert w._analysis_transect_combo.count() == 1
     assert len(w._analysis_covers) == 1
     assert w._analysis_stats_table.rowCount() >= 1
     assert w._analysis_stats_table.item(0, 1).text() == "30.0%"
-    assert w._analysis_runs_list.count() == 1
-    assert "t1__p01" in w._analysis_runs_list.item(0).text()
+    assert not hasattr(w, "_analysis_runs_list")
 
 
 def test_analysis_export_csv(analysis_window, tmp_path, monkeypatch):

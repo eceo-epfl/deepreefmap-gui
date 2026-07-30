@@ -5,12 +5,14 @@ from __future__ import annotations
 from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QHBoxLayout,
     QLabel,
     QPushButton,
     QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -19,6 +21,7 @@ from deepreefmap_gui.core.theme import (
     BORDER,
     CARD_BG,
     ERROR,
+    PRIMARY,
     RADIUS,
     RADIUS_SM,
     SUCCESS,
@@ -28,6 +31,8 @@ from deepreefmap_gui.core.theme import (
     WARN_BORDER,
     WARN_TEXT,
     WARNING,
+    WINDOW,
+    WINDOW_TEXT,
 )
 
 
@@ -58,6 +63,66 @@ def section_card(title: str = "", *, spacing: int = 8) -> tuple[QWidget, QVBoxLa
         label.setStyleSheet(f"color: {TEXT_MUTED};")
         outer.addWidget(label)
     return card, outer
+
+
+class FilterChips(QWidget):
+    """A row of exclusive filters, each carrying its own count.
+
+    The count is the point: a chip reading "Failed 3" answers the question
+    before it is clicked, and a chip reading "Failed 0" says not to bother. Empty
+    chips stay visible rather than disappearing, so the row does not reflow under
+    the cursor as a batch runs.
+    """
+
+    changed = Signal(str)
+
+    def __init__(
+        self, options: tuple[tuple[str, str], ...], parent: QWidget | None = None
+    ) -> None:
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        self._labels = dict(options)
+        self._buttons: dict[str, QToolButton] = {}
+        group = QButtonGroup(self)
+        group.setExclusive(True)
+        for key, title in options:
+            button = QToolButton()
+            button.setText(title)
+            button.setCheckable(True)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setStyleSheet(
+                f"QToolButton {{ border: 1px solid {BORDER};"
+                f" border-radius: {RADIUS_SM}px; padding: 3px 10px;"
+                f" background: transparent; color: {TEXT_MUTED}; }}"
+                f" QToolButton:hover {{ color: {WINDOW_TEXT}; }}"
+                f" QToolButton:checked {{ background: {PRIMARY}; color: {WINDOW};"
+                " font-weight: 600; border-color: transparent; }"
+            )
+            button.toggled.connect(
+                lambda checked, k=key: self.changed.emit(k) if checked else None
+            )
+            group.addButton(button)
+            layout.addWidget(button)
+            self._buttons[key] = button
+        first = options[0][0]
+        self._buttons[first].setChecked(True)
+
+    def set_counts(self, counts: dict[str, int]) -> None:
+        for key, button in self._buttons.items():
+            count = counts.get(key)
+            button.setText(
+                self._labels[key] if count is None else f"{self._labels[key]}  {count}"
+            )
+
+    def current(self) -> str:
+        return next(k for k, b in self._buttons.items() if b.isChecked())
+
+    def set_current(self, key: str) -> None:
+        button = self._buttons.get(key)
+        if button is not None and not button.isChecked():
+            button.setChecked(True)
 
 
 class EmptyState(QWidget):
@@ -136,7 +201,9 @@ class NotReadyStrip(QWidget):
 
 
 # Run statuses come from SurveyStore; anything unrecognised stays neutral.
-_STATUS_COLORS = {
+# Public because the run detail pane colours its status line from the same map:
+# one status must not read green in the list and grey beside it.
+STATUS_COLORS = {
     "succeeded": SUCCESS,
     "running": WARNING,
     "failed": ERROR,
@@ -179,7 +246,7 @@ class StatusPillDelegate(QStyledItemDelegate):
 
         # Key off the leading word so a decorated pill ("Succeeded ⚠") keeps its
         # colour; case-insensitive so a title-cased "Failed" pill still reads red.
-        color = QColor(_STATUS_COLORS.get(text.lower().split()[0], TEXT_MUTED))
+        color = QColor(STATUS_COLORS.get(text.lower().split()[0], TEXT_MUTED))
         metrics = option.fontMetrics
         pad_x = 8
         width = min(metrics.horizontalAdvance(text) + pad_x * 2, option.rect.width() - 8)

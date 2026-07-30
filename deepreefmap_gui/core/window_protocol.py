@@ -211,17 +211,11 @@ if TYPE_CHECKING:
         _data_host_simple: QWidget
         _data_tree: QTreeWidget
         _data_run_list: QListWidget
-        _data_video_list: QListWidget
         _data_run_stack: QStackedWidget
         _data_group_header: QLabel
         _data_disk_label: QLabel
         _data_open_btn: QPushButton
         _data_show_btn: QPushButton
-        _data_open_folder_btn: QPushButton
-        _data_rename_btn: QPushButton
-        _data_assign_btn: QPushButton
-        _data_delete_btn: QPushButton
-        _data_queue_btn: QPushButton
         _data_refresh_timer: QTimer
         _data_facet_buttons: dict[str, QToolButton]
         _data_entries: list
@@ -257,7 +251,6 @@ if TYPE_CHECKING:
         _analysis_stats_table: QTableWidget
         _analysis_repro_label: QLabel
         _analysis_estimate_label: QLabel
-        _analysis_runs_list: QListWidget
         _transect_list: QTreeWidget
         _tr_name_input: QLineEdit
         _tr_start_coord: QLineEdit
@@ -401,6 +394,9 @@ if TYPE_CHECKING:
         def _build_analysis_page(self) -> QWidget: ...
         def _build_simple_shell(self) -> QWidget: ...
         def _build_setup_page(self) -> QWidget: ...
+        def _build_videos_page(self) -> QWidget: ...
+        def _refresh_videos_page(self) -> None: ...
+        def _queue_video_path(self, path: str | None) -> None: ...
         def _build_setup_nav_button(self) -> QToolButton: ...
         def _refresh_setup_page(self) -> None: ...
         def _current_setup_checks(self) -> list: ...

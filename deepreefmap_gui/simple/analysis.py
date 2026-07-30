@@ -13,10 +13,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QLabel,
-    QListWidget,
-    QListWidgetItem,
     QPushButton,
-    QSplitter,
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -65,8 +62,11 @@ class SimpleAnalysisMixin(MixinBase):
     """DeepReefMapWindow methods for the survey analysis tab."""
 
     def _build_analysis_page(self) -> QWidget:
-        """Full-page Analyse section: transect map beside the cover chart, with
-        repeatability stats and the run list below."""
+        """Transect detail: where it is, what grows on it, and how repeatable that is.
+
+        Shown in Browse's detail pane when a transect is what you have selected,
+        so it stacks vertically in a column rather than spreading across a page.
+        """
         self._analysis_covers = []
         self._analysis_all_covers = []
 
@@ -74,15 +74,6 @@ class SimpleAnalysisMixin(MixinBase):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(GUTTER)
-
-        top = QSplitter(Qt.Orientation.Horizontal)
-        top.setHandleWidth(GUTTER)
-        map_card, map_layout = section_card("Where")
-        self._analysis_map = SlippyMapWidget()
-        self._analysis_map.setMinimumHeight(200)
-        self._analysis_map.transect_clicked.connect(self._on_analysis_map_transect_clicked)
-        map_layout.addWidget(self._analysis_map, 1)
-        top.addWidget(map_card)
 
         chart_card, chart_layout = section_card()
         selector = QHBoxLayout()
@@ -117,19 +108,19 @@ class SimpleAnalysisMixin(MixinBase):
         self._analysis_estimate_label.setWordWrap(True)
         self._analysis_estimate_label.setStyleSheet(f"color: {TEXT_MUTED};")
         chart_layout.addWidget(self._analysis_estimate_label)
-        self._analysis_chart = GroupedBarChart()
-        chart_layout.addWidget(self._analysis_chart, 1)
-        top.addWidget(chart_card)
-        top.setStretchFactor(0, 1)
-        top.setStretchFactor(1, 2)
-        # Explicit sizes: left to itself the splitter gives the map whatever the
-        # chart's size hint leaves over, which is a sliver too narrow to read.
-        map_card.setMinimumWidth(280)
-        top.setSizes([420, 840])
-        layout.addWidget(top, 3)
+        # The map is context, not the subject: a strip tall enough to place the
+        # transect and no taller, above the numbers the page is actually for.
+        self._analysis_map = SlippyMapWidget()
+        self._analysis_map.setMinimumHeight(150)
+        self._analysis_map.setMaximumHeight(200)
+        self._analysis_map.transect_clicked.connect(self._on_analysis_map_transect_clicked)
+        chart_layout.addWidget(self._analysis_map)
 
-        bottom = QSplitter(Qt.Orientation.Horizontal)
-        bottom.setHandleWidth(GUTTER)
+        self._analysis_chart = GroupedBarChart()
+        self._analysis_chart.setMinimumHeight(160)
+        chart_layout.addWidget(self._analysis_chart, 1)
+        layout.addWidget(chart_card, 3)
+
         stats_card, stats_layout = section_card("Cover estimate and repeatability by class")
         self._analysis_stats_table = QTableWidget(0, 6)
         # "Cover" is the count-weighted transect estimate. "Mean of passes" is
@@ -156,22 +147,9 @@ class SimpleAnalysisMixin(MixinBase):
         self._analysis_repro_label.setStyleSheet(f"color: {TEXT_MUTED};")
         self._analysis_repro_label.setVisible(False)
         stats_layout.addWidget(self._analysis_repro_label)
-        bottom.addWidget(stats_card)
-
-        runs_card, runs_layout = section_card("Runs")
-        self._analysis_runs_list = QListWidget()
-        self._analysis_runs_list.setToolTip("Double-click a run to open it in the viewer.")
-        self._analysis_runs_list.itemDoubleClicked.connect(self._on_analysis_run_opened)
-        self._analysis_runs_stack = QStackedWidget()
-        self._analysis_runs_stack.addWidget(self._analysis_runs_list)
-        self._analysis_runs_stack.addWidget(
-            EmptyState("No runs for this transect", "Process a pass on the Run step.")
-        )
-        runs_layout.addWidget(self._analysis_runs_stack, 1)
-        bottom.addWidget(runs_card)
-        bottom.setStretchFactor(0, 2)
-        bottom.setStretchFactor(1, 1)
-        layout.addWidget(bottom, 2)
+        # This transect's runs are already the rows beside this pane, so there is
+        # no second list of them here.
+        layout.addWidget(stats_card, 2)
 
         export_row = QHBoxLayout()
         self._analysis_export_btn = QPushButton("Export repeatability CSV")
@@ -232,7 +210,6 @@ class SimpleAnalysisMixin(MixinBase):
             self._analysis_stats_table.setRowCount(0)
             self._analysis_repro_label.setText("")
             self._analysis_estimate_label.setText("")
-            self._analysis_runs_list.clear()
             self._refresh_analysis_empty_states()
             return
 
@@ -265,7 +242,6 @@ class SimpleAnalysisMixin(MixinBase):
         self._update_analysis_estimate_label(pooled)
         self._fill_analysis_stats(covers, pooled)
         self._fill_analysis_repro(all_covers)
-        self._fill_analysis_runs(store, out_root, transect_id)
         self._refresh_analysis_empty_states()
 
     def _update_analysis_estimate_label(self, pooled: PooledCover) -> None:
@@ -286,9 +262,6 @@ class SimpleAnalysisMixin(MixinBase):
         """Show each pane's placeholder while it has nothing to say."""
         self._analysis_stats_stack.setCurrentIndex(
             0 if self._analysis_stats_table.rowCount() else 1
-        )
-        self._analysis_runs_stack.setCurrentIndex(
-            0 if self._analysis_runs_list.count() else 1
         )
         self._update_analysis_export_button()
 
@@ -386,19 +359,6 @@ class SimpleAnalysisMixin(MixinBase):
         self._analysis_repro_label.setText(
             "Reproducibility (identical footage and trim):\n" + "\n".join(lines)
         )
-
-    def _fill_analysis_runs(self, store, out_root: Path, transect_id: uuid.UUID) -> None:
-        self._analysis_runs_list.clear()
-        for run in store.runs_for_transect(transect_id):
-            item = QListWidgetItem(f"{run.run_dir_name}  [{run.status}]")
-            if run.status == "succeeded":
-                item.setData(Qt.ItemDataRole.UserRole, str(out_root / run.run_dir_name))
-            self._analysis_runs_list.addItem(item)
-
-    def _on_analysis_run_opened(self, item: QListWidgetItem) -> None:
-        run_dir = item.data(Qt.ItemDataRole.UserRole)
-        if run_dir:
-            self._auto_load_run(Path(run_dir))
 
     def _on_analysis_export_csv(self) -> None:
         covers = self._analysis_covers

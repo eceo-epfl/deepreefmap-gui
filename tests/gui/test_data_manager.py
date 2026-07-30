@@ -47,6 +47,14 @@ def add_library_video(root: Path, path: str, content_hash: str) -> None:
     store.close()
 
 
+def write_crashed_run(root: Path, dir_name: str) -> Path:
+    """A run folder with no manifest: the shape a crash or a kill leaves behind."""
+    run_dir = root / dir_name
+    run_dir.mkdir(parents=True)
+    (run_dir / "run.log").write_text("started\n", encoding="utf-8")
+    return run_dir
+
+
 def write_survey_run(root: Path, dir_name: str) -> Transect:
     """Seed a survey run through a store the window will reopen at root/survey.db.
 
@@ -132,7 +140,7 @@ def test_data_tab_and_nav_registered(make_window):
     assert window._workspace_buttons["browse"].text() == "Browse"
     assert window._sidebar_tabs.tabText(window._TAB_SYSTEM) == "System"
     assert list(window._simple_nav_buttons) == ["plan", "run"]
-    assert list(window._workspace_buttons) == ["survey", "browse"]
+    assert list(window._workspace_buttons) == ["survey", "browse", "videos"]
     assert window._data_host_simple.isAncestorOf(window._data_panel)
 
 
@@ -419,22 +427,21 @@ def test_multi_select_assign_moves_all_selected(tmp_path, make_window, monkeypat
 # --- T1.6 video library facet ---
 
 
-def test_library_facet_surfaces_orphan_video(tmp_path, make_window):
+def test_videos_workspace_surfaces_orphan_video(tmp_path, make_window):
+    """A clip nobody has processed is invisible to every run-shaped view, which
+    is why the clip library is its own workspace rather than a facet here."""
     root = tmp_path / "out"
     root.mkdir(parents=True)
     add_library_video(root, "/data/orphan.mp4", "ff" * 16)
     window = make_window()
-    window._data_facet_buttons["library"].click()
-    assert window._data_facet == "library"
-    assert window._data_run_stack.currentWidget() is window._data_video_list
-    labels = [
-        window._data_video_list.item(i).text()
-        for i in range(window._data_video_list.count())
-    ]
-    assert labels == ["orphan.mp4  ·  not yet processed"]
+    window._refresh_videos_page()
+    labels = [window._video_list.item(i).text() for i in range(window._video_list.count())]
+    assert len(labels) == 1
+    assert labels[0].startswith("orphan.mp4")
+    assert "library" not in window._data_facet_buttons
 
 
-def test_library_queue_as_pass_adds_a_row(tmp_path, make_window, monkeypatch):
+def test_videos_queue_as_pass_adds_a_row(tmp_path, make_window, monkeypatch):
     root = tmp_path / "out"
     root.mkdir(parents=True)
     clip = tmp_path / "clip.mp4"
@@ -444,8 +451,85 @@ def test_library_queue_as_pass_adds_a_row(tmp_path, make_window, monkeypatch):
     monkeypatch.setattr(
         "deepreefmap_gui.simple.batch._probe_video", lambda _p: (60.0, 30.0)
     )
-    window._data_facet_buttons["library"].click()
-    window._data_video_list.setCurrentRow(0)
+    window._refresh_videos_page()
+    window._video_list.setCurrentRow(0)
     before = len(window._survey_rows)
-    window._on_data_queue_video_clicked()
+    window._on_video_queue_clicked()
     assert wait_until(lambda: len(window._survey_rows) == before + 1)
+
+
+def test_status_chips_count_and_filter_runs(tmp_path, make_window):
+    """Scenario: a batch left two finished runs and one that crashed.
+
+    Expected behaviour: the chip says how many of each before it is clicked, and
+    clicking one narrows the list to those.
+    """
+    root = tmp_path / "out"
+    write_run(root, "good_a")
+    write_run(root, "good_b")
+    write_crashed_run(root, "crashed")
+    window = make_window()
+    chips = window._data_status_chips
+    assert chips._buttons["all"].text().endswith("3")
+    assert chips._buttons["succeeded"].text().endswith("2")
+    assert chips._buttons["unfinished"].text().endswith("1")
+
+    chips.set_current("unfinished")
+    assert window._data_run_list.count() == 1
+    assert window._data_run_list.item(0).text() == "crashed"
+    chips.set_current("succeeded")
+    assert window._data_run_list.count() == 2
+
+
+def test_search_narrows_the_run_list(tmp_path, make_window):
+    root = tmp_path / "out"
+    write_run(root, "north_reef")
+    write_run(root, "south_lagoon")
+    window = make_window()
+    window._data_search.setText("lagoon")
+    assert window._data_run_list.count() == 1
+    assert window._data_run_list.item(0).text() == "south_lagoon"
+    window._data_search.setText("")
+    assert window._data_run_list.count() == 2
+
+
+def test_filtered_empty_state_says_why(tmp_path, make_window):
+    root = tmp_path / "out"
+    write_run(root, "north_reef")
+    window = make_window()
+    window._data_search.setText("nothing matches this")
+    assert window._data_run_stack.currentWidget() is window._data_empty_state
+    assert "No runs match" in window._data_empty_state._message.text()
+
+
+def test_detail_pane_follows_the_selection(tmp_path, make_window):
+    """Nothing transect-shaped appears until a transect is what is selected."""
+    root = tmp_path / "out"
+    write_survey_run(root, "assigned")
+    window = make_window()
+
+    window._data_run_list.setCurrentRow(0)
+    assert window._data_detail_stack.currentIndex() == 1
+    assert "assigned" in window._run_detail_title.text()
+
+    window._data_facet_buttons["transects"].click()
+    window._data_run_list.setCurrentItem(None)
+    for i in range(window._data_tree.topLevelItemCount()):
+        item = window._data_tree.topLevelItem(i)
+        if item.text(0).startswith("T1"):
+            window._data_tree.setCurrentItem(item)
+    window._update_data_actions()
+    assert window._data_detail_stack.currentIndex() == 2
+
+
+def test_unfinished_run_detail_carries_its_reason(tmp_path, make_window):
+    """The status bar loses a failure on the next event; the pane keeps it."""
+    root = tmp_path / "out"
+    write_crashed_run(root, "crashed")
+    window = make_window()
+    window._data_run_list.setCurrentRow(0)
+    assert not window._run_detail_error.isHidden()
+    assert "did not finish" in window._run_detail_error.text()
+    # A crashed run cannot be opened, only inspected on disk.
+    assert not window._data_open_btn.isEnabled()
+    assert window._data_show_btn.isEnabled()

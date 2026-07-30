@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMenu,
@@ -44,10 +45,16 @@ from deepreefmap_gui.core.theme import (
     SURFACE_HI,
     TEXT_MUTED,
     TEXT_SECONDARY,
+    WARN_TEXT,
     WINDOW,
     WINDOW_TEXT,
 )
-from deepreefmap_gui.core.widgets import EmptyState, section_card
+from deepreefmap_gui.core.widgets import (
+    STATUS_COLORS,
+    EmptyState,
+    FilterChips,
+    section_card,
+)
 from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.profiling.eta import format_duration
 from deepreefmap_gui.profiling.system_probe import format_bytes
@@ -64,27 +71,48 @@ from deepreefmap_gui.survey.models.transect_pass import PASS_DIRECTIONS
 
 logger = logging.getLogger(__name__)
 
+# How the runs are grouped, not what they are: the clip library is its own
+# workspace now, so every entry here is a way of arranging the same runs.
 # Keys are persisted and test-pinned; only the labels say what each view does.
 _FACETS = (
     ("runs", "All runs"),
     ("transects", "By transect"),
     ("videos", "By video"),
-    ("library", "Video library"),
 )
 
-# Facets whose left rail groups runs into a tree. "runs" and "library" have no
-# grouping, so their rail is hidden.
+# Facets whose left rail groups runs into a tree. "runs" has no grouping, so its
+# rail is hidden.
 _GROUPED_FACETS = ("transects", "videos")
 
 _RAIL_TITLES = {"transects": "Transects", "videos": "Videos"}
 
+# Outcome filters over the listed runs. Counts come from the scan, so a chip
+# reading "Failed 3" answers the question without being clicked.
+_STATUS_FILTERS = (
+    ("all", "All"),
+    (catalogue.RUN_SUCCEEDED, "Completed"),
+    (catalogue.RUN_FAILED, "Failed"),
+    (catalogue.RUN_UNFINISHED, "Unfinished"),
+)
+
 # Right-pane pages inside the runs stack.
-_RUN_LIST_PAGE, _EMPTY_PAGE, _VIDEO_LIST_PAGE = 0, 1, 2
+_RUN_LIST_PAGE, _EMPTY_PAGE = 0, 1
+
+# Detail pane pages: nothing selected, a run, a transect.
+_DETAIL_EMPTY, _DETAIL_RUN, _DETAIL_TRANSECT = 0, 1, 2
 
 # What a dropped file has to be to queue as a pass.
 _VIDEO_SUFFIXES = {".mp4", ".mov", ".avi", ".mkv"}
 
 _GROUP_KEY_ROLE = Qt.ItemDataRole.UserRole
+
+# Wide enough for a transect name or a GoPro filename to survive elision; the
+# old 260 with a tree indent left "GX0100..." and a horizontal scrollbar.
+_RAIL_WIDTH = 300
+
+# Below this the rail is not showing names any more, so a remembered width this
+# small is a layout artefact rather than a choice the user made.
+_RAIL_MIN_WIDTH = 200
 
 
 def _facet_qss(*, first: bool, last: bool) -> str:
@@ -111,6 +139,7 @@ class DataManagerMixin(MixinBase):
     """DeepReefMapWindow methods for Browse, one panel hosted by both modes."""
 
     _data_facet: str = "runs"
+    _data_status_filter: str = "all"
     _data_selected_key: tuple | None = None
     _data_rebuilt_root: Path | None = None
 
@@ -149,12 +178,25 @@ class DataManagerMixin(MixinBase):
                 lambda checked, n=name: self._on_data_facet_changed(n) if checked else None
             )
             self._data_facet_buttons[name] = btn
+        top_row.addWidget(QLabel("Group"))
         top_row.addLayout(facet_row)
+        self._data_search = QLineEdit()
+        self._data_search.setPlaceholderText("Search runs…")
+        self._data_search.setClearButtonEnabled(True)
+        self._data_search.setMaximumWidth(240)
+        self._data_search.textChanged.connect(lambda *_: self._rebuild_data_run_list())
+        top_row.addWidget(self._data_search)
+        self._data_status_chips = FilterChips(_STATUS_FILTERS)
+        self._data_status_chips.changed.connect(self._on_data_status_filter_changed)
+        top_row.addWidget(self._data_status_chips)
         top_row.addStretch(1)
+        layout.addLayout(top_row)
+
+        # Disk sits with the group header rather than on the filter row: the
+        # filters already fill that row, and squeezing a growing byte count in
+        # beside them clipped it on a narrow window.
         self._data_disk_label = QLabel("")
         self._data_disk_label.setStyleSheet(f"color: {TEXT_SECONDARY};")
-        top_row.addWidget(self._data_disk_label)
-        layout.addLayout(top_row)
 
         self._data_split = QSplitter(Qt.Orientation.Horizontal)
         self._data_split.setHandleWidth(GUTTER)
@@ -169,13 +211,17 @@ class DataManagerMixin(MixinBase):
         self._data_tree_stack.addWidget(self._data_tree)
         self._data_tree_stack.addWidget(EmptyState("Nothing to group yet"))
         rail_layout.addWidget(self._data_tree_stack, 1)
+        self._data_rail.setMinimumWidth(_RAIL_MIN_WIDTH)
         self._data_split.addWidget(self._data_rail)
 
         runs_card, runs_layout = section_card()
+        header_row = QHBoxLayout()
         self._data_group_header = QLabel("")
         self._data_group_header.setStyleSheet(f"color: {TEXT_SECONDARY};")
         self._data_group_header.setWordWrap(True)
-        runs_layout.addWidget(self._data_group_header)
+        header_row.addWidget(self._data_group_header, 1)
+        header_row.addWidget(self._data_disk_label)
+        runs_layout.addLayout(header_row)
 
         self._data_run_list = QListWidget()
         self._data_run_list.setItemDelegate(RunCardDelegate(self._data_run_list))
@@ -189,22 +235,15 @@ class DataManagerMixin(MixinBase):
         self._data_run_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._data_run_list.customContextMenuRequested.connect(self._on_data_context_menu)
 
-        # A clip lives in the store even before it is processed, so the run list
-        # cannot show it. The library facet swaps to this list of video cards.
-        self._data_video_list = QListWidget()
-        self._data_video_list.itemDoubleClicked.connect(self._on_data_video_activated)
-        self._data_video_list.itemSelectionChanged.connect(self._update_data_actions)
-        self._data_video_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self._data_video_list.customContextMenuRequested.connect(self._on_data_video_menu)
-
         self._data_run_stack = QStackedWidget()
         self._data_run_stack.addWidget(self._data_run_list)
-        self._data_run_stack.addWidget(
-            EmptyState("No runs here yet", "Processed passes collect here.")
-        )
-        self._data_run_stack.addWidget(self._data_video_list)
+        self._data_empty_state = EmptyState("No runs here yet", "Processed passes collect here.")
+        self._data_run_stack.addWidget(self._data_empty_state)
         runs_layout.addWidget(self._data_run_stack, 1)
 
+        # Two actions and a menu, rather than a row of six mostly-disabled
+        # buttons: opening and finding a run are what you do constantly, the
+        # rest are occasional housekeeping.
         actions = QHBoxLayout()
         actions.setSpacing(6)
         self._data_open_btn = QPushButton("Open")
@@ -213,30 +252,24 @@ class DataManagerMixin(MixinBase):
         self._data_show_btn = QPushButton("Show in folder")
         self._data_show_btn.clicked.connect(self._on_data_show_in_folder_clicked)
         actions.addWidget(self._data_show_btn)
-        self._data_rename_btn = QPushButton("Rename…")
-        self._data_rename_btn.clicked.connect(self._on_data_rename_clicked)
-        actions.addWidget(self._data_rename_btn)
-        self._data_assign_btn = QPushButton("Assign to transect…")
-        self._data_assign_btn.clicked.connect(self._on_data_assign_clicked)
-        actions.addWidget(self._data_assign_btn)
-        self._data_delete_btn = QPushButton("Delete…")
-        self._data_delete_btn.clicked.connect(self._on_data_delete_clicked)
-        actions.addWidget(self._data_delete_btn)
-        self._data_queue_btn = QPushButton("Queue as pass")
-        self._data_queue_btn.clicked.connect(self._on_data_queue_video_clicked)
-        actions.addWidget(self._data_queue_btn)
-        actions.addStretch(1)
-        # A run folder from anywhere on disk, not only ones under the output
-        # root, mirroring the CLI's view-run.
-        self._data_open_folder_btn = QPushButton("Open run folder…")
-        self._data_open_folder_btn.clicked.connect(self._on_data_open_folder_clicked)
-        actions.addWidget(self._data_open_folder_btn)
-        self._data_rescan_btn = QPushButton("Rescan")
-        self._data_rescan_btn.setToolTip(
-            "Re-read the output folder, picking up runs copied in since it opened."
+        self._data_more_btn = QToolButton()
+        self._data_more_btn.setText("More…")
+        self._data_more_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        more_menu = QMenu(self._data_more_btn)
+        self._data_rename_action = more_menu.addAction("Rename…", self._on_data_rename_clicked)
+        self._data_assign_action = more_menu.addAction(
+            "Assign to transect…", self._on_data_assign_clicked
         )
-        self._data_rescan_btn.clicked.connect(self._on_data_rescan_clicked)
-        actions.addWidget(self._data_rescan_btn)
+        more_menu.addSeparator()
+        self._data_delete_action = more_menu.addAction("Delete…", self._on_data_delete_clicked)
+        more_menu.addSeparator()
+        # Housekeeping that belongs to the panel, not to a selection: a run
+        # folder from anywhere on disk, and a re-read of the output root.
+        more_menu.addAction("Open run folder…", self._on_data_open_folder_clicked)
+        more_menu.addAction("Rescan output folder", self._on_data_rescan_clicked)
+        self._data_more_btn.setMenu(more_menu)
+        actions.addWidget(self._data_more_btn)
+        actions.addStretch(1)
         runs_layout.addLayout(actions)
 
         # A shared drop handler queues dropped videos as passes and opens a
@@ -245,9 +278,22 @@ class DataManagerMixin(MixinBase):
             widget.setAcceptDrops(True)
             widget.installEventFilter(self)
         self._data_split.addWidget(runs_card)
+
+        # One detail pane, showing whichever kind of thing is selected. Transect
+        # analysis lives here rather than under the list, so nothing
+        # transect-shaped appears while you are grouped by video or run.
+        self._data_detail_stack = QStackedWidget()
+        self._data_detail_stack.addWidget(
+            EmptyState("Nothing selected", "Pick a run or a transect to see its detail.")
+        )
+        self._data_detail_stack.addWidget(self._build_run_detail_panel())
+        self._data_detail_stack.addWidget(self._build_analysis_page())
+        self._data_split.addWidget(self._data_detail_stack)
+
         self._data_split.setStretchFactor(0, 0)
-        self._data_split.setStretchFactor(1, 1)
-        self._data_split.setSizes([260, 700])
+        self._data_split.setStretchFactor(1, 3)
+        self._data_split.setStretchFactor(2, 3)
+        self._data_split.setSizes([_RAIL_WIDTH, 560, 520])
         layout.addWidget(self._data_split, 1)
         self._update_data_actions()
 
@@ -262,6 +308,39 @@ class DataManagerMixin(MixinBase):
         self._data_panel = panel
         self._data_facet_buttons["runs"].setChecked(True)
         return panel
+
+    def _build_run_detail_panel(self) -> QWidget:
+        """What one run is, and why it failed if it did.
+
+        A failure reason belongs here rather than in the status bar, which the
+        next event overwrites: the run that broke is still selected long after
+        the message that explained it has gone.
+        """
+        card, layout = section_card()
+        self._run_detail_title = QLabel("")
+        self._run_detail_title.setWordWrap(True)
+        self._run_detail_title.setStyleSheet("font-weight: bold;")
+        layout.addWidget(self._run_detail_title)
+
+        self._run_detail_status = QLabel("")
+        self._run_detail_status.setWordWrap(True)
+        layout.addWidget(self._run_detail_status)
+
+        self._run_detail_facts = QLabel("")
+        self._run_detail_facts.setWordWrap(True)
+        self._run_detail_facts.setTextFormat(Qt.TextFormat.RichText)
+        self._run_detail_facts.setStyleSheet(f"color: {TEXT_SECONDARY};")
+        self._run_detail_facts.setAlignment(
+            Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft
+        )
+        layout.addWidget(self._run_detail_facts, 1)
+
+        self._run_detail_error = QLabel("")
+        self._run_detail_error.setWordWrap(True)
+        self._run_detail_error.setStyleSheet(f"color: {WARN_TEXT};")
+        self._run_detail_error.setVisible(False)
+        layout.addWidget(self._run_detail_error)
+        return card
 
     def _build_simple_data_host(self) -> QWidget:
         # The panel cards its own halves, so the host is a bare slot in both
@@ -374,15 +453,21 @@ class DataManagerMixin(MixinBase):
         self._data_rail_shown = visible
         if not visible:
             # Qt collapses a hidden splitter child to zero and does not restore
-            # the width by itself, so remember it.
+            # the width by itself, so remember it. Only a width the splitter has
+            # actually laid out counts: before the first show it reports a size
+            # hint of a hundred-odd pixels, and remembering that pinned the rail
+            # narrow enough to elide every name in it for the rest of the session.
             sizes = self._data_split.sizes()
-            if sizes and sizes[0]:
+            if sizes and sizes[0] >= _RAIL_MIN_WIDTH:
                 self._data_rail_width = sizes[0]
         self._data_rail.setVisible(visible)
-        if visible:
-            width = getattr(self, "_data_rail_width", 260)
-            total = sum(self._data_split.sizes()) or 960
-            self._data_split.setSizes([width, max(200, total - width)])
+        # Every pane gets a size. Handing setSizes fewer entries than the
+        # splitter has children leaves the rest at zero, which collapsed the
+        # detail pane to a hairline the moment a grouping was picked.
+        total = sum(self._data_split.sizes()) or 1200
+        rail = getattr(self, "_data_rail_width", _RAIL_WIDTH) if visible else 0
+        detail = max(360, int((total - rail) * 0.46))
+        self._data_split.setSizes([rail, max(280, total - rail - detail), detail])
 
     def _set_rail_title(self, title: str) -> None:
         label = self._data_rail.findChild(QLabel)
@@ -461,38 +546,69 @@ class DataManagerMixin(MixinBase):
             self._scope_syncing = False
 
     def _update_data_actions(self) -> None:
-        """Gate each action on what the current facet and selection support.
+        """Gate each action on the selection, and point the detail pane at it.
 
-        The run actions want a run, the library's queue wants a video, and a run
-        with no manifest can only be shown in a folder or deleted.
+        A run with no manifest can only be shown in a folder or deleted, so the
+        openers stay off for one.
         """
-        library = self._data_facet == "library"
-        self._data_queue_btn.setVisible(library)
-        for button in (
-            self._data_open_btn,
-            self._data_show_btn,
-            self._data_rename_btn,
-            self._data_assign_btn,
-            self._data_delete_btn,
-        ):
-            button.setVisible(not library)
-        # The open-any-folder action is a hub-wide entry point, always available.
-        self._data_open_folder_btn.setVisible(True)
-        self._data_open_folder_btn.setEnabled(not self._run_in_flight())
-
-        if library:
-            self._data_queue_btn.setEnabled(self._data_selected_video() is not None)
-            return
-
         current = self._data_selected_entry()
         selected = self._data_selected_entries()
         complete_current = current is not None and not current.incomplete
         self._data_open_btn.setEnabled(complete_current)
-        self._data_rename_btn.setEnabled(complete_current)
+        self._data_rename_action.setEnabled(complete_current)
         # Showing a crashed run in its folder is exactly how you inspect it.
         self._data_show_btn.setEnabled(current is not None)
-        self._data_assign_btn.setEnabled(any(not e.incomplete for e in selected))
-        self._data_delete_btn.setEnabled(bool(selected))
+        self._data_assign_action.setEnabled(any(not e.incomplete for e in selected))
+        self._data_delete_action.setEnabled(bool(selected))
+        self._refresh_data_detail()
+
+    def _refresh_data_detail(self) -> None:
+        """Show the selected run, else the selected transect, else nothing.
+
+        The run wins when both are selected: it is the more specific of the two,
+        and it is what was clicked last to get here.
+        """
+        entry = self._data_selected_entry()
+        if entry is not None:
+            self._fill_run_detail(entry)
+            self._data_detail_stack.setCurrentIndex(_DETAIL_RUN)
+            return
+        key = self._data_selected_key
+        if self._data_facet == "transects" and key is not None and key[0] == "transect":
+            self._data_detail_stack.setCurrentIndex(_DETAIL_TRANSECT)
+            return
+        self._data_detail_stack.setCurrentIndex(_DETAIL_EMPTY)
+
+    def _fill_run_detail(self, entry: RunEntry) -> None:
+        from deepreefmap_gui.simple.batch import _diagnose_failure
+
+        status = catalogue.entry_status(entry)
+        colour = STATUS_COLORS.get(status, TEXT_MUTED)
+        self._run_detail_title.setText(entry.display_name)
+        self._run_detail_status.setText(
+            f'<span style="color:{colour}; font-weight:600;">{status.capitalize()}</span>'
+        )
+        rows = [
+            ("Folder", entry.dir_name),
+            ("Transect", entry.transect_name or "Not assigned yet"),
+            ("Video", entry.video_name or "—"),
+        ]
+        if entry.duration_s:
+            rows.append(("Runtime", format_duration(entry.duration_s)))
+        if entry.points:
+            rows.append(("Points", f"{entry.points:,}"))
+        if entry.size_bytes is not None:
+            rows.append(("On disk", format_bytes(entry.size_bytes)))
+        self._run_detail_facts.setText(
+            "<br>".join(f"<b>{label}</b>  {value}" for label, value in rows)
+        )
+        error = entry.db_run.error if entry.db_run is not None else ""
+        if entry.incomplete:
+            message = _diagnose_failure(error) if error else (
+                "This run did not finish and wrote no manifest."
+            )
+            self._run_detail_error.setText(message)
+        self._run_detail_error.setVisible(bool(entry.incomplete))
 
     def _on_data_facet_changed(self, name: str) -> None:
         # _focus_data_on_transect sets the facet and the key together and then
@@ -514,15 +630,53 @@ class DataManagerMixin(MixinBase):
         if key is not None and len(key) == 2 and key[0] == "transect":
             self._set_scope_transect(uuid.UUID(key[1]))
 
-    def _data_listed_entries(self) -> list[RunEntry]:
+    def _data_grouped_entries(self) -> list[RunEntry]:
+        """The runs the current grouping selection covers, before filtering."""
         if self._data_facet == "runs" or self._data_selected_key is None:
             return self._data_entries
         return self._data_groups.get(self._data_selected_key, [])
 
+    def _data_listed_entries(self) -> list[RunEntry]:
+        """What the list actually shows: the group, narrowed by outcome and search."""
+        entries = self._data_grouped_entries()
+        if self._data_status_filter != "all":
+            entries = [
+                e for e in entries if catalogue.entry_outcome(e) == self._data_status_filter
+            ]
+        needle = self._data_search.text().strip().lower()
+        if needle:
+            entries = [e for e in entries if needle in self._entry_search_text(e)]
+        return entries
+
+    @staticmethod
+    def _entry_search_text(entry: RunEntry) -> str:
+        """Everything about a run worth typing to find it again."""
+        return " ".join(
+            part.lower()
+            for part in (
+                entry.display_name,
+                entry.dir_name,
+                entry.video_name or "",
+                entry.transect_name or "",
+            )
+        )
+
+    def _on_data_status_filter_changed(self, key: str) -> None:
+        self._data_status_filter = key
+        self._rebuild_data_run_list()
+
+    def _refresh_data_status_counts(self) -> None:
+        """Count over the grouping, not the whole root: the chips filter what is listed."""
+        entries = self._data_grouped_entries()
+        counts = {key: 0 for key, _ in _STATUS_FILTERS}
+        counts["all"] = len(entries)
+        for entry in entries:
+            outcome = catalogue.entry_outcome(entry)
+            counts[outcome] = counts.get(outcome, 0) + 1
+        self._data_status_chips.set_counts(counts)
+
     def _rebuild_data_run_list(self) -> None:
-        if self._data_facet == "library":
-            self._rebuild_video_library()
-            return
+        self._refresh_data_status_counts()
         listed = self._data_listed_entries()
         related = related_run_counts([(e.run_dir, e.manifest) for e in self._data_entries])
         current = self._data_run_list.currentItem()
@@ -562,6 +716,14 @@ class DataManagerMixin(MixinBase):
                 self._data_run_list.setCurrentItem(item)
         self._data_group_header.setText(self._data_header_text(listed))
         self._data_group_header.setVisible(bool(listed))
+        # An empty list means one of two different things, and saying which is
+        # the difference between "nothing here" and "nothing matches".
+        if not listed and self._data_grouped_entries():
+            self._data_empty_state.set_text(
+                "No runs match these filters", "Clear the search or pick a different outcome."
+            )
+        else:
+            self._data_empty_state.set_text("No runs here yet", "Processed passes collect here.")
         self._data_run_stack.setCurrentIndex(_RUN_LIST_PAGE if listed else _EMPTY_PAGE)
         self._update_data_actions()
 
@@ -860,73 +1022,6 @@ class DataManagerMixin(MixinBase):
         self._refresh_data_manager()
         self._refresh_transect_list()
         self._refresh_survey_analysis()
-
-    # --- Video library ---
-
-    def _rebuild_video_library(self) -> None:
-        current = self._data_video_list.currentItem()
-        keep = current.data(Qt.ItemDataRole.UserRole) if current is not None else None
-        self._data_video_list.clear()
-        entries = self._video_library_entries()
-        for entry in entries:
-            video = entry.video
-            if entry.orphan:
-                tag = "not yet processed"
-            else:
-                tag = f"{entry.pass_count} pass{'es' if entry.pass_count != 1 else ''}"
-                if entry.run_count:
-                    tag += f", {entry.run_count} run{'s' if entry.run_count != 1 else ''}"
-            item = QListWidgetItem(f"{video.file_name}  ·  {tag}")
-            item.setData(Qt.ItemDataRole.UserRole, video.path)
-            item.setData(Qt.ItemDataRole.ToolTipRole, video.path)
-            self._data_video_list.addItem(item)
-            if keep is not None and video.path == keep:
-                self._data_video_list.setCurrentItem(item)
-        self._data_group_header.setText(self._video_library_header(entries))
-        self._data_group_header.setVisible(bool(entries))
-        self._data_run_stack.setCurrentIndex(_VIDEO_LIST_PAGE if entries else _EMPTY_PAGE)
-        self._update_data_actions()
-
-    def _video_library_entries(self) -> list[catalogue.VideoLibraryEntry]:
-        if not getattr(self, "_data_store_ok", False):
-            return []
-        try:
-            store = self._survey_store()
-            return catalogue.video_library(
-                store.list_videos(), store.list_passes(), store.list_runs()
-            )
-        except Exception:
-            logger.exception("Could not list the video library")
-            return []
-
-    def _video_library_header(self, entries: list[catalogue.VideoLibraryEntry]) -> str:
-        if not entries:
-            return ""
-        orphans = sum(1 for e in entries if e.orphan)
-        bits = [f"{len(entries)} video{'s' if len(entries) != 1 else ''}"]
-        if orphans:
-            bits.append(f"{orphans} not yet processed")
-        return " · ".join(bits)
-
-    def _data_selected_video(self) -> str | None:
-        if self._data_facet != "library":
-            return None
-        item = self._data_video_list.currentItem()
-        return item.data(Qt.ItemDataRole.UserRole) if item is not None else None
-
-    def _on_data_video_activated(self, item: QListWidgetItem) -> None:
-        self._queue_video_path(item.data(Qt.ItemDataRole.UserRole))
-
-    def _on_data_video_menu(self, pos) -> None:
-        item = self._data_video_list.itemAt(pos)
-        if item is not None:
-            self._data_video_list.setCurrentItem(item)
-        menu = QMenu(self._data_video_list)
-        menu.addAction("Queue as pass", self._on_data_queue_video_clicked)
-        menu.exec(self._data_video_list.mapToGlobal(pos))
-
-    def _on_data_queue_video_clicked(self) -> None:
-        self._queue_video_path(self._data_selected_video())
 
     def _queue_video_path(self, path: str | None) -> None:
         """Turn a library clip into a fresh pass, off the GUI thread."""

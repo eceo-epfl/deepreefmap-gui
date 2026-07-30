@@ -29,6 +29,31 @@ logger = logging.getLogger(__name__)
 
 UNASSIGNED_TITLE = "Not assigned yet"
 
+# Outcome buckets, coarser than the raw run status: the browser offers one
+# filter per outcome a diver acts on, not one per state the store records.
+RUN_SUCCEEDED, RUN_FAILED, RUN_UNFINISHED = "succeeded", "failed", "unfinished"
+
+# The same idea for a clip: what is left to do with this footage.
+VIDEO_UNPROCESSED, VIDEO_PENDING, VIDEO_FAILED, VIDEO_PROCESSED = (
+    "unprocessed",
+    "pending",
+    "failed",
+    "processed",
+)
+
+
+def entry_status(entry: RunEntry) -> str:
+    """The run's own status. A directory holding a manifest is a finished run."""
+    return "succeeded" if not entry.incomplete else entry.status_label
+
+
+def entry_outcome(entry: RunEntry) -> str:
+    """Which filter bucket a run falls into."""
+    status = entry_status(entry)
+    if status == "succeeded":
+        return RUN_SUCCEEDED
+    return RUN_FAILED if status == "failed" else RUN_UNFINISHED
+
 
 @dataclass(slots=True)
 class RunEntry:
@@ -364,10 +389,30 @@ class VideoLibraryEntry:
     video: VideoAsset
     pass_count: int
     run_count: int
+    # The passes cut from this clip and every run they produced, so a detail
+    # pane can show what became of the footage without re-querying per row.
+    passes: list[TransectPass] = field(default_factory=list)
+    runs: list[RunRecord] = field(default_factory=list)
 
     @property
     def orphan(self) -> bool:
         return self.pass_count == 0
+
+    @property
+    def outcome(self) -> str:
+        """Where this clip stands: unprocessed, failing, or done.
+
+        A clip is only ``processed`` once every pass cut from it has a run that
+        succeeded; anything short of that is work still owed.
+        """
+        if self.orphan:
+            return VIDEO_UNPROCESSED
+        if any(run.status == "failed" for run in self.runs):
+            return VIDEO_FAILED
+        succeeded = {run.pass_id for run in self.runs if run.status == "succeeded"}
+        if len(succeeded) >= self.pass_count:
+            return VIDEO_PROCESSED
+        return VIDEO_PENDING
 
 
 def video_library(
@@ -389,14 +434,22 @@ def video_library(
         videos_by_pass[p.id] = p.video_ids()
         passes_per_video.update(videos_by_pass[p.id])
     runs_per_video: Counter[uuid.UUID] = Counter()
+    passes_by_video: dict[uuid.UUID, list[TransectPass]] = {}
+    runs_by_video: dict[uuid.UUID, list[RunRecord]] = {}
+    for p in passes:
+        for video_id in videos_by_pass[p.id]:
+            passes_by_video.setdefault(video_id, []).append(p)
     for run in runs:
         for video_id in videos_by_pass.get(run.pass_id, []):
             runs_per_video[video_id] += 1
+            runs_by_video.setdefault(video_id, []).append(run)
     return [
         VideoLibraryEntry(
             video=video,
             pass_count=passes_per_video.get(video.id, 0),
             run_count=runs_per_video.get(video.id, 0),
+            passes=passes_by_video.get(video.id, []),
+            runs=runs_by_video.get(video.id, []),
         )
         for video in videos
     ]

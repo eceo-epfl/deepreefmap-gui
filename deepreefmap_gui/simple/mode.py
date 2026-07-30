@@ -30,7 +30,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QSpinBox,
-    QSplitter,
     QStackedWidget,
     QToolButton,
     QVBoxLayout,
@@ -75,15 +74,22 @@ UI_MODE_ORDER = ("simple", "advanced")
 
 # Doing the work is a short sequence; looking at what came out is not a step you
 # finish but a place you return to, so the two are different kinds of thing.
-WORKSPACES = ("survey", "browse")
+WORKSPACES = ("survey", "browse", "videos")
 
 # Inside Survey: plan your transects, then process the day's videos.
 SURVEY_STEPS = ("plan", "run")
 
+# One line per workspace, said in the terms of the work rather than the widget.
+_WORKSPACE_TIPS = {
+    "survey": "Plan transects and process this session's videos.",
+    "browse": "Everything processed so far, and how repeat passes compare.",
+    "videos": "Every clip this survey knows about, and what became of each one.",
+}
+
 # Every destination the stack can show, in stack order. Setup is appended last
 # so the Plan/Run/Browse stack indices other code and tests rely on stay put; it
 # is a first-run destination, not a numbered survey step.
-SIMPLE_SECTIONS = (*SURVEY_STEPS, "browse", "setup")
+SIMPLE_SECTIONS = (*SURVEY_STEPS, "browse", "videos", "setup")
 
 _STEP_BADGE_PX = 20
 
@@ -436,6 +442,7 @@ class UiModeMixin(MixinBase):
             self._refresh_survey_batch_tab()
             self._refresh_survey_analysis()
             self._refresh_data_manager()
+            self._refresh_videos_page()
             self._refresh_setup_page()
         else:
             viewing = getattr(self, "_app_mode", "SETUP") == "VIEWING"
@@ -482,11 +489,7 @@ class UiModeMixin(MixinBase):
             btn.setCheckable(True)
             btn.setStyleSheet(_segment_qss(first=index == 0))
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setToolTip(
-                "Plan transects and process this session's videos."
-                if workspace == "survey"
-                else "Everything processed so far, and how repeat passes compare."
-            )
+            btn.setToolTip(_WORKSPACE_TIPS[workspace])
             btn.clicked.connect(partial(self._on_workspace_clicked, workspace))
             workspace_group.addButton(btn)
             nav.addWidget(btn)
@@ -499,6 +502,7 @@ class UiModeMixin(MixinBase):
             "plan": self._build_plan_page(),
             "run": self._build_simple_run_page(),
             "browse": self._build_browse_page(),
+            "videos": self._build_videos_page(),
             "setup": self._build_setup_page(),
         }
 
@@ -554,19 +558,14 @@ class UiModeMixin(MixinBase):
         return shell
 
     def _build_browse_page(self) -> QWidget:
-        """Browse: the run archive, with per-transect comparison underneath it.
+        """Browse: the run archive, and the detail of whatever is selected in it.
 
-        The browser groups runs by transect and the analysis works per transect,
-        so the two belong on one surface — selecting a transect above drives the
-        comparison below.
+        The whole page is the browse panel. Transect comparison used to sit under
+        it permanently, which meant a transect chart while you were grouped by
+        video; it is now one page of that panel's detail pane, shown when a
+        transect is what you have selected.
         """
-        split = QSplitter(Qt.Orientation.Vertical)
-        split.setHandleWidth(GUTTER)
-        split.addWidget(self._build_simple_data_host())
-        split.addWidget(self._build_analysis_page())
-        split.setStretchFactor(0, 2)
-        split.setStretchFactor(1, 3)
-        return split
+        return self._build_simple_data_host()
 
     def _current_section(self) -> str:
         index = self._simple_stack.currentIndex()
@@ -575,12 +574,12 @@ class UiModeMixin(MixinBase):
         return "plan"
 
     def _on_workspace_clicked(self, workspace: str) -> None:
-        if workspace == "browse":
-            self._set_simple_section("browse")
-        elif self._current_section() == "browse":
-            # Coming back from Browse lands on the step you left, not always the
+        if workspace == "survey":
+            # Coming back to Survey lands on the step you left, not always the
             # first one.
             self._set_simple_section(getattr(self, "_last_survey_step", "plan"))
+        else:
+            self._set_simple_section(workspace)
 
     def _sync_workspace_chrome(self) -> None:
         """Reflect which workspace the live section belongs to, and hide the
@@ -588,19 +587,21 @@ class UiModeMixin(MixinBase):
         section = self._current_section()
         in_survey = section in SURVEY_STEPS
         if section == "setup":
-            # Setup sits outside both workspaces, so neither pill should own it.
+            # Setup sits outside every workspace, so no pill should own it.
             for button in self._workspace_buttons.values():
                 button.blockSignals(True)
                 button.setChecked(False)
                 button.blockSignals(False)
         else:
-            button = self._workspace_buttons["survey" if in_survey else "browse"]
+            button = self._workspace_buttons["survey" if in_survey else section]
             button.blockSignals(True)
             button.setChecked(True)
             button.blockSignals(False)
         for widget in self._step_widgets:
             widget.setVisible(in_survey)
-        self._section_counts["browse"].setVisible(not in_survey and section != "setup")
+        # The run count describes Browse, so it goes with Browse rather than
+        # sitting over the clip library counting something else's rows.
+        self._section_counts["browse"].setVisible(section == "browse")
 
     def _refresh_section_state(self) -> None:
         """Paint each step's badge and count from the cached verdicts.

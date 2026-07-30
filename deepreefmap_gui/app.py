@@ -38,6 +38,7 @@ from deepreefmap_gui.simple.batch import SimpleBatchMixin
 from deepreefmap_gui.simple.mode import UiModeMixin
 from deepreefmap_gui.simple.plan import SimplePlanMixin
 from deepreefmap_gui.simple.setup import SimpleSetupMixin
+from deepreefmap_gui.simple.videos import SimpleVideosMixin
 from deepreefmap_gui.system.panel import SystemPanelMixin
 from deepreefmap_gui.update.version import VersionCheckMixin
 from deepreefmap_gui.viewer.controls import ViewerControlsMixin
@@ -60,6 +61,7 @@ class DeepReefMapWindow(
     SimpleBatchMixin,
     SimplePlanMixin,
     SimpleSetupMixin,
+    SimpleVideosMixin,
     SystemPanelMixin,
     UiModeMixin,
     ViewerControlsMixin,
