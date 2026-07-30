@@ -81,11 +81,6 @@ from deepreefmap_gui.runs.timing_popup import HoverColumn
 
 logger = logging.getLogger(__name__)
 
-# Mapping backends with no processor fallback: without a card they do not run
-# slowly, they do not run at all. Everything else degrades to the main processor.
-GPU_ONLY_MAPPERS = ("loger", "loger_star")
-
-
 class _InstantTipLabel(QLabel):
     """A QLabel whose tooltip appears the instant the cursor enters, no delay."""
 
@@ -1592,8 +1587,10 @@ class FormPanelMixin(MixinBase):
         batch. One helper so a CPU-only laptop cannot be told it is fine by one
         of them and blocked by the other.
         """
+        from deepreefmap_gui.models.manager import GPU_ONLY_BACKENDS
+
         mapping = self._map_combo.currentText()
-        if mapping in GPU_ONLY_MAPPERS and not self._gpu_available():
+        if mapping in GPU_ONLY_BACKENDS and not self._gpu_available():
             return mapping
         return ""
 

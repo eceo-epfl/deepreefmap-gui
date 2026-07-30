@@ -50,6 +50,7 @@ from deepreefmap_gui.core.widgets import (
     section_card,
 )
 from deepreefmap_gui.simple.progress import (
+    ATTENTION,
     BLOCKED,
     FIX_HERE,
     FIX_SETTINGS,
@@ -1276,6 +1277,13 @@ class SimpleBatchMixin(MixinBase):
                 # the far end of the window, easy to miss from the pass table.
                 self._survey_start_btn.setText(f"Assign transects first ({unassigned} to do)")
             self._status_label.setText(gate.reason)
+        elif gate.state == ATTENTION and gate.reason:
+            # A warning still leaves the batch runnable, so the button carries no
+            # sign of it. Without this the failed-pass warning lives only in the
+            # nav badge and the tooltip.
+            self._status_label.setText(gate.reason)
+            self._set_survey_forward_action("process", count=len(remaining))
+            self._survey_start_btn.setEnabled(bool(remaining) or bool(self._survey_rows))
         elif remaining:
             self._set_survey_forward_action("process", count=len(remaining))
             self._survey_start_btn.setEnabled(True)

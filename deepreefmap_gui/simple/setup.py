@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
 
 from deepreefmap_gui.core.theme import ERROR, GUTTER, SUCCESS, TEXT_MUTED
 from deepreefmap_gui.core.widgets import section_card
-from deepreefmap_gui.form.panel import GPU_ONLY_MAPPERS
+from deepreefmap_gui.models.manager import GPU_ONLY_BACKENDS
 from deepreefmap_gui.profiling.system_probe import GPU_NONE, format_bytes, probe_system
 
 logger = logging.getLogger(__name__)
@@ -263,7 +263,7 @@ class SimpleSetupMixin(MixinBase):
         mapping = preset.get("mapping_name") or self._map_combo.currentText()
         return evaluate_setup(
             gpu_name=gpu_name,
-            requires_gpu=mapping in GPU_ONLY_MAPPERS,
+            requires_gpu=mapping in GPU_ONLY_BACKENDS,
             missing_models=self._survey_missing_models(),
             free_bytes=profile.disk_free_bytes,
             min_free_bytes=_MIN_FREE_BYTES,
