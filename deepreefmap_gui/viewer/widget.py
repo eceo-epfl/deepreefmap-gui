@@ -37,17 +37,20 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from deepreefmap_gui.core.image_view import ClickableLabel, ImageDialog
+from deepreefmap_gui.core.image_view import ImageDialog
 from deepreefmap_gui.core.theme import (
     BORDER,
     CARD_BG,
     GROOVE,
     OVERLAY_TEXT,
-    PREVIEW_BG,
     PRIMARY,
     PRIMARY_DARK,
     SLIDER_HANDLE,
     TEXT_SECONDARY,
+)
+from deepreefmap_gui.viewer.frame_stack import (
+    CompositeFrameView,
+    FrameLayerControls,
 )
 from deepreefmap_gui.viewer.legend import LegendOverlay
 from deepreefmap_gui.viewer.picking import ViewerPickingMixin
@@ -73,11 +76,8 @@ _FRAME_PANEL_CACHE_BYTES = 256 * 1024 * 1024
 # still keeps the current frame and its neighbours rather than thrashing.
 _FRAME_PANEL_MIN_ENTRIES = 4
 
-_FRAME_TITLES = {
-    "rgb": "Frame",
-    "seg": "Segmentation",
-    "depth": "Depth",
-}
+# One popup for the stack, keyed in the same dict the per-layer popups used.
+_STACK_POPUP = "stack"
 
 
 def _panel_nbytes(parts: "tuple[np.ndarray, np.ndarray, np.ndarray]") -> int:
@@ -117,20 +117,28 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         self._frame_pixmaps: dict[str, QPixmap] = {}
         self._frame_dialogs: dict[str, ImageDialog] = {}
 
-        self._rgb_label = self._make_frame_label("rgb")
-        self._seg_label = self._make_frame_label("seg")
-        self._depth_label = self._make_frame_label("depth")
+        # One pane holding all three images stacked, with the layer controls
+        # under it: the frame, its segmentation and its depth are the same pixel
+        # grid, so blending them beats three thumbnails a third of the width.
+        self.frame_stack = CompositeFrameView()
+        self.frame_stack.clicked.connect(self._open_frame_popup)
+        self.frame_layers = FrameLayerControls()
+        self.frame_layers.set_swatches(self._class_colors)
+        self.frame_layers.opacity_changed.connect(self._on_layer_opacity_changed)
+        self._popup_refresh_timer = QTimer(self)
+        self._popup_refresh_timer.setSingleShot(True)
+        self._popup_refresh_timer.setInterval(30)
+        self._popup_refresh_timer.timeout.connect(self._apply_frame_popup_refresh)
         self._frames_panel = QWidget()
         frames_outer = QVBoxLayout(self._frames_panel)
         frames_outer.setContentsMargins(0, 0, 0, 0)
         frames_outer.setSpacing(0)
         frames_row = QWidget()
-        frames_layout = QHBoxLayout(frames_row)
-        frames_layout.setContentsMargins(0, 0, 0, 0)
-        frames_layout.setSpacing(0)
-        frames_layout.addWidget(self._rgb_label, 1)
-        frames_layout.addWidget(self._seg_label, 1)
-        frames_layout.addWidget(self._depth_label, 1)
+        frames_row_layout = QHBoxLayout(frames_row)
+        frames_row_layout.setContentsMargins(0, 0, 0, 0)
+        frames_row_layout.setSpacing(0)
+        frames_row_layout.addWidget(self.frame_layers)
+        frames_row_layout.addWidget(self.frame_stack, 1)
         frames_outer.addWidget(frames_row, 1)
 
         # Slider bar: a fat, hard-to-miss timeline control with a Frame N / N
@@ -209,7 +217,10 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         self._canvas_stack.addWidget(self._canvas_container)
         self._main_splitter.addWidget(self._canvas_stack)
         self._main_splitter.addWidget(self._frames_panel)
-        self._main_splitter.setStretchFactor(0, 3)
+        # 3:1 left the frame pane too short to show the frame at any useful size
+        # once the images were stacked into one rather than spread across three.
+        # Still the cloud's window; the handle moves it either way.
+        self._main_splitter.setStretchFactor(0, 2)
         self._main_splitter.setStretchFactor(1, 1)
         self._canvas_revealed = False
 
@@ -222,13 +233,6 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         self.legend_overlay = LegendOverlay(self._canvas_container)
         self.legend_overlay.repaint_requested.connect(self._render_canvas_safe)
         self._canvas_container.installEventFilter(self)
-        # The first frame is painted before the splitter has handed the strip its
-        # width, so without a rescale on resize the thumbnails would sit at
-        # whatever narrow size the labels had and only fill out on the next
-        # scrub. Installed here rather than at construction: eventFilter reaches
-        # for widgets that do not exist until the layout above is built.
-        for _kind in _FRAME_TITLES:
-            self._frame_label(_kind).installEventFilter(self)
 
         self._plotter: Any = None
 
@@ -333,10 +337,6 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         self._last_t = None
 
     def eventFilter(self, obj, event):  # type: ignore[override]
-        if event.type() == QEvent.Type.Resize:
-            for kind in _FRAME_TITLES:
-                if obj is self._frame_label(kind):
-                    self._rescale_frame_label(kind)
         if obj is self._canvas_container and event.type() == QEvent.Type.Resize:
             self.legend_overlay.reposition()
             self.canvas_resized.emit()
@@ -955,6 +955,7 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         self._mapping_result = None
         self._frame_panel_cache.clear()
         self._frame_panel_bytes = 0
+        self._clear_frame_layers()
         self._last_t = None
         self._last_accumulate = None
         self._last_semantic = None
@@ -1366,28 +1367,27 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
 
     # --- Frame strip ---
 
-    def _make_frame_label(self, kind: str) -> ClickableLabel:
-        label = ClickableLabel()
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        label.setMinimumHeight(120)
-        label.setStyleSheet(f"background-color: {PREVIEW_BG};")
-        label.setCursor(Qt.CursorShape.PointingHandCursor)
-        label.setToolTip(f"Click to open the {_FRAME_TITLES[kind].lower()} at full size")
-        label.clicked.connect(lambda k=kind: self._open_frame_popup(k))
-        return label
-
     def _set_frame_label_visible(self, kind: str, visible: bool) -> None:
-        """Show or hide one strip image, closing its popup when it goes away."""
-        self._frame_label(kind).setVisible(visible)
+        """Offer or withdraw one layer: a run with no labels has no segmentation
+        to blend, so the layer stops being drawn and its row goes away."""
+        self.frame_stack.set_layer_available(kind, visible)
+        self.frame_layers.set_layer_available(kind, visible)
         if not visible:
-            self._close_frame_popup(kind)
+            # Dropped rather than merely unavailable, so the next run cannot
+            # inherit it if the layer becomes available again.
+            self._frame_pixmaps.pop(kind, None)
+            self.frame_stack.clear_layer(kind)
+        self._refresh_frame_popup()
 
-    def _frame_label(self, kind: str) -> QLabel:
-        return {
-            "rgb": self._rgb_label,
-            "seg": self._seg_label,
-            "depth": self._depth_label,
-        }[kind]
+    def _clear_frame_layers(self) -> None:
+        """Empty the panel at a run boundary, popup and all."""
+        self._frame_pixmaps.clear()
+        self.frame_stack.clear_layers()
+        self._close_frame_popup()
+
+    def _on_layer_opacity_changed(self, kind: str, value: float) -> None:
+        self.frame_stack.set_opacity(kind, value)
+        self._refresh_frame_popup()
 
     def _paint_label(self, kind: str, image: np.ndarray) -> None:
         h, w, _ = image.shape
@@ -1397,47 +1397,53 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         ).copy()
         pixmap = QPixmap.fromImage(qimg)
         self._frame_pixmaps[kind] = pixmap
-        self._rescale_frame_label(kind)
-        dialog = self._frame_dialogs.get(kind)
-        if dialog is not None:
-            dialog.set_pixmap(pixmap)
+        self.frame_stack.set_layer(kind, pixmap)
+        self._refresh_frame_popup()
 
-    def _rescale_frame_label(self, kind: str) -> None:
-        """Fit the strip image to its third of the panel, never blown up past native."""
-        pixmap = self._frame_pixmaps.get(kind)
+    def _open_frame_popup(self) -> None:
+        """Open (or raise) a live popup of the stack at full resolution."""
+        # isHidden rather than isVisible: the panel is legitimately unshown while
+        # the viewer itself is, only an explicit hide should block a popup.
+        if self.frame_stack.isHidden() or not self.frame_stack.has_content():
+            return
+        pixmap = self.frame_stack.composite_pixmap()
         if pixmap is None or pixmap.isNull():
             return
-        label = self._frame_label(kind)
-        target = max(1, min(pixmap.width(), label.width() or pixmap.width()))
-        scaled = pixmap.scaledToWidth(target, Qt.TransformationMode.SmoothTransformation)
-        if label.pixmap().size() == scaled.size():
-            return
-        label.setPixmap(scaled)
-
-    def _open_frame_popup(self, kind: str) -> None:
-        """Open (or raise) a live popup of one frame image at full resolution."""
-        # isHidden rather than isVisible: the strip is legitimately unshown
-        # while the viewer itself is, only an explicit hide should block a popup.
-        if self._frame_label(kind).isHidden():
-            return
-        pixmap = self._frame_pixmaps.get(kind)
-        if pixmap is None or pixmap.isNull():
-            return
-        dialog = self._frame_dialogs.get(kind)
+        dialog = self._frame_dialogs.get(_STACK_POPUP)
         if dialog is not None:
             dialog.set_pixmap(pixmap)
             dialog.raise_()
             dialog.activateWindow()
             return
-        # Non-modal, so scrubbing the timeline behind it keeps updating it.
-        dialog = ImageDialog(pixmap, _FRAME_TITLES[kind], self)
-        self._frame_dialogs[kind] = dialog
-        dialog.finished.connect(lambda _result, k=kind: self._frame_dialogs.pop(k, None))
+        # Non-modal, so scrubbing the timeline or moving a slider behind it keeps
+        # updating it.
+        dialog = ImageDialog(pixmap, "Frame stack", self)
+        self._frame_dialogs[_STACK_POPUP] = dialog
+        dialog.finished.connect(lambda _result: self._frame_dialogs.pop(_STACK_POPUP, None))
         dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         dialog.show()
 
-    def _close_frame_popup(self, kind: str) -> None:
-        dialog = self._frame_dialogs.pop(kind, None)
+    def _refresh_frame_popup(self) -> None:
+        """Keep an open popup showing the blend the pane is showing.
+
+        Coalesced: compositing costs a full-resolution pixmap (~6 MB at 1080p),
+        and a slider drag or a single frame update would otherwise ask for one
+        per tick and per layer. With no popup open it costs nothing at all.
+        """
+        if _STACK_POPUP not in self._frame_dialogs:
+            return
+        self._popup_refresh_timer.start()
+
+    def _apply_frame_popup_refresh(self) -> None:
+        dialog = self._frame_dialogs.get(_STACK_POPUP)
+        if dialog is None:
+            return
+        pixmap = self.frame_stack.composite_pixmap()
+        if pixmap is not None and not pixmap.isNull():
+            dialog.set_pixmap(pixmap)
+
+    def _close_frame_popup(self) -> None:
+        dialog = self._frame_dialogs.pop(_STACK_POPUP, None)
         if dialog is not None:
             dialog.close()
 
@@ -1549,6 +1555,12 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
     def _on_start_run(self, run_label: str, output_dir: str) -> None:
         self._output_dir = Path(output_dir)
         self._hide_canvas()
+        # A run starts with nothing to show but the frames it is about to
+        # decode: segmentation appears once labels land on disk, depth only once
+        # mapping has produced depth maps. Both are withdrawn until then, and
+        # the previous run's images go with them.
+        self._clear_frame_layers()
+        self._set_frame_label_visible("seg", False)
         self._set_frame_label_visible("depth", False)
         self._notify_status("start_run", run_label=run_label, output_dir=output_dir)
 
@@ -1602,8 +1614,7 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
 
     @Slot()
     def _on_close(self) -> None:
-        for kind in list(self._frame_dialogs):
-            self._close_frame_popup(kind)
+        self._close_frame_popup()
         if self._plotter is not None:
             try:
                 self._plotter.close()
