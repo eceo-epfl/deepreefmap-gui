@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import pytest
 from _factories import seed_survey_run, write_run
 from _qt_wait import wait_until
 from PySide6.QtCore import QEvent, Qt, QUrl
@@ -30,11 +31,6 @@ def select_run(window, row: int) -> None:
 
 def row_of(window, name: str) -> int:
     return listed_runs(window).index(name)
-
-
-def pane_stretch(window, index: int) -> int:
-    """QSplitter has no stretch getter; it lives on the child's size policy."""
-    return window._data_split.widget(index).sizePolicy().horizontalStretch()
 
 
 class _FakeMime:
@@ -631,27 +627,45 @@ def test_opening_a_run_lands_in_view_mode(tmp_path, make_window, monkeypatch):
     assert window._viewer.isHidden()
 
 
-def test_the_table_gets_the_bulk_of_browse(tmp_path, make_window):
-    """The table is the page; the detail pane holds one run's facts beside it.
+def detail_share(window) -> float:
+    _rail, table, detail = window._data_split.sizes()
+    return detail / (table + detail)
 
-    Asserted on the stretch factors rather than the laid-out pixels: a test
-    window is narrow enough that Qt clamps the requested sizes, but the stretch
-    is what survives a resize and so is the rule being set.
-    """
+
+def test_the_table_gets_the_bulk_of_browse(tmp_path, make_window):
+    """The table is the page; the detail pane holds one run's facts beside it."""
     write_run(tmp_path / "out", "run_a")
     window = make_window()
-    assert (pane_stretch(window, 1), pane_stretch(window, 2)) == (7, 3)
+    window._data_split.resize(1200, 600)
+
+    window._apply_data_split_sizes(rail_visible=False)
+    assert detail_share(window) == pytest.approx(0.30, abs=0.02)
 
 
 def test_grouping_by_transect_widens_the_detail_pane(tmp_path, make_window):
     """A chart and a stats table need more room than a metadata card."""
     write_survey_run(tmp_path / "out", "assigned")
     window = make_window()
+    window._data_split.resize(1200, 600)
+
     window._data_facet_buttons["transects"].click()
-    assert pane_stretch(window, 2) > 3
+    assert detail_share(window) > 0.35
 
     window._data_facet_buttons["runs"].click()
-    assert pane_stretch(window, 2) == 3
+    assert detail_share(window) == pytest.approx(0.30, abs=0.02)
+
+
+def test_a_dragged_handle_survives_the_next_resize(tmp_path, make_window):
+    """Re-dividing on every resize must not undo a deliberate drag."""
+    write_run(tmp_path / "out", "run_a")
+    window = make_window()
+    window._data_split.resize(1200, 600)
+    window._apply_data_split_sizes(rail_visible=False)
+
+    window._on_data_split_moved()
+    window._data_split.setSizes([0, 400, 800])
+    window._apply_data_split_sizes(rail_visible=False)
+    assert window._data_split.sizes()[2] > window._data_split.sizes()[1]
 
 
 def test_detail_pane_shows_the_ortho_a_run_produced(tmp_path, make_window):
@@ -693,7 +707,11 @@ def test_clicking_the_ortho_opens_it_full_size(tmp_path, make_window, monkeypatc
     select_run(window, 0)
 
     opened = []
-    monkeypatch.setattr(OrthoDialog, "exec", lambda self: opened.append(self))
+
+    def record(dialog):
+        opened.append(dialog)
+
+    monkeypatch.setattr(OrthoDialog, "exec", record)
     window._run_detail.ortho.clicked.emit()
     assert len(opened) == 1
     assert opened[0].windowTitle() == "clickable"
