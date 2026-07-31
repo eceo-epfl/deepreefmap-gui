@@ -7,8 +7,11 @@ from dataclasses import dataclass, field
 
 from deepreefmap_gui.survey.models.common import utc_now_iso
 
-RUN_STATUSES = ("pending", "running", "succeeded", "failed", "cancelled")
-TERMINAL_STATUSES = ("succeeded", "failed", "cancelled")
+# "interrupted" is the terminal state for a run the process never finished: a
+# crash or a quit-with-batch-running (closeEvent abandons the worker) leaves a
+# row stuck non-terminal, and the startup sweep reconciles it to this.
+RUN_STATUSES = ("pending", "running", "succeeded", "failed", "cancelled", "interrupted")
+TERMINAL_STATUSES = ("succeeded", "failed", "cancelled", "interrupted")
 
 
 @dataclass(slots=True)

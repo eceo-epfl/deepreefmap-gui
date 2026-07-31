@@ -3,13 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Sequence, SupportsFloat, cast
 
+from deepreefmap.config.classes import ClassConfig
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPaintEvent, QPen, QPixmap
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
-from deepreefmap.config.classes import ClassConfig
 from deepreefmap_gui.cover import aggregate_cover, group_color_for_name, group_name_for_id
-
 
 _FINE_RING_OUTER = 1.00
 _FINE_RING_INNER = 0.62
@@ -337,6 +336,13 @@ def _slice_at_angle(slices: Sequence[_Slice], angle_deg: float) -> _Slice | None
     # QPainter angles increase counter-clockwise; our spans are negative
     # (clockwise). Reduce both to a normalized [0, 360) frame and test.
     for slc in slices:
+        # A slice covering the whole circle reduces to lo == hi, exactly as an
+        # empty one does, and was skipped with it -- so a run with a single class
+        # at 100% had no clickable slice and no tooltip anywhere on the chart.
+        # The two cases are opposites: 360 degrees contains every angle, 0
+        # contains none.
+        if abs(slc.span_deg) >= 360.0:
+            return slc
         end = slc.start_deg + slc.span_deg
         lo = min(slc.start_deg, end) % 360.0
         hi = max(slc.start_deg, end) % 360.0

@@ -1,15 +1,24 @@
-"""Simple / Advanced UI mode switch and the shared survey store accessor."""
+"""Simple / Advanced UI mode switch and the shared survey store accessor.
+
+Browse is the only page both modes show, and it is one widget re-parented by
+_host_data_panel rather than two builds of the same thing. Plan, Compare and
+Results are each still owned by a single mode. Promoting them to that same
+shared-host pattern is the remaining half of this cleanup, deferred rather than
+started: it changes the advanced sidebar's tab set, and _setup_page is already
+lent out to the run settings dialog, so a second borrower of the same widget
+needs one owner deciding who holds it.
+"""
 
 from __future__ import annotations
-
-from deepreefmap_gui.core.window_protocol import MixinBase
 
 import logging
 from functools import partial
 from pathlib import Path
 from typing import Any
 
+import yaml
 from PySide6.QtCore import QSize, Qt
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QAbstractButton,
     QButtonGroup,
@@ -22,7 +31,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QSpinBox,
-    QSplitter,
     QStackedWidget,
     QToolButton,
     QVBoxLayout,
@@ -44,8 +52,19 @@ from deepreefmap_gui.core.theme import (
     WINDOW,
     WINDOW_TEXT,
 )
+from deepreefmap_gui.core.window_protocol import MixinBase
+from deepreefmap_gui.runs.run_detail import RunDetailPanel
 from deepreefmap_gui.simple.progress import browse_state, plan_state, run_gate
-from deepreefmap_gui.survey.preset import save_user_preset
+from deepreefmap_gui.survey.preset import (
+    ActivePreset,
+    OrgPreset,
+    OverrideResult,
+    clear_machine_override,
+    describe_keys,
+    deviations_from_org,
+    load_active_preset,
+    save_machine_override,
+)
 from deepreefmap_gui.survey.store import SURVEY_DB_NAME, SurveyStore
 
 logger = logging.getLogger(__name__)
@@ -57,13 +76,27 @@ UI_MODE_ORDER = ("simple", "advanced")
 
 # Doing the work is a short sequence; looking at what came out is not a step you
 # finish but a place you return to, so the two are different kinds of thing.
-WORKSPACES = ("survey", "browse")
+WORKSPACES = ("survey", "browse", "videos")
 
 # Inside Survey: plan your transects, then process the day's videos.
 SURVEY_STEPS = ("plan", "run")
 
-# Every destination the stack can show, in stack order.
-SIMPLE_SECTIONS = (*SURVEY_STEPS, "browse")
+# One line per workspace, said in the terms of the work rather than the widget.
+_WORKSPACE_TIPS = {
+    "survey": "Plan transects and process this session's videos.",
+    "browse": "Everything processed so far, and how repeat passes compare.",
+    "videos": "Every clip this survey knows about, and what became of each one.",
+}
+
+# Every destination the stack can show, in stack order. Setup and view are
+# appended last so the Plan/Run/Browse stack indices other code and tests rely on
+# stay put; neither is a numbered survey step. Setup is a first-run destination,
+# and view is where an opened run goes — reached by opening one, never by a tab.
+SIMPLE_SECTIONS = (*SURVEY_STEPS, "browse", "videos", "setup", "view")
+
+# What the info panel takes when it is open. Wide enough for the metadata block
+# without eating into the cloud, which is what View mode is for.
+VIEW_INFO_WIDTH = 340
 
 _STEP_BADGE_PX = 20
 
@@ -175,6 +208,10 @@ class UiModeMixin(MixinBase):
     """DeepReefMapWindow methods for switching between the simple and advanced UIs."""
 
     _survey_store_obj: SurveyStore | None = None
+    # The configuration as persisted: organisation preset plus this machine's
+    # allow-listed changes. _survey_preset is what the run will use, which can
+    # additionally hold a session-only edit the override would not keep.
+    _active_preset: ActivePreset | None = None
     _form_defaults: dict[str, Any]
     _simple_nav_buttons: dict[str, QToolButton]
     _workspace_buttons: dict[str, QToolButton]
@@ -182,7 +219,7 @@ class UiModeMixin(MixinBase):
     _step_widgets: list[QWidget]
     _section_state_cache: tuple | None = None
     _last_survey_step: str = "plan"
-    _work_area_state: tuple[bool, bool, str] | None = None
+    _work_area_state: tuple[bool, bool, str, bool] | None = None
 
     def _build_mode_toggle(self) -> QWidget:
         """Segmented control: both names stay readable and the filled half says
@@ -228,6 +265,17 @@ class UiModeMixin(MixinBase):
             self._populate_form_from_preset(self._survey_preset)
         self._set_ui_mode(mode)
 
+    def _reveal_memory_detail(self) -> None:
+        """Where the memory warning sends you, per mode.
+
+        Advanced has the System tab with the full breakdown. Simple has no such
+        tab, so it lands on the setup step, where the same plain sentence lives.
+        """
+        if getattr(self, "_ui_mode", "advanced") == "simple":
+            self._set_simple_section("setup")
+        elif hasattr(self, "_sidebar_tabs"):
+            self._sidebar_tabs.setCurrentIndex(self._TAB_SYSTEM)
+
     def _idle_status_text(self) -> str:
         if getattr(self, "_ui_mode", "advanced") == "simple":
             return "Ready. Plan your transects, then add videos on the Run step."
@@ -241,40 +289,135 @@ class UiModeMixin(MixinBase):
         self._refresh_section_state()
 
     def _adopt_form_as_preset(self) -> None:
-        """Take the form's current settings as the survey preset and persist them."""
-        preset = self._collect_preset_from_form()
-        self._survey_preset = preset
+        """Persist the settings this machine is allowed to change, and only those.
+
+        The organisation preset owns the method: which models run, at what
+        resolution, over how many frames. Those decide the numbers a survey
+        reports, so one diver's curiosity in advanced mode must not rewrite them
+        for every dive after. Only MACHINE_OVERRIDABLE_KEYS describe the computer
+        rather than the method, and only those are written back.
+
+        A locked preset (an administrator named one) puts the rest of the form
+        back to standard, because an authoritative configuration that the next
+        run would silently ignore is not authoritative. An unlocked one leaves
+        the edit in place for this session and says it will not be kept.
+        """
+        # With no readable organisation preset there is nothing to measure a
+        # deviation against, so there is nothing meaningful to write either.
+        if self._active_preset is None:
+            return
+        org = self._active_preset.org
         try:
-            save_user_preset(preset)
+            result = save_machine_override(self._collect_preset_from_form(), org)
         except OSError as exc:
-            logger.warning("Could not save the preset: %s", exc)
-            self._status_label.setText(f"Preset not saved: {exc}")
+            logger.warning("Could not save the settings for this machine: %s", exc)
+            self._status_label.setText(f"Settings not saved: {exc}")
+            return
+        self._active_preset = ActivePreset(org=org, overrides=result.saved)
+        if result.refused and org.locked:
+            self._populate_form_from_preset(self._active_preset.settings)
+        # What the run will use, which is the form: a session-only deviation the
+        # organisation preset would not keep still reaches the pipeline.
+        self._survey_preset = self._collect_preset_from_form()
+        self._announce_preset_save(result, org)
         self._survey_preset_label.setText(self._survey_preset_summary())
 
-    def _build_preview_toggle(self) -> QToolButton:
-        self._preview_toggle_btn = QToolButton()
-        self._preview_toggle_btn.setText("3D preview")
-        self._preview_toggle_btn.setCheckable(True)
-        self._preview_toggle_btn.setToolTip(
-            "Show the live 3D point cloud. When off, run progress and frame "
-            "previews are shown instead."
-        )
-        checked = str(self._settings.value("preview_3d", "false")).lower() == "true"
-        self._preview_toggle_btn.setChecked(checked)
-        self._viewer.set_canvas_allowed(checked)
-        self._preview_toggle_btn.toggled.connect(self._on_preview_toggled)
-        return self._preview_toggle_btn
+    def _announce_preset_save(self, result: OverrideResult, org: OrgPreset) -> None:
+        """Say what was kept and what was not, naming the settings in plain words."""
+        if result.refused and org.locked:
+            self._status_label.setText(
+                f"{org.name} sets {describe_keys(result.refused)}, so that went back to standard."
+            )
+        elif result.refused:
+            self._status_label.setText(
+                f"{describe_keys(result.refused)} changed for now, but the standard"
+                " settings come back next launch."
+            )
+        elif result.saved:
+            self._status_label.setText(
+                f"Saved for this machine: {describe_keys(result.saved)}."
+            )
 
-    def _on_preview_toggled(self, checked: bool) -> None:
-        self._settings.setValue("preview_3d", checked)
-        self._viewer.set_canvas_allowed(checked)
+    def _survey_deviations(self) -> dict[str, Any]:
+        """Form settings that differ from the organisation preset.
+
+        Read from the form rather than the saved override, because a batch runs
+        from _collect_run_settings(): a session-only edit changes the run just as
+        much as a saved one, so it is named and recorded just the same.
+        """
+        if self._active_preset is None:
+            return {}
+        return deviations_from_org(
+            self._collect_preset_from_form(), self._active_preset.org
+        )
+
+    def _reload_active_preset(self) -> None:
+        """Re-resolve the organisation preset and this machine's changes.
+
+        A malformed admin file is caught here rather than allowed to abort window
+        construction: the gate then blocks with a reason the diver can read,
+        instead of the app refusing to open on a field laptop.
+        """
+        try:
+            self._active_preset = load_active_preset()
+        except (OSError, ValueError, yaml.YAMLError) as exc:
+            self._active_preset = None
+            self._survey_preset = None
+            logger.warning("Settings unavailable: %s", exc)
+            return
+        self._survey_preset = self._active_preset.settings
+
+    def _restore_standard_settings(self) -> None:
+        """Drop this machine's changes and go back to the organisation preset."""
+        if self._survey_worker_running:
+            self._status_label.setText("Unavailable while processing.")
+            return
+        # Ask before restoring, or the answer is always "nothing changed".
+        deviated = bool(self._survey_deviations())
+        had_override = clear_machine_override()
+        self._reload_active_preset()
+        if self._survey_preset is not None:
+            self._populate_form_from_preset(self._survey_preset)
+        else:
+            # No readable preset to restore from, so the fresh-window values are
+            # the only known-good state left to offer.
+            self._reset_form_defaults()
+        self._recompute_survey_start()
+        if self._active_preset is None:
+            self._status_label.setText(
+                "Settings could not be read. The form has reverted to its defaults."
+            )
+        elif had_override or deviated:
+            self._status_label.setText(
+                f"Settings are back to {self._active_preset.org.label}."
+            )
+        else:
+            self._status_label.setText(
+                f"Already on {self._active_preset.org.label}; nothing to restore."
+            )
+
+    def _load_standard_into_form(self) -> None:
+        """Load the organisation standard into the form without persisting.
+
+        The run settings dialog borrows the live form, so its Restore button must
+        only touch widgets: the caller's snapshot undoes it on Cancel, and OK
+        persists the result, which clears the machine override once the form is
+        back on the standard. The persistent restore is the Run page's own button.
+        """
+        if self._active_preset is not None:
+            self._populate_form_from_preset(self._active_preset.org.settings)
+        else:
+            self._reset_form_defaults()
 
     def _init_ui_mode(self) -> None:
         mode = str(self._settings.value("ui_mode", "simple"))
         if mode not in UI_MODES:
             mode = "simple"
-        # Starting in advanced still shows what simple mode would run.
-        if mode == "advanced" and self._survey_preset is not None:
+        # Populate the form from the saved preset in every mode, not just
+        # advanced. Simple mode never shows the form, but it runs from
+        # _collect_run_settings() which reads exactly these widgets, so leaving
+        # the constructor defaults in place would make the run ignore the preset.
+        if self._survey_preset is not None:
             self._populate_form_from_preset(self._survey_preset)
         self._set_ui_mode(mode)
 
@@ -291,10 +434,13 @@ class UiModeMixin(MixinBase):
         # Simple mode starts runs from its Run section, so it has no start
         # button. Pause and stop stay run-driven and appear in both modes.
         self._start_btn.setVisible(not simple and not self._run_in_flight())
-        if simple:
-            self._memory_warn_icon.setVisible(False)
-        else:
-            self._update_memory_profile_warning()
+        # The command preview describes the one run this form would start, which
+        # is not how simple mode launches work, so it follows the start button.
+        self._refresh_command_preview()
+        # The memory warning is advisory in both modes now: simple mode grades
+        # the queued batch and routes the icon to the setup step, which exists,
+        # rather than the System tab, which simple mode has no room for.
+        self._update_memory_profile_warning()
         self._settings.setValue("ui_mode", mode)
         # Each mode is driven differently, and simple mode has neither a form
         # nor a Start button, so the idle hint must follow the mode.
@@ -306,6 +452,8 @@ class UiModeMixin(MixinBase):
             self._refresh_survey_batch_tab()
             self._refresh_survey_analysis()
             self._refresh_data_manager()
+            self._refresh_videos_page()
+            self._refresh_setup_page()
         else:
             viewing = getattr(self, "_app_mode", "SETUP") == "VIEWING"
             self._sidebar_tabs.setCurrentIndex(self._TAB_RESULTS if viewing else self._TAB_RUN)
@@ -327,10 +475,17 @@ class UiModeMixin(MixinBase):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
+        # Built here so it exists before the first _sync_workspace_chrome, but
+        # added to the window's central column rather than to this shell: in View
+        # mode the shell is squeezed to zero width, and a Back button inside it
+        # would go with it.
+        self._build_view_bar()
+
         header = QWidget()
         header.setStyleSheet(
             f"background-color: {CARD_BG}; border-bottom: 1px solid {BORDER};"
         )
+        self._simple_header = header
         nav = QHBoxLayout(header)
         nav.setContentsMargins(PAGE_MARGIN, 8, PAGE_MARGIN, 8)
         nav.setSpacing(4)
@@ -351,11 +506,7 @@ class UiModeMixin(MixinBase):
             btn.setCheckable(True)
             btn.setStyleSheet(_segment_qss(first=index == 0))
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setToolTip(
-                "Plan transects and process this session's videos."
-                if workspace == "survey"
-                else "Everything processed so far, and how repeat passes compare."
-            )
+            btn.setToolTip(_WORKSPACE_TIPS[workspace])
             btn.clicked.connect(partial(self._on_workspace_clicked, workspace))
             workspace_group.addButton(btn)
             nav.addWidget(btn)
@@ -368,6 +519,9 @@ class UiModeMixin(MixinBase):
             "plan": self._build_plan_page(),
             "run": self._build_simple_run_page(),
             "browse": self._build_browse_page(),
+            "videos": self._build_videos_page(),
+            "setup": self._build_setup_page(),
+            "view": self._build_view_info_page(),
         }
 
         step_group = QButtonGroup(shell)
@@ -404,6 +558,7 @@ class UiModeMixin(MixinBase):
         self._section_counts["browse"] = browse_count
 
         nav.addStretch(1)
+        nav.addWidget(self._build_setup_nav_button())
         layout.addWidget(header)
 
         for name in SIMPLE_SECTIONS:
@@ -416,24 +571,103 @@ class UiModeMixin(MixinBase):
         body_layout.addWidget(self._simple_stack, 1)
         layout.addWidget(body, 1)
 
-        self._set_simple_section("plan")
+        self._set_simple_section(self._initial_simple_section())
         self._refresh_section_state()
         return shell
 
     def _build_browse_page(self) -> QWidget:
-        """Browse: the run archive, with per-transect comparison underneath it.
+        """Browse: the run archive, and the detail of whatever is selected in it.
 
-        The browser groups runs by transect and the analysis works per transect,
-        so the two belong on one surface — selecting a transect above drives the
-        comparison below.
+        The whole page is the browse panel. Transect comparison used to sit under
+        it permanently, which meant a transect chart while you were grouped by
+        video; it is now one page of that panel's detail pane, shown when a
+        transect is what you have selected.
         """
-        split = QSplitter(Qt.Orientation.Vertical)
-        split.setHandleWidth(GUTTER)
-        split.addWidget(self._build_simple_data_host())
-        split.addWidget(self._build_analysis_page())
-        split.setStretchFactor(0, 2)
-        split.setStretchFactor(1, 3)
-        return split
+        return self._build_simple_data_host()
+
+    def _build_view_bar(self) -> QWidget:
+        """The way out of View mode, and the switch for the metadata beside it.
+
+        Full window width, so it survives the info column collapsing to nothing.
+        """
+        self._view_info_open = False
+        bar = QWidget()
+        bar.setStyleSheet(
+            f"background-color: {CARD_BG}; border-bottom: 1px solid {BORDER};"
+        )
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(PAGE_MARGIN, 6, PAGE_MARGIN, 6)
+        row.setSpacing(GUTTER)
+
+        back = QPushButton("← Back to Browse")
+        back.setProperty("quiet", "true")
+        back.setCursor(Qt.CursorShape.PointingHandCursor)
+        back.clicked.connect(lambda: self._set_simple_section("browse"))
+        row.addWidget(back)
+
+        self._view_title = QLabel("")
+        font = self._view_title.font()
+        font.setWeight(QFont.Weight.DemiBold)
+        self._view_title.setFont(font)
+        row.addWidget(self._view_title)
+        row.addStretch(1)
+
+        self._view_info_btn = QToolButton()
+        self._view_info_btn.setText("Info")
+        self._view_info_btn.setCheckable(True)
+        self._view_info_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._view_info_btn.setToolTip("Show what this run is, beside the cloud.")
+        self._view_info_btn.setStyleSheet(_STEP_QSS)
+        self._view_info_btn.toggled.connect(self._on_view_info_toggled)
+        row.addWidget(self._view_info_btn)
+
+        bar.setVisible(False)
+        self._view_bar = bar
+        return bar
+
+    def _set_view_bar_visible(self, visible: bool) -> None:
+        if hasattr(self, "_view_bar"):
+            self._view_bar.setVisible(visible)
+
+    def _on_view_info_toggled(self, checked: bool) -> None:
+        self._view_info_open = checked
+        self._update_work_area()
+
+    def _enter_view_mode(self, run_dir: Path) -> None:
+        """Point View mode at the run now on screen, and go there.
+
+        The catalogue entry carries what the info panel shows, but a run opened
+        from outside the output root has none; the title still names it, and the
+        panel stays on whatever it last described rather than showing another
+        run's facts under this one's name.
+        """
+        entry = next(
+            (e for e in getattr(self, "_data_entries", []) if e.run_dir == run_dir),
+            None,
+        )
+        if entry is not None:
+            self._view_title.setText(entry.display_name)
+            self._view_detail.show_entry(entry)
+        else:
+            manifest = getattr(self, "_active_run_manifest", None) or {}
+            self._view_title.setText(manifest.get("name") or run_dir.name)
+            self._view_detail.clear()
+        self._set_simple_section("view")
+
+    def _build_view_info_page(self) -> QWidget:
+        """What the run on screen is, beside the cloud rather than instead of it.
+
+        The whole point of View mode is the viewport, so this column is off by
+        default and the Info button in the view bar brings it back. It reuses the
+        Browse detail pane's filler, so the two cannot describe one run
+        differently.
+        """
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self._view_detail = RunDetailPanel()
+        layout.addWidget(self._view_detail, 1)
+        return page
 
     def _current_section(self) -> str:
         index = self._simple_stack.currentIndex()
@@ -442,25 +676,38 @@ class UiModeMixin(MixinBase):
         return "plan"
 
     def _on_workspace_clicked(self, workspace: str) -> None:
-        if workspace == "browse":
-            self._set_simple_section("browse")
-        elif self._current_section() == "browse":
-            # Coming back from Browse lands on the step you left, not always the
+        if workspace == "survey":
+            # Coming back to Survey lands on the step you left, not always the
             # first one.
             self._set_simple_section(getattr(self, "_last_survey_step", "plan"))
+        else:
+            self._set_simple_section(workspace)
 
     def _sync_workspace_chrome(self) -> None:
         """Reflect which workspace the live section belongs to, and hide the
         step controls entirely in Browse — they steer nothing there."""
         section = self._current_section()
         in_survey = section in SURVEY_STEPS
-        button = self._workspace_buttons["survey" if in_survey else "browse"]
-        button.blockSignals(True)
-        button.setChecked(True)
-        button.blockSignals(False)
+        # The header band is the workspace switch; View replaces it with its own
+        # bar, so nothing here should read as the live destination while it shows.
+        self._simple_header.setVisible(section != "view")
+        self._set_view_bar_visible(section == "view")
+        if section in ("setup", "view"):
+            # Neither sits inside a workspace, so no pill should own them.
+            for button in self._workspace_buttons.values():
+                button.blockSignals(True)
+                button.setChecked(False)
+                button.blockSignals(False)
+        else:
+            button = self._workspace_buttons["survey" if in_survey else section]
+            button.blockSignals(True)
+            button.setChecked(True)
+            button.blockSignals(False)
         for widget in self._step_widgets:
             widget.setVisible(in_survey)
-        self._section_counts["browse"].setVisible(not in_survey)
+        # The run count describes Browse, so it goes with Browse rather than
+        # sitting over the clip library counting something else's rows.
+        self._section_counts["browse"].setVisible(section == "browse")
 
     def _refresh_section_state(self) -> None:
         """Paint each step's badge and count from the cached verdicts.
@@ -570,6 +817,8 @@ class UiModeMixin(MixinBase):
                 button.blockSignals(True)
                 button.setChecked(True)
                 button.blockSignals(False)
+        if name == "setup":
+            self._refresh_setup_page()
         self._simple_stack.setCurrentIndex(SIMPLE_SECTIONS.index(name))
         self._sync_workspace_chrome()
         self._update_work_area()
@@ -580,15 +829,14 @@ class UiModeMixin(MixinBase):
         if not hasattr(self, "_work_hsplitter"):
             return
         simple = getattr(self, "_ui_mode", "advanced") == "simple"
-        app_mode = getattr(self, "_app_mode", "SETUP")
         section = self._current_section() if hasattr(self, "_simple_stack") else "plan"
-        # Browse is a reading surface: a run opened from it wants the viewer, but
-        # a batch running in the background must not shove 3D onto the page you
-        # went there to read.
-        show_viewer = not simple or (
-            app_mode == "VIEWING" or (app_mode == "RUNNING" and section != "browse")
-        )
-        state = (simple, show_viewer, section)
+        # In simple mode the point cloud gets a destination of its own rather
+        # than half of Browse. Browsing wants the whole window for the table, and
+        # looking at a cloud wants the whole window for the cloud; sharing served
+        # neither. Advanced keeps the permanent side-by-side it was built around.
+        show_viewer = not simple or section == "view"
+        info_open = getattr(self, "_view_info_open", False)
+        state = (simple, show_viewer, section, info_open)
         if getattr(self, "_work_area_state", None) == state:
             return
         self._work_area_state = state
@@ -597,18 +845,31 @@ class UiModeMixin(MixinBase):
         if not show_viewer:
             self._work_hsplitter.setSizes([total, 0])
         elif simple:
-            left = int(total * 0.45)
+            # View mode gives the viewport everything the info panel is not using.
+            left = min(VIEW_INFO_WIDTH, total // 3) if info_open else 0
             self._work_hsplitter.setSizes([left, total - left])
         else:
             left = min(self._form_preferred_width, total // 2)
             self._work_hsplitter.setSizes([left, total - left])
 
+    def _snapshot_form_settings(self) -> dict[str, Any]:
+        """Every settings widget's current value, keyed by attribute name.
+
+        Widget values rather than a preset dict: the preset drops the processing
+        size when the resolution is not Custom, which is right for storage and
+        wrong for an undo, since cancelling has to put back exactly what was
+        there.
+        """
+        return {attr: _widget_value(getattr(self, attr)) for _, attr in _PRESET_FIELD_WIDGETS}
+
+    def _restore_form_settings(self, snapshot: dict[str, Any]) -> None:
+        for _, attr in _PRESET_FIELD_WIDGETS:
+            _set_widget_value(getattr(self, attr), snapshot[attr])
+
     def _capture_form_defaults(self) -> None:
         """Snapshot fresh-window values of every settings field, so the run
         settings dialog can offer Reset defaults."""
-        self._form_defaults = {
-            attr: _widget_value(getattr(self, attr)) for _, attr in _PRESET_FIELD_WIDGETS
-        }
+        self._form_defaults = self._snapshot_form_settings()
 
     def _collect_preset_from_form(self) -> dict[str, Any]:
         preset: dict[str, Any] = {}
@@ -632,8 +893,7 @@ class UiModeMixin(MixinBase):
             _set_widget_value(getattr(self, attr), value)
 
     def _reset_form_defaults(self) -> None:
-        for _, attr in _PRESET_FIELD_WIDGETS:
-            _set_widget_value(getattr(self, attr), self._form_defaults[attr])
+        self._restore_form_settings(self._form_defaults)
 
     def _survey_store(self) -> SurveyStore:
         """Store keyed to the current output root; reopened when the root changes.

@@ -78,7 +78,8 @@ def install_desktop_entry(binary_path: str | os.PathLike[str]) -> Path:
         # launcher does not reliably render absolute Icon= paths.
         "Icon=deepreefmap-gui\n"
         "Terminal=false\n"
-        "Categories=Science;\n"
+        "Categories=Science;\n",
+        encoding="utf-8",
     )
     _refresh_menu_database()
     return entry

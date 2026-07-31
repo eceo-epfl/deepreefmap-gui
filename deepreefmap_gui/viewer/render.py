@@ -10,13 +10,6 @@ if TYPE_CHECKING:
     import pyvista as pv
 
 
-def _to_rgba(rgb: np.ndarray) -> np.ndarray:
-    f = np.ascontiguousarray(rgb, dtype=np.float32)
-    if f.max() > 1.0:
-        f = f / 255.0
-    return np.column_stack([f, np.ones(len(f), dtype=np.float32)])
-
-
 def _colorize_seg(labels: np.ndarray, class_colors: dict[int, tuple[int, int, int]]) -> np.ndarray:
     h, w = labels.shape[:2]
     out = np.full((h, w, 3), 128, dtype=np.uint8)

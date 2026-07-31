@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections import OrderedDict
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -12,13 +13,18 @@ import numpy as np
 
 if TYPE_CHECKING:
     import pyvista as pv
-
     from deepreefmap.config.classes import ClassConfig
     from deepreefmap.pipeline.artifacts import (
         FrameBatch,
         MappingSequenceResult,
         SemanticPointCloud,
     )
+from deepreefmap.pointcloud.final_cloud_index import FinalCloudIndex, build_final_cloud_index
+from deepreefmap.pointcloud.live_frame_cloud import (
+    LiveFrameCloudCache,
+    build_enabled_label_lut,
+    mask_points_by_enabled_lut,
+)
 from PySide6.QtCore import QEvent, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
@@ -31,24 +37,22 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from deepreefmap.pointcloud.final_cloud_index import FinalCloudIndex, build_final_cloud_index
-from deepreefmap.pointcloud.live_frame_cloud import (
-    LiveFrameCloudCache,
-    build_enabled_label_lut,
-    mask_points_by_enabled_lut,
-)
-from deepreefmap_gui.viewer.legend import LegendOverlay
+from deepreefmap_gui.core.image_view import ImageDialog
 from deepreefmap_gui.core.theme import (
     BORDER,
     CARD_BG,
     GROOVE,
     OVERLAY_TEXT,
-    PREVIEW_BG,
     PRIMARY,
     PRIMARY_DARK,
     SLIDER_HANDLE,
     TEXT_SECONDARY,
 )
+from deepreefmap_gui.viewer.frame_stack import (
+    CompositeFrameView,
+    FrameLayerControls,
+)
+from deepreefmap_gui.viewer.legend import LegendOverlay
 from deepreefmap_gui.viewer.picking import ViewerPickingMixin
 from deepreefmap_gui.viewer.render import (
     _build_frustum_lines,
@@ -63,6 +67,21 @@ from deepreefmap_gui.viewer.render import (
 logger = logging.getLogger(__name__)
 
 _EMPTY_XYZ = np.zeros((0, 3), dtype=np.float32)
+
+# Ceiling for the composed image panels, in bytes rather than entries: the
+# processing resolution is a user setting, so an entry is ~4.7 MB at 960x540 and
+# ~18.7 MB at 1920x1080. A count that suited one would be wrong for the other.
+_FRAME_PANEL_CACHE_BYTES = 256 * 1024 * 1024
+# Held regardless of budget, so a resolution large enough to blow it on its own
+# still keeps the current frame and its neighbours rather than thrashing.
+_FRAME_PANEL_MIN_ENTRIES = 4
+
+# One popup for the stack, keyed in the same dict the per-layer popups used.
+_STACK_POPUP = "stack"
+
+
+def _panel_nbytes(parts: "tuple[np.ndarray, np.ndarray, np.ndarray]") -> int:
+    return int(sum(int(p.nbytes) for p in parts))
 
 
 class QtPointCloudViewer(ViewerPickingMixin, QWidget):
@@ -93,29 +112,33 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         self._class_names = class_names or {}
         self._output_dir: Path | None = None
 
-        self._rgb_label = QLabel()
-        self._rgb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._rgb_label.setMinimumHeight(120)
-        self._rgb_label.setStyleSheet(f"background-color: {PREVIEW_BG};")
-        self._seg_label = QLabel()
-        self._seg_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._seg_label.setMinimumHeight(120)
-        self._seg_label.setStyleSheet(f"background-color: {PREVIEW_BG};")
-        self._depth_label = QLabel()
-        self._depth_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._depth_label.setMinimumHeight(120)
-        self._depth_label.setStyleSheet(f"background-color: {PREVIEW_BG};")
+        # Full-resolution pixmaps behind the strip's thumbnails, so a popup
+        # shows the frame rather than the third-of-a-pane downscale.
+        self._frame_pixmaps: dict[str, QPixmap] = {}
+        self._frame_dialogs: dict[str, ImageDialog] = {}
+
+        # One pane holding all three images stacked, with the layer controls
+        # under it: the frame, its segmentation and its depth are the same pixel
+        # grid, so blending them beats three thumbnails a third of the width.
+        self.frame_stack = CompositeFrameView()
+        self.frame_stack.clicked.connect(self._open_frame_popup)
+        self.frame_layers = FrameLayerControls()
+        self.frame_layers.set_swatches(self._class_colors)
+        self.frame_layers.opacity_changed.connect(self._on_layer_opacity_changed)
+        self._popup_refresh_timer = QTimer(self)
+        self._popup_refresh_timer.setSingleShot(True)
+        self._popup_refresh_timer.setInterval(30)
+        self._popup_refresh_timer.timeout.connect(self._apply_frame_popup_refresh)
         self._frames_panel = QWidget()
         frames_outer = QVBoxLayout(self._frames_panel)
         frames_outer.setContentsMargins(0, 0, 0, 0)
         frames_outer.setSpacing(0)
         frames_row = QWidget()
-        frames_layout = QHBoxLayout(frames_row)
-        frames_layout.setContentsMargins(0, 0, 0, 0)
-        frames_layout.setSpacing(0)
-        frames_layout.addWidget(self._rgb_label, 1)
-        frames_layout.addWidget(self._seg_label, 1)
-        frames_layout.addWidget(self._depth_label, 1)
+        frames_row_layout = QHBoxLayout(frames_row)
+        frames_row_layout.setContentsMargins(0, 0, 0, 0)
+        frames_row_layout.setSpacing(0)
+        frames_row_layout.addWidget(self.frame_layers)
+        frames_row_layout.addWidget(self.frame_stack, 1)
         frames_outer.addWidget(frames_row, 1)
 
         # Slider bar: a fat, hard-to-miss timeline control with a Frame N / N
@@ -194,22 +217,15 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         self._canvas_stack.addWidget(self._canvas_container)
         self._main_splitter.addWidget(self._canvas_stack)
         self._main_splitter.addWidget(self._frames_panel)
-        self._main_splitter.setStretchFactor(0, 3)
+        # 3:1 left the frame pane too short to show the frame at any useful size
+        # once the images were stacked into one rather than spread across three.
+        # Still the cloud's window; the handle moves it either way.
+        self._main_splitter.setStretchFactor(0, 2)
         self._main_splitter.setStretchFactor(1, 1)
         self._canvas_revealed = False
-        self._canvas_wanted = False
-        self._canvas_allowed = True
-
-        # Slim header row above the canvas for controls that belong to the
-        # viewer itself (the 3D preview toggle). A header rather than a canvas
-        # overlay so the controls stay reachable while the placeholder shows.
-        self._header_row = QHBoxLayout()
-        self._header_row.setContentsMargins(4, 2, 4, 2)
-        self._header_row.addStretch(1)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addLayout(self._header_row)
         layout.addWidget(self._main_splitter)
 
         # Floating legend pinned to the canvas's top-right corner. Hidden until
@@ -225,7 +241,6 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         self._live_polydata: pv.PolyData | None = None
         self._class_actors: dict[int, Any] = {}
         self._class_polydata: dict[int, pv.PolyData] = {}
-        self._frustum_actors: dict[int, Any] = {}
         self._frustum_batch_actor: Any = None
         self._frustum_batch_pd: Any = None
         self._frustum_highlight_actor: Any = None
@@ -285,7 +300,10 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         self._pick_press_pos: tuple[int, int] | None = None
         self._pick_drag_detected: bool = False
 
-        self._frame_panel_cache: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+        self._frame_panel_cache: OrderedDict[
+            int, tuple[np.ndarray, np.ndarray, np.ndarray]
+        ] = OrderedDict()
+        self._frame_panel_bytes = 0
 
         self._sig_start_run.connect(self._on_start_run)
         self._sig_set_stage.connect(self._on_set_stage)
@@ -510,24 +528,7 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         assert layout is not None
         layout.addWidget(widget)
 
-    def add_header_widget(self, widget: QWidget) -> None:
-        """Dock a control into the viewer's slim header row, right-aligned."""
-        self._header_row.addWidget(widget)
-
-    def set_canvas_allowed(self, allowed: bool) -> None:
-        """Gate the 3D canvas. Scene data keeps flowing while disallowed; allowing
-        mid-run reveals a canvas that has been fed all along."""
-        self._canvas_allowed = allowed
-        if allowed and self._canvas_wanted:
-            self._reveal_canvas()
-        elif not allowed:
-            self._canvas_revealed = False
-            self._canvas_stack.setCurrentWidget(self._placeholder_container)
-
     def _reveal_canvas(self) -> None:
-        self._canvas_wanted = True
-        if not self._canvas_allowed:
-            return
         self._ensure_plotter()
         self._canvas_revealed = True
         self._canvas_stack.setCurrentWidget(self._canvas_container)
@@ -538,7 +539,6 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         self._main_splitter.setSizes([int(total * 0.75), int(total * 0.25)])
 
     def _hide_canvas(self) -> None:
-        self._canvas_wanted = False
         self._canvas_revealed = False
         self._canvas_stack.setCurrentWidget(self._placeholder_container)
 
@@ -607,8 +607,8 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
 
         self._clear_scene_data()
         with self._scene_mutation():
-            self._seg_label.setVisible(True)
-            self._depth_label.setVisible(True)
+            self._set_frame_label_visible("seg", True)
+            self._set_frame_label_visible("depth", True)
             plotter = self._ensure_plotter()
             self._frame_batch = frame_batch
             self._mapping_result = mapping_result
@@ -671,8 +671,8 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
 
         self._clear_scene_data()
         with self._scene_mutation():
-            self._seg_label.setVisible(True)
-            self._depth_label.setVisible(True)
+            self._set_frame_label_visible("seg", True)
+            self._set_frame_label_visible("depth", True)
             plotter = self._ensure_plotter()
             self._frame_batch = frame_batch
             self._mapping_result = mapping_result
@@ -732,8 +732,8 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         """
         self._clear_scene_data()
         with self._scene_mutation():
-            self._seg_label.setVisible(False)
-            self._depth_label.setVisible(True)
+            self._set_frame_label_visible("seg", False)
+            self._set_frame_label_visible("depth", True)
             plotter = self._ensure_plotter()
             self._frame_batch = frame_batch
             self._mapping_result = mapping_result
@@ -821,8 +821,8 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         if parts is None:
             return
         rgb, depth = parts
-        self._paint_label(self._rgb_label, rgb)
-        self._paint_label(self._depth_label, depth)
+        self._paint_label("rgb", rgb)
+        self._paint_label("depth", depth)
 
     def _emit_setup(self, message: str, current: int, total: int) -> None:
         """Forward a one-off setup-progress event so GUI-thread stages don't look frozen."""
@@ -924,8 +924,6 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
                 _remove(self._frustum_batch_actor)
             if hasattr(self, "_frustum_highlight_actor") and self._frustum_highlight_actor is not None:
                 _remove(self._frustum_highlight_actor)
-            for actor in self._frustum_actors.values():
-                _remove(actor)
             if self._live_actor is not None:
                 _remove(self._live_actor)
             if self._simple_actor is not None:
@@ -937,7 +935,6 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
                 pass
         self._class_actors.clear()
         self._class_polydata.clear()
-        self._frustum_actors.clear()
         self._frustum_batch_actor = None
         self._frustum_batch_pd = None
         self._frustum_highlight_actor = None
@@ -957,6 +954,8 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         self._frame_batch = None
         self._mapping_result = None
         self._frame_panel_cache.clear()
+        self._frame_panel_bytes = 0
+        self._clear_frame_layers()
         self._last_t = None
         self._last_accumulate = None
         self._last_semantic = None
@@ -1300,23 +1299,6 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
                     self._frustum_highlight_pd.copy_from(new_pd)
             return
 
-        # Legacy per-actor path
-        for fid, actor in self._frustum_actors.items():
-            actor.SetVisibility(bool(visible))
-            if not visible:
-                continue
-            prop = actor.GetProperty()
-            if fid == current_frame:
-                prop.SetColor(1.0, 0.8, 0.25)
-                prop.SetOpacity(0.9)
-                prop.SetLineWidth(2.0)
-            else:
-                prop.SetColor(0.5, 0.5, 0.5)
-                prop.SetOpacity(0.6)
-                prop.SetLineWidth(1.0)
-
-    # --- Image panel ---
-
     def current_frame_stack(self) -> "np.ndarray | None":
         """Return the RGB/seg/depth composite for exporting the current frame."""
         if self._last_t is None:
@@ -1326,12 +1308,42 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         if self._final_index is None:
             return None
         t = int(self._last_t)
-        parts = self._frame_panel_cache.get(t) or self._compose_frame_panel(t)
+        parts = self._cached_frame_panel(t) or self._compose_frame_panel(t)
         if parts is None:
             return None
-        self._frame_panel_cache[t] = parts
+        self._cache_frame_panel(t, parts)
         rgb, seg, depth = parts
         return np.concatenate([rgb, seg, depth], axis=0)
+
+    def _cached_frame_panel(
+        self, t: int
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+        parts = self._frame_panel_cache.get(t)
+        if parts is not None:
+            self._frame_panel_cache.move_to_end(t)
+        return parts
+
+    def _cache_frame_panel(
+        self, t: int, parts: tuple[np.ndarray, np.ndarray, np.ndarray]
+    ) -> None:
+        """Hold a composed panel, dropping the least recently used to stay in budget.
+
+        Linear playback never revisits a frame, so this only pays off when the
+        user scrubs back over ground already covered. Letting it grow unbounded
+        to serve that costs three full-resolution images per frame: ~4.7 MB at
+        960x540, so a 1000-frame run reaches several GB resident.
+        """
+        if t in self._frame_panel_cache:
+            self._frame_panel_bytes -= _panel_nbytes(self._frame_panel_cache[t])
+        self._frame_panel_cache[t] = parts
+        self._frame_panel_cache.move_to_end(t)
+        self._frame_panel_bytes += _panel_nbytes(parts)
+        while (
+            len(self._frame_panel_cache) > _FRAME_PANEL_MIN_ENTRIES
+            and self._frame_panel_bytes > _FRAME_PANEL_CACHE_BYTES
+        ):
+            _, evicted = self._frame_panel_cache.popitem(last=False)
+            self._frame_panel_bytes -= _panel_nbytes(evicted)
 
     def _update_image_panel(self, t: int) -> None:
         if self._frame_batch is None or self._mapping_result is None:
@@ -1339,27 +1351,101 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         if self._final_index is None:
             return
 
-        parts = self._frame_panel_cache.get(t)
+        parts = self._cached_frame_panel(t)
         if parts is None:
             parts = self._compose_frame_panel(t)
             if parts is not None:
-                self._frame_panel_cache[t] = parts
+                self._cache_frame_panel(t, parts)
 
         if parts is None:
             return
 
         rgb, seg, depth = parts
-        self._paint_label(self._rgb_label, rgb)
-        self._paint_label(self._seg_label, seg)
-        self._paint_label(self._depth_label, depth)
+        self._paint_label("rgb", rgb)
+        self._paint_label("seg", seg)
+        self._paint_label("depth", depth)
 
-    @staticmethod
-    def _paint_label(label: QLabel, image: np.ndarray) -> None:
+    # --- Frame strip ---
+
+    def _set_frame_label_visible(self, kind: str, visible: bool) -> None:
+        """Offer or withdraw one layer: a run with no labels has no segmentation
+        to blend, so the layer stops being drawn and its row goes away."""
+        self.frame_stack.set_layer_available(kind, visible)
+        self.frame_layers.set_layer_available(kind, visible)
+        if not visible:
+            # Dropped rather than merely unavailable, so the next run cannot
+            # inherit it if the layer becomes available again.
+            self._frame_pixmaps.pop(kind, None)
+            self.frame_stack.clear_layer(kind)
+        self._refresh_frame_popup()
+
+    def _clear_frame_layers(self) -> None:
+        """Empty the panel at a run boundary, popup and all."""
+        self._frame_pixmaps.clear()
+        self.frame_stack.clear_layers()
+        self._close_frame_popup()
+
+    def _on_layer_opacity_changed(self, kind: str, value: float) -> None:
+        self.frame_stack.set_opacity(kind, value)
+        self._refresh_frame_popup()
+
+    def _paint_label(self, kind: str, image: np.ndarray) -> None:
         h, w, _ = image.shape
-        qimg = QImage(np.ascontiguousarray(image).data, w, h, 3 * w, QImage.Format.Format_RGB888)
+        # The QImage borrows the array's buffer, so copy before the array goes.
+        qimg = QImage(
+            np.ascontiguousarray(image).data, w, h, 3 * w, QImage.Format.Format_RGB888
+        ).copy()
         pixmap = QPixmap.fromImage(qimg)
-        target = max(1, min(w, label.width() or w))
-        label.setPixmap(pixmap.scaledToWidth(target, Qt.TransformationMode.SmoothTransformation))
+        self._frame_pixmaps[kind] = pixmap
+        self.frame_stack.set_layer(kind, pixmap)
+        self._refresh_frame_popup()
+
+    def _open_frame_popup(self) -> None:
+        """Open (or raise) a live popup of the stack at full resolution."""
+        # isHidden rather than isVisible: the panel is legitimately unshown while
+        # the viewer itself is, only an explicit hide should block a popup.
+        if self.frame_stack.isHidden() or not self.frame_stack.has_content():
+            return
+        pixmap = self.frame_stack.composite_pixmap()
+        if pixmap is None or pixmap.isNull():
+            return
+        dialog = self._frame_dialogs.get(_STACK_POPUP)
+        if dialog is not None:
+            dialog.set_pixmap(pixmap)
+            dialog.raise_()
+            dialog.activateWindow()
+            return
+        # Non-modal, so scrubbing the timeline or moving a slider behind it keeps
+        # updating it.
+        dialog = ImageDialog(pixmap, "Frame stack", self)
+        self._frame_dialogs[_STACK_POPUP] = dialog
+        dialog.finished.connect(lambda _result: self._frame_dialogs.pop(_STACK_POPUP, None))
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dialog.show()
+
+    def _refresh_frame_popup(self) -> None:
+        """Keep an open popup showing the blend the pane is showing.
+
+        Coalesced: compositing costs a full-resolution pixmap (~6 MB at 1080p),
+        and a slider drag or a single frame update would otherwise ask for one
+        per tick and per layer. With no popup open it costs nothing at all.
+        """
+        if _STACK_POPUP not in self._frame_dialogs:
+            return
+        self._popup_refresh_timer.start()
+
+    def _apply_frame_popup_refresh(self) -> None:
+        dialog = self._frame_dialogs.get(_STACK_POPUP)
+        if dialog is None:
+            return
+        pixmap = self.frame_stack.composite_pixmap()
+        if pixmap is not None and not pixmap.isNull():
+            dialog.set_pixmap(pixmap)
+
+    def _close_frame_popup(self) -> None:
+        dialog = self._frame_dialogs.pop(_STACK_POPUP, None)
+        if dialog is not None:
+            dialog.close()
 
     def _compose_frame_panel(
         self, t: int,
@@ -1419,7 +1505,7 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         if rgb is None:
             return
         rgb = cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB)
-        self._paint_label(self._rgb_label, rgb)
+        self._paint_label("rgb", rgb)
         if labels_path.exists():
             labels = cv2.imread(str(labels_path), cv2.IMREAD_GRAYSCALE)
             if labels is None:
@@ -1429,10 +1515,10 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
                 cv2.resize(labels, (w, h), interpolation=cv2.INTER_NEAREST),
                 self._class_colors,
             )
-            self._seg_label.setVisible(True)
-            self._paint_label(self._seg_label, seg_color)
+            self._set_frame_label_visible("seg", True)
+            self._paint_label("seg", seg_color)
         else:
-            self._seg_label.setVisible(False)
+            self._set_frame_label_visible("seg", False)
 
     # --- Viewer protocol ---
 
@@ -1469,7 +1555,13 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
     def _on_start_run(self, run_label: str, output_dir: str) -> None:
         self._output_dir = Path(output_dir)
         self._hide_canvas()
-        self._depth_label.setVisible(False)
+        # A run starts with nothing to show but the frames it is about to
+        # decode: segmentation appears once labels land on disk, depth only once
+        # mapping has produced depth maps. Both are withdrawn until then, and
+        # the previous run's images go with them.
+        self._clear_frame_layers()
+        self._set_frame_label_visible("seg", False)
+        self._set_frame_label_visible("depth", False)
         self._notify_status("start_run", run_label=run_label, output_dir=output_dir)
 
     @Slot(str, str, object)
@@ -1522,6 +1614,7 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
 
     @Slot()
     def _on_close(self) -> None:
+        self._close_frame_popup()
         if self._plotter is not None:
             try:
                 self._plotter.close()

@@ -12,9 +12,10 @@ import json
 import logging
 import shutil
 import uuid
+from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from deepreefmap_gui.io.atomic import atomic_write_json
@@ -27,6 +28,31 @@ from deepreefmap_gui.survey.store import SurveyStore
 logger = logging.getLogger(__name__)
 
 UNASSIGNED_TITLE = "Not assigned yet"
+
+# Outcome buckets, coarser than the raw run status: the browser offers one
+# filter per outcome a diver acts on, not one per state the store records.
+RUN_SUCCEEDED, RUN_FAILED, RUN_UNFINISHED = "succeeded", "failed", "unfinished"
+
+# The same idea for a clip: what is left to do with this footage.
+VIDEO_UNPROCESSED, VIDEO_PENDING, VIDEO_FAILED, VIDEO_PROCESSED = (
+    "unprocessed",
+    "pending",
+    "failed",
+    "processed",
+)
+
+
+def entry_status(entry: RunEntry) -> str:
+    """The run's own status. A directory holding a manifest is a finished run."""
+    return "succeeded" if not entry.incomplete else entry.status_label
+
+
+def entry_outcome(entry: RunEntry) -> str:
+    """Which filter bucket a run falls into."""
+    status = entry_status(entry)
+    if status == "succeeded":
+        return RUN_SUCCEEDED
+    return RUN_FAILED if status == "failed" else RUN_UNFINISHED
 
 
 @dataclass(slots=True)
@@ -54,6 +80,17 @@ class RunEntry:
     db_transect_name: str | None = None
     moved_from: str | None = None
     size_bytes: int | None = None
+    # A run directory that never wrote a manifest: crashed, cancelled, or still
+    # in flight. Carries an empty manifest, so the fields above stay at defaults.
+    incomplete: bool = False
+
+    @property
+    def status_label(self) -> str:
+        """What to show for an incomplete run: the recorded status, or a generic
+        marker when the database has no row for it."""
+        if self.db_run is not None:
+            return self.db_run.status
+        return "incomplete"
 
     @property
     def transect_id(self) -> uuid.UUID | None:
@@ -94,15 +131,29 @@ class FacetGroup:
         return collected
 
 
+def parse_run_timestamp(ts: object) -> datetime | None:
+    """An ISO-8601 run timestamp as an aware datetime, or None if unusable.
+
+    A timestamp with no offset is read as UTC, which is what writes it: the
+    pipeline uses datetime.now(timezone.utc) and the survey store records the
+    same value. Left alone, fromisoformat gives a naive datetime whose
+    .timestamp() assumes local time, so an older naive manifest sorts against a
+    newer offset-carrying one by the local UTC offset -- hours out, and in the
+    wrong direction depending on which side of UTC the machine sits.
+    """
+    if not isinstance(ts, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(ts)
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
+
+
 def run_sort_key(manifest: dict, mtime: float) -> float:
     """Prefer the recorded run timestamp; fall back to the manifest file mtime."""
-    ts = manifest.get("run_timestamp")
-    if isinstance(ts, str):
-        try:
-            return datetime.fromisoformat(ts).timestamp()
-        except ValueError:
-            pass
-    return mtime
+    parsed = parse_run_timestamp(manifest.get("run_timestamp"))
+    return parsed.timestamp() if parsed is not None else mtime
 
 
 def run_duration_s(manifest: dict) -> float | None:
@@ -126,7 +177,7 @@ def scan_out_root(out_root: Path) -> list[RunEntry]:
             continue
         manifest: dict = {}
         try:
-            manifest = json.loads(manifest_path.read_text())
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             logger.warning("Unreadable manifest in %s", child)
         entries.append(_entry_from_manifest(child, manifest, manifest_path.stat().st_mtime))
@@ -159,6 +210,58 @@ def _entry_from_manifest(run_dir: Path, manifest: dict, mtime: float) -> RunEntr
         manifest_transect_id=_as_uuid(transect_block.get("id")),
         manifest_transect_name=transect_block.get("name"),
         manifest_direction=pass_block.get("direction"),
+    )
+
+
+def scan_incomplete_runs(
+    out_root: Path, store: SurveyStore | None, known: set[str]
+) -> list[RunEntry]:
+    """Child directories that look like runs but never wrote a manifest.
+
+    ``scan_out_root`` skips these, which hides crashed or interrupted runs from
+    the browser. A folder counts as an incomplete run when the database still has
+    a run record for it (the survey batch writes one before the pipeline starts)
+    or when it holds a ``run.log`` a run left behind. ``known`` names the folders
+    already surfaced as complete runs, so nothing is listed twice.
+    """
+    entries: list[RunEntry] = []
+    if not out_root.is_dir():
+        return entries
+    records = {r.run_dir_name for r in store.list_runs()} if store is not None else set()
+    for child in out_root.iterdir():
+        if not child.is_dir() or child.name in known:
+            continue
+        if (child / "run_manifest.json").exists():
+            continue
+        if child.name not in records and not (child / "run.log").exists():
+            continue
+        try:
+            mtime = child.stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        entries.append(_incomplete_entry(child, mtime))
+    return entries
+
+
+def _incomplete_entry(run_dir: Path, mtime: float) -> RunEntry:
+    return RunEntry(
+        run_dir=run_dir,
+        dir_name=run_dir.name,
+        manifest={},
+        display_name=run_dir.name,
+        sort_key=mtime,
+        video_hashes=[],
+        video_name=None,
+        begin_s=None,
+        end_s=None,
+        duration_s=None,
+        points=None,
+        manifest_run_id=None,
+        manifest_pass_id=None,
+        manifest_transect_id=None,
+        manifest_transect_name=None,
+        manifest_direction=None,
+        incomplete=True,
     )
 
 
@@ -231,10 +334,6 @@ def group_stats(entries: list[RunEntry]) -> GroupStats:
     )
 
 
-def runs_facet(entries: list[RunEntry]) -> list[RunEntry]:
-    return list(entries)
-
-
 def transects_facet(
     entries: list[RunEntry], transects: Iterable[Transect] = ()
 ) -> list[FacetGroup]:
@@ -279,6 +378,83 @@ def videos_facet(entries: list[RunEntry]) -> list[FacetGroup]:
     return sorted(by_video.values(), key=lambda g: g.title)
 
 
+@dataclass(slots=True)
+class VideoLibraryEntry:
+    """One imported clip, with how much of the survey hangs off it.
+
+    A video the browser can show even with no runs: an orphan is a clip imported
+    but never turned into a pass, which the run-oriented facets cannot surface.
+    """
+
+    video: VideoAsset
+    pass_count: int
+    run_count: int
+    # The passes cut from this clip and every run they produced, so a detail
+    # pane can show what became of the footage without re-querying per row.
+    passes: list[TransectPass] = field(default_factory=list)
+    runs: list[RunRecord] = field(default_factory=list)
+
+    @property
+    def orphan(self) -> bool:
+        return self.pass_count == 0
+
+    @property
+    def outcome(self) -> str:
+        """Where this clip stands: unprocessed, failing, or done.
+
+        A clip is only ``processed`` once every pass cut from it has a run that
+        succeeded; anything short of that is work still owed.
+        """
+        if self.orphan:
+            return VIDEO_UNPROCESSED
+        if any(run.status == "failed" for run in self.runs):
+            return VIDEO_FAILED
+        succeeded = {run.pass_id for run in self.runs if run.status == "succeeded"}
+        if len(succeeded) >= self.pass_count:
+            return VIDEO_PROCESSED
+        return VIDEO_PENDING
+
+
+def video_library(
+    videos: Iterable[VideoAsset],
+    passes: Iterable[TransectPass],
+    runs: Iterable[RunRecord] = (),
+) -> list[VideoLibraryEntry]:
+    """Every imported clip with its pass and run counts, orphans included.
+
+    Orphan detection is the point: a clip referenced by no pass never appears in
+    the transect or video facets, which only know clips that produced a run.
+    """
+    passes = list(passes)
+    # Every chapter of a pass counts, or the second half of a swim the camera
+    # split at 4 GB would read as a clip nothing has ever used.
+    passes_per_video: Counter[uuid.UUID] = Counter()
+    videos_by_pass: dict[uuid.UUID, list[uuid.UUID]] = {}
+    for p in passes:
+        videos_by_pass[p.id] = p.video_ids()
+        passes_per_video.update(videos_by_pass[p.id])
+    runs_per_video: Counter[uuid.UUID] = Counter()
+    passes_by_video: dict[uuid.UUID, list[TransectPass]] = {}
+    runs_by_video: dict[uuid.UUID, list[RunRecord]] = {}
+    for p in passes:
+        for video_id in videos_by_pass[p.id]:
+            passes_by_video.setdefault(video_id, []).append(p)
+    for run in runs:
+        for video_id in videos_by_pass.get(run.pass_id, []):
+            runs_per_video[video_id] += 1
+            runs_by_video.setdefault(video_id, []).append(run)
+    return [
+        VideoLibraryEntry(
+            video=video,
+            pass_count=passes_per_video.get(video.id, 0),
+            run_count=runs_per_video.get(video.id, 0),
+            passes=passes_by_video.get(video.id, []),
+            runs=runs_by_video.get(video.id, []),
+        )
+        for video in videos
+    ]
+
+
 def _child_for(parent: FacetGroup, key: tuple, title: str) -> FacetGroup:
     for child in parent.children:
         if child.key == key:
@@ -320,20 +496,27 @@ def dir_size_bytes(run_dir: Path) -> int:
 def rename_run(run_dir: Path, new_name: str) -> dict:
     """Set the display name in the run manifest, atomically."""
     manifest_path = run_dir / "run_manifest.json"
-    manifest = json.loads(manifest_path.read_text())
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["name"] = new_name.strip()
     atomic_write_json(manifest_path, manifest)
     return manifest
 
 
 def delete_run(out_root: Path, run_dir: Path, store: SurveyStore | None) -> None:
-    """Remove a run directory and its database row. Only direct children of the
-    output root that carry a manifest are ever deleted."""
+    """Remove a finished run directory and its database row. Only direct children
+    of the output root that carry a manifest are ever deleted."""
+    if not (run_dir.resolve() / "run_manifest.json").exists():
+        raise ValueError(f"{run_dir} has no run manifest")
+    delete_run_dir(out_root, run_dir, store)
+
+
+def delete_run_dir(out_root: Path, run_dir: Path, store: SurveyStore | None) -> None:
+    """Remove a run directory that may have no manifest (a crashed run) plus any
+    database row. The direct-child guard still holds: only folders sitting
+    directly under the output root are ever removed."""
     resolved = run_dir.resolve()
     if resolved.parent != out_root.resolve():
         raise ValueError(f"{run_dir} is not directly under {out_root}")
-    if not (resolved / "run_manifest.json").exists():
-        raise ValueError(f"{run_dir} has no run manifest")
     shutil.rmtree(resolved)
     if store is not None:
         run = store.run_by_dir_name(resolved.name)

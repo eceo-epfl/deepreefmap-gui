@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-from deepreefmap_gui.core.window_protocol import MixinBase
-
 import logging
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from deepreefmap_gui.system.log_view import close_run_log_file, open_run_log_file
+from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.profiling.eta import STAGE_MESSAGE_TO_PHASE as _STAGE_MESSAGE_TO_PHASE
 from deepreefmap_gui.runs.progress import _LOAD_STAGE_TO_PHASE
+from deepreefmap_gui.system.log_view import close_run_log_file, open_run_log_file
 
 if TYPE_CHECKING:
     from deepreefmap.postproc.ortho_outputs import TransectCropParams
@@ -69,30 +68,16 @@ class RunLoadingMixin(MixinBase):
         """Carry the resume cache from a matching prior run into this fresh dir."""
         # GUI run names default to a timestamp, so no two runs share a directory and
         # the orchestrator's always-on cache would never hit on its own.
-        try:
-            from deepreefmap.pipeline import resume as resume_mod
+        from deepreefmap_gui.runs.seeding import seed_from_settings
 
-            from deepreefmap_gui.runs.seeding import seed_run_dir_from_match
-
-            prep_key = resume_mod.preprocess_key(
-                video_paths=[video_path],
-                fps=self._fps_spin.value(),
-                begin_s=begin_s,
-                end_s=end_s,
-                camera_profile_name=self._profile_combo.currentText(),
-                segmentation_name=(
-                    "__skip__" if self._skip_seg_check.isChecked() else self._seg_combo.currentText()
-                ),
-                classes_path=self._classes_path,
-                processing_width=self._proc_width_spin.value(),
-                processing_height=self._proc_height_spin.value(),
-            )
-            seeded = seed_run_dir_from_match(out_dir, out_dir.parent, prep_key)
-        except Exception:
-            logger.warning("Cache seeding failed; running from scratch", exc_info=True)
-            return
-        if seeded is not None:
-            logger.info("Seeded cache from %s", seeded)
+        seed_from_settings(
+            out_dir,
+            out_dir.parent,
+            self._collect_run_settings(),
+            [video_path],
+            begin_s,
+            end_s,
+        )
 
     def _on_submit(self) -> None:
         video = self._video_input.text().strip()
@@ -117,15 +102,7 @@ class RunLoadingMixin(MixinBase):
 
         begin_s, end_s = self._effective_time_range()
         self._seed_run_cache(out_dir, video_path, begin_s, end_s)
-        kwargs = {
-            **self._collect_run_settings(),
-            "video_paths": [str(video_path)],
-            "output_dir": out_dir,
-            "run_name": run_name,
-            "transect_length": self._transect_length.value() or None,
-            "begin_s": begin_s,
-            "end_s": end_s,
-        }
+        kwargs = self._collect_full_run_kwargs()
 
         self._set_form_enabled(False)
         self._begin_progress(self._recon_model)
@@ -406,6 +383,7 @@ class RunLoadingMixin(MixinBase):
         generation: int,
     ) -> None:
         import time as _time
+
         from deepreefmap.pipeline.run_loader import GEOMETRY_ONLY_MODE
 
         _t0 = _time.monotonic()
@@ -562,6 +540,11 @@ class RunLoadingMixin(MixinBase):
         log_path = run_dir / "run.log"
         self._log_view.set_current_log_path(log_path if log_path.exists() else None)
         self._set_app_mode("VIEWING")
+        # Every open path funnels through here — the run table, a dropped folder,
+        # --view, a finished batch — so simple mode enters View mode once, at the
+        # point the cloud is actually on screen rather than when it was asked for.
+        if getattr(self, "_ui_mode", "advanced") == "simple":
+            self._enter_view_mode(run_dir)
 
 
     def _add_run_warning(self, message: str) -> None:

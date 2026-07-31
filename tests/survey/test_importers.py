@@ -42,6 +42,45 @@ def test_parse_latlon_rejects_garbage():
         parse_latlon("ten twenty")
 
 
+def test_parse_latlon_accepts_degrees_decimal_minutes():
+    lat, lon = parse_latlon("17°30.512'S 149°49.104'W")
+    assert lat == pytest.approx(-(17 + 30.512 / 60))
+    assert lon == pytest.approx(-(149 + 49.104 / 60))
+
+
+def test_parse_latlon_accepts_space_separated_ddm():
+    lat, lon = parse_latlon("17 30.512 S 149 49.104 W")
+    assert lat == pytest.approx(-(17 + 30.512 / 60))
+    assert lon == pytest.approx(-(149 + 49.104 / 60))
+
+
+def test_parse_latlon_accepts_dms_with_seconds():
+    lat, lon = parse_latlon("17°30'30\"S 149°49'6\"E")
+    assert lat == pytest.approx(-(17 + 30 / 60 + 30 / 3600))
+    assert lon == pytest.approx(149 + 49 / 60 + 6 / 3600)
+
+
+def test_parse_latlon_hemisphere_order_independent():
+    # Lon-first still assigns by hemisphere, so a swapped paste is not silently wrong.
+    assert parse_latlon("149°49.104'W 17°30.512'S") == parse_latlon("17°30.512'S 149°49.104'W")
+
+
+def test_parse_latlon_northern_hemisphere_stays_positive():
+    lat, lon = parse_latlon("40°26.767'N 79°58.933'W")
+    assert lat == pytest.approx(40 + 26.767 / 60)
+    assert lon == pytest.approx(-(79 + 58.933 / 60))
+
+
+def test_parse_latlon_rejects_two_of_the_same_hemisphere():
+    with pytest.raises(ValueError):
+        parse_latlon("17°30'S 18°10'S")
+
+
+def test_parse_latlon_rejects_minutes_over_sixty():
+    with pytest.raises(ValueError):
+        parse_latlon("17°75.0'S 149°10.0'W")
+
+
 def test_csv_import_case_insensitive_headers(tmp_path):
     path = tmp_path / "transects.csv"
     path.write_text(
@@ -155,3 +194,56 @@ def test_repeatability_csv_with_no_passes_still_writes_a_header(tmp_path):
     path = tmp_path / "repeatability.csv"
     save_repeatability_csv(path, [], {}, [])
     assert path.read_text().strip() == "class,mean_fraction,std,cv,range"
+
+
+def test_long_format_csv_writes_per_pass_and_pooled_rows(tmp_path):
+    """The collated export is a published artefact: precision and blanks are contract."""
+    from deepreefmap_gui.survey.analysis import LONG_COVER_COLUMNS, LongCoverRow
+    from deepreefmap_gui.survey.models.exporters import save_long_format_csv
+
+    common = {
+        "transect_name": "T1",
+        "transect_id": "tid",
+        "level": "fine",
+        "group": "coral alive",
+        "contributing_passes": 2,
+        "expected_passes": 3,
+        "gui_version": "0.1.0",
+        "taxonomy_version": 1,
+        "taxonomy_hash": "abc123",
+    }
+    per_pass = LongCoverRow(
+        **common, estimator="per_pass", fraction=0.9, count=90.0, denominator=100.0,
+        pass_id="pid", direction="forward", begin_s=0.0, end_s=60.0,
+        run_id="rid", run_dir_name="run_a", deepreefmap_version="2.0.0",
+        segmentation_model="segformer-b2", mapping_backend="scsfmlearner",
+    )
+    pooled = LongCoverRow(
+        **common, estimator="pooled", fraction=0.0909, count=100.0, denominator=1100.0,
+        pass_id="", direction="", begin_s=None, end_s=None,
+        run_id="", run_dir_name="", deepreefmap_version="",
+        segmentation_model="", mapping_backend="",
+    )
+
+    path = tmp_path / "long.csv"
+    save_long_format_csv(path, [per_pass, pooled])
+    rows = list(csv.DictReader(path.open()))
+
+    assert list(rows[0]) == LONG_COVER_COLUMNS
+    assert rows[0]["estimator"] == "per_pass"
+    assert rows[0]["fraction"] == "0.900000"       # 6dp
+    assert rows[0]["count"] == "90.0000"           # 4dp
+    assert rows[0]["expected_passes"] == "3"
+    # Pooled row leaves the pass-only columns blank rather than zero.
+    assert rows[1]["estimator"] == "pooled"
+    assert rows[1]["begin_s"] == ""
+    assert rows[1]["pass_id"] == ""
+
+
+def test_long_format_csv_with_no_rows_still_writes_a_header(tmp_path):
+    from deepreefmap_gui.survey.analysis import LONG_COVER_COLUMNS
+    from deepreefmap_gui.survey.models.exporters import save_long_format_csv
+
+    path = tmp_path / "long.csv"
+    save_long_format_csv(path, [])
+    assert path.read_text().strip() == ",".join(LONG_COVER_COLUMNS)

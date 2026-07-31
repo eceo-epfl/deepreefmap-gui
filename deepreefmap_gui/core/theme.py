@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-
 from pathlib import Path
 
 from PySide6.QtCore import QPointF, QStandardPaths, Qt
@@ -39,7 +38,6 @@ SLIDER_HANDLE = "#f0f0f0"  # near-white grab handle on trim/timeline sliders
 # legible at a glance, not the loudest thing on the page. Line edits keep the
 # strong palette Highlight, where a hard selection colour is what you want.
 SELECTION_BG = "#2b4763"
-SELECTION_BG_HOVER = "#345574"
 
 # Named semantic accents. These consolidate several inconsistent spellings that
 # were scattered across the GUI (e.g. success was both "#4a4" and
@@ -100,7 +98,11 @@ def _chevron_file(direction: str, color: str, size: int = 16) -> str:
         painter.drawLine(QPointF(mid, mid + drop / 2), QPointF(mid + arm, mid - drop / 2))
         painter.end()
         pixmap.save(str(path))
-    # Qt stylesheet urls take forward slashes on every platform.
+    # Qt stylesheet urls take forward slashes on every platform. Callers quote
+    # the result: this lands under the user's cache directory, which on Windows
+    # sits below a profile name that routinely contains a space, and an unquoted
+    # url() stops parsing there -- taking every rule after it in the block with
+    # it, so the combo and spin arrows all disappear.
     return path.as_posix()
 
 
@@ -118,8 +120,8 @@ QComboBox::drop-down {{
     border: none;
     width: 20px;
 }}
-QComboBox::down-arrow {{ image: url({down}); width: 12px; height: 12px; }}
-QComboBox::down-arrow:disabled {{ image: url({down_off}); }}
+QComboBox::down-arrow {{ image: url("{down}"); width: 12px; height: 12px; }}
+QComboBox::down-arrow:disabled {{ image: url("{down_off}"); }}
 QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {{
     subcontrol-origin: border;
     border: none;
@@ -128,13 +130,13 @@ QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {{
 }}
 QAbstractSpinBox::up-button {{ subcontrol-position: top right; }}
 QAbstractSpinBox::down-button {{ subcontrol-position: bottom right; }}
-QAbstractSpinBox::up-arrow {{ image: url({up}); width: 10px; height: 10px; }}
-QAbstractSpinBox::down-arrow {{ image: url({down}); width: 10px; height: 10px; }}
+QAbstractSpinBox::up-arrow {{ image: url("{up}"); width: 10px; height: 10px; }}
+QAbstractSpinBox::down-arrow {{ image: url("{down}"); width: 10px; height: 10px; }}
 QAbstractSpinBox::up-arrow:disabled, QAbstractSpinBox::up-arrow:off {{
-    image: url({up_off});
+    image: url("{up_off}");
 }}
 QAbstractSpinBox::down-arrow:disabled, QAbstractSpinBox::down-arrow:off {{
-    image: url({down_off});
+    image: url("{down_off}");
 }}
 """
 
@@ -194,6 +196,14 @@ QPushButton:disabled, QToolButton:disabled {{
     background-color: {CARD_BG};
     color: {DISABLED_FG};
     border-color: {BORDER};
+}}
+/* A latched button is a mode that stays on until it is pressed again, so it has
+   to look held down rather than like every other button on the row. */
+QPushButton:checked, QToolButton:checked {{
+    background-color: {SURFACE_HI};
+    border-color: {PRIMARY};
+    color: {LINK};
+    font-weight: 600;
 }}
 
 /* One filled action per screen: the step's forward move. */

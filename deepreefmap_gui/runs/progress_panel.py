@@ -1,4 +1,9 @@
-"""Run progress shown in place of the 3D canvas while the preview is off."""
+"""Run progress shown in place of the 3D canvas until a cloud arrives.
+
+One of two progress sinks: this one rides with the viewer and reports a single
+run; simple mode's BatchProgressCard reports the batch around it. Both take the
+same calls from ProgressMixin, so either may be absent.
+"""
 
 from __future__ import annotations
 
@@ -63,6 +68,12 @@ class ProgressPanel(QWidget):
 
     def set_eta(self, text: str) -> None:
         self._eta_label.setText(text)
+
+    def set_eta_seconds(self, seconds: float | None) -> None:
+        """Part of the sink interface; this panel shows the pre-formatted text."""
+
+    def set_batch_plan(self, total: int, pass_seconds: float | None) -> None:
+        """Part of the sink interface; this panel is scoped to one run."""
 
     def set_idle(self, message: str) -> None:
         self._status_label.setText(f'<span style="color: {TEXT_SECONDARY};">{message}</span>')

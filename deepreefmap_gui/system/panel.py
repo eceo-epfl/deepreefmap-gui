@@ -6,9 +6,6 @@ user sees match the ones the guard decides on.
 
 from __future__ import annotations
 
-from deepreefmap_gui.core.window_protocol import MixinBase
-from deepreefmap_gui.core.theme import BAR_HEIGHT, BLOCK, PRIMARY, TEXT_MUTED, UPDATE, bar_qss
-
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QComboBox,
@@ -20,6 +17,9 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from deepreefmap_gui.core.theme import BAR_HEIGHT, BLOCK, PRIMARY, TEXT_MUTED, UPDATE, bar_qss
+from deepreefmap_gui.core.window_protocol import MixinBase
 
 
 def _util_color(percent: float) -> str:

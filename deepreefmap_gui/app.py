@@ -7,6 +7,8 @@ import sys
 import threading
 from pathlib import Path
 from typing import cast
+
+from deepreefmap.config.classes import ClassConfig
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QIcon, QSurfaceFormat
 from PySide6.QtWidgets import (
@@ -20,25 +22,26 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from deepreefmap.config.classes import ClassConfig
 from deepreefmap_gui.core.theme import BANNER_BG, BANNER_BORDER, BANNER_TEXT
 from deepreefmap_gui.form.batch import BatchMixin
 from deepreefmap_gui.form.panel import FormPanelMixin
-from deepreefmap_gui.models.management import ModelManagementMixin
 from deepreefmap_gui.models.library_ui import ModelLibraryMixin
+from deepreefmap_gui.models.management import ModelManagementMixin
 from deepreefmap_gui.runs.data_manager import DataManagerMixin
+from deepreefmap_gui.runs.loading import RunLoadingMixin
 from deepreefmap_gui.runs.past_runs import PastRunsMixin
+from deepreefmap_gui.runs.progress import ProgressBarsMixin
 from deepreefmap_gui.runs.progress_panel import ProgressPanel
 from deepreefmap_gui.runs.results import ResultsMixin
-from deepreefmap_gui.runs.loading import RunLoadingMixin
 from deepreefmap_gui.simple.analysis import SimpleAnalysisMixin
 from deepreefmap_gui.simple.batch import SimpleBatchMixin
 from deepreefmap_gui.simple.mode import UiModeMixin
 from deepreefmap_gui.simple.plan import SimplePlanMixin
+from deepreefmap_gui.simple.setup import SimpleSetupMixin
+from deepreefmap_gui.simple.videos import SimpleVideosMixin
 from deepreefmap_gui.system.panel import SystemPanelMixin
-from deepreefmap_gui.viewer.controls import ViewerControlsMixin
-from deepreefmap_gui.runs.progress import ProgressBarsMixin
 from deepreefmap_gui.update.version import VersionCheckMixin
+from deepreefmap_gui.viewer.controls import ViewerControlsMixin
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +60,8 @@ class DeepReefMapWindow(
     SimpleAnalysisMixin,
     SimpleBatchMixin,
     SimplePlanMixin,
+    SimpleSetupMixin,
+    SimpleVideosMixin,
     SystemPanelMixin,
     UiModeMixin,
     ViewerControlsMixin,
@@ -83,6 +88,7 @@ class DeepReefMapWindow(
     _sig_survey_progress = Signal(int, int, str)
     _sig_survey_done = Signal(int, int, str)
     _sig_run_sizes_done = Signal(object)
+    _sig_videos_probed = Signal(object)
 
     def __init__(self, classes_config: ClassConfig, classes_path: Path | None) -> None:
         super().__init__()
@@ -113,6 +119,7 @@ class DeepReefMapWindow(
         self._sig_survey_progress.connect(self._on_survey_progress)
         self._sig_survey_done.connect(self._on_survey_done)
         self._sig_run_sizes_done.connect(self._apply_run_sizes)
+        self._sig_videos_probed.connect(self._on_videos_probed)
 
         self.setWindowTitle("DeepReefMap")
         # Open at ~90% of the available screen, capped at the comfortable
@@ -156,9 +163,6 @@ class DeepReefMapWindow(
         form_panel = self._build_form_panel()
         self._capture_form_defaults()
         top_bar = self._build_top_bar()
-        # The preview toggle gates the viewer canvas, so it docks onto the
-        # viewer's header rather than the global toolbar.
-        self._viewer.add_header_widget(self._build_preview_toggle())
         log_panel = self._build_log_panel()
 
         # The left pane is either the advanced sidebar (page 0) or the simple
@@ -218,6 +222,9 @@ class DeepReefMapWindow(
         central_layout.setContentsMargins(0, 0, 0, 0)
         central_layout.setSpacing(0)
         central_layout.addWidget(top_bar)
+        # Spans the window rather than riding in the simple shell, which View
+        # mode squeezes to nothing to give the viewport the full width.
+        central_layout.addWidget(self._view_bar)
         central_layout.addWidget(self._run_meta_banner)
         central_layout.addWidget(self._central_vsplitter, 1)
         # Status and progress span the whole window under everything else, so
@@ -228,6 +235,16 @@ class DeepReefMapWindow(
         # Apply the saved mode last: it flips the left stack and re-divides the
         # splitter, so everything above must exist first.
         self._init_ui_mode()
+
+    def eventFilter(self, obj, event):  # noqa: N802 (Qt override)
+        # QObject owns eventFilter earlier in the MRO than the mixins, so the
+        # drop handling lives here on the concrete window and delegates in.
+        if self._data_drop_event_filter(obj, event):
+            return True
+        # Observes rather than consumes: the splitter still has to lay itself
+        # out, this only re-divides it afterwards.
+        self._data_split_event_filter(obj, event)
+        return super().eventFilter(obj, event)
 
     # --- teardown -----------------------------------------------------------
 
@@ -243,6 +260,7 @@ class DeepReefMapWindow(
             "_sys_timer",
             "_status_tick_timer",
             "_data_refresh_timer",
+            "_out_root_commit_timer",
         ):
             timer = getattr(self, attr, None)
             if timer is not None:

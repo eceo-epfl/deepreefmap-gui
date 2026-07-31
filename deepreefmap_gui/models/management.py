@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from deepreefmap_gui.core.window_protocol import MixinBase
-
 import threading
 from typing import TYPE_CHECKING, cast
 
@@ -20,8 +18,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from deepreefmap_gui.models.hf_dialog import HfLoginDialog
 from deepreefmap_gui.core.theme import BORDER, CARD_BG, DANGER_BG, SUCCESS, TEXT_DIM, WARNING
+from deepreefmap_gui.core.window_protocol import MixinBase
+from deepreefmap_gui.models.hf_dialog import HfLoginDialog
 
 if TYPE_CHECKING:
     from deepreefmap_gui.models.manager import ModelInfo
@@ -198,7 +197,12 @@ class ModelManagementMixin(MixinBase):
         auth_user, can_gated = check_hf_auth()
         self._can_read_gated = can_gated
         model_states = [(m, is_model_cached(m)) for m in all_known_models()]
-        self._sig_model_status_done.emit(auth_user, model_states)
+        try:
+            self._sig_model_status_done.emit(auth_user, model_states)
+        except RuntimeError:
+            # The window was destroyed while this ran (a quit during the startup
+            # check, or a test tearing the window down); nothing to deliver to.
+            pass
 
     def _on_discover_clicked(self) -> None:
         self._discover_btn.setEnabled(False)
@@ -355,6 +359,10 @@ class ModelManagementMixin(MixinBase):
             self._model_actions[info.name] = action
 
         self._recompute_submit_state()
+        # Provisioning from the simple-mode setup step changes what is cached, so
+        # its "Models ready" row follows the same status refresh the Models tab does.
+        if hasattr(self, "_setup_check_rows"):
+            self._refresh_setup_page()
 
     def _required_model_names(self) -> set[str]:
         required = {self._map_combo.currentText()}

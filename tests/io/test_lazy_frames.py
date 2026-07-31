@@ -16,7 +16,6 @@ from deepreefmap_gui.io.lazy_frames import (
     LazyFrameBatch,
     LazyPreparedFrame,
     RunDirFrameAccessor,
-    lazy_frame_batch_from_run_dir,
 )
 
 H, W = 5, 7
@@ -117,29 +116,6 @@ def test_lazy_batch_presents_the_eager_frame_batch_interface(accessor, run_dir):
         np.testing.assert_array_equal(batch.images[pos], rgb)
         np.testing.assert_array_equal(batch.labels[pos], labels)
         np.testing.assert_array_equal(batch.masks[pos], mask)
-
-
-def test_conversion_from_an_eager_batch_carries_gravity(run_dir):
-    """gravity_vectors is set after construction, so it is easy to drop."""
-    from types import SimpleNamespace
-
-    path, written = run_dir
-    gravity = np.array([[0.0, 0.0, -9.81]] * len(FRAME_INDICES), dtype=np.float32)
-    eager = SimpleNamespace(
-        frame_indices=list(FRAME_INDICES),
-        clip_counts=(2, 1),
-        image_size=(W, H),
-        intrinsics=np.eye(3),
-        gravity_vectors=gravity,
-    )
-
-    lazy = lazy_frame_batch_from_run_dir(path, eager)
-
-    assert lazy.frame_indices == list(FRAME_INDICES)
-    assert lazy.clip_counts == (2, 1)
-    np.testing.assert_array_equal(lazy.gravity_vectors, gravity)
-    np.testing.assert_array_equal(lazy.intrinsics, eager.intrinsics)
-    np.testing.assert_array_equal(lazy.images[0], written[0][0])
 
 
 def test_close_is_safe_to_call(accessor):

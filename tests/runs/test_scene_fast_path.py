@@ -19,7 +19,6 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pytest
-
 from deepreefmap.config.classes import ClassConfig, SemanticClass
 from deepreefmap.pipeline.artifacts import FrameBatch, PreparedFrame
 from deepreefmap.pointcloud.final_cloud_index import FinalCloudIndex

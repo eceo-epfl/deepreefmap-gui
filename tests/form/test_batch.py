@@ -26,7 +26,7 @@ def test_parse_timestamp_range(text, expected) -> None:
 
 
 def test_load_batch_csv_parses_rows(tmp_path) -> None:
-    from deepreefmap_gui.form.batch import _load_batch_csv
+    from deepreefmap_gui.form.batch import load_batch_csv
 
     csv_path = tmp_path / "jobs.csv"
     csv_path.write_text(
@@ -34,7 +34,7 @@ def test_load_batch_csv_parses_rows(tmp_path) -> None:
         "a.mp4,5-30,10,2\n"
         "b.mp4,-60,,1.5\n"
     )
-    jobs = _load_batch_csv(csv_path)
+    jobs = load_batch_csv(csv_path)
     assert len(jobs) == 2
     assert jobs[0].video == "a.mp4"
     assert jobs[0].begin_s == 5.0
@@ -48,28 +48,28 @@ def test_load_batch_csv_parses_rows(tmp_path) -> None:
 
 
 def test_load_batch_csv_case_insensitive_columns(tmp_path) -> None:
-    from deepreefmap_gui.form.batch import _load_batch_csv
+    from deepreefmap_gui.form.batch import load_batch_csv
 
     csv_path = tmp_path / "jobs.csv"
     csv_path.write_text(
         "Videos,Timestamps,Transect_Length,Crop_Width\n"
         "x.mp4,0-10,5,1\n"
     )
-    jobs = _load_batch_csv(csv_path)
+    jobs = load_batch_csv(csv_path)
     assert len(jobs) == 1
 
 
 def test_load_batch_csv_rejects_missing_columns(tmp_path) -> None:
-    from deepreefmap_gui.form.batch import _load_batch_csv
+    from deepreefmap_gui.form.batch import load_batch_csv
 
     csv_path = tmp_path / "jobs.csv"
     csv_path.write_text("videos,timestamps\nx.mp4,0-10\n")
     with pytest.raises(ValueError, match="missing required columns"):
-        _load_batch_csv(csv_path)
+        load_batch_csv(csv_path)
 
 
 def test_load_batch_csv_skips_blank_rows(tmp_path) -> None:
-    from deepreefmap_gui.form.batch import _load_batch_csv
+    from deepreefmap_gui.form.batch import load_batch_csv
 
     csv_path = tmp_path / "jobs.csv"
     csv_path.write_text(
@@ -77,15 +77,38 @@ def test_load_batch_csv_skips_blank_rows(tmp_path) -> None:
         ",,,,\n"
         "x.mp4,0-10,5,1\n"
     )
-    jobs = _load_batch_csv(csv_path)
+    jobs = load_batch_csv(csv_path)
     assert len(jobs) == 1
     assert jobs[0].video == "x.mp4"
 
 
+def test_load_batch_csv_reads_an_optional_transect(tmp_path) -> None:
+    """The survey queue assigns passes from this column; the advanced batch ignores it."""
+    from deepreefmap_gui.form.batch import load_batch_csv
+
+    csv_path = tmp_path / "jobs.csv"
+    csv_path.write_text(
+        "videos,timestamps,transect_length,crop_width,transect\n"
+        "a.mp4,,10,2, Reef North \n"
+        "b.mp4,,10,2,\n"
+    )
+    jobs = load_batch_csv(csv_path)
+    assert [job.transect for job in jobs] == ["Reef North", ""]
+
+
+def test_load_batch_csv_without_a_transect_column(tmp_path) -> None:
+    """One parser reads both callers, so the added column stays optional."""
+    from deepreefmap_gui.form.batch import load_batch_csv
+
+    csv_path = tmp_path / "jobs.csv"
+    csv_path.write_text("videos,timestamps,transect_length,crop_width\na.mp4,,10,2\n")
+    assert [job.transect for job in load_batch_csv(csv_path)] == [""]
+
+
 def test_load_batch_csv_rejects_excel(tmp_path) -> None:
-    from deepreefmap_gui.form.batch import _load_batch_csv
+    from deepreefmap_gui.form.batch import load_batch_csv
 
     bogus = tmp_path / "jobs.xlsx"
     bogus.write_bytes(b"not actually excel")
     with pytest.raises(ValueError, match="Excel"):
-        _load_batch_csv(bogus)
+        load_batch_csv(bogus)

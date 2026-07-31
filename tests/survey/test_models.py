@@ -1,6 +1,7 @@
 import uuid
 
 import pytest
+from _factories import make_transect, make_video
 
 from deepreefmap_gui.survey.models import RunRecord, SurveyBatch, TransectPass
 from deepreefmap_gui.survey.models.convert import (
@@ -10,8 +11,6 @@ from deepreefmap_gui.survey.models.convert import (
     survey_manifest_block,
     to_row,
 )
-
-from _factories import make_transect, make_video
 
 
 def make_pass(transect, video, **overrides):
@@ -121,3 +120,48 @@ def test_manifest_block_snapshots_pass_and_transect():
     assert block["transect"]["name"] == "T1"
     assert block["transect"]["start_lat"] == -17.5
     assert survey_manifest_block(run, pass_, transect, None)["batch_id"] is None
+
+
+def test_manifest_block_records_model_versions():
+    transect, video = make_transect(), make_video()
+    pass_ = make_pass(transect, video)
+    run = RunRecord(pass_id=pass_.id, run_dir_name="run")
+    versions = {"EPFL-ECEO/segformer-b5-finetuned-coralscapes-1024-1024": "a" * 40}
+
+    recorded = survey_manifest_block(run, pass_, transect, None, model_versions=versions)
+    assert recorded["provenance"]["model_versions"] == versions
+
+    # Omitted, not written empty, when nothing was resolved.
+    plain = survey_manifest_block(run, pass_, transect, None)
+    assert "model_versions" not in plain["provenance"]
+
+
+def test_pass_chapters_read_in_playing_order():
+    """A GoPro splits a long swim at about 4 GB, so a pass may name several files."""
+    transect, video = make_transect(), make_video()
+    second = make_video("cd" * 16, file_name="GX020001.MP4")
+    pass_ = make_pass(transect, video, extra_video_ids=[second.id], end_s=600.0)
+    assert pass_.video_ids() == [video.id, second.id]
+
+    row = to_row(pass_)
+    # The chapters share one sqlite column, so they travel as a JSON array.
+    assert isinstance(row["extra_video_ids"], str)
+    assert from_row(TransectPass, row) == pass_
+
+
+def test_pass_rejects_a_chapter_that_repeats_its_first_video():
+    transect, video = make_transect(), make_video()
+    with pytest.raises(ValueError):
+        make_pass(transect, video, extra_video_ids=[video.id])
+
+
+def test_a_document_written_before_chapters_still_parses():
+    """A survey exported by an earlier build has no extra_video_ids to read."""
+    transect, video = make_transect(), make_video()
+    pass_ = make_pass(transect, video)
+    doc = build_document(
+        transects=[transect], videos=[video], batches=[], passes=[pass_], runs=[]
+    )
+    for row in doc["passes"]:
+        del row["extra_video_ids"]
+    assert parse_document(doc)["passes"] == [pass_]

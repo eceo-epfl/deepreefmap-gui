@@ -10,8 +10,6 @@ from __future__ import annotations
 from deepreefmap_gui.core.theme import BLOCK, UPDATE
 
 
-
-
 def _recorded_runs_text(window) -> str:
     """Caption + every child label text + every meter bar stylesheet, concatenated."""
     from PySide6.QtWidgets import QLabel, QProgressBar
@@ -92,6 +90,8 @@ def _low_ram_profile(probe):
 def test_memory_warning_shows_inline_notice_and_icon(window, monkeypatch) -> None:
     import deepreefmap_gui.profiling.system_probe as probe
 
+    # Advanced grades the one video in the form; simple grades the queued batch.
+    window._set_ui_mode("advanced")
     monkeypatch.setattr(probe, "probe_system", lambda *a, **k: _low_ram_profile(probe))
     window._video_duration_s = 378.0
     window._fps_spin.setValue(5)
@@ -112,6 +112,7 @@ def test_memory_warning_hidden_without_a_video(window) -> None:
 def test_memory_icon_colour_tracks_warn_vs_block(window, monkeypatch) -> None:
     import deepreefmap_gui.profiling.system_probe as probe
 
+    window._set_ui_mode("advanced")
     window._video_duration_s = 378.0
     window._fps_spin.setValue(5)
 
@@ -136,6 +137,9 @@ def test_memory_icon_colour_tracks_warn_vs_block(window, monkeypatch) -> None:
 
 
 def test_memory_icon_click_opens_system_tab(window) -> None:
+    # The System tab is the advanced destination. Simple mode routes the same
+    # icon to the setup step instead (see tests/gui/test_simple_setup.py).
+    window._set_ui_mode("advanced")
     window._sidebar_tabs.setCurrentIndex(window._TAB_RUN)
     window._memory_warn_icon.clicked.emit()
     assert window._sidebar_tabs.currentIndex() == window._TAB_SYSTEM

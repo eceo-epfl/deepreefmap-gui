@@ -11,7 +11,9 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 from deepreefmap.pipeline.resume import (
     CACHE_DIR_NAME,
@@ -24,6 +26,58 @@ from deepreefmap.pipeline.resume import (
 logger = logging.getLogger(__name__)
 
 _SEED_DIRS = ("frames", "labels", "masks")
+
+
+def preprocess_key_for_settings(
+    settings: Mapping[str, Any],
+    video_paths: list[Path],
+    begin_s: float | None,
+    end_s: float | None,
+) -> str:
+    """The library's preprocess cache key for a run built from the run form.
+
+    Takes the ``_collect_run_settings()`` dict rather than reading the widgets,
+    so the survey batch worker can key its own seeding from its own thread.
+    """
+    from deepreefmap.pipeline import resume as resume_mod
+
+    return resume_mod.preprocess_key(
+        video_paths=video_paths,
+        fps=settings["fps"],
+        begin_s=begin_s,
+        end_s=end_s,
+        camera_profile_name=settings["camera_profile_name"],
+        # Skipping segmentation is its own cache identity, not a missing model.
+        segmentation_name=(
+            "__skip__" if settings["skip_segmentation"] else settings["segmentation_name"]
+        ),
+        classes_path=settings["classes_path"],
+        processing_width=settings["processing_width"],
+        processing_height=settings["processing_height"],
+    )
+
+
+def seed_from_settings(
+    output_dir: Path,
+    search_root: Path,
+    settings: Mapping[str, Any],
+    video_paths: list[Path],
+    begin_s: float | None,
+    end_s: float | None,
+) -> Path | None:
+    """Seed ``output_dir`` from a sibling run of the same clips and settings.
+
+    Never raises: a failed seed only costs the preprocess it would have skipped.
+    """
+    try:
+        prep_key = preprocess_key_for_settings(settings, video_paths, begin_s, end_s)
+        seeded = seed_run_dir_from_match(output_dir, search_root, prep_key)
+    except Exception:
+        logger.warning("Cache seeding failed; running from scratch", exc_info=True)
+        return None
+    if seeded is not None:
+        logger.info("Seeded cache from %s", seeded)
+    return seeded
 
 
 def _link_or_copy(src: Path, dst: Path) -> None:

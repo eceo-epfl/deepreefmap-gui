@@ -5,14 +5,13 @@ import logging
 import os
 import shutil
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
-from huggingface_hub.constants import HF_HUB_CACHE
-
 from deepreefmap.paths import loger_ckpts_dir
+from huggingface_hub.constants import HF_HUB_CACHE
 
 logger = logging.getLogger(__name__)
 
@@ -209,6 +208,13 @@ DPT_BACKBONE_MAP: dict[str, str] = {
     "coralscapes-vit-l-dpt": "dinov3-vitl16",
 }
 
+# Mapping backends with no processor fallback: without a card they do not run
+# slowly, they do not run at all. Both modes gate their Start button on this, so
+# it lives here rather than as a tuple literal in each: the advanced form and
+# the simple wizard disagreeing about which backends need a GPU is the failure
+# this is preventing.
+GPU_ONLY_BACKENDS: frozenset[str] = frozenset({"loger", "loger_star"})
+
 ALL_MODELS = SEGMENTATION_MODELS + MAPPING_MODELS + BACKBONE_MODELS
 
 # Models discovered at run time via discover_models(). Session-scoped (not
@@ -250,10 +256,10 @@ def discover_models() -> tuple[list[str], str | None]:
     # Failures come back as a string rather than an exception: the caller is a
     # worker thread and cannot raise across the boundary.
     try:
+        from deepreefmap.segmentation.registry import register_segmentation_model
         from huggingface_hub import HfApi
 
         from deepreefmap_gui.models.families import synthesize_model_info
-        from deepreefmap.segmentation.registry import register_segmentation_model
 
         repos = HfApi().list_models(author="EPFL-ECEO")
     except Exception as exc:  # network, auth, or API errors
@@ -297,9 +303,32 @@ def repo_commit(repo_id: str) -> str | None:
     """Current commit hash for a repo from refs/main, or None. Never hits the network."""
     ref = _hf_cache_dir(repo_id) / "refs" / "main"
     try:
-        return ref.read_text().strip()
+        return ref.read_text(encoding="utf-8").strip()
     except OSError:
         return None
+
+
+def resolve_model_versions(names: Iterable[str]) -> dict[str, str]:
+    """HuggingFace commit revision for each named model's repos, keyed by repo id.
+
+    The value is the repo's refs/main commit, the id HuggingFace assigns to the
+    exact snapshot in the cache. It resolves back at the source (the repo tree URL
+    or HfApi().model_info(repo, revision=...)), so it is not a hash we compute.
+    Best-effort provenance: the version present, not a guarantee the run loaded
+    it. Unknown names and repos with no cached ref are skipped. A DPT head lists
+    its backbone in hf_repos, so the head name alone covers both.
+    """
+    catalogue = {info.name: info for info in all_known_models()}
+    versions: dict[str, str] = {}
+    for name in names:
+        info = catalogue.get(name)
+        if info is None:
+            continue
+        for repo in info.hf_repos:
+            commit = repo_commit(repo)
+            if commit is not None:
+                versions[repo] = commit
+    return versions
 
 
 def _snapshot_dir(repo_id: str) -> Path | None:
@@ -318,10 +347,6 @@ def _snapshot_dir(repo_id: str) -> Path | None:
 # what lets that monkeypatch (and a future HF_HOME relocation) take effect.
 def hf_cache_root() -> Path:
     return _HF_CACHE_ROOT
-
-
-def loger_ckpts_root() -> Path:
-    return _LOGER_CKPTS
 
 
 def hf_cache_dir(repo_id: str) -> Path:
@@ -359,7 +384,7 @@ def _verify_repo(repo_id: str) -> tuple[ModelStatus, str]:
     # (coralscapes_hub_model.py). Its absence is the file that crashed at runtime.
     if has_config:
         try:
-            module = json.loads(config.read_text()).get("hub_inference_module")
+            module = json.loads(config.read_text(encoding="utf-8")).get("hub_inference_module")
         except (OSError, ValueError):
             return ModelStatus.PARTIAL, "config.json unreadable"
         if module and not (snap / module).exists():

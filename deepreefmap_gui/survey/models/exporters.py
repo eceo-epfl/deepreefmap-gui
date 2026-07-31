@@ -1,14 +1,17 @@
-"""Survey data writers: transect CSV and the JSON document."""
+"""Survey data writers: transect CSV, the collated cover CSV, and the JSON document."""
 
 from __future__ import annotations
 
 import csv
 import json
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from deepreefmap_gui.survey.models.transect import Transect
+
+if TYPE_CHECKING:
+    from deepreefmap_gui.survey.analysis import LongCoverRow
 
 TRANSECT_CSV_COLUMNS = [
     "name",
@@ -25,7 +28,7 @@ TRANSECT_CSV_COLUMNS = [
 
 def save_transects_csv(path: Path, transects: Iterable[Transect]) -> None:
     """CSV in the shape import_transects_csv reads back, ids included."""
-    with path.open("w", newline="") as f:
+    with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(TRANSECT_CSV_COLUMNS)
         for t in transects:
@@ -49,7 +52,7 @@ def save_repeatability_csv(
     covers: list[Any],
 ) -> None:
     """Per-class repeatability stats plus one fraction column per pass."""
-    with path.open("w", newline="") as f:
+    with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(
             ["class", "mean_fraction", "std", "cv", "range"]
@@ -69,12 +72,42 @@ def save_repeatability_csv(
             )
 
 
+_LONG_PRECISION = {"fraction": 6, "count": 4, "denominator": 4}
+
+
+def _format_long_value(name: str, value: Any) -> str:
+    """Blank for missing, fixed precision for the measured columns, str otherwise."""
+    if value is None:
+        return ""
+    if name in _LONG_PRECISION and isinstance(value, (int, float)):
+        return f"{float(value):.{_LONG_PRECISION[name]}f}"
+    return str(value)
+
+
+def save_long_format_csv(path: Path, rows: Sequence[LongCoverRow]) -> None:
+    """Collated long-format cover: one row per transect/pass/class/level.
+
+    Column order is the dataclass field order, so a header is always written
+    even for an empty survey. Pooled estimate rows carry the same schema with
+    ``estimator=pooled`` and the contributing/expected pass counts.
+    """
+    from deepreefmap_gui.survey.analysis import LONG_COVER_COLUMNS
+
+    with path.open("w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(LONG_COVER_COLUMNS)
+        for row in rows:
+            writer.writerow(
+                [_format_long_value(name, getattr(row, name)) for name in LONG_COVER_COLUMNS]
+            )
+
+
 def save_survey_json(path: Path, document: Mapping[str, Any]) -> None:
-    path.write_text(json.dumps(document, indent=2))
+    path.write_text(json.dumps(document, indent=2), encoding="utf-8")
 
 
 def load_survey_json(path: Path) -> dict[str, Any]:
-    doc = json.loads(path.read_text())
+    doc = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(doc, dict):
         raise ValueError("Survey JSON must be a single object.")
     return doc

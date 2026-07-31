@@ -34,6 +34,10 @@ logger = logging.getLogger(__name__)
 
 SURVEY_DB_NAME = "survey.db"
 
+# Left on a run row the process abandoned. Short on purpose: it shows in the run
+# list and the pass status, so it reads as a fact, not a stack trace.
+_INTERRUPTED_REASON = "The app closed before this run finished."
+
 _MIGRATIONS = [
     """
     CREATE TABLE transect (
@@ -89,6 +93,18 @@ _MIGRATIONS = [
         created_at TEXT NOT NULL
     );
     """,
+    # A swim longer than about 4 GB arrives as GoPro chapters, so a pass names
+    # the chapters that follow its first video. A JSON array rather than a join
+    # table: the list is short, ordered, and only ever read whole. It carries no
+    # foreign key, so get_video returning None is how a missing chapter reads.
+    """
+    ALTER TABLE transect_pass ADD COLUMN extra_video_ids TEXT NOT NULL DEFAULT '[]';
+    """,
+    # Holding a pass back is a property of the pass, not of the session: a batch
+    # left half-run overnight must come back with the same passes held.
+    """
+    ALTER TABLE transect_pass ADD COLUMN held INTEGER NOT NULL DEFAULT 0;
+    """,
 ]
 
 
@@ -125,6 +141,10 @@ class SurveyStore:
         self._local = threading.local()
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._migrate()
+        # A store is opened once per output root, on the GUI thread, before any
+        # batch touches it, so opening is the one moment where every non-terminal
+        # row is certain to be a leftover rather than live work.
+        self.reconcile_interrupted_runs()
 
     @property
     def path(self) -> Path:
@@ -151,6 +171,15 @@ class SurveyStore:
         conn = self._conn()
         conn.execute("PRAGMA journal_mode = WAL")
         version = conn.execute("PRAGMA user_version").fetchone()[0]
+        # A database stamped newer than this build knows must not be opened: the
+        # empty migration slice would run nothing and then read a schema whose
+        # columns this code does not understand. This happens after an update is
+        # rolled back, so it needs to say what to do, not fail obscurely later.
+        if version > len(_MIGRATIONS):
+            raise RuntimeError(
+                f"survey.db is schema v{version}, but this build knows up to "
+                f"v{len(_MIGRATIONS)}. Update the app to open this survey."
+            )
         for number, script in enumerate(_MIGRATIONS[version:], start=version + 1):
             with conn:
                 conn.executescript(script)
@@ -196,6 +225,30 @@ class SurveyStore:
 
     def list_transects(self) -> list[Transect]:
         return self._list("transect", Transect, "name")
+
+    def transect_usage_counts(self) -> dict[uuid.UUID, tuple[int, int]]:
+        """(passes, runs) per transect, for every transect that has either.
+
+        Two grouped queries rather than a count per row: the plan list is
+        rebuilt on every keystroke while a transect is being typed.
+        """
+        counts: dict[uuid.UUID, tuple[int, int]] = {}
+        conn = self._conn()
+        for row in conn.execute(
+            "SELECT transect_id, COUNT(*) AS n FROM transect_pass GROUP BY transect_id"
+        ):
+            counts[uuid.UUID(row["transect_id"])] = (row["n"], 0)
+        for row in conn.execute(
+            """
+            SELECT transect_pass.transect_id AS transect_id, COUNT(*) AS n
+            FROM run_record
+            JOIN transect_pass ON transect_pass.id = run_record.pass_id
+            GROUP BY transect_pass.transect_id
+            """
+        ):
+            transect_id = uuid.UUID(row["transect_id"])
+            counts[transect_id] = (counts.get(transect_id, (0, 0))[0], row["n"])
+        return counts
 
     # --- Videos ---
 
@@ -265,8 +318,12 @@ class SurveyStore:
             clauses.append("batch_id = ?")
             params.append(str(batch_id))
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        # created_at is second-precision, so passes queued in one action share it.
+        # rowid breaks the tie by insertion order, which is the order the user
+        # built the table in, and which the run-dir name a pass keeps across
+        # attempts is numbered from.
         rows = self._conn().execute(
-            f"SELECT * FROM transect_pass{where} ORDER BY created_at", params
+            f"SELECT * FROM transect_pass{where} ORDER BY created_at, rowid", params
         ).fetchall()
         return [from_row(TransectPass, r) for r in rows]
 
@@ -291,6 +348,26 @@ class SurveyStore:
             cursor = conn.execute(f"UPDATE run_record SET {sets} WHERE id = ?", params)
         if cursor.rowcount == 0:
             raise KeyError(f"No run_record row with id {run_id}")
+
+    def reconcile_interrupted_runs(self) -> int:
+        """Mark every non-terminal run row as interrupted; return how many moved.
+
+        A crash or a quit-with-batch-running never gets to stamp a terminal
+        status, so a row stays "running" (or "pending") forever, reading as live
+        work that blocks nothing from being re-run. Reconciling on open turns
+        those into a terminal, non-success state the gate treats as remaining.
+        """
+        non_terminal = [s for s in RUN_STATUSES if s not in TERMINAL_STATUSES]
+        placeholders = ", ".join("?" for _ in non_terminal)
+        with self._conn() as conn:
+            cursor = conn.execute(
+                f"UPDATE run_record SET status = ?, finished_at = ?, error = ? "
+                f"WHERE status IN ({placeholders})",
+                ["interrupted", utc_now_iso(), _INTERRUPTED_REASON, *non_terminal],
+            )
+        if cursor.rowcount:
+            logger.info("Reconciled %d interrupted run(s) in %s", cursor.rowcount, self._db_path)
+        return cursor.rowcount
 
     def delete_run(self, run_id: uuid.UUID) -> None:
         with self._conn() as conn:
@@ -324,6 +401,17 @@ class SurveyStore:
             (str(transect_id),),
         ).fetchall()
         return [from_row(RunRecord, r) for r in rows]
+
+    def succeeded_pass_ids(self) -> set[uuid.UUID]:
+        """Passes with at least one successful run, in one query.
+
+        The Run table groups every row by whether it still has work to do, and
+        asks on every repaint, so it cannot afford a query per row.
+        """
+        rows = self._conn().execute(
+            "SELECT DISTINCT pass_id FROM run_record WHERE status = 'succeeded'"
+        ).fetchall()
+        return {uuid.UUID(row["pass_id"]) for row in rows}
 
     def list_runs(self) -> list[RunRecord]:
         return self._list("run_record", RunRecord, "created_at")
@@ -365,7 +453,7 @@ class SurveyStore:
         for manifest_path in sorted(out_root.glob("*/run_manifest.json")):
             run_dir_name = manifest_path.parent.name
             try:
-                manifest = json.loads(manifest_path.read_text())
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 report.skipped.append(run_dir_name)
                 continue
@@ -389,8 +477,8 @@ class SurveyStore:
     ) -> None:
         transect_id = self._restore_transect(survey["transect"], report)
         batch_id = self._restore_batch(survey, report)
-        video_id = self._restore_video(manifest, report)
-        pass_id = self._restore_pass(survey["pass"], transect_id, video_id, batch_id, report)
+        video_ids = self._restore_videos(manifest, report)
+        pass_id = self._restore_pass(survey["pass"], transect_id, video_ids, batch_id, report)
         run_id = uuid.UUID(survey["run_id"])
         if self.get_run(run_id) is None:
             self.add_run(RunRecord(
@@ -432,30 +520,40 @@ class SurveyStore:
             report.batches += 1
         return batch_id
 
-    def _restore_video(self, manifest: dict[str, Any], report: RebuildReport) -> uuid.UUID:
+    def _restore_videos(self, manifest: dict[str, Any], report: RebuildReport) -> list[uuid.UUID]:
+        """Every input clip of the run, in order: a pass may span GoPro chapters."""
         paths = manifest.get("input_videos") or [""]
-        hashes = manifest.get("video_hashes") or [None]
-        sizes = manifest.get("video_sizes") or [None]
-        mtimes = manifest.get("video_mtimes") or [None]
-        existing = self.find_video_by_hash(hashes[0])
-        if existing is not None:
-            return existing.id
-        asset = VideoAsset(
-            file_name=Path(paths[0]).name or "unknown",
-            path=paths[0],
-            hash=hashes[0],
-            size_bytes=sizes[0],
-            mtime=mtimes[0],
-        )
-        self._add("video_asset", asset)
-        report.videos += 1
-        return asset.id
+        hashes = manifest.get("video_hashes") or []
+        sizes = manifest.get("video_sizes") or []
+        mtimes = manifest.get("video_mtimes") or []
+
+        def at(values: list, index: int) -> Any:
+            return values[index] if index < len(values) else None
+
+        video_ids = []
+        for index, path in enumerate(paths):
+            content_hash = at(hashes, index)
+            existing = self.find_video_by_hash(content_hash)
+            if existing is not None:
+                video_ids.append(existing.id)
+                continue
+            asset = VideoAsset(
+                file_name=Path(path).name or "unknown",
+                path=path,
+                hash=content_hash,
+                size_bytes=at(sizes, index),
+                mtime=at(mtimes, index),
+            )
+            self._add("video_asset", asset)
+            report.videos += 1
+            video_ids.append(asset.id)
+        return video_ids
 
     def _restore_pass(
         self,
         snapshot: dict[str, Any],
         transect_id: uuid.UUID,
-        video_id: uuid.UUID,
+        video_ids: list[uuid.UUID],
         batch_id: uuid.UUID | None,
         report: RebuildReport,
     ) -> uuid.UUID:
@@ -464,7 +562,8 @@ class SurveyStore:
             self.add_pass(TransectPass(
                 id=pass_id,
                 transect_id=transect_id,
-                video_id=video_id,
+                video_id=video_ids[0],
+                extra_video_ids=video_ids[1:],
                 batch_id=batch_id,
                 direction=snapshot["direction"],
                 begin_s=snapshot["begin_s"],

@@ -3,7 +3,7 @@ cross-mixin `self._foo` references."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import logging
@@ -11,6 +11,9 @@ if TYPE_CHECKING:
     import uuid
     from pathlib import Path
 
+    from deepreefmap.config.classes import ClassConfig
+    from deepreefmap.pipeline.artifacts import SemanticPointCloud
+    from deepreefmap.pointcloud.grid_ortho import OrthoGrid
     from PySide6.QtCore import QSettings, QTimer, Signal
     from PySide6.QtWidgets import (
         QCheckBox,
@@ -20,7 +23,6 @@ if TYPE_CHECKING:
         QGroupBox,
         QLabel,
         QLineEdit,
-        QListWidget,
         QProgressBar,
         QPushButton,
         QSlider,
@@ -35,25 +37,26 @@ if TYPE_CHECKING:
         QWidget,
     )
 
-    from deepreefmap.config.classes import ClassConfig
-    from deepreefmap_gui.io.lazy_frames import FrameAccessor
-    from deepreefmap_gui.system.log_view import LogView
-    from deepreefmap_gui.runs.progress import ProgressModel
-    from deepreefmap_gui.viewer.pick_tooltip import PickCard
-    from deepreefmap_gui.profiling.eta import RunEtaEstimator
     from deepreefmap_gui.core.spinner import SpinnerStopButton
+    from deepreefmap_gui.core.widgets import NotReadyStrip
     from deepreefmap_gui.form.time_edit import TimeSecondsEdit
-    from deepreefmap_gui.runs.timing_popup import HoverColumn, TimingPopup
-    from deepreefmap.pipeline.artifacts import SemanticPointCloud
-    from deepreefmap.pointcloud.grid_ortho import OrthoGrid
-    from deepreefmap_gui.viewer.widget import QtPointCloudViewer
-    from deepreefmap_gui.runs.sunburst import SunburstWidget
+    from deepreefmap_gui.io.lazy_frames import FrameAccessor
     from deepreefmap_gui.map.widget import SlippyMapWidget
+    from deepreefmap_gui.models.library_ui import PackProgressDialog
+    from deepreefmap_gui.profiling.eta import RunEtaEstimator
+    from deepreefmap_gui.runs.progress import ProgressModel
+    from deepreefmap_gui.runs.run_detail import RunDetailPanel
+    from deepreefmap_gui.runs.run_table import RunTable
+    from deepreefmap_gui.runs.sunburst import SunburstWidget
+    from deepreefmap_gui.runs.timing_popup import HoverColumn, TimingPopup
     from deepreefmap_gui.simple.charts import GroupedBarChart
     from deepreefmap_gui.simple.plan import NotesEdit
     from deepreefmap_gui.survey.models import SurveyBatch
+    from deepreefmap_gui.survey.preset import ActivePreset
     from deepreefmap_gui.survey.store import SurveyStore
-    from deepreefmap_gui.models.library_ui import PackProgressDialog
+    from deepreefmap_gui.system.log_view import LogView
+    from deepreefmap_gui.viewer.pick_tooltip import PickCard
+    from deepreefmap_gui.viewer.widget import QtPointCloudViewer
 
     # QWidget, not QMainWindow: DeepReefMapWindow lists QMainWindow first among
     # its bases, so a QMainWindow base here breaks C3 linearisation.
@@ -85,15 +88,19 @@ if TYPE_CHECKING:
         _survey_store_obj: SurveyStore | None
         _transect_form_id: uuid.UUID | None
         _pick_stage: str | None
+        _transect_editing: bool
         _plan_map_fitted: bool
         _survey_rows: list
+        _survey_table_index: list[int | None]
         _survey_transects: list
         _survey_batch: SurveyBatch | None
         _survey_preset: dict | None
+        _active_preset: ActivePreset | None
         _survey_cancel_event: threading.Event | None
         _survey_worker_running: bool
         _settings_dialog_open: bool
         _analysis_covers: list
+        _analysis_all_covers: list
         _downloading: set[str]
         _download_cancel_requested: set[str]
         _download_errors: dict[str, str]
@@ -134,12 +141,8 @@ if TYPE_CHECKING:
         _current_version_str: str
 
         # --- checkboxes --------------------------------------------------
-        _accumulate_check: QCheckBox
-        _follow_camera_check: QCheckBox
-        _play_check: QCheckBox
         _refine_intrinsics_check: QCheckBox
         _require_gravity_check: QCheckBox
-        _semantic_check: QCheckBox
         _skip_seg_check: QCheckBox
         _tsdf_check: QCheckBox
         _update_show_all: QCheckBox
@@ -150,6 +153,9 @@ if TYPE_CHECKING:
         _discover_btn: QPushButton
         _export_models_btn: QPushButton
         _hf_auth_btn: QPushButton
+        _copy_command_btn: QPushButton
+        _copy_command_toolbtn: QToolButton
+        _command_preview_box: QWidget
         _import_pack_btn: QPushButton
         _pause_btn: QPushButton
         _scrub_btn: QPushButton
@@ -161,17 +167,14 @@ if TYPE_CHECKING:
         _batch_size_spin: QSpinBox
         _fps_spin: QSpinBox
         _grid_bins_spin: QSpinBox
-        _play_fps_spin: QSpinBox
         _proc_height_spin: QSpinBox
         _proc_width_spin: QSpinBox
         _rr_est_frames_spin: QSpinBox
         _scs_height_spin: QSpinBox
         _scs_width_spin: QSpinBox
         _begin_spin: TimeSecondsEdit
-        _camera_backoff_spin: QDoubleSpinBox
         _crop_width: QDoubleSpinBox
         _end_spin: TimeSecondsEdit
-        _point_size_spin: QDoubleSpinBox
         _results_crop_width: QDoubleSpinBox
         _results_transect_length: QDoubleSpinBox
         _rr_factor_spin: QDoubleSpinBox
@@ -179,7 +182,6 @@ if TYPE_CHECKING:
         _transect_length: QDoubleSpinBox
 
         # --- sliders -----------------------------------------------------
-        _confidence_slider: QSlider
         _frame_slider: QSlider
         _results_crop_slider: QSlider
         _results_transect_slider: QSlider
@@ -213,13 +215,15 @@ if TYPE_CHECKING:
         _data_tab: QWidget
         _data_host_simple: QWidget
         _data_tree: QTreeWidget
-        _data_run_list: QListWidget
+        _data_run_table: RunTable
+        _data_map: SlippyMapWidget
+        _data_rail_split: QSplitter
+        _run_detail: RunDetailPanel
+        _data_run_stack: QStackedWidget
         _data_group_header: QLabel
         _data_disk_label: QLabel
         _data_open_btn: QPushButton
-        _data_rename_btn: QPushButton
-        _data_assign_btn: QPushButton
-        _data_delete_btn: QPushButton
+        _data_show_btn: QPushButton
         _data_refresh_timer: QTimer
         _data_facet_buttons: dict[str, QToolButton]
         _data_entries: list
@@ -229,32 +233,45 @@ if TYPE_CHECKING:
         _data_rebuilt_root: Path | None
         _data_store_ok: bool
         _run_size_cache: dict[str, int]
+        # (output root, measured bytes per footage minute); None until measured.
+        _footage_rate_cache: tuple[Path, float | None] | None
         _data_sizes_scan_running: bool
 
         # --- survey mode -------------------------------------------------
         _mode_toggle_btn: QWidget
         _mode_buttons: dict[str, QToolButton]
-        _preview_toggle_btn: QToolButton
         _plan_map: SlippyMapWidget
-        _analysis_map: SlippyMapWidget
-        _map_start_btn: QToolButton
-        _map_end_btn: QToolButton
+        _simple_header: QWidget
+        _view_bar: QWidget
+        _view_title: QLabel
+        _view_info_btn: QToolButton
+        _view_info_open: bool
+        _view_detail: RunDetailPanel
         _survey_batch_name: QLineEdit
         _survey_preset_label: QLabel
         _survey_pass_table: QTableWidget
         _survey_start_btn: QPushButton
         _survey_settings_btn: QPushButton
+        _survey_restore_btn: QPushButton
+        _survey_audit_btn: QPushButton
+        _survey_import_btn: QPushButton
+        _survey_not_ready: NotReadyStrip
+        _setup_memory_label: QLabel
+        _hf_auth_user: str | None
         _analysis_transect_combo: QComboBox
         _analysis_level_combo: QComboBox
         _analysis_chart: GroupedBarChart
         _analysis_stats_table: QTableWidget
         _analysis_repro_label: QLabel
-        _analysis_runs_list: QListWidget
-        _transect_list: QListWidget
+        _analysis_estimate_label: QLabel
+        _transect_list: QTreeWidget
         _tr_name_input: QLineEdit
         _tr_start_coord: QLineEdit
         _tr_end_coord: QLineEdit
-        _pick_both_btn: QPushButton
+        _tr_geometry: QLabel
+        _pick_both_btn: QToolButton
+        _transect_edit_btn: QPushButton
+        _plan_view_timer: QTimer
         _tr_length: QDoubleSpinBox
         _tr_depth: QDoubleSpinBox
         _tr_description: NotesEdit
@@ -271,10 +288,8 @@ if TYPE_CHECKING:
         _video_input: QLineEdit
 
         # --- containers / layouts ----------------------------------------
-        _confidence_box: QWidget
         _crop_box: QGroupBox
         _results_group: QGroupBox
-        _viewer_controls_group: QGroupBox
         _models_grid: QGridLayout
         _sidebar_tabs: QTabWidget
         _left_stack: QStackedWidget
@@ -313,9 +328,16 @@ if TYPE_CHECKING:
         _sig_survey_progress = Signal(int, int, str)
         _sig_survey_done = Signal(int, int, str)
         _sig_run_sizes_done = Signal(object)
+        _sig_videos_probed = Signal(object)
 
         # --- cross-mixin methods -----------------------------------------
         def _add_run_warning(self, message: str) -> None: ...
+        def _add_video_path(
+            self, path: str, probed: tuple[float, float] | None = None
+        ) -> bool: ...
+        def _add_video_paths(self, paths: list[str]) -> None: ...
+        def _on_videos_probed(self, probed: list) -> None: ...
+        def _on_survey_import_csv(self) -> None: ...
         def _apply_progress(
             self,
             phase_key: str,
@@ -326,8 +348,11 @@ if TYPE_CHECKING:
         ) -> None: ...
         def _auto_load_run(self, run_dir: Path) -> None: ...
         def _begin_progress(self, model: ProgressModel) -> None: ...
+        def _progress_sinks(self) -> list: ...
         def _build_legend(self) -> None: ...
-        def _build_model_status_button(self, combo: QComboBox) -> QPushButton: ...
+        def _build_model_status_button(
+            self, combo: QComboBox
+        ) -> QPushButton: ...
         def _build_system_panel(self, layout: object) -> None: ...
         def _on_sidebar_tab_changed(self, index: int) -> None: ...
         def _refresh_recorded_runs(self) -> None: ...
@@ -337,8 +362,18 @@ if TYPE_CHECKING:
         def _clear_run_warnings(self) -> None: ...
         def _collect_loger_options(self, mapping_name: str) -> dict | None: ...
         def _collect_run_settings(self) -> dict: ...
+        def _collect_full_run_kwargs(self) -> dict: ...
+        def _effective_time_range(
+            self,
+        ) -> tuple[float | None, float | None]: ...
+        def _copy_run_command(self) -> None: ...
+        def _refresh_command_preview(self) -> None: ...
+        def _command_preview_applies(self) -> bool: ...
+
         def _estimate_frame_count(self, fps: int) -> int | None: ...
         def _recompute_submit_state(self) -> None: ...
+        def _gpu_only_mapper(self) -> str: ...
+        def _gpu_available(self) -> bool: ...
         def _refresh_desktop_entry_button(self) -> None: ...
         def _refresh_model_status(self) -> None: ...
         def _build_data_panel(self) -> QWidget: ...
@@ -360,7 +395,12 @@ if TYPE_CHECKING:
         def _required_model_names(self) -> set[str]: ...
         def _reset_progress_bars(self) -> None: ...
         def _reset_form_defaults(self) -> None: ...
+        def _snapshot_form_settings(self) -> dict[str, Any]: ...
+        def _restore_form_settings(self, snapshot: dict[str, Any]) -> None: ...
         def _adopt_form_as_preset(self) -> None: ...
+        def _reload_active_preset(self) -> None: ...
+        def _restore_standard_settings(self) -> None: ...
+        def _survey_deviations(self) -> dict: ...
         def _idle_status_text(self) -> str: ...
         def _on_edit_run_settings(self) -> None: ...
         def _set_progress_widgets_visible(self, visible: bool) -> None: ...
@@ -375,12 +415,25 @@ if TYPE_CHECKING:
         def _set_app_mode(self, mode: str) -> None: ...
         def _set_form_enabled(self, enabled: bool) -> None: ...
         def _build_mode_toggle(self) -> QWidget: ...
-        def _build_preview_toggle(self) -> QToolButton: ...
         def _build_plan_page(self) -> QWidget: ...
         def _build_simple_run_page(self) -> QWidget: ...
         def _build_analysis_page(self) -> QWidget: ...
         def _build_simple_shell(self) -> QWidget: ...
+        def _build_setup_page(self) -> QWidget: ...
+        def _build_videos_page(self) -> QWidget: ...
+        def _refresh_videos_page(self) -> None: ...
+        def _queue_video_path(self, path: str | None) -> None: ...
+        def _build_setup_nav_button(self) -> QToolButton: ...
+        def _refresh_setup_page(self) -> None: ...
+        def _current_setup_checks(self) -> list: ...
+        def _initial_simple_section(self) -> str: ...
+        def _reveal_memory_detail(self) -> None: ...
+        def _simple_peak_frames(self, fps: int) -> int | None: ...
+        def _survey_missing_models(self) -> list[str]: ...
+        def _download_model(self, model_name: str) -> None: ...
         def _set_simple_section(self, name: str) -> None: ...
+
+        def _enter_view_mode(self, run_dir: Path) -> None: ...
         def _go_to_step(self, name: str) -> None: ...
         def _set_wizard_navigation_enabled(self, enabled: bool) -> None: ...
         def _wrap_wizard_page(self, name: str, page: QWidget) -> QWidget: ...
@@ -412,6 +465,7 @@ if TYPE_CHECKING:
             self, manifest: dict, run_dir: Path, *, include_disk_size: bool
         ) -> None: ...
         def _show_viewer_controls(self) -> None: ...
+        def _set_overlay_controls_visible(self, visible: bool) -> None: ...
         def _update_effective_dir_label(self) -> None: ...
 
         # event handlers invoked across mixins
@@ -452,8 +506,10 @@ if TYPE_CHECKING:
 
         @staticmethod
         def _format_cover_html(cover: dict) -> str: ...
+
         @staticmethod
         def _sanitize_run_name(name: str) -> str: ...
+
 
 else:
     MixinBase = object

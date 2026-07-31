@@ -10,9 +10,6 @@ from __future__ import annotations
 import json
 
 import pytest
-
-from deepreefmap_gui.models.families import synthesize_model_info
-from deepreefmap_gui.models.manager import ALL_MODELS, ModelInfo, register_discovered
 from deepreefmap.segmentation.dinov3_dpt import DinoV3DPTWrapper
 from deepreefmap.segmentation.registry import (
     create_segmentation_model,
@@ -21,6 +18,9 @@ from deepreefmap.segmentation.registry import (
     register_segmentation_model,
 )
 from deepreefmap.segmentation.segformer import SegformerWrapper
+
+from deepreefmap_gui.models.families import synthesize_model_info
+from deepreefmap_gui.models.manager import ALL_MODELS, ModelInfo, register_discovered
 
 
 def test_model_list_has_all_expected_models() -> None:
@@ -73,8 +73,9 @@ def test_dinov3_dpt_entries_include_facebook_backbone() -> None:
 
 
 def test_loger_entries_materialise_into_ckpts_dir() -> None:
-    from deepreefmap_gui.models.manager import MAPPING_MODELS
     from deepreefmap.mapping.registry import _LOGER_CKPTS
+
+    from deepreefmap_gui.models.manager import MAPPING_MODELS
 
     by_name = {m.name: m for m in MAPPING_MODELS}
     assert "loger" in by_name and "loger_star" in by_name
@@ -89,6 +90,39 @@ def test_loger_entries_materialise_into_ckpts_dir() -> None:
     assert star.materialise_to[
         "LoGeR_star/latest.pt"
     ] == _LOGER_CKPTS / "LoGeR_star" / "latest.pt"
+
+
+def test_resolve_model_versions_uses_the_source_commit_per_repo(tmp_path, monkeypatch) -> None:
+    """The recorded id is HuggingFace's own refs/main commit, not one we compute."""
+    from deepreefmap_gui.models import manager as model_manager
+    from deepreefmap_gui.models.manager import resolve_model_versions
+
+    cache = tmp_path / "hf"
+    monkeypatch.setattr(model_manager, "_HF_CACHE_ROOT", cache)
+
+    def write_ref(repo_id: str, commit: str) -> None:
+        ref = cache / f"models--{repo_id.replace('/', '--')}" / "refs" / "main"
+        ref.parent.mkdir(parents=True, exist_ok=True)
+        ref.write_text(commit)
+
+    write_ref("EPFL-ECEO/coralscapes-vit-s-dpt", "a" * 40)
+    write_ref("facebook/dinov3-vits16-pretrain-lvd1689m", "b" * 40)
+    write_ref("EPFL-ECEO/deepreefmap-sfm-net", "c" * 40)
+
+    versions = resolve_model_versions(["coralscapes-vit-s-dpt", "scsfmlearner"])
+    assert versions == {
+        "EPFL-ECEO/coralscapes-vit-s-dpt": "a" * 40,
+        "facebook/dinov3-vits16-pretrain-lvd1689m": "b" * 40,
+        "EPFL-ECEO/deepreefmap-sfm-net": "c" * 40,
+    }
+
+
+def test_resolve_model_versions_skips_unknown_and_uncached(tmp_path, monkeypatch) -> None:
+    from deepreefmap_gui.models import manager as model_manager
+    from deepreefmap_gui.models.manager import resolve_model_versions
+
+    monkeypatch.setattr(model_manager, "_HF_CACHE_ROOT", tmp_path / "empty")
+    assert resolve_model_versions(["not-a-model", "scsfmlearner"]) == {}
 
 
 def _write_snapshot(cache_root, repo_id, files):

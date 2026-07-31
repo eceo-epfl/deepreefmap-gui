@@ -35,7 +35,9 @@ def test_status_ticker_appends_elapsed_and_keeps_base(make_window, monkeypatch) 
     monkeypatch.setattr(progress_mod.time, "monotonic", lambda: clock[0])
 
     window._apply_progress("mapping", "Mapping", current=3, total=10)
-    assert _plain(window._status_label.text()) == "Mapping · Mapping 3/10 · 0s"
+    # The coloured stage token is plain language for the diver. The engineer
+    # "Mapping" name survives as the base label after it.
+    assert _plain(window._status_label.text()) == "Working out the 3D shape · Mapping 3/10 · 0s"
 
     clock[0] += 74.0
     window._render_status()
@@ -163,8 +165,9 @@ def test_bars_carry_no_text_and_overall_estimate_is_visible(make_window, monkeyp
 
 
 def test_first_run_popup_hides_future_estimates_but_shows_measured(make_window, monkeypatch, tmp_path) -> None:
-    import deepreefmap_gui.runs.progress as progress_mod
     from PySide6.QtCore import QPointF
+
+    import deepreefmap_gui.runs.progress as progress_mod
 
     # Isolate the timing profile so the host machine's real history can't leak in.
     monkeypatch.setenv("DEEPREEFMAP_RUN_TIMINGS", str(tmp_path / "none.json"))
@@ -183,8 +186,9 @@ def test_first_run_popup_hides_future_estimates_but_shows_measured(make_window, 
 
 
 def test_hover_popup_builds_rows_from_estimator(make_window, monkeypatch) -> None:
-    import deepreefmap_gui.runs.progress as progress_mod
     from PySide6.QtCore import QPointF
+
+    import deepreefmap_gui.runs.progress as progress_mod
 
     window = make_window()
     window._begin_progress(window._recon_model)

@@ -71,13 +71,29 @@ def test_app_mode_targets_sections_in_simple(window, monkeypatch):
     assert window._simple_stack.currentIndex() == 2
 
 
-def test_viewer_pane_follows_app_mode_in_simple(window, monkeypatch):
+def test_viewer_pane_follows_section_in_simple(window, monkeypatch):
+    """The cloud belongs to View mode: no app mode brings it onto another page."""
     monkeypatch.setattr(window._viewer, "_ensure_plotter", lambda: None)
     assert not window._viewer.isVisibleTo(window)
-    window._set_app_mode("RUNNING")
+    for section in ("run", "browse"):
+        window._set_simple_section(section)
+        for mode in ("RUNNING", "VIEWING", "SETUP"):
+            window._set_app_mode(mode)
+            assert not window._viewer.isVisibleTo(window)
+    window._set_simple_section("view")
     assert window._viewer.isVisibleTo(window)
-    window._set_app_mode("SETUP")
-    assert not window._viewer.isVisibleTo(window)
+
+
+def test_view_mode_gives_the_viewport_the_window(window, monkeypatch):
+    """The info column is off by default, so the cloud starts at full width."""
+    monkeypatch.setattr(window._viewer, "_ensure_plotter", lambda: None)
+    window._set_simple_section("view")
+    assert window._work_hsplitter.sizes()[0] == 0
+    assert window._view_bar.isVisibleTo(window)
+    assert not window._simple_header.isVisibleTo(window)
+
+    window._view_info_btn.setChecked(True)
+    assert window._work_hsplitter.sizes()[0] > 0
 
 
 def test_advanced_run_controls_hidden_in_simple(window):

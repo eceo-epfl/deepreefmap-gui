@@ -46,37 +46,50 @@ def test_custom_processing_size_round_trips(window):
     assert (window._proc_width_spin.value(), window._proc_height_spin.value()) == (800, 600)
 
 
-def test_preview_defaults_off_and_gates_canvas(window):
-    viewer = window._viewer
-    assert not window._preview_toggle_btn.isChecked()
-    assert viewer._canvas_stack.currentWidget() is viewer._placeholder_container
-    viewer._reveal_canvas()
-    assert viewer._canvas_wanted
-    assert viewer._canvas_stack.currentWidget() is viewer._placeholder_container
+def test_processing_never_shows_the_viewer(window):
+    """Scenario: a batch is running on the Run step.
+
+    Expected behaviour: the page stays whole. The cloud belongs to Browse, so the
+    queue is not made to share the window with whichever pass finished last.
+    """
+    assert window._ui_mode == "simple"
+    window._set_simple_section("run")
+    window._set_app_mode("RUNNING")
+    assert window._viewer.isHidden()
 
 
-def test_allowing_preview_reveals_pending_scene(window, monkeypatch):
+def test_view_mode_shows_the_viewer(window):
+    window._set_simple_section("view")
+    assert not window._viewer.isHidden()
+
+
+def test_browse_keeps_the_viewer_hidden(window):
+    """Browsing wants the whole window for the table, open run or not."""
+    window._set_simple_section("browse")
+    window._set_app_mode("VIEWING")
+    assert window._viewer.isHidden()
+
+
+def test_leaving_view_mode_takes_the_viewer_with_it(window):
+    window._set_simple_section("view")
+    window._set_simple_section("browse")
+    assert window._viewer.isHidden()
+
+
+def test_advanced_mode_keeps_the_viewer_throughout(window):
+    window._mode_buttons["advanced"].click()
+    window._set_app_mode("RUNNING")
+    assert not window._viewer.isHidden()
+
+
+def test_revealing_the_canvas_needs_no_permission(window, monkeypatch):
+    """The canvas gate is gone: scene data arriving is what reveals the cloud."""
     viewer = window._viewer
     monkeypatch.setattr(viewer, "_ensure_plotter", lambda: None)
     viewer._reveal_canvas()
-    window._preview_toggle_btn.setChecked(True)
     assert viewer._canvas_stack.currentWidget() is viewer._canvas_container
-    window._preview_toggle_btn.setChecked(False)
+    viewer._hide_canvas()
     assert viewer._canvas_stack.currentWidget() is viewer._placeholder_container
-    assert viewer._canvas_wanted
-
-
-def test_preview_setting_persists(window, make_window):
-    window._preview_toggle_btn.setChecked(True)
-    other = make_window()
-    assert other._preview_toggle_btn.isChecked()
-
-
-def test_viewing_forces_preview_on(window, monkeypatch):
-    monkeypatch.setattr(window._viewer, "_ensure_plotter", lambda: None)
-    assert not window._preview_toggle_btn.isChecked()
-    window._set_app_mode("VIEWING")
-    assert window._preview_toggle_btn.isChecked()
 
 
 def test_entering_advanced_expands_the_preset(window):
@@ -88,19 +101,38 @@ def test_entering_advanced_expands_the_preset(window):
     assert window._map_combo.currentText() == preset["mapping_name"]
 
 
-def test_returning_to_simple_persists_tweaks(window, tmp_path, monkeypatch):
-    from deepreefmap_gui.survey.preset import parse_preset
+def test_returning_to_simple_persists_a_machine_setting(window, machine_preset_path):
+    """An allow-listed setting describes the computer, so it survives a restart."""
+    import yaml
 
-    target = tmp_path / "survey_preset.yaml"
-    monkeypatch.setattr("deepreefmap_gui.survey.preset.survey_preset_path", lambda: target)
+    window._mode_buttons["advanced"].click()
+    window._batch_size_spin.setValue(1)
+    window._mode_buttons["simple"].click()
+    assert window._ui_mode == "simple"
+    assert window._survey_preset["preprocess_batch_size"] == 1
+    assert yaml.safe_load(machine_preset_path.read_text())["overrides"] == {
+        "preprocess_batch_size": 1
+    }
+
+
+def test_returning_to_simple_does_not_rewrite_the_organisation_preset(
+    window, machine_preset_path
+):
+    """Scenario: a curious diver changes the method in advanced mode.
+
+    Expected behaviour: this session runs what they typed, but nothing is written
+    back, so the next launch measures the way the organisation asked. Writing the
+    whole preset here is what used to let one dive rebrand the machine for good.
+    """
     window._mode_buttons["advanced"].click()
     window._fps_spin.setValue(3)
     window._seg_combo.setCurrentText("segformer-b2")
     window._mode_buttons["simple"].click()
-    assert window._ui_mode == "simple"
     assert window._survey_preset["fps"] == 3
-    assert window._survey_preset["segmentation_name"] == "segformer-b2"
-    assert parse_preset(target.read_text())["fps"] == 3
+    assert not machine_preset_path.exists()
+    label = window._survey_preset_label.text()
+    assert "Changed for this batch only" in label
+    assert "go back to standard next launch" in label
 
 
 def test_crop_width_zero_means_disabled(window):
@@ -110,3 +142,20 @@ def test_crop_width_zero_means_disabled(window):
         {**window._collect_preset_from_form(), "transect_crop_width": 1.5}
     )
     assert window._crop_width.value() == 1.5
+
+
+def test_bundled_preset_reaches_the_run_settings(window):
+    """A fresh simple-mode window must carry the saved preset into the run.
+
+    The survey batch runs from _collect_run_settings(), so populating only the
+    preset dict is not enough: the form has to hold the preset's values on
+    startup. transect_crop_width is the tell -- the form default is 0.0, which
+    _collect_run_settings maps to None (crop disabled), while the bundled preset
+    asks for 1.0.
+    """
+    assert window._ui_mode == "simple"
+    settings = window._collect_run_settings()
+    assert settings["transect_crop_width"] == window._survey_preset["transect_crop_width"]
+    assert settings["transect_crop_width"] == 1.0
+    assert settings["fps"] == window._survey_preset["fps"]
+    assert settings["segmentation_name"] == window._survey_preset["segmentation_name"]

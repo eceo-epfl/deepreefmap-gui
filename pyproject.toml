@@ -1,6 +1,6 @@
 [project]
 name = "deepreefmap-gui"
-version = "0.1.0"
+version = "0.2.0"
 description = "Desktop application for semantic 3D mapping of coral reefs with deepreefmap"
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
@@ -172,6 +172,7 @@ extend-exclude = ["tests/e2e/_cache", "tests/e2e/_work"]
 # lock in behaviour rather than schedule a refactor.
 extend-select = [
   "E4", "E7", "E9", "W", "E501",
+  "I",       # import sorting: fully autofixable, so it stays sorted for free
   "A",       # builtin shadowing
   "ASYNC", "EXE", "FA", "INT", "SLOT", "TID", "YTT", "PYI",
   "B",       # bugbear: mutable defaults, loop-variable capture in closures
@@ -183,6 +184,11 @@ extend-select = [
   "T20",     # stray print()
   "PLW", "PLC0207", "PLR1714", "PLR1730", "PLR5501",
 ]
+# PLW1514 (open without an explicit encoding) is selected by the PLW above but
+# only fires under --preview, which currently reports 305 unrelated errors. The
+# tree is already clean under it, so it starts green the day it graduates rather
+# than arriving as a backlog. Check with:
+#   uv run ruff check --preview --select PLW1514 deepreefmap_gui tests
 # RUF100 (unused noqa) is deliberately NOT here yet. It only knows about enabled
 # rules, so turning it on before N and S would delete the `# noqa: N802 (Qt
 # override)` and `# noqa: S310` comments this codebase already carries — real
