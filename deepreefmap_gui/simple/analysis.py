@@ -7,7 +7,6 @@ import uuid
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -25,8 +24,6 @@ from deepreefmap_gui.core.theme import GUTTER, TEXT_MUTED
 from deepreefmap_gui.core.widgets import EmptyState, section_card
 from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.cover import COVER_LEVELS
-from deepreefmap_gui.map.overlays import OverlayTransect
-from deepreefmap_gui.map.widget import SlippyMapWidget
 from deepreefmap_gui.simple.charts import GroupedBarChart, pass_color
 from deepreefmap_gui.survey.analysis import (
     PooledCover,
@@ -38,24 +35,12 @@ from deepreefmap_gui.survey.analysis import (
     repeatability_stats,
     reproducibility_groups,
 )
-from deepreefmap_gui.survey.catalogue import parse_run_timestamp
 from deepreefmap_gui.survey.models.exporters import save_long_format_csv, save_repeatability_csv
 
 logger = logging.getLogger(__name__)
 
 # Below this cover fraction a class is noise in the chart; the CSV keeps everything.
 _CHART_MIN_FRACTION = 0.005
-
-
-def transect_status_color(statuses: list[str]) -> QColor:
-    """Grey none, red any failure, green all succeeded, amber in between."""
-    if not statuses:
-        return QColor(128, 128, 128)
-    if any(status == "failed" for status in statuses):
-        return QColor(200, 70, 60)
-    if all(status == "succeeded" for status in statuses):
-        return QColor(70, 170, 90)
-    return QColor(220, 160, 40)
 
 
 class SimpleAnalysisMixin(MixinBase):
@@ -108,14 +93,6 @@ class SimpleAnalysisMixin(MixinBase):
         self._analysis_estimate_label.setWordWrap(True)
         self._analysis_estimate_label.setStyleSheet(f"color: {TEXT_MUTED};")
         chart_layout.addWidget(self._analysis_estimate_label)
-        # The map is context, not the subject: a strip tall enough to place the
-        # transect and no taller, above the numbers the page is actually for.
-        self._analysis_map = SlippyMapWidget()
-        self._analysis_map.setMinimumHeight(150)
-        self._analysis_map.setMaximumHeight(200)
-        self._analysis_map.transect_clicked.connect(self._on_analysis_map_transect_clicked)
-        chart_layout.addWidget(self._analysis_map)
-
         self._analysis_chart = GroupedBarChart()
         self._analysis_chart.setMinimumHeight(160)
         chart_layout.addWidget(self._analysis_chart, 1)
@@ -202,7 +179,6 @@ class SimpleAnalysisMixin(MixinBase):
         combo.blockSignals(False)
 
         transect_id = self._analysis_transect_id()
-        self._refresh_analysis_map(store, transect_id)
         if transect_id is None:
             self._analysis_covers = []
             self._analysis_all_covers = []
@@ -264,59 +240,6 @@ class SimpleAnalysisMixin(MixinBase):
             0 if self._analysis_stats_table.rowCount() else 1
         )
         self._update_analysis_export_button()
-
-    def _refresh_analysis_map(self, store, selected_id: uuid.UUID | None) -> None:
-        overlays = []
-        for transect in store.list_transects():
-            runs = store.runs_for_transect(transect.id)
-            statuses = [run.status for run in runs]
-            overlays.append(OverlayTransect(
-                id=str(transect.id),
-                start=(transect.start_lat, transect.start_lon),
-                end=(transect.end_lat, transect.end_lon),
-                color=transect_status_color(statuses),
-                selected=transect.id == selected_id,
-                label=transect.name,
-                tooltip=self._transect_tooltip(store, transect, runs),
-            ))
-        self._analysis_map.set_transects(overlays)
-        self._analysis_map.fit_transects()
-
-    def _transect_tooltip(self, store, transect, runs: list) -> str:
-        """What has actually been surveyed here, without opening the transect."""
-        passes = store.list_passes(transect_id=transect.id)
-        videos = {video_id for p in passes for video_id in p.video_ids()}
-        done = sum(1 for run in runs if run.status == "succeeded")
-        failed = sum(1 for run in runs if run.status == "failed")
-        lines = [f"<b>{transect.name}</b>"]
-        lines.append(f"{len(videos)} video{'s' if len(videos) != 1 else ''}"
-                     f" · {len(passes)} pass{'es' if len(passes) != 1 else ''}")
-        if runs:
-            summary = f"{done} of {len(runs)} run{'s' if len(runs) != 1 else ''} succeeded"
-            if failed:
-                summary += f", {failed} failed"
-            lines.append(summary)
-            # Parsed rather than compared as text: the two fields can carry a UTC
-            # offset or not, and "...T10:00:00+00:00" sorts after "...T23:00:00"
-            # as a string while being the earlier instant.
-            stamps = [
-                parse_run_timestamp(run.started_at or run.created_at) for run in runs
-            ]
-            latest = max((s for s in stamps if s is not None), default=None)
-            if latest is not None:
-                lines.append(f"Last run {latest.date().isoformat()}")
-        else:
-            lines.append("Not processed yet")
-        if transect.length_m:
-            lines.append(f"{transect.length_m:g} m tape")
-        return "<br>".join(lines)
-
-    def _on_analysis_map_transect_clicked(self, transect_id: str) -> None:
-        combo = self._analysis_transect_combo
-        for index in range(combo.count()):
-            if combo.itemData(index) == transect_id:
-                combo.setCurrentIndex(index)
-                return
 
     def _fill_analysis_stats(self, covers: list, pooled: PooledCover) -> None:
         stats = repeatability_stats(covers)

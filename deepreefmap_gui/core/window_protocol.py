@@ -23,7 +23,6 @@ if TYPE_CHECKING:
         QGroupBox,
         QLabel,
         QLineEdit,
-        QListWidget,
         QProgressBar,
         QPushButton,
         QSlider,
@@ -46,6 +45,8 @@ if TYPE_CHECKING:
     from deepreefmap_gui.models.library_ui import PackProgressDialog
     from deepreefmap_gui.profiling.eta import RunEtaEstimator
     from deepreefmap_gui.runs.progress import ProgressModel
+    from deepreefmap_gui.runs.run_detail import RunDetailPanel
+    from deepreefmap_gui.runs.run_table import RunTable
     from deepreefmap_gui.runs.sunburst import SunburstWidget
     from deepreefmap_gui.runs.timing_popup import HoverColumn, TimingPopup
     from deepreefmap_gui.simple.charts import GroupedBarChart
@@ -210,7 +211,10 @@ if TYPE_CHECKING:
         _data_tab: QWidget
         _data_host_simple: QWidget
         _data_tree: QTreeWidget
-        _data_run_list: QListWidget
+        _data_run_table: RunTable
+        _data_map: SlippyMapWidget
+        _data_rail_split: QSplitter
+        _run_detail: RunDetailPanel
         _data_run_stack: QStackedWidget
         _data_group_header: QLabel
         _data_disk_label: QLabel
@@ -233,7 +237,12 @@ if TYPE_CHECKING:
         _mode_toggle_btn: QWidget
         _mode_buttons: dict[str, QToolButton]
         _plan_map: SlippyMapWidget
-        _analysis_map: SlippyMapWidget
+        _simple_header: QWidget
+        _view_bar: QWidget
+        _view_title: QLabel
+        _view_info_btn: QToolButton
+        _view_info_open: bool
+        _view_detail: RunDetailPanel
         _survey_batch_name: QLineEdit
         _survey_preset_label: QLabel
         _survey_pass_table: QTableWidget
@@ -406,6 +415,8 @@ if TYPE_CHECKING:
         def _survey_missing_models(self) -> list[str]: ...
         def _download_model(self, model_name: str) -> None: ...
         def _set_simple_section(self, name: str) -> None: ...
+
+        def _enter_view_mode(self, run_dir: Path) -> None: ...
         def _go_to_step(self, name: str) -> None: ...
         def _set_wizard_navigation_enabled(self, enabled: bool) -> None: ...
         def _wrap_wizard_page(self, name: str, page: QWidget) -> QWidget: ...

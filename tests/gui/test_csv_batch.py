@@ -18,6 +18,8 @@ from pathlib import Path
 
 import pytest
 
+from deepreefmap_gui.runs.run_table import COL_NAME
+
 
 @pytest.fixture
 def batch_csv(tmp_path):
@@ -195,7 +197,8 @@ def test_completed_batch_lands_flat_and_shows_in_data_manager(
 
     # _on_batch_done refreshes the data manager off the batch-done signal.
     deadline = time.monotonic() + 5
-    while window._data_run_list.count() < 3 and time.monotonic() < deadline:
+    table = window._data_run_table
+    while table.rowCount() < 3 and time.monotonic() < deadline:
         qapp.processEvents()
-    names = {window._data_run_list.item(i).text() for i in range(window._data_run_list.count())}
+    names = {table.item(row, COL_NAME).text() for row in range(table.rowCount())}
     assert {"alpha", "beta", "gamma"} <= names

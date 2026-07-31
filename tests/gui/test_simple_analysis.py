@@ -3,6 +3,7 @@ import json
 import pytest
 from _factories import seed_pass
 
+from deepreefmap_gui.map.overlays import transect_overlays
 from deepreefmap_gui.survey.models import RunRecord
 
 
@@ -57,7 +58,7 @@ def test_analysis_map_labels_and_counts_each_transect(analysis_window):
     """Transects are identifiable on the map, with their survey effort on hover."""
     window = analysis_window
     window._refresh_survey_analysis()
-    overlays = window._analysis_map._transects
+    overlays = transect_overlays(window._survey_store(), None)
     assert overlays
     overlay = overlays[0]
     assert overlay.label == "T1"
@@ -81,5 +82,6 @@ def test_unprocessed_transect_says_so(analysis_window):
         )
     )
     window._refresh_survey_analysis()
-    tooltips = {o.label: o.tooltip for o in window._analysis_map._transects}
+    overlays = transect_overlays(window._survey_store(), None)
+    tooltips = {o.label: o.tooltip for o in overlays}
     assert "Not processed yet" in tooltips["Untouched"]

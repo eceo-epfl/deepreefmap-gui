@@ -548,6 +548,11 @@ class RunLoadingMixin(MixinBase):
         log_path = run_dir / "run.log"
         self._log_view.set_current_log_path(log_path if log_path.exists() else None)
         self._set_app_mode("VIEWING")
+        # Every open path funnels through here — the run table, a dropped folder,
+        # --view, a finished batch — so simple mode enters View mode once, at the
+        # point the cloud is actually on screen rather than when it was asked for.
+        if getattr(self, "_ui_mode", "advanced") == "simple":
+            self._enter_view_mode(run_dir)
 
 
     def _add_run_warning(self, message: str) -> None:

@@ -58,16 +58,21 @@ def test_processing_never_shows_the_viewer(window):
     assert window._viewer.isHidden()
 
 
-def test_browse_shows_the_viewer_for_an_open_run(window):
-    window._set_simple_section("browse")
-    window._set_app_mode("VIEWING")
+def test_view_mode_shows_the_viewer(window):
+    window._set_simple_section("view")
     assert not window._viewer.isHidden()
 
 
-def test_viewing_outside_browse_keeps_the_viewer_hidden(window):
-    """Opening a run is not enough on its own: the section has to be Browse."""
-    window._set_simple_section("run")
+def test_browse_keeps_the_viewer_hidden(window):
+    """Browsing wants the whole window for the table, open run or not."""
+    window._set_simple_section("browse")
     window._set_app_mode("VIEWING")
+    assert window._viewer.isHidden()
+
+
+def test_leaving_view_mode_takes_the_viewer_with_it(window):
+    window._set_simple_section("view")
+    window._set_simple_section("browse")
     assert window._viewer.isHidden()
 
 

@@ -18,6 +18,7 @@ from typing import Any
 
 import yaml
 from PySide6.QtCore import QSize, Qt
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QAbstractButton,
     QButtonGroup,
@@ -52,6 +53,7 @@ from deepreefmap_gui.core.theme import (
     WINDOW_TEXT,
 )
 from deepreefmap_gui.core.window_protocol import MixinBase
+from deepreefmap_gui.runs.run_detail import RunDetailPanel
 from deepreefmap_gui.simple.progress import browse_state, plan_state, run_gate
 from deepreefmap_gui.survey.preset import (
     ActivePreset,
@@ -86,10 +88,15 @@ _WORKSPACE_TIPS = {
     "videos": "Every clip this survey knows about, and what became of each one.",
 }
 
-# Every destination the stack can show, in stack order. Setup is appended last
-# so the Plan/Run/Browse stack indices other code and tests rely on stay put; it
-# is a first-run destination, not a numbered survey step.
-SIMPLE_SECTIONS = (*SURVEY_STEPS, "browse", "videos", "setup")
+# Every destination the stack can show, in stack order. Setup and view are
+# appended last so the Plan/Run/Browse stack indices other code and tests rely on
+# stay put; neither is a numbered survey step. Setup is a first-run destination,
+# and view is where an opened run goes — reached by opening one, never by a tab.
+SIMPLE_SECTIONS = (*SURVEY_STEPS, "browse", "videos", "setup", "view")
+
+# What the info panel takes when it is open. Wide enough for the metadata block
+# without eating into the cloud, which is what View mode is for.
+VIEW_INFO_WIDTH = 340
 
 _STEP_BADGE_PX = 20
 
@@ -212,7 +219,7 @@ class UiModeMixin(MixinBase):
     _step_widgets: list[QWidget]
     _section_state_cache: tuple | None = None
     _last_survey_step: str = "plan"
-    _work_area_state: tuple[bool, bool, str] | None = None
+    _work_area_state: tuple[bool, bool, str, bool] | None = None
 
     def _build_mode_toggle(self) -> QWidget:
         """Segmented control: both names stay readable and the filled half says
@@ -465,10 +472,17 @@ class UiModeMixin(MixinBase):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
+        # Built here so it exists before the first _sync_workspace_chrome, but
+        # added to the window's central column rather than to this shell: in View
+        # mode the shell is squeezed to zero width, and a Back button inside it
+        # would go with it.
+        self._build_view_bar()
+
         header = QWidget()
         header.setStyleSheet(
             f"background-color: {CARD_BG}; border-bottom: 1px solid {BORDER};"
         )
+        self._simple_header = header
         nav = QHBoxLayout(header)
         nav.setContentsMargins(PAGE_MARGIN, 8, PAGE_MARGIN, 8)
         nav.setSpacing(4)
@@ -504,6 +518,7 @@ class UiModeMixin(MixinBase):
             "browse": self._build_browse_page(),
             "videos": self._build_videos_page(),
             "setup": self._build_setup_page(),
+            "view": self._build_view_info_page(),
         }
 
         step_group = QButtonGroup(shell)
@@ -567,6 +582,90 @@ class UiModeMixin(MixinBase):
         """
         return self._build_simple_data_host()
 
+    def _build_view_bar(self) -> QWidget:
+        """The way out of View mode, and the switch for the metadata beside it.
+
+        Full window width, so it survives the info column collapsing to nothing.
+        """
+        self._view_info_open = False
+        bar = QWidget()
+        bar.setStyleSheet(
+            f"background-color: {CARD_BG}; border-bottom: 1px solid {BORDER};"
+        )
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(PAGE_MARGIN, 6, PAGE_MARGIN, 6)
+        row.setSpacing(GUTTER)
+
+        back = QPushButton("← Back to Browse")
+        back.setProperty("quiet", "true")
+        back.setCursor(Qt.CursorShape.PointingHandCursor)
+        back.clicked.connect(lambda: self._set_simple_section("browse"))
+        row.addWidget(back)
+
+        self._view_title = QLabel("")
+        font = self._view_title.font()
+        font.setWeight(QFont.Weight.DemiBold)
+        self._view_title.setFont(font)
+        row.addWidget(self._view_title)
+        row.addStretch(1)
+
+        self._view_info_btn = QToolButton()
+        self._view_info_btn.setText("Info")
+        self._view_info_btn.setCheckable(True)
+        self._view_info_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._view_info_btn.setToolTip("Show what this run is, beside the cloud.")
+        self._view_info_btn.setStyleSheet(_STEP_QSS)
+        self._view_info_btn.toggled.connect(self._on_view_info_toggled)
+        row.addWidget(self._view_info_btn)
+
+        bar.setVisible(False)
+        self._view_bar = bar
+        return bar
+
+    def _set_view_bar_visible(self, visible: bool) -> None:
+        if hasattr(self, "_view_bar"):
+            self._view_bar.setVisible(visible)
+
+    def _on_view_info_toggled(self, checked: bool) -> None:
+        self._view_info_open = checked
+        self._update_work_area()
+
+    def _enter_view_mode(self, run_dir: Path) -> None:
+        """Point View mode at the run now on screen, and go there.
+
+        The catalogue entry carries what the info panel shows, but a run opened
+        from outside the output root has none; the title still names it, and the
+        panel stays on whatever it last described rather than showing another
+        run's facts under this one's name.
+        """
+        entry = next(
+            (e for e in getattr(self, "_data_entries", []) if e.run_dir == run_dir),
+            None,
+        )
+        if entry is not None:
+            self._view_title.setText(entry.display_name)
+            self._view_detail.show_entry(entry)
+        else:
+            manifest = getattr(self, "_active_run_manifest", None) or {}
+            self._view_title.setText(manifest.get("name") or run_dir.name)
+            self._view_detail.clear()
+        self._set_simple_section("view")
+
+    def _build_view_info_page(self) -> QWidget:
+        """What the run on screen is, beside the cloud rather than instead of it.
+
+        The whole point of View mode is the viewport, so this column is off by
+        default and the Info button in the view bar brings it back. It reuses the
+        Browse detail pane's filler, so the two cannot describe one run
+        differently.
+        """
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self._view_detail = RunDetailPanel()
+        layout.addWidget(self._view_detail, 1)
+        return page
+
     def _current_section(self) -> str:
         index = self._simple_stack.currentIndex()
         if 0 <= index < len(SIMPLE_SECTIONS):
@@ -586,8 +685,12 @@ class UiModeMixin(MixinBase):
         step controls entirely in Browse — they steer nothing there."""
         section = self._current_section()
         in_survey = section in SURVEY_STEPS
-        if section == "setup":
-            # Setup sits outside every workspace, so no pill should own it.
+        # The header band is the workspace switch; View replaces it with its own
+        # bar, so nothing here should read as the live destination while it shows.
+        self._simple_header.setVisible(section != "view")
+        self._set_view_bar_visible(section == "view")
+        if section in ("setup", "view"):
+            # Neither sits inside a workspace, so no pill should own them.
             for button in self._workspace_buttons.values():
                 button.blockSignals(True)
                 button.setChecked(False)
@@ -723,13 +826,14 @@ class UiModeMixin(MixinBase):
         if not hasattr(self, "_work_hsplitter"):
             return
         simple = getattr(self, "_ui_mode", "advanced") == "simple"
-        app_mode = getattr(self, "_app_mode", "SETUP")
         section = self._current_section() if hasattr(self, "_simple_stack") else "plan"
-        # In simple mode the point cloud belongs to Browse alone. The Run step is a
-        # queue you watch, so it reports per-pass progress in the table rather than
-        # borrowing half the window for a cloud from whichever pass finished last.
-        show_viewer = not simple or (app_mode == "VIEWING" and section == "browse")
-        state = (simple, show_viewer, section)
+        # In simple mode the point cloud gets a destination of its own rather
+        # than half of Browse. Browsing wants the whole window for the table, and
+        # looking at a cloud wants the whole window for the cloud; sharing served
+        # neither. Advanced keeps the permanent side-by-side it was built around.
+        show_viewer = not simple or section == "view"
+        info_open = getattr(self, "_view_info_open", False)
+        state = (simple, show_viewer, section, info_open)
         if getattr(self, "_work_area_state", None) == state:
             return
         self._work_area_state = state
@@ -738,7 +842,8 @@ class UiModeMixin(MixinBase):
         if not show_viewer:
             self._work_hsplitter.setSizes([total, 0])
         elif simple:
-            left = int(total * 0.45)
+            # View mode gives the viewport everything the info panel is not using.
+            left = min(VIEW_INFO_WIDTH, total // 3) if info_open else 0
             self._work_hsplitter.setSizes([left, total - left])
         else:
             left = min(self._form_preferred_width, total // 2)

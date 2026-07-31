@@ -222,6 +222,9 @@ class DeepReefMapWindow(
         central_layout.setContentsMargins(0, 0, 0, 0)
         central_layout.setSpacing(0)
         central_layout.addWidget(top_bar)
+        # Spans the window rather than riding in the simple shell, which View
+        # mode squeezes to nothing to give the viewport the full width.
+        central_layout.addWidget(self._view_bar)
         central_layout.addWidget(self._run_meta_banner)
         central_layout.addWidget(self._central_vsplitter, 1)
         # Status and progress span the whole window under everything else, so
@@ -238,6 +241,9 @@ class DeepReefMapWindow(
         # drop handling lives here on the concrete window and delegates in.
         if self._data_drop_event_filter(obj, event):
             return True
+        # Observes rather than consumes: the splitter still has to lay itself
+        # out, this only re-divides it afterwards.
+        self._data_split_event_filter(obj, event)
         return super().eventFilter(obj, event)
 
     # --- teardown -----------------------------------------------------------

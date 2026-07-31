@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from deepreefmap_gui.runs.run_cards import build_run_card_meta, related_run_counts
+from deepreefmap_gui.runs.run_cards import related_run_counts
 
 
 def _entry(run_dir: str, hashes: list[str | None] | None) -> tuple[Path, dict]:
@@ -37,70 +37,3 @@ def test_old_manifests_and_failed_hashes_never_relate() -> None:
         _entry("run_c", [None]),
     ])
     assert counts == {Path("run_a"): 0, Path("run_b"): 0, Path("run_c"): 0}
-
-
-def test_card_meta_includes_related_count_only_when_positive() -> None:
-    meta = build_run_card_meta({}, Path("run_a"), related_runs=3)
-    assert "3 related runs" in meta["facts"]
-
-    meta = build_run_card_meta({}, Path("run_a"), related_runs=1)
-    assert "1 related run" in meta["facts"]
-    assert "1 related runs" not in meta["facts"]
-
-    meta = build_run_card_meta({}, Path("run_a"))
-    assert "related" not in meta["facts"]
-
-
-def test_card_video_line_shows_hash_size_and_date() -> None:
-    manifest = {
-        "input_videos": ["/data/GX_VIDEO.MP4"],
-        "video_hashes": ["deadbeefdeadbeefdeadbeefdeadbeef"],
-        "video_sizes": [3_800_000_000],
-        "video_mtimes": ["2026-07-12T14:03:00+00:00"],
-    }
-    meta = build_run_card_meta(manifest, Path("run_a"))
-    assert "GX_VIDEO.MP4" in meta["video"]
-    assert "#deadbeef" in meta["video"]
-    # Binary units: 3.8e9 bytes is 3.5 GiB. These read as SI before the two byte
-    # formatters were collapsed into one.
-    assert "3.5 GB" in meta["video"]
-    assert "2026-07-12" in meta["video"]
-
-
-def test_card_video_line_degrades_without_new_fields() -> None:
-    meta = build_run_card_meta(
-        {"input_videos": ["/data/old.mp4"]}, Path("run_a")
-    )
-    assert meta["video"] == "📹 old.mp4"
-
-
-def test_card_facts_show_trim_range_only_when_trimmed() -> None:
-    meta = build_run_card_meta(
-        {"begin_s": 61.95, "end_s": 336.31}, Path("run_a")
-    )
-    assert "62.0–336.3s" in meta["facts"]
-
-    meta = build_run_card_meta(
-        {"begin_s": None, "end_s": None}, Path("run_a")
-    )
-    assert "–" not in meta["facts"]
-
-
-def test_card_facts_show_fps_and_runtime() -> None:
-    meta = build_run_card_meta(
-        {"frames_processed": 120, "fps": 5, "run_duration_s": 134.2}, Path("run_a")
-    )
-    assert "120f @ 5fps" in meta["facts"]
-    assert "2m 14s" in meta["facts"]
-
-
-def test_card_runtime_falls_back_to_stage_durations() -> None:
-    meta = build_run_card_meta(
-        {"stage_durations": {"preprocess": 10.0, "mapping": 30.5}}, Path("run_a")
-    )
-    assert "40s" in meta["facts"]
-
-
-def test_card_runtime_omitted_without_timing_fields() -> None:
-    meta = build_run_card_meta({"frames_processed": 120}, Path("run_a"))
-    assert meta["facts"] == "120f"

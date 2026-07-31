@@ -11,7 +11,6 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QButtonGroup,
     QComboBox,
     QDialog,
@@ -22,11 +21,10 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QLineEdit,
-    QListWidget,
-    QListWidgetItem,
     QMenu,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSplitter,
     QStackedWidget,
     QToolButton,
@@ -45,26 +43,18 @@ from deepreefmap_gui.core.theme import (
     SURFACE_HI,
     TEXT_MUTED,
     TEXT_SECONDARY,
-    WARN_TEXT,
     WINDOW,
     WINDOW_TEXT,
 )
-from deepreefmap_gui.core.widgets import (
-    STATUS_COLORS,
-    EmptyState,
-    FilterChips,
-    section_card,
-)
+from deepreefmap_gui.core.widgets import EmptyState, FilterChips, section_card
 from deepreefmap_gui.core.window_protocol import MixinBase
+from deepreefmap_gui.map.overlays import transect_overlays
+from deepreefmap_gui.map.widget import SlippyMapWidget
 from deepreefmap_gui.profiling.eta import format_duration
 from deepreefmap_gui.profiling.system_probe import format_bytes
-from deepreefmap_gui.runs.run_cards import (
-    RUN_META_ROLE,
-    RunCardDelegate,
-    build_run_card_meta,
-    format_run_metadata,
-    related_run_counts,
-)
+from deepreefmap_gui.runs.run_cards import points_label, related_run_counts
+from deepreefmap_gui.runs.run_detail import RunDetailPanel
+from deepreefmap_gui.runs.run_table import COL_NAME, RunTable
 from deepreefmap_gui.survey import catalogue
 from deepreefmap_gui.survey.catalogue import FacetGroup, RunEntry
 from deepreefmap_gui.survey.models.transect_pass import PASS_DIRECTIONS
@@ -106,6 +96,10 @@ _VIDEO_SUFFIXES = {".mp4", ".mov", ".avi", ".mkv"}
 
 _GROUP_KEY_ROLE = Qt.ItemDataRole.UserRole
 
+# Below this the splitter has not been laid out yet, so its width says nothing
+# about how much room Browse actually has.
+_SPLIT_MIN_TOTAL = 400
+
 # Wide enough for a transect name or a GoPro filename to survive elision; the
 # old 260 with a tree indent left "GX0100..." and a horizontal scrollbar.
 _RAIL_WIDTH = 300
@@ -113,6 +107,24 @@ _RAIL_WIDTH = 300
 # Below this the rail is not showing names any more, so a remembered width this
 # small is a layout artefact rather than a choice the user made.
 _RAIL_MIN_WIDTH = 200
+
+# Tall enough to hold a transect and the water around it; the list below it is
+# what grows when the rail is dragged wider.
+_RAIL_MAP_HEIGHT = 240
+_RAIL_MAP_MIN_HEIGHT = 140
+
+# How much of the space left over from the rail the detail pane takes. The run
+# table is the page and gets the rest; the pane holds one run's facts and its
+# ortho strip, which is not a 50/50 amount of content.
+_DETAIL_SHARE = 0.30
+
+# Grouping by transect puts a chart and a stats table in the pane instead, and
+# those do need close to half.
+_DETAIL_SHARE_ANALYSIS = 0.45
+
+# Narrow enough that the proportion still holds in the advanced sidebar,
+# which is a fraction of the width simple mode gives Browse.
+_DETAIL_MIN_WIDTH = 260
 
 
 def _facet_qss(*, first: bool, last: bool) -> str:
@@ -142,6 +154,9 @@ class DataManagerMixin(MixinBase):
     _data_status_filter: str = "all"
     _data_selected_key: tuple | None = None
     _data_rebuilt_root: Path | None = None
+    _data_rail_shown: bool | None = None
+    _data_split_user_sized: bool = False
+    _data_split_applying: bool = False
 
     def _build_data_panel(self) -> QWidget:
         self._data_entries: list[RunEntry] = []
@@ -210,7 +225,22 @@ class DataManagerMixin(MixinBase):
         self._data_tree_stack = QStackedWidget()
         self._data_tree_stack.addWidget(self._data_tree)
         self._data_tree_stack.addWidget(EmptyState("Nothing to group yet"))
-        rail_layout.addWidget(self._data_tree_stack, 1)
+
+        # Transects are places before they are rows, so the rail shows where they
+        # are and the list underneath stays for the ones a map cannot hold: the
+        # unassigned bucket, and any transect with no coordinates yet.
+        self._data_map = SlippyMapWidget()
+        self._data_map.setMinimumHeight(_RAIL_MAP_MIN_HEIGHT)
+        self._data_map.transect_clicked.connect(self._on_data_map_transect_clicked)
+        rail_split = QSplitter(Qt.Orientation.Vertical)
+        rail_split.setHandleWidth(GUTTER)
+        rail_split.addWidget(self._data_map)
+        rail_split.addWidget(self._data_tree_stack)
+        rail_split.setStretchFactor(0, 0)
+        rail_split.setStretchFactor(1, 1)
+        rail_split.setSizes([_RAIL_MAP_HEIGHT, 400])
+        self._data_rail_split = rail_split
+        rail_layout.addWidget(rail_split, 1)
         self._data_rail.setMinimumWidth(_RAIL_MIN_WIDTH)
         self._data_split.addWidget(self._data_rail)
 
@@ -223,20 +253,14 @@ class DataManagerMixin(MixinBase):
         header_row.addWidget(self._data_disk_label)
         runs_layout.addLayout(header_row)
 
-        self._data_run_list = QListWidget()
-        self._data_run_list.setItemDelegate(RunCardDelegate(self._data_run_list))
-        # Delete and Assign act on a whole selection, so several runs can be
-        # picked at once.
-        self._data_run_list.setSelectionMode(
-            QAbstractItemView.SelectionMode.ExtendedSelection
-        )
-        self._data_run_list.itemDoubleClicked.connect(self._on_data_run_activated)
-        self._data_run_list.itemSelectionChanged.connect(self._update_data_actions)
-        self._data_run_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self._data_run_list.customContextMenuRequested.connect(self._on_data_context_menu)
+        self._data_run_table = RunTable()
+        self._data_run_table.itemDoubleClicked.connect(self._on_data_run_activated)
+        self._data_run_table.itemSelectionChanged.connect(self._update_data_actions)
+        self._data_run_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._data_run_table.customContextMenuRequested.connect(self._on_data_context_menu)
 
         self._data_run_stack = QStackedWidget()
-        self._data_run_stack.addWidget(self._data_run_list)
+        self._data_run_stack.addWidget(self._data_run_table)
         self._data_empty_state = EmptyState("No runs here yet", "Processed passes collect here.")
         self._data_run_stack.addWidget(self._data_empty_state)
         runs_layout.addWidget(self._data_run_stack, 1)
@@ -274,7 +298,7 @@ class DataManagerMixin(MixinBase):
 
         # A shared drop handler queues dropped videos as passes and opens a
         # dropped run folder, rather than three widgets each learning to drop.
-        for widget in (self._data_run_list, self._data_tree):
+        for widget in (self._data_run_table, self._data_tree):
             widget.setAcceptDrops(True)
             widget.installEventFilter(self)
         self._data_split.addWidget(runs_card)
@@ -286,14 +310,26 @@ class DataManagerMixin(MixinBase):
         self._data_detail_stack.addWidget(
             EmptyState("Nothing selected", "Pick a run or a transect to see its detail.")
         )
-        self._data_detail_stack.addWidget(self._build_run_detail_panel())
-        self._data_detail_stack.addWidget(self._build_analysis_page())
+        self._run_detail = RunDetailPanel()
+        self._data_detail_stack.addWidget(self._run_detail)
+        # Scrolled, so the chart and stats table below it stop dictating how
+        # narrow the pane may be. A splitter only divides the space left over
+        # above each pane's minimum, and this page's minimum was wide enough to
+        # hold Browse at half and half however wide the window got.
+        analysis_scroll = QScrollArea()
+        analysis_scroll.setWidgetResizable(True)
+        analysis_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        analysis_scroll.setWidget(self._build_analysis_page())
+        self._data_detail_stack.addWidget(analysis_scroll)
+        self._data_detail_stack.setMinimumWidth(_DETAIL_MIN_WIDTH)
         self._data_split.addWidget(self._data_detail_stack)
 
         self._data_split.setStretchFactor(0, 0)
-        self._data_split.setStretchFactor(1, 3)
+        self._data_split.setStretchFactor(1, 7)
         self._data_split.setStretchFactor(2, 3)
-        self._data_split.setSizes([_RAIL_WIDTH, 560, 520])
+        self._data_split.splitterMoved.connect(self._on_data_split_moved)
+        self._data_split.installEventFilter(self)
+        self._apply_data_split_sizes(rail_visible=False)
         layout.addWidget(self._data_split, 1)
         self._update_data_actions()
 
@@ -308,39 +344,6 @@ class DataManagerMixin(MixinBase):
         self._data_panel = panel
         self._data_facet_buttons["runs"].setChecked(True)
         return panel
-
-    def _build_run_detail_panel(self) -> QWidget:
-        """What one run is, and why it failed if it did.
-
-        A failure reason belongs here rather than in the status bar, which the
-        next event overwrites: the run that broke is still selected long after
-        the message that explained it has gone.
-        """
-        card, layout = section_card()
-        self._run_detail_title = QLabel("")
-        self._run_detail_title.setWordWrap(True)
-        self._run_detail_title.setStyleSheet("font-weight: bold;")
-        layout.addWidget(self._run_detail_title)
-
-        self._run_detail_status = QLabel("")
-        self._run_detail_status.setWordWrap(True)
-        layout.addWidget(self._run_detail_status)
-
-        self._run_detail_facts = QLabel("")
-        self._run_detail_facts.setWordWrap(True)
-        self._run_detail_facts.setTextFormat(Qt.TextFormat.RichText)
-        self._run_detail_facts.setStyleSheet(f"color: {TEXT_SECONDARY};")
-        self._run_detail_facts.setAlignment(
-            Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft
-        )
-        layout.addWidget(self._run_detail_facts, 1)
-
-        self._run_detail_error = QLabel("")
-        self._run_detail_error.setWordWrap(True)
-        self._run_detail_error.setStyleSheet(f"color: {WARN_TEXT};")
-        self._run_detail_error.setVisible(False)
-        layout.addWidget(self._run_detail_error)
-        return card
 
     def _build_simple_data_host(self) -> QWidget:
         # The panel cards its own halves, so the host is a bare slot in both
@@ -376,6 +379,9 @@ class DataManagerMixin(MixinBase):
                 if self._data_rebuilt_root != root:
                     store.rebuild_from_scan(root)
                     self._data_rebuilt_root = root
+                    # A different root is a different survey, so the map earns a
+                    # fresh fit rather than keeping the last one's viewport.
+                    self._data_map_fitted = False
                 # Crashed runs never wrote a manifest, so scan_out_root skips
                 # them; surface them here so they can be seen and cleared.
                 entries += catalogue.scan_incomplete_runs(
@@ -437,7 +443,49 @@ class DataManagerMixin(MixinBase):
         finally:
             tree.blockSignals(False)
         self._set_rail_visible(grouped)
+        self._refresh_data_map()
         self._rebuild_data_run_list()
+
+    def _refresh_data_map(self) -> None:
+        """Draw the survey's transects, highlighting whichever one is in focus.
+
+        Only the transect facet has a map: grouping by video says nothing about
+        where anything is, and an unrelated map beside that list would invite
+        clicks that change the grouping out from under it.
+        """
+        if not hasattr(self, "_data_map"):
+            return
+        shown = self._data_facet == "transects"
+        self._data_map.setVisible(shown)
+        if not shown or not getattr(self, "_data_store_ok", False):
+            return
+        key = self._data_selected_key
+        selected = (
+            uuid.UUID(key[1]) if key is not None and key[0] == "transect" else None
+        )
+        try:
+            overlays = transect_overlays(self._survey_store(), selected)
+        except Exception:
+            logger.exception("Could not build the Browse transect overlays")
+            return
+        self._data_map.set_transects(overlays)
+        # Fit once per output root: refitting on every selection would yank the
+        # map back to the whole survey each time a transect is picked.
+        if not getattr(self, "_data_map_fitted", False) and overlays:
+            self._data_map.fit_transects()
+            self._data_map_fitted = True
+
+    def _on_data_map_transect_clicked(self, transect_id: str) -> None:
+        """A click on the map selects that transect's node, and nothing else.
+
+        Routed through the tree rather than filtering directly, so the map, the
+        tree and the analysis combo cannot end up pointing at different
+        transects.
+        """
+        try:
+            self._set_scope_transect(uuid.UUID(transect_id))
+        except ValueError:
+            logger.warning("Map click carried an unusable transect id: %r", transect_id)
 
     def _set_rail_visible(self, visible: bool) -> None:
         """Hide the whole rail, not just the tree inside it.
@@ -449,6 +497,9 @@ class DataManagerMixin(MixinBase):
         # that has not been shown yet reports False whatever we asked for, so
         # the first hide would look like a no-op and never take effect.
         if getattr(self, "_data_rail_shown", None) == visible:
+            # The rail has not moved, but the detail pane's share follows the
+            # facet, and transects <-> videos changes that without changing this.
+            self._apply_data_split_sizes(rail_visible=visible)
             return
         self._data_rail_shown = visible
         if not visible:
@@ -461,13 +512,55 @@ class DataManagerMixin(MixinBase):
             if sizes and sizes[0] >= _RAIL_MIN_WIDTH:
                 self._data_rail_width = sizes[0]
         self._data_rail.setVisible(visible)
+        self._apply_data_split_sizes(rail_visible=visible)
+
+    def _apply_data_split_sizes(self, *, rail_visible: bool) -> None:
+        """Divide Browse between the rail, the run table, and the detail pane.
+
+        The table is the page: it is what you scan, sort and select in, so it
+        takes the bulk. The detail pane only has to hold one run's facts and its
+        ortho strip. Grouping by transect is the exception — there the pane holds
+        a chart and a stats table, which need closer to half.
+
+        The sizes are set outright rather than left to stretch factors. A
+        splitter only shares out the space *above* each pane's minimum hint, and
+        the analysis page's hint is ~320px, so stretch alone settled at roughly
+        half and half however wide the window got.
+        """
+        if getattr(self, "_data_split_user_sized", False):
+            return
+        # The splitter's own width, not the sum of its sizes: during
+        # construction the panes have not been laid out and the sum is a
+        # placeholder, which is what the fallback is for.
+        total = self._data_split.width()
+        if total < _SPLIT_MIN_TOTAL:
+            total = sum(self._data_split.sizes()) or 1200
+        rail = getattr(self, "_data_rail_width", _RAIL_WIDTH) if rail_visible else 0
+        share = _DETAIL_SHARE_ANALYSIS if self._data_facet == "transects" else _DETAIL_SHARE
+        detail = max(_DETAIL_MIN_WIDTH, int((total - rail) * share))
         # Every pane gets a size. Handing setSizes fewer entries than the
         # splitter has children leaves the rest at zero, which collapsed the
         # detail pane to a hairline the moment a grouping was picked.
-        total = sum(self._data_split.sizes()) or 1200
-        rail = getattr(self, "_data_rail_width", _RAIL_WIDTH) if visible else 0
-        detail = max(360, int((total - rail) * 0.46))
-        self._data_split.setSizes([rail, max(280, total - rail - detail), detail])
+        self._data_split_applying = True
+        try:
+            self._data_split.setSizes([rail, max(280, total - rail - detail), detail])
+        finally:
+            self._data_split_applying = False
+
+    def _data_split_event_filter(self, obj, event) -> None:
+        """Re-divide Browse when the splitter is resized, in either UI mode.
+
+        Browse is re-parented between the simple shell and the advanced tab, and
+        each host hands it a different width; recomputing on resize is what makes
+        the proportion the same in both.
+        """
+        if obj is self._data_split and event.type() == QEvent.Type.Resize:
+            self._apply_data_split_sizes(rail_visible=bool(self._data_rail_shown))
+
+    def _on_data_split_moved(self, *_args) -> None:
+        """A dragged handle is a decision; stop overriding it on every resize."""
+        if not getattr(self, "_data_split_applying", False):
+            self._data_split_user_sized = True
 
     def _set_rail_title(self, title: str) -> None:
         label = self._data_rail.findChild(QLabel)
@@ -570,7 +663,7 @@ class DataManagerMixin(MixinBase):
         """
         entry = self._data_selected_entry()
         if entry is not None:
-            self._fill_run_detail(entry)
+            self._run_detail.show_entry(entry)
             self._data_detail_stack.setCurrentIndex(_DETAIL_RUN)
             return
         key = self._data_selected_key
@@ -578,37 +671,6 @@ class DataManagerMixin(MixinBase):
             self._data_detail_stack.setCurrentIndex(_DETAIL_TRANSECT)
             return
         self._data_detail_stack.setCurrentIndex(_DETAIL_EMPTY)
-
-    def _fill_run_detail(self, entry: RunEntry) -> None:
-        from deepreefmap_gui.simple.batch import _diagnose_failure
-
-        status = catalogue.entry_status(entry)
-        colour = STATUS_COLORS.get(status, TEXT_MUTED)
-        self._run_detail_title.setText(entry.display_name)
-        self._run_detail_status.setText(
-            f'<span style="color:{colour}; font-weight:600;">{status.capitalize()}</span>'
-        )
-        rows = [
-            ("Folder", entry.dir_name),
-            ("Transect", entry.transect_name or "Not assigned yet"),
-            ("Video", entry.video_name or "—"),
-        ]
-        if entry.duration_s:
-            rows.append(("Runtime", format_duration(entry.duration_s)))
-        if entry.points:
-            rows.append(("Points", f"{entry.points:,}"))
-        if entry.size_bytes is not None:
-            rows.append(("On disk", format_bytes(entry.size_bytes)))
-        self._run_detail_facts.setText(
-            "<br>".join(f"<b>{label}</b>  {value}" for label, value in rows)
-        )
-        error = entry.db_run.error if entry.db_run is not None else ""
-        if entry.incomplete:
-            message = _diagnose_failure(error) if error else (
-                "This run did not finish and wrote no manifest."
-            )
-            self._run_detail_error.setText(message)
-        self._run_detail_error.setVisible(bool(entry.incomplete))
 
     def _on_data_facet_changed(self, name: str) -> None:
         # _focus_data_on_transect sets the facet and the key together and then
@@ -618,6 +680,7 @@ class DataManagerMixin(MixinBase):
             return
         self._data_facet = name
         self._data_selected_key = None
+        self._data_split_user_sized = False
         if hasattr(self, "_data_tree"):
             self._rebuild_data_tree()
 
@@ -625,6 +688,7 @@ class DataManagerMixin(MixinBase):
         items = self._data_tree.selectedItems()
         key = items[0].data(0, _GROUP_KEY_ROLE) if items else None
         self._data_selected_key = key
+        self._refresh_data_map()
         self._rebuild_data_run_list()
         # Picking a transect here drives the comparison below it on the same page.
         if key is not None and len(key) == 2 and key[0] == "transect":
@@ -679,41 +743,7 @@ class DataManagerMixin(MixinBase):
         self._refresh_data_status_counts()
         listed = self._data_listed_entries()
         related = related_run_counts([(e.run_dir, e.manifest) for e in self._data_entries])
-        current = self._data_run_list.currentItem()
-        keep = current.data(Qt.ItemDataRole.UserRole) if current is not None else None
-        self._data_run_list.clear()
-        for entry in listed:
-            item = QListWidgetItem(entry.display_name)
-            item.setData(Qt.ItemDataRole.UserRole, str(entry.run_dir))
-            if entry.incomplete:
-                item.setData(RUN_META_ROLE, self._incomplete_card_meta(entry))
-                item.setData(
-                    Qt.ItemDataRole.ToolTipRole,
-                    f"<b>{entry.dir_name}</b><br>"
-                    "<i>No run manifest: this run did not finish.</i>",
-                )
-                self._data_run_list.addItem(item)
-                if keep is not None and str(entry.run_dir) == keep:
-                    self._data_run_list.setCurrentItem(item)
-                continue
-            tooltip = format_run_metadata(
-                entry.manifest,
-                entry.run_dir,
-                include_disk_size=entry.size_bytes is not None,
-                disk_bytes=entry.size_bytes,
-            )
-            if entry.moved_from:
-                tooltip += f"<br><i>Recorded at run time as: {entry.moved_from}</i>"
-            item.setData(Qt.ItemDataRole.ToolTipRole, tooltip)
-            meta = build_run_card_meta(entry.manifest, entry.run_dir, related.get(entry.run_dir, 0))
-            if entry.size_bytes is not None:
-                meta["facts"] = "  ·  ".join(
-                    filter(None, [meta["facts"], format_bytes(entry.size_bytes)])
-                )
-            item.setData(RUN_META_ROLE, meta)
-            self._data_run_list.addItem(item)
-            if keep is not None and str(entry.run_dir) == keep:
-                self._data_run_list.setCurrentItem(item)
+        self._data_run_table.set_entries(listed, related)
         self._data_group_header.setText(self._data_header_text(listed))
         self._data_group_header.setVisible(bool(listed))
         # An empty list means one of two different things, and saying which is
@@ -726,18 +756,6 @@ class DataManagerMixin(MixinBase):
             self._data_empty_state.set_text("No runs here yet", "Processed passes collect here.")
         self._data_run_stack.setCurrentIndex(_RUN_LIST_PAGE if listed else _EMPTY_PAGE)
         self._update_data_actions()
-
-    def _incomplete_card_meta(self, entry: RunEntry) -> dict:
-        facts = ["No manifest — the run did not finish"]
-        if entry.size_bytes is not None:
-            facts.append(format_bytes(entry.size_bytes))
-        return {
-            "title": entry.display_name,
-            "slug": "",
-            "facts": "  ·  ".join(facts),
-            "video": "",
-            "status": entry.status_label,
-        }
 
     def _data_header_text(self, listed: list[RunEntry]) -> str:
         if not listed:
@@ -753,24 +771,19 @@ class DataManagerMixin(MixinBase):
         if stats.point_range:
             lo_p, hi_p = stats.point_range
             bits.append(
-                f"{_points_label(lo_p)}–{_points_label(hi_p)} points"
+                f"{points_label(lo_p)}–{points_label(hi_p)} points"
                 if hi_p != lo_p
-                else f"{_points_label(hi_p)} points"
+                else f"{points_label(hi_p)} points"
             )
         if stats.total_bytes is not None:
             bits.append(f"{format_bytes(stats.total_bytes)} on disk")
         return " · ".join(bits)
 
-    def _on_data_run_activated(self, item: QListWidgetItem) -> None:
-        self._open_data_run(item)
+    def _on_data_run_activated(self, _item) -> None:
+        self._on_data_open_clicked()
 
     def _on_data_open_clicked(self) -> None:
-        item = self._data_run_list.currentItem()
-        if item is not None:
-            self._open_data_run(item)
-
-    def _open_data_run(self, item: QListWidgetItem) -> None:
-        run_dir = item.data(Qt.ItemDataRole.UserRole)
+        run_dir = self._data_run_table.current_run_dir()
         if run_dir:
             self._load_run_from_dir(Path(run_dir))
 
@@ -810,21 +823,17 @@ class DataManagerMixin(MixinBase):
     # --- Actions ---
 
     def _data_selected_entry(self) -> RunEntry | None:
-        item = self._data_run_list.currentItem()
-        if item is None:
+        run_dir = self._data_run_table.current_run_dir()
+        if run_dir is None:
             return None
-        run_dir = item.data(Qt.ItemDataRole.UserRole)
         for entry in self._data_entries:
             if str(entry.run_dir) == run_dir:
                 return entry
         return None
 
     def _data_selected_entries(self) -> list[RunEntry]:
-        """Every run picked in the list, for the actions that act on many."""
-        run_dirs = {
-            item.data(Qt.ItemDataRole.UserRole)
-            for item in self._data_run_list.selectedItems()
-        }
+        """Every run picked in the table, for the actions that act on many."""
+        run_dirs = self._data_run_table.selected_run_dirs()
         return [e for e in self._data_entries if str(e.run_dir) in run_dirs]
 
     def _on_data_show_in_folder_clicked(self) -> None:
@@ -833,19 +842,19 @@ class DataManagerMixin(MixinBase):
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(entry.run_dir)))
 
     def _on_data_context_menu(self, pos) -> None:
-        item = self._data_run_list.itemAt(pos)
+        item = self._data_run_table.itemAt(pos)
         # Leave an existing multi-selection alone: collapsing it to the
         # right-clicked row would throw away the runs the menu is about to act on.
         if item is not None and not item.isSelected():
-            self._data_run_list.setCurrentItem(item)
-        menu = QMenu(self._data_run_list)
+            self._data_run_table.setCurrentCell(item.row(), COL_NAME)
+        menu = QMenu(self._data_run_table)
         menu.addAction("Open", self._on_data_open_clicked)
         menu.addAction("Show in folder", self._on_data_show_in_folder_clicked)
         menu.addAction("Rename…", self._on_data_rename_clicked)
         menu.addAction("Assign to transect…", self._on_data_assign_clicked)
         menu.addSeparator()
         menu.addAction("Delete…", self._on_data_delete_clicked)
-        menu.exec(self._data_run_list.mapToGlobal(pos))
+        menu.exec(self._data_run_table.mapToGlobal(pos))
 
     # --- Drag and drop ---
 
@@ -1074,11 +1083,3 @@ class DataManagerMixin(MixinBase):
         self._data_disk_label.setText(
             f"Space used: {format_bytes(total)} across {n} run{'s' if n != 1 else ''}{suffix}"
         )
-
-
-def _points_label(n: int) -> str:
-    if n >= 1_000_000:
-        return f"{n / 1_000_000:.1f}M"
-    if n >= 1_000:
-        return f"{n / 1_000:.0f}k"
-    return str(n)
