@@ -1,6 +1,6 @@
 [project]
 name = "deepreefmap-gui"
-version = "0.1.0"
+version = "0.2.0"
 description = "Desktop application for semantic 3D mapping of coral reefs with deepreefmap"
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
