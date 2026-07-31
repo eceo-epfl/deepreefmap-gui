@@ -145,8 +145,10 @@ class EmptyState(QWidget):
         self._hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._hint.setWordWrap(True)
         self._hint.setStyleSheet(f"color: {TEXT_DIM};")
-        self._hint.setVisible(bool(hint))
+        # Parented before shown: setVisible on a parentless widget maps it as a
+        # top-level window, which flashes an empty titlebar box on screen.
         layout.addWidget(self._hint)
+        self._hint.setVisible(bool(hint))
 
         layout.addStretch(1)
 

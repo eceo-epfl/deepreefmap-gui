@@ -10,17 +10,20 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QGuiApplication, QImageReader, QPixmap
 from PySide6.QtWidgets import (
     QDialog,
     QLabel,
+    QPushButton,
     QScrollArea,
     QSizePolicy,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
 
+from deepreefmap_gui.core.icons import check_icon, copy_icon
 from deepreefmap_gui.core.theme import TEXT_MUTED, TEXT_SECONDARY, WARN_TEXT
 from deepreefmap_gui.core.widgets import STATUS_COLORS, section_card
 from deepreefmap_gui.profiling.eta import format_duration
@@ -169,7 +172,35 @@ class RunDetailPanel(QWidget):
         self.error.setVisible(False)
         layout.addWidget(self.error)
 
+        # What this run was, as a terminal command. Below everything else because
+        # it is for taking away — reproducing the run elsewhere or filing it in a
+        # bug report — not for reading in place.
+        self.copy_command_btn = QPushButton("Copy CLI command")
+        self.copy_command_btn.setIcon(copy_icon(14))
+        self.copy_command_btn.setToolTip(
+            "Copy the command that reproduces this run in a terminal"
+        )
+        self.copy_command_btn.clicked.connect(self._copy_command)
+        self.copy_command_btn.setVisible(False)
+        layout.addWidget(self.copy_command_btn)
+        self._entry: RunEntry | None = None
+
         outer.addWidget(card)
+
+    def _copy_command(self) -> None:
+        from deepreefmap_gui.runs.run_command import command_from_manifest
+
+        if self._entry is None:
+            return
+        text = command_from_manifest(self._entry.manifest, self._entry.run_dir)
+        QGuiApplication.clipboard().setText(text)
+        QToolTip.showText(
+            self.copy_command_btn.mapToGlobal(self.copy_command_btn.rect().topRight()),
+            "Copied to clipboard",
+            self.copy_command_btn,
+        )
+        self.copy_command_btn.setIcon(check_icon(14))
+        QTimer.singleShot(1200, lambda: self.copy_command_btn.setIcon(copy_icon(14)))
 
     def show_entry(self, entry: RunEntry) -> None:
         # Imported here rather than at module scope: simple.batch reaches back
@@ -204,6 +235,10 @@ class RunDetailPanel(QWidget):
                 else "This run did not finish and wrote no manifest."
             )
         self.error.setVisible(bool(entry.incomplete))
+        self._entry = entry
+        # An incomplete run still has a command worth copying — the run_command.sh
+        # it wrote before it failed is exactly what a diagnosis starts from.
+        self.copy_command_btn.setVisible(True)
         self._show_ortho(entry.run_dir, entry.display_name)
 
     def _show_ortho(self, run_dir: Path, title: str) -> None:
@@ -256,6 +291,8 @@ class RunDetailPanel(QWidget):
         self.status.setText("")
         self.facts.setText("")
         self.error.setVisible(False)
+        self._entry = None
+        self.copy_command_btn.setVisible(False)
         self._ortho_source = None
         self._ortho_run_dir = None
         self._rescale_ortho()

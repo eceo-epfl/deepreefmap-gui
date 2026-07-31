@@ -193,6 +193,29 @@ class _MarkingViewer:
             self._inner.wait_forever()
 
 
+def _record_run_command(output_dir: Path, kwargs: dict) -> dict:
+    """The CLI equivalent of this run, dropped in the run dir and returned for
+    the manifest.
+
+    Written before the pipeline starts so a run that crashes or is cancelled
+    still leaves behind what it was asked to do. Never raises: losing the record
+    must not lose the run.
+    """
+    from deepreefmap_gui.runs.run_command import (
+        build_reconstruct_argv,
+        format_command,
+        write_run_command_script,
+    )
+
+    try:
+        argv = build_reconstruct_argv(kwargs)
+        write_run_command_script(output_dir, argv)
+        return {"cli_argv": argv, "cli_command": format_command(argv)}
+    except Exception:
+        logger.warning("Failed to record the run command", exc_info=True)
+        return {}
+
+
 def instrumented_reconstruction(
     *,
     run_name: str | None = None,
@@ -220,6 +243,8 @@ def instrumented_reconstruction(
     output_dir = Path(kwargs["output_dir"])
     instr = RunInstrumentation(output_dir)
     proxy = _MarkingViewer(kwargs.pop("viewer", None), instr)
+    extra = dict(manifest_extra or {})
+    extra.update(_record_run_command(output_dir, kwargs))
     manifest: dict | None = None
     try:
         run_reconstruction(viewer=proxy, **kwargs)
@@ -228,7 +253,7 @@ def instrumented_reconstruction(
         # so a scene built from the raw pipeline manifest would come back missing
         # the name the user gave the run and the survey block that files it.
         manifest = apply_manifest_timings(
-            output_dir, instr, run_name=run_name, manifest_extra=manifest_extra
+            output_dir, instr, run_name=run_name, manifest_extra=extra
         )
         if scene_writer is not None and proxy.data is not None and manifest is not None:
             try:
@@ -240,7 +265,7 @@ def instrumented_reconstruction(
                 # Re-fold so the manifest on disk carries the scene_save duration
                 # and peak; the copy inside the scene file predates them.
                 manifest = apply_manifest_timings(
-                    output_dir, instr, run_name=run_name, manifest_extra=manifest_extra
+                    output_dir, instr, run_name=run_name, manifest_extra=extra
                 )
     finally:
         instr.stop()

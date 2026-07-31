@@ -434,6 +434,9 @@ class UiModeMixin(MixinBase):
         # Simple mode starts runs from its Run section, so it has no start
         # button. Pause and stop stay run-driven and appear in both modes.
         self._start_btn.setVisible(not simple and not self._run_in_flight())
+        # The command preview describes the one run this form would start, which
+        # is not how simple mode launches work, so it follows the start button.
+        self._refresh_command_preview()
         # The memory warning is advisory in both modes now: simple mode grades
         # the queued batch and routes the icon to the setup step, which exists,
         # rather than the System tab, which simple mode has no room for.

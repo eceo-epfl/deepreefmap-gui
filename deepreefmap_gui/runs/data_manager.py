@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, Qt, QTimer, QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import (
     QButtonGroup,
     QComboBox,
@@ -852,6 +852,7 @@ class DataManagerMixin(MixinBase):
         menu.addAction("Show in folder", self._on_data_show_in_folder_clicked)
         menu.addAction("Rename…", self._on_data_rename_clicked)
         menu.addAction("Assign to transect…", self._on_data_assign_clicked)
+        menu.addAction("Copy run command", self._on_data_copy_command_clicked)
         menu.addSeparator()
         menu.addAction("Delete…", self._on_data_delete_clicked)
         menu.exec(self._data_run_table.mapToGlobal(pos))
@@ -899,6 +900,22 @@ class DataManagerMixin(MixinBase):
                 self._status_label.setText("Dropped several folders; opened the first.")
             return
         self._status_label.setText("Drop video files or a run folder here.")
+
+    def _on_data_copy_command_clicked(self) -> None:
+        """Put the selected run's terminal equivalent on the clipboard."""
+        from deepreefmap_gui.runs.run_command import command_from_manifest
+
+        entry = self._data_selected_entry()
+        if entry is None:
+            return
+        try:
+            text = command_from_manifest(entry.manifest, entry.run_dir)
+        except Exception as exc:
+            self._status_label.setText(f"Could not build the run command: {exc}")
+            logger.exception("Failed to build the run command")
+            return
+        QGuiApplication.clipboard().setText(text)
+        self._status_label.setText(f"Copied the command for '{entry.display_name}'.")
 
     def _on_data_rename_clicked(self) -> None:
         entry = self._data_selected_entry()

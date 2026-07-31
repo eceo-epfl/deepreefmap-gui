@@ -102,15 +102,7 @@ class RunLoadingMixin(MixinBase):
 
         begin_s, end_s = self._effective_time_range()
         self._seed_run_cache(out_dir, video_path, begin_s, end_s)
-        kwargs = {
-            **self._collect_run_settings(),
-            "video_paths": [str(video_path)],
-            "output_dir": out_dir,
-            "run_name": run_name,
-            "transect_length": self._transect_length.value() or None,
-            "begin_s": begin_s,
-            "end_s": end_s,
-        }
+        kwargs = self._collect_full_run_kwargs()
 
         self._set_form_enabled(False)
         self._begin_progress(self._recon_model)

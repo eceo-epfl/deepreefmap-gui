@@ -17,7 +17,13 @@ from PySide6.QtCore import (
     QUrl,
     Signal,
 )
-from PySide6.QtGui import QDesktopServices, QIcon, QStandardItemModel
+from PySide6.QtGui import (
+    QDesktopServices,
+    QFontDatabase,
+    QGuiApplication,
+    QIcon,
+    QStandardItemModel,
+)
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -30,6 +36,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QScrollArea,
@@ -43,6 +50,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from deepreefmap_gui.core.icons import check_icon, copy_icon
 from deepreefmap_gui.core.spinner import SpinnerStopButton
 from deepreefmap_gui.core.theme import (
     BAR_HEIGHT,
@@ -523,8 +531,154 @@ class FormPanelMixin(MixinBase):
         self._build_advanced_batch_and_radius(adv_layout)
         self._build_scs_panel(adv_layout)
         self._build_loger_panel(adv_layout)
+        self._build_advanced_command_preview(adv_layout)
         self._advanced_panel.setVisible(False)
         setup_layout.addWidget(self._advanced_panel)
+
+    def _build_advanced_command_preview(self, adv_layout: QVBoxLayout) -> None:
+        """The terminal equivalent of the settings above it.
+
+        Last in the advanced panel because it summarises everything above: the
+        settings are the input, this is what they add up to. Read-only — editing
+        it would suggest the edits reach the run, which they do not.
+
+        Boxed in a container of its own so simple mode can hide the lot: it
+        borrows this form into a settings dialog with the per-run rows hidden,
+        where a command naming one video and one output directory would describe
+        a run nobody is about to start.
+        """
+        self._command_preview_box = QWidget()
+        box = QVBoxLayout(self._command_preview_box)
+        box.setContentsMargins(0, 8, 0, 0)
+        adv_layout.addWidget(self._command_preview_box)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.addWidget(QLabel("Command line equivalent"))
+        header.addStretch(1)
+        self._copy_command_btn = QPushButton("Copy")
+        self._copy_command_btn.setIcon(copy_icon(14))
+        self._copy_command_btn.setToolTip(
+            "Copy the command that reproduces this run in a terminal"
+        )
+        self._copy_command_btn.clicked.connect(self._copy_run_command)
+        header.addWidget(self._copy_command_btn)
+        box.addLayout(header)
+
+        self._command_preview = QPlainTextEdit()
+        self._command_preview.setReadOnly(True)
+        self._command_preview.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
+        # No wrap: a wrapped flag reads as two, and the point of this box is to
+        # show one setting per line.
+        self._command_preview.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self._command_preview.setMinimumHeight(160)
+        self._command_preview.setStyleSheet(
+            f"QPlainTextEdit {{ background: {PREVIEW_BG}; color: {TEXT_SECONDARY};"
+            f" border: 1px solid {BORDER}; border-radius: {RADIUS_SM}px; font-size: 11px; }}"
+        )
+        box.addWidget(self._command_preview)
+
+        note = QLabel(
+            "Every flag is spelled out, including the ones left at their defaults, "
+            "so this doubles as a record of the settings."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px;")
+        box.addWidget(note)
+
+        # Coalesces the burst of signals a single edit can produce (a preset
+        # change moves both resolution spinboxes) into one rebuild.
+        self._command_preview_timer = QTimer(self)
+        self._command_preview_timer.setSingleShot(True)
+        self._command_preview_timer.setInterval(120)
+        self._command_preview_timer.timeout.connect(self._refresh_command_preview)
+        self._connect_command_preview_signals()
+        self._refresh_command_preview()
+
+    def _connect_command_preview_signals(self) -> None:
+        """Rebuild the preview whenever anything the command depends on changes.
+
+        Driven off _PRESET_FIELD_WIDGETS, the table simple mode already keeps in
+        step with the advanced form, so a new setting only has to be added in one
+        place to show up here.
+        """
+        from deepreefmap_gui.simple.mode import _PRESET_FIELD_WIDGETS
+
+        per_run = (
+            "_video_input", "_out_root_input", "_run_name_input",
+            "_begin_spin", "_end_spin", "_transect_length",
+        )
+        names = [attr for _key, attr in _PRESET_FIELD_WIDGETS] + list(per_run)
+        for attr in names:
+            widget = getattr(self, attr, None)
+            if widget is None:
+                continue
+            for signal_name in ("valueChanged", "currentTextChanged", "textChanged", "toggled"):
+                signal = getattr(widget, signal_name, None)
+                if signal is not None:
+                    signal.connect(self._queue_command_preview)
+                    break
+
+    def _queue_command_preview(self, *_args: object) -> None:
+        timer = getattr(self, "_command_preview_timer", None)
+        if timer is not None:
+            timer.start()
+
+    def _run_command_text(self) -> str:
+        from deepreefmap_gui.runs.run_command import command_for_kwargs
+
+        return command_for_kwargs(self._collect_full_run_kwargs())
+
+    def _command_preview_applies(self) -> bool:
+        """Whether a single-run command describes what the form would launch.
+
+        Simple mode runs a batch of passes off the survey plan, not the one video
+        and output directory this form holds, so the command is only meaningful
+        in advanced mode. Past runs are unaffected — each one records its own.
+        """
+        return getattr(self, "_ui_mode", "advanced") != "simple"
+
+    def _refresh_command_preview(self) -> None:
+        preview = getattr(self, "_command_preview", None)
+        if preview is None:
+            return
+        applies = self._command_preview_applies()
+        self._command_preview_box.setVisible(applies)
+        toolbtn = getattr(self, "_copy_command_toolbtn", None)
+        if toolbtn is not None:
+            toolbtn.setVisible(applies)
+        if not applies:
+            return
+        try:
+            text = self._run_command_text()
+        except Exception:
+            logger.warning("Failed to build the command preview", exc_info=True)
+            return
+        if text != preview.toPlainText():
+            preview.setPlainText(text)
+
+    def _copy_run_command(self) -> None:
+        """Put the current form's command on the clipboard."""
+        try:
+            text = self._run_command_text()
+        except Exception as exc:
+            self._status_label.setText(f"Could not build the run command: {exc}")
+            logger.exception("Failed to build the run command")
+            return
+        QGuiApplication.clipboard().setText(text)
+        self._status_label.setText("Copied the run command to the clipboard.")
+        # The status bar is at the opposite corner from either copy button, so
+        # confirm at the button that was pressed as well.
+        for attr in ("_copy_command_btn", "_copy_command_toolbtn"):
+            button = getattr(self, attr, None)
+            if button is None or not button.isVisible():
+                continue
+            QToolTip.showText(
+                button.mapToGlobal(button.rect().topRight()), "Copied to clipboard", button
+            )
+            button.setIcon(check_icon(14))
+            QTimer.singleShot(1200, lambda b=button: b.setIcon(copy_icon(14)))
+            break
 
     def _build_advanced_transect_crop(self, adv_layout: QVBoxLayout) -> None:
         self._transect_length_widget = QWidget()
@@ -1152,11 +1306,13 @@ class FormPanelMixin(MixinBase):
 
         self._desktop_entry_btn = QPushButton()
         self._desktop_entry_btn.clicked.connect(self._on_toggle_desktop_entry)
+        # Parented before shown: setVisible on a parentless widget maps it as a
+        # top-level window, which flashes an empty titlebar box on screen.
+        updates_layout.addWidget(self._desktop_entry_btn)
         self._desktop_entry_btn.setVisible(
             desktop_entry_supported() and pyapp_binary_path() is not None
         )
         self._refresh_desktop_entry_button()
-        updates_layout.addWidget(self._desktop_entry_btn)
 
         threading.Thread(target=self._check_for_update, daemon=True).start()
 
@@ -1238,6 +1394,16 @@ class FormPanelMixin(MixinBase):
         row.addWidget(self._status_label, 1)
         self._eta_total_label.setVisible(False)
         row.addWidget(self._eta_total_label)
+        # Beside Start rather than only inside Advanced: copying the command is
+        # something you do about the run you are about to start, and Advanced is
+        # collapsed most of the time.
+        self._copy_command_toolbtn = QToolButton()
+        self._copy_command_toolbtn.setIcon(copy_icon(16))
+        self._copy_command_toolbtn.setToolTip(
+            "Copy the terminal command that reproduces this run"
+        )
+        self._copy_command_toolbtn.clicked.connect(self._copy_run_command)
+        row.addWidget(self._copy_command_toolbtn)
         row.addWidget(self._start_btn)
         row.addWidget(self._pause_btn)
         row.addWidget(self._spinner_stop)
@@ -1337,6 +1503,28 @@ class FormPanelMixin(MixinBase):
                 scs_opts["checkpoint_path"] = scs_ckpt
             settings["mapping_options"] = scs_opts
         return settings
+
+    def _collect_full_run_kwargs(self) -> dict:
+        """Everything a single advanced-mode run is launched with.
+
+        The Start button and the command preview both read this, so what the
+        preview shows is by construction what the run does. The per-run inputs
+        can be blank while the form is still being filled in — the preview wants
+        a command to show regardless — so the video list may come back empty.
+        """
+        video = self._video_input.text().strip()
+        run_name = self._sanitize_run_name(self._run_name_input.text())
+        out_root = Path(self._out_root_input.text()).expanduser()
+        begin_s, end_s = self._effective_time_range()
+        return {
+            **self._collect_run_settings(),
+            "video_paths": [str(Path(video).expanduser())] if video else [],
+            "output_dir": out_root / run_name,
+            "run_name": run_name,
+            "transect_length": self._transect_length.value() or None,
+            "begin_s": begin_s,
+            "end_s": end_s,
+        }
 
     def _collect_loger_options(self, mapping_name: str) -> dict | None:
         """Build the LoGeR mapping_options dict from the form, or None for other backends."""
