@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from collections import OrderedDict
-from collections.abc import Iterable
 from functools import lru_cache
 from pathlib import Path
 
@@ -53,6 +53,7 @@ _RETRY_MAX_S = 300.0
 # tiles have landed to be worth the walk.
 _DISK_BUDGET_BYTES = 512 * 1024 * 1024
 _PRUNE_AFTER_BYTES = 16 * 1024 * 1024
+_TOUCH_AFTER_S = 24 * 60 * 60
 
 
 class TileCache(QObject):
@@ -103,32 +104,25 @@ class TileCache(QObject):
         if disk_path.is_file():
             pixmap = QPixmap(str(disk_path))
             if not pixmap.isNull():
+                self._touch(disk_path)
                 self._remember(key, pixmap)
                 return pixmap
         self._fetch(key)
         return None
 
-    def cache_area(self, keys: Iterable[tuple[int, int, int]]) -> tuple[int, int]:
-        """Persist the given tiles for offline use, returning (count, bytes) held.
+    def _touch(self, path: Path) -> None:
+        """Restamp a tile served from disk, so pruning drops what is no longer
+        looked at rather than what was fetched longest ago.
 
-        Only the tiles the map is currently showing are passed here, so this keeps
-        what the user has viewed rather than bulk-prefetching, which OSM forbids.
-        Tiles already displayed are on disk, so the figure reflects them at once;
-        any not yet fetched are requested so they land for next time.
+        Preparing for a trip means visiting the site on the map; without this,
+        that site's tiles are the oldest on disk and the first to be pruned. The
+        day's grace keeps a repaint from rewriting metadata on every frame.
         """
-        count = 0
-        total = 0
-        for zoom, x, y in keys:
-            if not 0 <= y < 2**zoom:
-                continue
-            col = x % 2**zoom
-            disk_path = self._disk_path(zoom, col, y)
-            if disk_path.is_file():
-                count += 1
-                total += disk_path.stat().st_size
-            else:
-                self.pixmap(zoom, col, y)
-        return count, total
+        try:
+            if time.time() - path.stat().st_mtime > _TOUCH_AFTER_S:
+                os.utime(path)
+        except OSError:
+            logger.debug("Could not restamp cached tile %s", path, exc_info=True)
 
     def _remember(self, key: tuple[int, int, int], pixmap: QPixmap) -> None:
         self._memory[key] = pixmap
@@ -212,11 +206,12 @@ class TileCache(QObject):
             self.offline_changed.emit(self.offline)
 
     def _prune_disk_cache(self) -> None:
-        """Drop the least recently written tiles until the cache fits its budget.
+        """Drop the least recently used tiles until the cache fits its budget.
 
-        Oldest-first by mtime rather than by access: reading a tile does not
-        touch it, and mounting the cache with access times is not something this
-        can assume. A tile that falls out is re-fetched when next displayed.
+        Ordered by mtime rather than atime, which a cache mounted noatime would
+        not maintain; _touch keeps the mtime of a tile served from disk current
+        so this stays least-recently-*used*. A tile that falls out is re-fetched
+        when next displayed.
         """
         root = tile_cache_dir() / self._layer.id
         try:

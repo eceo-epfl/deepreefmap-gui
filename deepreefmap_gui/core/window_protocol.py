@@ -88,6 +88,7 @@ if TYPE_CHECKING:
         _survey_store_obj: SurveyStore | None
         _transect_form_id: uuid.UUID | None
         _pick_stage: str | None
+        _transect_editing: bool
         _plan_map_fitted: bool
         _survey_rows: list
         _survey_table_index: list[int | None]
@@ -269,6 +270,7 @@ if TYPE_CHECKING:
         _tr_end_coord: QLineEdit
         _tr_geometry: QLabel
         _pick_both_btn: QToolButton
+        _transect_edit_btn: QPushButton
         _plan_view_timer: QTimer
         _tr_length: QDoubleSpinBox
         _tr_depth: QDoubleSpinBox

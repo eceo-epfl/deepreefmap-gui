@@ -1,6 +1,7 @@
 import pytest
 from _factories import make_transect
 
+from deepreefmap_gui.simple.plan import DRAFT_ID
 from deepreefmap_gui.survey.models import RunRecord, TransectPass, VideoAsset
 from deepreefmap_gui.survey.models.exporters import save_transects_csv
 
@@ -274,20 +275,64 @@ def test_selecting_a_transect_filters_the_browser(simple_window):
     assert w._data_selected_key == ("transect", str(transect.id))
 
 
-def test_save_offline_area_reports_the_size_saved(simple_window, monkeypatch):
+def test_a_selected_transect_is_locked_against_dragging(simple_window):
+    """Expected behaviour: reading a transect off the map leaves its endpoints
+    fixed; only pressing Edit puts them under the pointer."""
     w = simple_window
-    monkeypatch.setattr(w._plan_map, "save_visible_area", lambda: (12, 2_400_000))
-    w._on_save_offline_area()
-    text = w._status_label.text()
-    assert "12 map tiles" in text
-    assert "2 MB" in text
+    transect = make_transect()
+    w._survey_store().add_transect(transect)
+    w._refresh_transect_list()
+    select_row(w, 0)
+
+    assert w._plan_map._editable_id is None
+    start_px = w._plan_map._px_of(transect.start_lat, transect.start_lon)
+    assert w._plan_map._endpoint_at(start_px) is None
+
+    w._transect_edit_btn.setChecked(True)
+    assert w._plan_map._editable_id == str(transect.id)
+    assert w._plan_map._endpoint_at(start_px) is not None
 
 
-def test_save_offline_area_says_so_when_nothing_is_cached(simple_window, monkeypatch):
+def test_leaving_edit_mode_saves_and_locks(simple_window):
     w = simple_window
-    monkeypatch.setattr(w._plan_map, "save_visible_area", lambda: (0, 0))
-    w._on_save_offline_area()
-    assert "Nothing to save yet" in w._status_label.text()
+    transect = make_transect()
+    w._survey_store().add_transect(transect)
+    w._refresh_transect_list()
+    select_row(w, 0)
+    w._transect_edit_btn.setChecked(True)
+    assert w._transect_edit_btn.text() == "Save"
+
+    type_coord(w, "end", "-17.4000, 177.2000")
+    w._transect_edit_btn.setChecked(False)
+
+    assert w._transect_edit_btn.text() == "Edit"
+    assert w._plan_map._editable_id is None
+    saved = w._survey_store().get_transect(transect.id)
+    assert saved.end_lat == pytest.approx(-17.4)
+    assert saved.end_lon == pytest.approx(177.2)
+
+
+def test_a_new_transect_starts_editable(simple_window):
+    w = simple_window
+    w._on_transect_new()
+    assert w._transect_editing
+    assert w._pick_both_btn.isChecked()
+    assert w._plan_map._editable_id == DRAFT_ID
+
+
+def test_dragging_an_end_of_an_uncommitted_draft_moves_it(simple_window):
+    """A line drawn before it has a name stays a draft, and its ends still follow
+    the pointer rather than being frozen until it is saved."""
+    w = simple_window
+    w._on_transect_new()
+    w._tr_name_input.clear()
+    w._plan_map.map_clicked.emit(-17.5, 177.1)
+    w._plan_map.map_clicked.emit(-17.5005, 177.1005)
+    assert w._transect_form_id is None
+    assert w._plan_map._editable_id == DRAFT_ID
+
+    w._plan_map.transect_endpoint_moved.emit(DRAFT_ID, "end", -17.6, 177.2)
+    assert w._tr_end_coord.text() == "-17.600000, 177.200000"
 
 
 def test_columns_count_the_passes_and_runs_on_each_transect(simple_window):

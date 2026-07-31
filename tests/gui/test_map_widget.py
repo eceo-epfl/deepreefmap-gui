@@ -1,6 +1,6 @@
 import pytest
 from PySide6.QtCore import QPoint, QPointF, Qt
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QWheelEvent
 from PySide6.QtTest import QTest
 
 from deepreefmap_gui.map.layers import OSM_LAYER
@@ -128,26 +128,60 @@ def test_offline_banner_renders(map_widget):
     assert not image.isNull()
 
 
-def test_save_visible_area_reports_the_tiles_on_disk(map_widget, tmp_path, monkeypatch):
-    monkeypatch.setattr("deepreefmap_gui.map.tile_cache.tile_cache_dir", lambda: tmp_path)
+def wheel(widget, notches, at=None):
+    at = at if at is not None else QPointF(200, 150)
+    event = QWheelEvent(
+        at,
+        widget.mapToGlobal(at),
+        QPoint(0, 0),
+        QPoint(0, int(notches * 120)),
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.NoScrollPhase,
+        False,
+    )
+    widget.wheelEvent(event)
+
+
+def test_one_wheel_notch_zooms_less_than_a_tile_level(map_widget):
     map_widget.set_view(-17.5, 177.1, 12)
-    keys = map_widget._visible_tile_keys()
-    assert keys  # the viewport covers at least one tile
-
-    for zoom, x, y in keys:
-        path = tmp_path / OSM_LAYER.id / str(zoom) / str(x) / f"{y}.png"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"x" * 100)
-
-    count, saved = map_widget.save_visible_area()
-    assert count == len(keys)
-    assert saved == len(keys) * 100
+    wheel(map_widget, 1)
+    assert 12 < map_widget._zoom < 13
+    assert map_widget._tile_zoom() == 12
+    assert map_widget._tile_px() > 256
 
 
-def test_save_visible_area_is_zero_when_nothing_cached(map_widget, tmp_path, monkeypatch):
-    monkeypatch.setattr("deepreefmap_gui.map.tile_cache.tile_cache_dir", lambda: tmp_path)
+def test_three_wheel_notches_cross_one_tile_level(map_widget):
     map_widget.set_view(-17.5, 177.1, 12)
-    assert map_widget.save_visible_area() == (0, 0)
+    for _ in range(3):
+        wheel(map_widget, 1)
+    assert map_widget._tile_zoom() == 13
+    assert map_widget._zoom == pytest.approx(13.02)
+
+
+def test_a_flung_trackpad_cannot_cross_the_whole_range(map_widget):
+    map_widget.set_view(-17.5, 177.1, 12)
+    wheel(map_widget, 40)
+    assert map_widget._zoom <= 12 + 3 * 0.34 + 1e-9
+
+
+def test_zoom_holds_the_point_under_the_cursor(map_widget):
+    map_widget.set_view(-17.5, 177.1, 15)
+    anchor = QPointF(310, 90)
+    before = map_widget.latlon_at(anchor)
+    wheel(map_widget, 1, at=anchor)
+    after = map_widget.latlon_at(anchor)
+    assert after[0] == pytest.approx(before[0], abs=1e-6)
+    assert after[1] == pytest.approx(before[1], abs=1e-6)
+
+
+def test_zoom_stops_at_the_layer_bounds(map_widget):
+    map_widget.set_view(-17.5, 177.1, 19)
+    wheel(map_widget, 1)
+    assert map_widget._zoom == 19
+    map_widget.set_view(-17.5, 177.1, 1)
+    wheel(map_widget, -1)
+    assert map_widget._zoom == 1
 
 
 def test_pick_mode_sends_clicks_past_transects(map_widget):

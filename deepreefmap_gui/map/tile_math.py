@@ -22,7 +22,7 @@ def normalise_longitude(lon: float) -> float:
     return (lon + 180.0) % 360.0 - 180.0
 
 
-def deg2tile(lat: float, lon: float, zoom: int) -> tuple[float, float]:
+def deg2tile(lat: float, lon: float, zoom: float) -> tuple[float, float]:
     """Fractional tile coordinates of a WGS84 point."""
     lat = max(-MAX_LATITUDE, min(MAX_LATITUDE, lat))
     lon = normalise_longitude(lon)
@@ -32,7 +32,7 @@ def deg2tile(lat: float, lon: float, zoom: int) -> tuple[float, float]:
     return x, y
 
 
-def tile2deg(x: float, y: float, zoom: int) -> tuple[float, float]:
+def tile2deg(x: float, y: float, zoom: float) -> tuple[float, float]:
     """WGS84 point of fractional tile coordinates."""
     n = 2.0**zoom
     lon = normalise_longitude(x / n * 360.0 - 180.0)
@@ -40,8 +40,13 @@ def tile2deg(x: float, y: float, zoom: int) -> tuple[float, float]:
     return lat, lon
 
 
-def clamp_zoom(zoom: int) -> int:
-    return max(MIN_ZOOM, min(MAX_ZOOM, zoom))
+def clamp_zoom(zoom: float) -> float:
+    """Hold a zoom inside the layer's range.
+
+    Zoom is continuous — the map draws between tile levels — so this takes and
+    returns a float; the integer level whose tiles are fetched is derived from it.
+    """
+    return max(float(MIN_ZOOM), min(float(MAX_ZOOM), zoom))
 
 
 def fit_zoom(

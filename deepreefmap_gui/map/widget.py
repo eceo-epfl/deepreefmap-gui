@@ -67,6 +67,14 @@ def _segment_intersects_rect(a: QPointF, b: QPointF, rect: QRectF) -> bool:
             code2 = code(QPointF(x2, y2))
 
 
+# Zoom is continuous, so a notch nudges the view instead of doubling it. A wheel
+# that reports free-scrolling deltas sends many small events per gesture; one
+# that clicks sends 120 units a notch, and roughly three of those cross a tile
+# level. The per-event cap keeps a flung trackpad from crossing the whole range.
+_ZOOM_PER_NOTCH = 0.34
+_MAX_NOTCHES_PER_EVENT = 3.0
+
+
 class SlippyMapWidget(QWidget):
     """Pan/zoom raster map with transect line overlays.
 
@@ -89,7 +97,7 @@ class SlippyMapWidget(QWidget):
         # appears without waiting for the next pan or zoom.
         self._cache.offline_changed.connect(lambda *_: self.update())
         self._center = (0.0, 0.0)
-        self._zoom = 2
+        self._zoom = 2.0
         self._transects: list[OverlayTransect] = []
         self._editable_id: str | None = None
         self._press_pos: QPointF | None = None
@@ -106,11 +114,20 @@ class SlippyMapWidget(QWidget):
 
     # --- view state ---
 
-    def set_view(self, lat: float, lon: float, zoom: int) -> None:
+    def set_view(self, lat: float, lon: float, zoom: float) -> None:
         self._center = (lat, lon)
         self._zoom = clamp_zoom(zoom)
         self.update()
         self.view_changed.emit()
+
+    def _tile_zoom(self) -> int:
+        """Integer level whose tiles are fetched for the current zoom."""
+        return int(clamp_zoom(math.floor(self._zoom)))
+
+    def _tile_px(self) -> float:
+        """On-screen size of one tile: TILE_SIZE at a whole level, up to twice
+        that just below the next one."""
+        return TILE_SIZE * 2.0 ** (self._zoom - self._tile_zoom())
 
     def resizeEvent(self, event) -> None:  # noqa: N802 (Qt override)
         super().resizeEvent(event)
@@ -174,36 +191,23 @@ class SlippyMapWidget(QWidget):
             )
         ]
 
-    def save_visible_area(self) -> tuple[int, int]:
-        """Persist the tiles now on screen for offline use, returning (count, bytes)."""
-        return self._cache.cache_area(self._visible_tile_keys())
-
     def is_offline(self) -> bool:
         return self._cache.offline
 
-    def _visible_tile_keys(self) -> list[tuple[int, int, int]]:
-        """(zoom, x, y) of every tile currently on screen, normalised and in range."""
-        _cx, _cy, first_x, last_x, first_y, last_y = self._tile_bounds()
-        span = 2**self._zoom
-        return [
-            (self._zoom, tx % span, ty)
-            for tx in range(first_x, last_x + 1)
-            for ty in range(first_y, last_y + 1)
-            if 0 <= ty < span
-        ]
-
     def latlon_at(self, pos: QPointF) -> tuple[float, float]:
-        cx, cy = deg2tile(*self._center, self._zoom)
-        tx = cx + (pos.x() - self.width() / 2) / TILE_SIZE
-        ty = cy + (pos.y() - self.height() / 2) / TILE_SIZE
-        return tile2deg(tx, ty, self._zoom)
+        zoom, size = self._tile_zoom(), self._tile_px()
+        cx, cy = deg2tile(*self._center, zoom)
+        tx = cx + (pos.x() - self.width() / 2) / size
+        ty = cy + (pos.y() - self.height() / 2) / size
+        return tile2deg(tx, ty, zoom)
 
     def _px_of(self, lat: float, lon: float) -> QPointF:
-        cx, cy = deg2tile(*self._center, self._zoom)
-        tx, ty = deg2tile(lat, lon, self._zoom)
+        zoom, size = self._tile_zoom(), self._tile_px()
+        cx, cy = deg2tile(*self._center, zoom)
+        tx, ty = deg2tile(lat, lon, zoom)
         return QPointF(
-            self.width() / 2 + (tx - cx) * TILE_SIZE,
-            self.height() / 2 + (ty - cy) * TILE_SIZE,
+            self.width() / 2 + (tx - cx) * size,
+            self.height() / 2 + (ty - cy) * size,
         )
 
     # --- painting ---
@@ -222,33 +226,41 @@ class SlippyMapWidget(QWidget):
 
     def _tile_bounds(self) -> tuple[float, float, int, int, int, int]:
         """Centre tile and the inclusive tile-index box that covers the viewport."""
-        cx, cy = deg2tile(*self._center, self._zoom)
+        size = self._tile_px()
+        cx, cy = deg2tile(*self._center, self._tile_zoom())
         half_w = self.width() / 2
         half_h = self.height() / 2
         return (
             cx,
             cy,
-            math.floor(cx - half_w / TILE_SIZE),
-            math.floor(cx + half_w / TILE_SIZE),
-            math.floor(cy - half_h / TILE_SIZE),
-            math.floor(cy + half_h / TILE_SIZE),
+            math.floor(cx - half_w / size),
+            math.floor(cx + half_w / size),
+            math.floor(cy - half_h / size),
+            math.floor(cy + half_h / size),
         )
 
     def _paint_tiles(self, painter: QPainter) -> None:
         cx, cy, first_x, last_x, first_y, last_y = self._tile_bounds()
+        zoom, size = self._tile_zoom(), self._tile_px()
         half_w = self.width() / 2
         half_h = self.height() / 2
         grid_pen = QPen(QColor(BORDER))
+        # Between whole levels the tiles are drawn larger than their pixels, so
+        # they need resampling; the extra pixel on each side covers the hairline
+        # seams float placement would otherwise leave between neighbours.
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         for tx in range(first_x, last_x + 1):
             for ty in range(first_y, last_y + 1):
-                left = half_w + (tx - cx) * TILE_SIZE
-                top = half_h + (ty - cy) * TILE_SIZE
-                pixmap = self._cache.pixmap(self._zoom, tx, ty)
+                left = half_w + (tx - cx) * size
+                top = half_h + (ty - cy) * size
+                target = QRectF(left, top, size + 1, size + 1)
+                pixmap = self._cache.pixmap(zoom, tx, ty)
                 if pixmap is not None:
-                    painter.drawPixmap(int(left), int(top), pixmap)
+                    painter.drawPixmap(target, pixmap, QRectF(pixmap.rect()))
                 else:
                     painter.setPen(grid_pen)
-                    painter.drawRect(QRectF(left, top, TILE_SIZE, TILE_SIZE))
+                    painter.drawRect(QRectF(left, top, size, size))
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
 
     def _paint_transects(self, painter: QPainter) -> None:
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -397,7 +409,7 @@ class SlippyMapWidget(QWidget):
         if event.button() != Qt.MouseButton.LeftButton:
             return
         self._press_pos = event.position()
-        self._press_center_tile = deg2tile(*self._center, self._zoom)
+        self._press_center_tile = deg2tile(*self._center, self._tile_zoom())
         self._dragging_endpoint = self._endpoint_at(event.position())
         self._moved = False
 
@@ -422,9 +434,10 @@ class SlippyMapWidget(QWidget):
             self.update()
             return
         assert self._press_center_tile is not None
-        cx = self._press_center_tile[0] - delta.x() / TILE_SIZE
-        cy = self._press_center_tile[1] - delta.y() / TILE_SIZE
-        self._center = tile2deg(cx, cy, self._zoom)
+        size = self._tile_px()
+        cx = self._press_center_tile[0] - delta.x() / size
+        cy = self._press_center_tile[1] - delta.y() / size
+        self._center = tile2deg(cx, cy, self._tile_zoom())
         self.update()
         self.view_changed.emit()
 
@@ -448,17 +461,20 @@ class SlippyMapWidget(QWidget):
         self._moved = False
 
     def wheelEvent(self, event: QWheelEvent) -> None:
-        step = 1 if event.angleDelta().y() > 0 else -1
-        new_zoom = clamp_zoom(self._zoom + step)
+        event.accept()
+        notches = event.angleDelta().y() / 120.0
+        notches = max(-_MAX_NOTCHES_PER_EVENT, min(_MAX_NOTCHES_PER_EVENT, notches))
+        new_zoom = clamp_zoom(self._zoom + notches * _ZOOM_PER_NOTCH)
         if new_zoom == self._zoom:
             return
         anchor = event.position()
         lat, lon = self.latlon_at(anchor)
         self._zoom = new_zoom
         # Keep the point under the cursor fixed while zooming.
-        tx, ty = deg2tile(lat, lon, self._zoom)
-        cx = tx - (anchor.x() - self.width() / 2) / TILE_SIZE
-        cy = ty - (anchor.y() - self.height() / 2) / TILE_SIZE
-        self._center = tile2deg(cx, cy, self._zoom)
+        size = self._tile_px()
+        tx, ty = deg2tile(lat, lon, self._tile_zoom())
+        cx = tx - (anchor.x() - self.width() / 2) / size
+        cy = ty - (anchor.y() - self.height() / 2) / size
+        self._center = tile2deg(cx, cy, self._tile_zoom())
         self.update()
         self.view_changed.emit()

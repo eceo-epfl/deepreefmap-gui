@@ -197,6 +197,14 @@ QPushButton:disabled, QToolButton:disabled {{
     color: {DISABLED_FG};
     border-color: {BORDER};
 }}
+/* A latched button is a mode that stays on until it is pressed again, so it has
+   to look held down rather than like every other button on the row. */
+QPushButton:checked, QToolButton:checked {{
+    background-color: {SURFACE_HI};
+    border-color: {PRIMARY};
+    color: {LINK};
+    font-weight: 600;
+}}
 
 /* One filled action per screen: the step's forward move. */
 QPushButton[cta="true"] {{

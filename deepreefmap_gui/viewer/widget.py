@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from deepreefmap_gui.core.image_view import ClickableLabel, ImageDialog
 from deepreefmap_gui.core.theme import (
     BORDER,
     CARD_BG,
@@ -72,6 +73,12 @@ _FRAME_PANEL_CACHE_BYTES = 256 * 1024 * 1024
 # still keeps the current frame and its neighbours rather than thrashing.
 _FRAME_PANEL_MIN_ENTRIES = 4
 
+_FRAME_TITLES = {
+    "rgb": "Frame",
+    "seg": "Segmentation",
+    "depth": "Depth",
+}
+
 
 def _panel_nbytes(parts: "tuple[np.ndarray, np.ndarray, np.ndarray]") -> int:
     return int(sum(int(p.nbytes) for p in parts))
@@ -105,18 +112,14 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         self._class_names = class_names or {}
         self._output_dir: Path | None = None
 
-        self._rgb_label = QLabel()
-        self._rgb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._rgb_label.setMinimumHeight(120)
-        self._rgb_label.setStyleSheet(f"background-color: {PREVIEW_BG};")
-        self._seg_label = QLabel()
-        self._seg_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._seg_label.setMinimumHeight(120)
-        self._seg_label.setStyleSheet(f"background-color: {PREVIEW_BG};")
-        self._depth_label = QLabel()
-        self._depth_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._depth_label.setMinimumHeight(120)
-        self._depth_label.setStyleSheet(f"background-color: {PREVIEW_BG};")
+        # Full-resolution pixmaps behind the strip's thumbnails, so a popup
+        # shows the frame rather than the third-of-a-pane downscale.
+        self._frame_pixmaps: dict[str, QPixmap] = {}
+        self._frame_dialogs: dict[str, ImageDialog] = {}
+
+        self._rgb_label = self._make_frame_label("rgb")
+        self._seg_label = self._make_frame_label("seg")
+        self._depth_label = self._make_frame_label("depth")
         self._frames_panel = QWidget()
         frames_outer = QVBoxLayout(self._frames_panel)
         frames_outer.setContentsMargins(0, 0, 0, 0)
@@ -219,6 +222,13 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         self.legend_overlay = LegendOverlay(self._canvas_container)
         self.legend_overlay.repaint_requested.connect(self._render_canvas_safe)
         self._canvas_container.installEventFilter(self)
+        # The first frame is painted before the splitter has handed the strip its
+        # width, so without a rescale on resize the thumbnails would sit at
+        # whatever narrow size the labels had and only fill out on the next
+        # scrub. Installed here rather than at construction: eventFilter reaches
+        # for widgets that do not exist until the layout above is built.
+        for _kind in _FRAME_TITLES:
+            self._frame_label(_kind).installEventFilter(self)
 
         self._plotter: Any = None
 
@@ -323,6 +333,10 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         self._last_t = None
 
     def eventFilter(self, obj, event):  # type: ignore[override]
+        if event.type() == QEvent.Type.Resize:
+            for kind in _FRAME_TITLES:
+                if obj is self._frame_label(kind):
+                    self._rescale_frame_label(kind)
         if obj is self._canvas_container and event.type() == QEvent.Type.Resize:
             self.legend_overlay.reposition()
             self.canvas_resized.emit()
@@ -593,8 +607,8 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
 
         self._clear_scene_data()
         with self._scene_mutation():
-            self._seg_label.setVisible(True)
-            self._depth_label.setVisible(True)
+            self._set_frame_label_visible("seg", True)
+            self._set_frame_label_visible("depth", True)
             plotter = self._ensure_plotter()
             self._frame_batch = frame_batch
             self._mapping_result = mapping_result
@@ -657,8 +671,8 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
 
         self._clear_scene_data()
         with self._scene_mutation():
-            self._seg_label.setVisible(True)
-            self._depth_label.setVisible(True)
+            self._set_frame_label_visible("seg", True)
+            self._set_frame_label_visible("depth", True)
             plotter = self._ensure_plotter()
             self._frame_batch = frame_batch
             self._mapping_result = mapping_result
@@ -718,8 +732,8 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         """
         self._clear_scene_data()
         with self._scene_mutation():
-            self._seg_label.setVisible(False)
-            self._depth_label.setVisible(True)
+            self._set_frame_label_visible("seg", False)
+            self._set_frame_label_visible("depth", True)
             plotter = self._ensure_plotter()
             self._frame_batch = frame_batch
             self._mapping_result = mapping_result
@@ -807,8 +821,8 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         if parts is None:
             return
         rgb, depth = parts
-        self._paint_label(self._rgb_label, rgb)
-        self._paint_label(self._depth_label, depth)
+        self._paint_label("rgb", rgb)
+        self._paint_label("depth", depth)
 
     def _emit_setup(self, message: str, current: int, total: int) -> None:
         """Forward a one-off setup-progress event so GUI-thread stages don't look frozen."""
@@ -1346,17 +1360,86 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
             return
 
         rgb, seg, depth = parts
-        self._paint_label(self._rgb_label, rgb)
-        self._paint_label(self._seg_label, seg)
-        self._paint_label(self._depth_label, depth)
+        self._paint_label("rgb", rgb)
+        self._paint_label("seg", seg)
+        self._paint_label("depth", depth)
 
-    @staticmethod
-    def _paint_label(label: QLabel, image: np.ndarray) -> None:
+    # --- Frame strip ---
+
+    def _make_frame_label(self, kind: str) -> ClickableLabel:
+        label = ClickableLabel()
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setMinimumHeight(120)
+        label.setStyleSheet(f"background-color: {PREVIEW_BG};")
+        label.setCursor(Qt.CursorShape.PointingHandCursor)
+        label.setToolTip(f"Click to open the {_FRAME_TITLES[kind].lower()} at full size")
+        label.clicked.connect(lambda k=kind: self._open_frame_popup(k))
+        return label
+
+    def _set_frame_label_visible(self, kind: str, visible: bool) -> None:
+        """Show or hide one strip image, closing its popup when it goes away."""
+        self._frame_label(kind).setVisible(visible)
+        if not visible:
+            self._close_frame_popup(kind)
+
+    def _frame_label(self, kind: str) -> QLabel:
+        return {
+            "rgb": self._rgb_label,
+            "seg": self._seg_label,
+            "depth": self._depth_label,
+        }[kind]
+
+    def _paint_label(self, kind: str, image: np.ndarray) -> None:
         h, w, _ = image.shape
-        qimg = QImage(np.ascontiguousarray(image).data, w, h, 3 * w, QImage.Format.Format_RGB888)
+        # The QImage borrows the array's buffer, so copy before the array goes.
+        qimg = QImage(
+            np.ascontiguousarray(image).data, w, h, 3 * w, QImage.Format.Format_RGB888
+        ).copy()
         pixmap = QPixmap.fromImage(qimg)
-        target = max(1, min(w, label.width() or w))
-        label.setPixmap(pixmap.scaledToWidth(target, Qt.TransformationMode.SmoothTransformation))
+        self._frame_pixmaps[kind] = pixmap
+        self._rescale_frame_label(kind)
+        dialog = self._frame_dialogs.get(kind)
+        if dialog is not None:
+            dialog.set_pixmap(pixmap)
+
+    def _rescale_frame_label(self, kind: str) -> None:
+        """Fit the strip image to its third of the panel, never blown up past native."""
+        pixmap = self._frame_pixmaps.get(kind)
+        if pixmap is None or pixmap.isNull():
+            return
+        label = self._frame_label(kind)
+        target = max(1, min(pixmap.width(), label.width() or pixmap.width()))
+        scaled = pixmap.scaledToWidth(target, Qt.TransformationMode.SmoothTransformation)
+        if label.pixmap().size() == scaled.size():
+            return
+        label.setPixmap(scaled)
+
+    def _open_frame_popup(self, kind: str) -> None:
+        """Open (or raise) a live popup of one frame image at full resolution."""
+        # isHidden rather than isVisible: the strip is legitimately unshown
+        # while the viewer itself is, only an explicit hide should block a popup.
+        if self._frame_label(kind).isHidden():
+            return
+        pixmap = self._frame_pixmaps.get(kind)
+        if pixmap is None or pixmap.isNull():
+            return
+        dialog = self._frame_dialogs.get(kind)
+        if dialog is not None:
+            dialog.set_pixmap(pixmap)
+            dialog.raise_()
+            dialog.activateWindow()
+            return
+        # Non-modal, so scrubbing the timeline behind it keeps updating it.
+        dialog = ImageDialog(pixmap, _FRAME_TITLES[kind], self)
+        self._frame_dialogs[kind] = dialog
+        dialog.finished.connect(lambda _result, k=kind: self._frame_dialogs.pop(k, None))
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dialog.show()
+
+    def _close_frame_popup(self, kind: str) -> None:
+        dialog = self._frame_dialogs.pop(kind, None)
+        if dialog is not None:
+            dialog.close()
 
     def _compose_frame_panel(
         self, t: int,
@@ -1416,7 +1499,7 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         if rgb is None:
             return
         rgb = cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB)
-        self._paint_label(self._rgb_label, rgb)
+        self._paint_label("rgb", rgb)
         if labels_path.exists():
             labels = cv2.imread(str(labels_path), cv2.IMREAD_GRAYSCALE)
             if labels is None:
@@ -1426,10 +1509,10 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
                 cv2.resize(labels, (w, h), interpolation=cv2.INTER_NEAREST),
                 self._class_colors,
             )
-            self._seg_label.setVisible(True)
-            self._paint_label(self._seg_label, seg_color)
+            self._set_frame_label_visible("seg", True)
+            self._paint_label("seg", seg_color)
         else:
-            self._seg_label.setVisible(False)
+            self._set_frame_label_visible("seg", False)
 
     # --- Viewer protocol ---
 
@@ -1466,7 +1549,7 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
     def _on_start_run(self, run_label: str, output_dir: str) -> None:
         self._output_dir = Path(output_dir)
         self._hide_canvas()
-        self._depth_label.setVisible(False)
+        self._set_frame_label_visible("depth", False)
         self._notify_status("start_run", run_label=run_label, output_dir=output_dir)
 
     @Slot(str, str, object)
@@ -1519,6 +1602,8 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
 
     @Slot()
     def _on_close(self) -> None:
+        for kind in list(self._frame_dialogs):
+            self._close_frame_popup(kind)
         if self._plotter is not None:
             try:
                 self._plotter.close()

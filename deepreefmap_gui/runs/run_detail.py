@@ -10,13 +10,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QGuiApplication, QImageReader, QPixmap
 from PySide6.QtWidgets import (
-    QDialog,
     QLabel,
     QPushButton,
-    QScrollArea,
     QSizePolicy,
     QToolTip,
     QVBoxLayout,
@@ -24,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from deepreefmap_gui.core.icons import check_icon, copy_icon
+from deepreefmap_gui.core.image_view import ClickableLabel, ImageDialog
 from deepreefmap_gui.core.theme import TEXT_MUTED, TEXT_SECONDARY, WARN_TEXT
 from deepreefmap_gui.core.widgets import STATUS_COLORS, section_card
 from deepreefmap_gui.profiling.eta import format_duration
@@ -45,62 +44,17 @@ _ORTHO_CACHE_MAX = 12
 # than off its own label.
 _ORTHO_H_MARGIN = 44
 
-# Frame and scrollbar the full-size dialog spends on its own chrome.
-_DIALOG_CHROME = 24
 
-
-class _ClickableLabel(QLabel):
-    """A label that reports clicks, for the ortho thumbnail."""
-
-    clicked = Signal()
-
-    def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt override)
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.clicked.emit()
-        super().mousePressEvent(event)
-
-
-class OrthoDialog(QDialog):
-    """The ortho at full resolution, fitted to the window and rescaled with it.
+class OrthoDialog(ImageDialog):
+    """The ortho at full resolution, fitted to the window and zoomable.
 
     Fit to width rather than to the whole window: an ortho is a long thin strip
     of transect, so width is the dimension worth spending on and the height
-    scrolls.
+    scrolls. The wheel zooms in about the cursor from there.
     """
 
     def __init__(self, path: Path, title: str, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setWindowTitle(title)
-        self._source = QPixmap(str(path))
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        self._image = QLabel()
-        self._image.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(self._image)
-        layout.addWidget(scroll)
-
-        screen = QGuiApplication.primaryScreen()
-        bounds = screen.availableSize() if screen is not None else QSize(1280, 800)
-        self.resize(
-            min(self._source.width(), int(bounds.width() * 0.9)),
-            min(self._source.height(), int(bounds.height() * 0.9)),
-        )
-        self._fit()
-
-    def _fit(self) -> None:
-        if self._source.isNull():
-            return
-        width = min(max(self.width() - _DIALOG_CHROME, 1), self._source.width())
-        self._image.setPixmap(
-            self._source.scaledToWidth(width, Qt.TransformationMode.SmoothTransformation)
-        )
-
-    def resizeEvent(self, event) -> None:  # noqa: N802 (Qt override)
-        super().resizeEvent(event)
-        self._fit()
+        super().__init__(QPixmap(str(path)), title, parent)
 
 
 def _load_ortho(run_dir: Path) -> QPixmap | None:
@@ -147,7 +101,7 @@ class RunDetailPanel(QWidget):
         # What the run actually produced, which no amount of metadata conveys.
         # Below the facts rather than above them: the facts identify the run, the
         # ortho is what you look at once you know you have the right one.
-        self.ortho = _ClickableLabel("")
+        self.ortho = ClickableLabel("")
         self.ortho.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
         # Ignored horizontally: a pixmap's size hint is its own width, so the
         # thumbnail would otherwise widen the pane to fit itself and shove the

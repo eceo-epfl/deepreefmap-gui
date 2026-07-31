@@ -715,5 +715,6 @@ def test_clicking_the_ortho_opens_it_full_size(tmp_path, make_window, monkeypatc
     window._run_detail.ortho.clicked.emit()
     assert len(opened) == 1
     assert opened[0].windowTitle() == "clickable"
-    # Fitted to the dialog, not pasted at native size.
-    assert opened[0]._image.pixmap().width() <= 800
+    # Opens fitted, with the full-resolution ortho behind it to zoom into.
+    assert opened[0].view.pixmap().width() == 800
+    assert opened[0].view.is_fitted()

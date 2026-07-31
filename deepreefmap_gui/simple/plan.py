@@ -229,6 +229,7 @@ class SimplePlanMixin(MixinBase):
 
     _transect_form_id: uuid.UUID | None = None
     _pick_stage: str | None = None
+    _transect_editing: bool = False
     _plan_map_fitted: bool = False
     _plan_list_rebuilding: bool = False
     _plan_visible_ids: tuple[str, ...] = ()
@@ -257,22 +258,9 @@ class SimplePlanMixin(MixinBase):
         self._plan_view_timer.setInterval(60)
         self._plan_view_timer.timeout.connect(self._apply_plan_view_change)
         self._plan_map.view_changed.connect(self._on_plan_view_changed)
+        # Tiles reach the disk cache by being drawn, so browsing a site before
+        # leaving is what keeps it drawable at sea. Nothing to press.
         map_layout.addWidget(_framed(self._plan_map), 1)
-
-        # Caching the visible tiles keeps a site drawable at sea, where the
-        # laptop has no connection. Only the tiles on screen are saved, per the
-        # OSM policy against bulk prefetching.
-        offline_row = QHBoxLayout()
-        offline_row.setContentsMargins(0, 0, 0, 0)
-        self._save_offline_btn = QPushButton("Save this area for offline use")
-        self._save_offline_btn.setProperty("quiet", "true")
-        self._save_offline_btn.setToolTip(
-            "Store the map tiles now on screen so this area still draws without internet."
-        )
-        self._save_offline_btn.clicked.connect(self._on_save_offline_area)
-        offline_row.addWidget(self._save_offline_btn)
-        offline_row.addStretch(1)
-        map_layout.addLayout(offline_row)
 
         transects_group, group_layout = section_card("Transects")
         self._transect_list = QTreeWidget()
@@ -316,6 +304,16 @@ class SimplePlanMixin(MixinBase):
         new_btn = QPushButton("New")
         new_btn.setProperty("cta", "true")
         new_btn.clicked.connect(self._on_transect_new)
+        # A saved transect's endpoints are fixed until this is pressed: reading a
+        # line off the map used to be enough to put its ends under the pointer,
+        # where a stray drag moved the survey position with nothing to undo it.
+        self._transect_edit_btn = QPushButton("Edit")
+        self._transect_edit_btn.setCheckable(True)
+        self._transect_edit_btn.setToolTip(
+            "Unlock this transect so its ends can be dragged on the map. "
+            "Press again to save and lock it."
+        )
+        self._transect_edit_btn.toggled.connect(self._on_transect_edit_toggled)
         delete_btn = QPushButton("Delete")
         delete_btn.clicked.connect(self._on_transect_delete)
         import_btn = QPushButton("Import…")
@@ -325,6 +323,7 @@ class SimplePlanMixin(MixinBase):
         # Creating and deleting a transect is a different kind of act from
         # moving the whole set in and out of a file, so the two groups separate.
         buttons.addWidget(new_btn)
+        buttons.addWidget(self._transect_edit_btn)
         buttons.addWidget(delete_btn)
         buttons.addStretch(1)
         buttons.addWidget(import_btn)
@@ -599,6 +598,8 @@ class SimplePlanMixin(MixinBase):
             return
         self._transect_form_id = transect.id
         self._set_pick_armed(False)
+        # A transect opened from the list is being looked at, not moved.
+        self._set_transect_editing(False)
         self._tr_name_input.setText(transect.name)
         self._tr_start_coord.setText(f"{transect.start_lat:.6f}, {transect.start_lon:.6f}")
         self._tr_end_coord.setText(f"{transect.end_lat:.6f}, {transect.end_lon:.6f}")
@@ -640,6 +641,7 @@ class SimplePlanMixin(MixinBase):
         self._tr_name_input.setText(next_transect_name(existing))
         self._tr_name_input.setFocus()
         self._tr_name_input.selectAll()
+        self._set_transect_editing(True)
         self._set_pick_armed(True)
 
     def _coord_edit(self, which: str) -> QLineEdit:
@@ -817,23 +819,19 @@ class SimplePlanMixin(MixinBase):
                 label=self._tr_name_input.text().strip(),
             ))
         self._plan_map.set_transects(overlays)
-        self._plan_map.set_editable(str(selected) if selected is not None else None)
+        # Only the transect being edited offers its endpoints to the pointer; the
+        # rest are there to be read, hovered and clicked without moving.
+        if not self._transect_editing:
+            editable = None
+        elif selected is not None:
+            editable = str(selected)
+        else:
+            editable = DRAFT_ID
+        self._plan_map.set_editable(editable)
+        self._sync_transect_edit_enabled()
         if fit or not self._plan_map_fitted:
             self._plan_map.fit_transects()
             self._plan_map_fitted = bool(overlays)
-
-    def _on_save_offline_area(self) -> None:
-        from deepreefmap_gui.runs.run_cards import format_bytes
-
-        count, saved = self._plan_map.save_visible_area()
-        if count == 0:
-            self._status_label.setText(
-                "Nothing to save yet. Let the map finish loading, then try again."
-            )
-            return
-        self._status_label.setText(
-            f"Saved {count} map tiles ({format_bytes(saved)}) for offline use."
-        )
 
     def _add_copy_action(self, which: str):
         """Copy button living inside the coordinate field, shown once it holds
@@ -864,6 +862,35 @@ class SimplePlanMixin(MixinBase):
         action.setIcon(check_icon(16))
         QTimer.singleShot(1200, lambda a=action: a.setIcon(copy_icon(16)))
 
+    def _set_transect_editing(self, on: bool) -> None:
+        """Unlock or lock the endpoints without going round the toggled signal."""
+        if self._transect_edit_btn.isChecked() == on:
+            self._apply_transect_editing(on)
+            return
+        self._transect_edit_btn.setChecked(on)
+
+    def _on_transect_edit_toggled(self, on: bool) -> None:
+        self._apply_transect_editing(on)
+
+    def _apply_transect_editing(self, on: bool) -> None:
+        self._transect_editing = on
+        self._transect_edit_btn.setText("Save" if on else "Edit")
+        if on:
+            self._status_label.setText("Drag either end of the transect to move it.")
+        else:
+            # Leaving edit mode is the save: the draw tool has nothing left to
+            # place, and a complete form commits itself.
+            self._set_pick_armed(False)
+            self._maybe_autosave()
+        self._refresh_plan_map()
+
+    def _sync_transect_edit_enabled(self) -> None:
+        """The button has nothing to unlock until there is a transect in the form."""
+        has_form = self._transect_form_id is not None or bool(
+            self._tr_name_input.text().strip()
+        )
+        self._transect_edit_btn.setEnabled(has_form)
+
     def _set_pick_armed(self, on: bool) -> None:
         """Arm or disarm the draw tool without going round the toggled signal."""
         if self._pick_both_btn.isChecked() == on:
@@ -874,6 +901,8 @@ class SimplePlanMixin(MixinBase):
     def _on_pick_both_toggled(self, on: bool) -> None:
         self._pick_stage = "start" if on else None
         if on:
+            # Placing a line is editing it, so the two arm together.
+            self._set_transect_editing(True)
             self._status_label.setText("Click the start of the transect.")
         self._plan_map.set_pending_start(None)
         self._sync_map_pick_mode()
@@ -904,7 +933,15 @@ class SimplePlanMixin(MixinBase):
         self._on_transect_selected(focus_map=False)
 
     def _on_plan_endpoint_moved(self, transect_id: str, which: str, lat: float, lon: float) -> None:
-        if self._transect_form_id is None or str(self._transect_form_id) != transect_id:
+        if self._transect_form_id is None:
+            # A line still being drawn has no id yet; its overlay is the draft.
+            if transect_id != DRAFT_ID:
+                return
+            self._coord_edit(which).setText(f"{lat:.6f}, {lon:.6f}")
+            self._on_coords_typed()
+            self._maybe_autosave()
+            return
+        if str(self._transect_form_id) != transect_id:
             return
         self._coord_edit(which).setText(f"{lat:.6f}, {lon:.6f}")
         self._on_transect_save()
