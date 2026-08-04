@@ -85,6 +85,19 @@ _STATUS_FILTERS = (
     (catalogue.RUN_UNFINISHED, "Unfinished"),
 )
 
+# Map scope over the transect facet: the viewport is a filter, the same way it
+# is in the Plan list. Only offered where there is a map to move.
+_SCOPE_FILTERS = (
+    ("in_view", "In view"),
+    ("all", "All transects"),
+)
+
+_SCOPE_TOOLTIP = (
+    "In view lists only the runs assigned to a transect the map is showing, "
+    "and follows the map as it is panned and zoomed. Runs with no transect are "
+    "not on the map, so they appear under All transects."
+)
+
 # Right-pane pages inside the runs stack.
 _RUN_LIST_PAGE, _EMPTY_PAGE = 0, 1
 
@@ -127,6 +140,14 @@ _DETAIL_SHARE_ANALYSIS = 0.45
 _DETAIL_MIN_WIDTH = 260
 
 
+def _entries_in_view(entries: list[RunEntry], visible: frozenset[str]) -> list[RunEntry]:
+    """The runs assigned to one of the transects the map is showing.
+
+    A run with no transect is nowhere on the map, so it is not in view either.
+    """
+    return [e for e in entries if e.transect_id is not None and str(e.transect_id) in visible]
+
+
 def _facet_qss(*, first: bool, last: bool) -> str:
     """One segment of the joined facet switch; only the outer corners round."""
     corners = ""
@@ -152,6 +173,8 @@ class DataManagerMixin(MixinBase):
 
     _data_facet: str = "runs"
     _data_status_filter: str = "all"
+    _data_scope_filter: str = "in_view"
+    _data_visible_ids: frozenset[str] | None = None
     _data_selected_key: tuple | None = None
     _data_rebuilt_root: Path | None = None
     _data_rail_shown: bool | None = None
@@ -204,6 +227,13 @@ class DataManagerMixin(MixinBase):
         self._data_status_chips = FilterChips(_STATUS_FILTERS)
         self._data_status_chips.changed.connect(self._on_data_status_filter_changed)
         top_row.addWidget(self._data_status_chips)
+        # Last on the row, because it is the one control here that comes and
+        # goes: it only means something while a map is deciding what is listed.
+        self._data_scope_chips = FilterChips(_SCOPE_FILTERS)
+        self._data_scope_chips.setToolTip(_SCOPE_TOOLTIP)
+        self._data_scope_chips.changed.connect(self._on_data_scope_filter_changed)
+        self._data_scope_chips.setVisible(False)
+        top_row.addWidget(self._data_scope_chips)
         top_row.addStretch(1)
         layout.addLayout(top_row)
 
@@ -232,6 +262,13 @@ class DataManagerMixin(MixinBase):
         self._data_map = SlippyMapWidget()
         self._data_map.setMinimumHeight(_RAIL_MAP_MIN_HEIGHT)
         self._data_map.transect_clicked.connect(self._on_data_map_transect_clicked)
+        # Coalesced, because a drag emits a view change per mouse move and each
+        # one would otherwise rebuild the table under the cursor.
+        self._data_view_timer = QTimer(self)
+        self._data_view_timer.setSingleShot(True)
+        self._data_view_timer.setInterval(60)
+        self._data_view_timer.timeout.connect(self._apply_data_view_change)
+        self._data_map.view_changed.connect(self._data_view_timer.start)
         rail_split = QSplitter(Qt.Orientation.Vertical)
         rail_split.setHandleWidth(GUTTER)
         rail_split.addWidget(self._data_map)
@@ -700,9 +737,42 @@ class DataManagerMixin(MixinBase):
             return self._data_entries
         return self._data_groups.get(self._data_selected_key, [])
 
-    def _data_listed_entries(self) -> list[RunEntry]:
-        """What the list actually shows: the group, narrowed by outcome and search."""
+    def _data_scope_applies(self) -> bool:
+        """Whether the map is currently in a position to decide what is listed.
+
+        Only at the top of the transect facet. A group picked in the tree is an
+        explicit choice of what to look at, and panning off it afterwards should
+        not empty the list underneath; the other facets have no map at all.
+        """
+        return self._data_facet == "transects" and self._data_selected_key is None
+
+    def _data_visible_transect_ids(self) -> frozenset[str] | None:
+        """Transects the Browse map is showing, or None when it cannot say.
+
+        None is not "none of them": it means the viewport has no answer yet (no
+        overlays, or a map that has not been laid out), so the in-view scope has
+        to stand aside rather than filter every run away.
+        """
+        map_widget = getattr(self, "_data_map", None)
+        if map_widget is None or not map_widget.transect_count():
+            return None
+        if map_widget.width() <= 0 or map_widget.height() <= 0:
+            return None
+        return frozenset(map_widget.visible_transect_ids())
+
+    def _data_scoped_entries(self) -> list[RunEntry]:
+        """The grouping, narrowed to the transects the map is showing."""
         entries = self._data_grouped_entries()
+        if not self._data_scope_applies() or self._data_scope_filter != "in_view":
+            return entries
+        visible = self._data_visible_transect_ids()
+        if visible is None:
+            return entries
+        return _entries_in_view(entries, visible)
+
+    def _data_listed_entries(self) -> list[RunEntry]:
+        """What the list shows: the group, narrowed by map, outcome and search."""
+        entries = self._data_scoped_entries()
         if self._data_status_filter != "all":
             entries = [
                 e for e in entries if catalogue.entry_outcome(e) == self._data_status_filter
@@ -729,9 +799,44 @@ class DataManagerMixin(MixinBase):
         self._data_status_filter = key
         self._rebuild_data_run_list()
 
+    def _on_data_scope_filter_changed(self, key: str) -> None:
+        self._data_scope_filter = key
+        self._rebuild_data_run_list()
+
+    def _apply_data_view_change(self) -> None:
+        """Pan, zoom and resize re-decide which runs the map is showing.
+
+        Rebuilt only when the set of on-screen transects actually changed: the
+        table is rebuilt from scratch, and doing that on every pixel of a drag
+        would drop the selection under the cursor.
+        """
+        if not hasattr(self, "_data_run_table") or not self._data_scope_applies():
+            return
+        visible = self._data_visible_transect_ids()
+        if visible == self._data_visible_ids:
+            return
+        self._data_visible_ids = visible
+        if self._data_scope_filter == "in_view":
+            self._rebuild_data_run_list()
+        else:
+            # Nothing listed changes, but the chip still has to say how many
+            # runs switching to In view would leave.
+            self._refresh_data_scope_chips()
+
+    def _refresh_data_scope_chips(self) -> None:
+        """Show the map scope where it bites, with a count on each side of it."""
+        applies = self._data_scope_applies()
+        self._data_scope_chips.setVisible(applies)
+        if not applies:
+            return
+        entries = self._data_grouped_entries()
+        visible = self._data_visible_ids
+        in_view = len(entries) if visible is None else len(_entries_in_view(entries, visible))
+        self._data_scope_chips.set_counts({"in_view": in_view, "all": len(entries)})
+
     def _refresh_data_status_counts(self) -> None:
         """Count over the grouping, not the whole root: the chips filter what is listed."""
-        entries = self._data_grouped_entries()
+        entries = self._data_scoped_entries()
         counts = {key: 0 for key, _ in _STATUS_FILTERS}
         counts["all"] = len(entries)
         for entry in entries:
@@ -740,15 +845,26 @@ class DataManagerMixin(MixinBase):
         self._data_status_chips.set_counts(counts)
 
     def _rebuild_data_run_list(self) -> None:
+        # The rebuild is the point at which the list catches up with the map, so
+        # this is also where the view the change detector compares against is set.
+        self._data_visible_ids = self._data_visible_transect_ids()
+        self._refresh_data_scope_chips()
         self._refresh_data_status_counts()
         listed = self._data_listed_entries()
         related = related_run_counts([(e.run_dir, e.manifest) for e in self._data_entries])
         self._data_run_table.set_entries(listed, related)
         self._data_group_header.setText(self._data_header_text(listed))
         self._data_group_header.setVisible(bool(listed))
-        # An empty list means one of two different things, and saying which is
-        # the difference between "nothing here" and "nothing matches".
-        if not listed and self._data_grouped_entries():
+        # An empty list means one of three different things, and saying which is
+        # the difference between "nothing here", "nothing matches" and "nothing
+        # where you are looking".
+        scoped = self._data_scoped_entries()
+        if not listed and not scoped and self._data_grouped_entries():
+            self._data_empty_state.set_text(
+                "No runs on this part of the map",
+                "Pan or zoom out, or switch to All transects.",
+            )
+        elif not listed and scoped:
             self._data_empty_state.set_text(
                 "No runs match these filters", "Clear the search or pick a different outcome."
             )

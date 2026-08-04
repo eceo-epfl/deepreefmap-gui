@@ -77,13 +77,13 @@ def write_crashed_run(root: Path, dir_name: str) -> Path:
     return run_dir
 
 
-def write_survey_run(root: Path, dir_name: str) -> Transect:
+def write_survey_run(root: Path, dir_name: str, transect: Transect | None = None) -> Transect:
     """Seed a survey run through a store the window will reopen at root/survey.db.
 
     The window owns its own connection, so this one is closed before handing back.
     """
     store = SurveyStore(root / "survey.db")
-    transect, _pass, _run = seed_survey_run(store, root, dir_name)
+    transect, _pass, _run = seed_survey_run(store, root, dir_name, transect=transect)
     store.close()
     return transect
 
@@ -589,11 +589,133 @@ def test_map_click_narrows_the_table_to_that_transect(tmp_path, make_window):
     write_run(root, "loose", video_hashes=["cd" * 16])
     window = make_window()
     window._data_facet_buttons["transects"].click()
+    window._data_scope_chips.set_current("all")
     assert len(listed_runs(window)) == 2
 
     window._on_data_map_transect_clicked(str(transect.id))
     assert listed_runs(window) == ["assigned"]
     assert window._data_selected_key == ("transect", str(transect.id))
+
+
+def two_sites(root: Path) -> None:
+    """Two transects an ocean apart, one run each, so a viewport can separate them."""
+    write_survey_run(root, "fiji", Transect(name="Fiji", start_lat=-17.5, start_lon=177.1,
+                                            end_lat=-17.5005, end_lon=177.1005, length_m=50.0))
+    write_survey_run(root, "azores", Transect(name="Azores", start_lat=38.5, start_lon=-28.6,
+                                              end_lat=38.5005, end_lon=-28.6005, length_m=50.0))
+
+
+def browse_by_transect(make_window):
+    window = make_window()
+    window._data_facet_buttons["transects"].click()
+    window._data_map.resize(400, 300)
+    return window
+
+
+def look_at(window, lat: float, lon: float, zoom: float = 14) -> None:
+    """Move the Browse map and let the coalesced view change land."""
+    window._data_map.set_view(lat, lon, zoom)
+    window._apply_data_view_change()
+
+
+def test_browse_lists_only_the_runs_the_map_is_showing(tmp_path, make_window):
+    """Scenario: a survey spanning two sites, browsed by transect.
+
+    Expected behaviour: the map is the filter, the same way it is in Plan, and
+    panning to one site leaves the other site's runs behind.
+    """
+    root = tmp_path / "out"
+    two_sites(root)
+    window = browse_by_transect(make_window)
+    assert sorted(listed_runs(window)) == ["azores", "fiji"]
+
+    look_at(window, -17.5, 177.1)
+    assert listed_runs(window) == ["fiji"]
+    look_at(window, 38.5, -28.6)
+    assert listed_runs(window) == ["azores"]
+
+
+def test_all_transects_brings_back_the_runs_off_screen(tmp_path, make_window):
+    root = tmp_path / "out"
+    two_sites(root)
+    window = browse_by_transect(make_window)
+    look_at(window, -17.5, 177.1)
+    assert listed_runs(window) == ["fiji"]
+
+    window._data_scope_chips.set_current("all")
+    assert sorted(listed_runs(window)) == ["azores", "fiji"]
+    window._data_scope_chips.set_current("in_view")
+    assert listed_runs(window) == ["fiji"]
+
+
+def test_scope_chips_count_what_each_side_would_list(tmp_path, make_window):
+    root = tmp_path / "out"
+    two_sites(root)
+    window = browse_by_transect(make_window)
+    look_at(window, -17.5, 177.1)
+    chips = window._data_scope_chips
+    assert chips._buttons["in_view"].text().endswith("1")
+    assert chips._buttons["all"].text().endswith("2")
+
+
+def test_the_in_view_count_follows_the_map_while_showing_all(tmp_path, make_window):
+    """Switching back has to be an informed choice, so the count keeps moving."""
+    root = tmp_path / "out"
+    two_sites(root)
+    window = browse_by_transect(make_window)
+    window._data_scope_chips.set_current("all")
+    look_at(window, -17.5, 177.1)
+    assert window._data_scope_chips._buttons["in_view"].text().endswith("1")
+    look_at(window, 0.0, 0.0)
+    assert window._data_scope_chips._buttons["in_view"].text().endswith("0")
+
+
+def test_runs_with_no_transect_are_not_in_view(tmp_path, make_window):
+    """A run assigned to nothing is nowhere on the map, so only All lists it."""
+    root = tmp_path / "out"
+    write_survey_run(root, "assigned")
+    write_run(root, "loose", video_hashes=["cd" * 16])
+    window = browse_by_transect(make_window)
+    assert listed_runs(window) == ["assigned"]
+
+    window._data_scope_chips.set_current("all")
+    assert sorted(listed_runs(window)) == ["assigned", "loose"]
+
+
+def test_the_map_scope_appears_only_where_it_decides_anything(tmp_path, make_window):
+    root = tmp_path / "out"
+    write_survey_run(root, "assigned")
+    window = make_window()
+    chips = window._data_scope_chips
+    assert not chips.isVisibleTo(window._data_panel)
+
+    window._data_facet_buttons["transects"].click()
+    assert chips.isVisibleTo(window._data_panel)
+    window._data_facet_buttons["videos"].click()
+    assert not chips.isVisibleTo(window._data_panel)
+
+
+def test_a_transect_picked_in_the_tree_outranks_the_map(tmp_path, make_window):
+    """Panning away from a chosen transect must not empty the list underneath."""
+    root = tmp_path / "out"
+    two_sites(root)
+    window = browse_by_transect(make_window)
+    window._on_data_map_transect_clicked(str(window._data_map._transects[0].id))
+    picked = listed_runs(window)
+    assert len(picked) == 1
+
+    look_at(window, 0.0, 0.0)
+    assert listed_runs(window) == picked
+    assert not window._data_scope_chips.isVisibleTo(window._data_panel)
+
+
+def test_empty_state_blames_the_map_when_the_map_is_the_reason(tmp_path, make_window):
+    root = tmp_path / "out"
+    two_sites(root)
+    window = browse_by_transect(make_window)
+    look_at(window, 0.0, 0.0)
+    assert window._data_run_stack.currentWidget() is window._data_empty_state
+    assert "part of the map" in window._data_empty_state._message.text()
 
 
 def test_the_map_draws_transects_only_while_grouping_by_them(tmp_path, make_window):

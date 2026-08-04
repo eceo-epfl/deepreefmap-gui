@@ -180,6 +180,14 @@ class SlippyMapWidget(QWidget):
         lon = sum(p[1] for p in points) / len(points)
         self.set_view(lat, lon, zoom)
 
+    def transect_count(self) -> int:
+        """How many overlay transects the map is holding.
+
+        Zero means "in view" has nothing to say: a caller filtering by the
+        viewport has to stand aside rather than hide everything.
+        """
+        return len(self._transects)
+
     def visible_transect_ids(self) -> list[str]:
         """Ids of the overlay transects whose line crosses the viewport."""
         viewport = QRectF(0, 0, self.width(), self.height())
