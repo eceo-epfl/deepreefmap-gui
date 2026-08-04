@@ -317,8 +317,8 @@ class RunEtaEstimator:
         """Remainder from this stage's own throughput, or None if not yet reliable.
 
         Purely measured, so it is safe to show on a first run. Evaluated against
-        the wall clock at query time — average time per unit of earned fraction,
-        scaled by the fraction left — so it counts down between sparse progress
+        the wall clock at query time (average time per unit of earned fraction,
+        scaled by the fraction left), so it counts down between sparse progress
         events and grows honestly when the stage stalls, instead of freezing at
         whatever the rate was at the last event.
         """

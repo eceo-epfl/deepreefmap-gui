@@ -8,12 +8,13 @@ from deepreefmap_gui.simple.progress import (
     ATTENTION,
     BLOCKED,
     FIX_HERE,
+    FIX_MACHINE,
     FIX_SETTINGS,
-    FIX_SETUP,
     OK,
     TODO,
     SectionState,
     browse_state,
+    machine_state,
     plan_state,
     run_gate,
 )
@@ -55,7 +56,6 @@ def test_empty_run_step_is_todo_not_blocked():
 @pytest.mark.parametrize(
     "overrides, fragment",
     [
-        ({"unassigned": 2}, "need a transect"),
         ({"has_preset": False}, "run settings"),
         ({"missing_models": ["coralscapes-vit-b-dpt"]}, "coralscapes-vit-b-dpt"),
         ({"gpu_only_mapper": "loger_star"}, "loger_star"),
@@ -67,8 +67,21 @@ def test_blockers_name_themselves(overrides, fragment):
     assert fragment in state.reason
 
 
-def test_unassigned_outranks_the_other_blockers():
-    """Only one reason is shown, so it must be the one the user can act on first."""
+def test_a_skipped_transect_is_reported_but_never_blocks():
+    """Scenario: a clip is queued with the transect deliberately skipped.
+
+    Expected behaviour: the batch runs. The step says what was given up -- the
+    pass cannot be set beside repeat passes of the same place -- and says it
+    below every real blocker, because it is information rather than a fault.
+    """
+    state = gate(pass_count=3, unassigned=1, remaining=3)
+    assert state.state == OK
+    assert "without a transect" in state.count
+    assert "repeat passes" in state.reason
+
+
+def test_a_real_blocker_outranks_a_skipped_transect():
+    """Only one reason is shown, so it must be the one that stops the batch."""
     state = gate(
         pass_count=3,
         unassigned=1,
@@ -76,7 +89,8 @@ def test_unassigned_outranks_the_other_blockers():
         missing_models=["x"],
         gpu_only_mapper="loger",
     )
-    assert "need a transect" in state.reason
+    assert state.state == BLOCKED
+    assert "run settings" in state.reason
 
 
 def test_a_gpu_only_method_on_a_cpu_laptop_blocks():
@@ -97,8 +111,8 @@ def test_the_missing_card_outranks_the_missing_models():
     [
         ({"unassigned": 1}, FIX_HERE),
         ({"has_preset": False}, FIX_SETTINGS),
-        ({"gpu_only_mapper": "loger"}, FIX_SETUP),
-        ({"missing_models": ["x"]}, FIX_SETUP),
+        ({"gpu_only_mapper": "loger"}, FIX_MACHINE),
+        ({"missing_models": ["x"]}, FIX_MACHINE),
     ],
 )
 def test_each_blocker_says_where_it_is_fixed(overrides, destination):
@@ -142,6 +156,53 @@ def test_browse_never_blocks_and_chases_unfiled_runs():
     unfiled = browse_state(5, 2)
     assert unfiled.state == ATTENTION
     assert "2 unfiled" in unfiled.count
+
+
+def test_an_unmet_requirement_blocks_the_machine_and_counts_itself():
+    one = machine_state(unmet=1)
+    assert one.state == BLOCKED
+    assert one.count == "1 requirement not met"
+    assert machine_state(unmet=3).count == "3 requirements not met"
+
+
+def test_a_memory_advisory_alone_warns_rather_than_blocking():
+    """The batch still runs on a machine that may run low, so nothing is blocked."""
+    state = machine_state(unmet=0, advisory="This batch may exhaust memory on this machine.")
+    assert state.state == ATTENTION
+    assert "exhaust memory" in state.reason
+
+
+def test_an_available_update_is_named_without_raising_the_state():
+    """An update is a chore rather than a blocker, so it says so and nothing more."""
+    state = machine_state(unmet=0, update_version="2.1.0")
+    assert state.state == OK
+    assert "2.1.0" in state.reason
+
+
+def test_an_update_alongside_a_blocker_still_leaves_the_machine_blocked():
+    state = machine_state(unmet=2, update_version="2.1.0")
+    assert state.state == BLOCKED
+    assert "2 requirements" in state.reason
+    assert "2.1.0" in state.reason
+
+
+def test_an_update_alongside_an_advisory_stays_at_attention():
+    state = machine_state(unmet=0, advisory="Memory may run low.", update_version="2.1.0")
+    assert state.state == ATTENTION
+    assert "Memory may run low." in state.reason
+    assert "2.1.0" in state.reason
+
+
+def test_a_machine_with_nothing_to_report_is_ok():
+    state = machine_state(unmet=0)
+    assert state.state == OK
+    assert state.count == "Ready"
+
+
+def test_the_machine_never_sends_the_user_anywhere_else():
+    """This machine is where its own blockers are fixed, so it names no destination."""
+    for state in (machine_state(unmet=2), machine_state(unmet=0, advisory="low memory")):
+        assert state.fix == FIX_HERE
 
 
 def test_unknown_state_is_rejected():

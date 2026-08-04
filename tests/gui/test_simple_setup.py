@@ -1,4 +1,4 @@
-"""First-run environment step: pass/fail logic, gating, and provisioning wiring."""
+"""Readiness view of This machine: pass/fail logic, gating, and provisioning wiring."""
 
 from __future__ import annotations
 
@@ -122,16 +122,20 @@ def _prof(*, gpu_name: str | None = "GPU", free: int = 50 * _GB):
 def _force(window, monkeypatch, *, gpu_name="GPU", free=50 * _GB, missing=(), mapping="scsfmlearner"):
     monkeypatch.setattr(S, "probe_system", lambda *_a, **_k: _prof(gpu_name=gpu_name, free=free))
     monkeypatch.setattr(window, "_survey_missing_models", lambda: list(missing))
+    # The form, which is what the readiness rows and the Run gate both read.
+    # Setting only the preset let this helper describe a configuration the gate
+    # would never see.
+    window._map_combo.setCurrentText(mapping)
     window._survey_preset = {"mapping_name": mapping}
-    window._refresh_setup_page()
+    window._refresh_readiness_view()
 
 
-def test_setup_is_a_reachable_section(window):
+def test_this_machine_is_a_reachable_section(window):
     from deepreefmap_gui.simple.mode import SIMPLE_SECTIONS
 
-    assert "setup" in SIMPLE_SECTIONS
-    window._set_simple_section("setup")
-    assert window._current_section() == "setup"
+    assert "machine" in SIMPLE_SECTIONS
+    window._set_simple_section("machine")
+    assert window._current_section() == "machine"
 
 
 def test_ready_when_all_three_pass(window, monkeypatch):
@@ -146,7 +150,7 @@ def test_missing_models_crosses_the_row_and_offers_provisioning(window, monkeypa
     _icon, detail, actions = window._setup_check_rows["models"]
     assert "scsfmlearner" in detail.text()
     assert all(not a.isHidden() for a in actions)
-    assert window._setup_summary.text() == "1 requirement not met."
+    assert window._setup_summary.text().startswith("1 requirement not met.")
 
 
 def test_cpu_only_machine_still_reaches_ready_with_the_standard_method(window, monkeypatch):
@@ -162,7 +166,7 @@ def test_gpu_only_method_without_a_card_fails_the_graphics_row(window, monkeypat
     _icon, detail, actions = window._setup_check_rows["graphics"]
     assert "requires one" in detail.text()
     assert not actions[0].isHidden()
-    assert window._setup_summary.text() == "1 requirement not met."
+    assert window._setup_summary.text().startswith("1 requirement not met.")
 
 
 def test_low_space_crosses_the_row(window, monkeypatch):
@@ -172,7 +176,7 @@ def test_low_space_crosses_the_row(window, monkeypatch):
     assert not actions[0].isHidden()
 
 
-def test_no_jargon_on_the_setup_step(window, monkeypatch):
+def test_no_jargon_on_the_readiness_view(window, monkeypatch):
     _force(window, monkeypatch, gpu_name=None, missing=["coralscapes-vit-s-dpt"], free=1 * _GB)
     texts = [window._setup_summary.text()]
     for _icon, detail, _actions in window._setup_check_rows.values():
@@ -185,11 +189,12 @@ def test_no_jargon_on_the_setup_step(window, monkeypatch):
 # --- launch gating -----------------------------------------------------------
 
 
-def test_first_launch_leads_to_setup_when_not_ready(make_window, monkeypatch):
+def test_first_launch_leads_to_this_machine_when_not_ready(make_window, monkeypatch):
     # Too little space makes the machine not-ready regardless of models or card.
     monkeypatch.setattr(S, "probe_system", lambda *_a, **_k: _prof(gpu_name="GPU", free=1 * _GB))
     window = make_window()
-    assert window._current_section() == "setup"
+    assert window._current_section() == "machine"
+    assert window._machine_view == "readiness"
 
 
 def test_first_launch_skips_setup_when_ready(make_window, monkeypatch):
@@ -218,10 +223,10 @@ def test_ready_records_the_flag_so_it_stops_leading(window, monkeypatch):
     assert str(QSettings("ECEO", "deepreefmap").value("setup_complete")).lower() == "true"
 
 
-def test_setup_reopenable_from_the_header(window):
+def test_this_machine_reopenable_from_the_header(window):
     window._set_simple_section("plan")
-    window._setup_nav_button.click()
-    assert window._current_section() == "setup"
+    window._machine_nav_button.click()
+    assert window._current_section() == "machine"
 
 
 # --- provisioning actions ----------------------------------------------------
@@ -266,34 +271,34 @@ def test_download_signs_in_first_for_a_model_that_needs_an_account(window, monke
     assert downloaded == []
 
 
-# --- memory warning surfaced in simple mode ----------------------------------
+# --- where the memory warning leads ------------------------------------------
 
 
-def test_memory_icon_routes_to_setup_in_simple_mode(window):
-    window._set_ui_mode("simple")
-    window._reveal_memory_detail()
-    assert window._current_section() == "setup"
+def test_the_memory_warning_links_through_to_the_readiness_view(window):
+    """The warning points at a sentence on the readiness view, so the destination
+    alone is not enough: whichever view was last open gives way to readiness."""
+    window._set_simple_section("machine")
+    window._set_machine_view("system")
+
+    window._memory_notice.linkActivated.emit("#system")
+
+    assert window._current_section() == "machine"
+    assert window._machine_view == "readiness"
 
 
-def test_memory_icon_routes_to_system_tab_in_advanced_mode(window):
-    window._mode_buttons["advanced"].click()
-    window._reveal_memory_detail()
-    assert window._sidebar_tabs.currentIndex() == window._TAB_SYSTEM
-
-
-def test_memory_grade_uses_the_longest_pass_in_simple_mode(window):
-    window._set_ui_mode("simple")
+def test_the_memory_grade_sizes_the_longest_queued_pass(window):
+    """Passes run one at a time, so the longest is the one that peaks memory."""
     window._survey_rows = [
         SimpleNamespace(begin_s=0.0, end_s=10.0),
         SimpleNamespace(begin_s=0.0, end_s=40.0),
     ]
-    assert window._simple_peak_frames(5) == 200
+    assert window._memory_grade_frames(5) == 200
 
 
 # --- batch pre-flight --------------------------------------------------------
 
 
-def test_preflight_proceeds_silently_when_there_is_room(simple_window, monkeypatch):
+def test_preflight_proceeds_silently_when_there_is_room(window, monkeypatch):
     import shutil
 
     from PySide6.QtWidgets import QMessageBox
@@ -306,10 +311,10 @@ def test_preflight_proceeds_silently_when_there_is_room(simple_window, monkeypat
         raise AssertionError("prompted despite plenty of room")
 
     monkeypatch.setattr(QMessageBox, "question", staticmethod(_no_prompt))
-    assert simple_window._confirm_batch_space(3) is True
+    assert window._confirm_batch_space(3) is True
 
 
-def test_preflight_asks_before_a_batch_that_may_not_fit(simple_window, monkeypatch):
+def test_preflight_asks_before_a_batch_that_may_not_fit(window, monkeypatch):
     import shutil
 
     from PySide6.QtWidgets import QMessageBox
@@ -322,5 +327,5 @@ def test_preflight_asks_before_a_batch_that_may_not_fit(simple_window, monkeypat
         return QMessageBox.StandardButton.No
 
     monkeypatch.setattr(QMessageBox, "question", staticmethod(_decline))
-    assert simple_window._confirm_batch_space(5) is False
+    assert window._confirm_batch_space(5) is False
     assert "5 passes" in seen["text"]

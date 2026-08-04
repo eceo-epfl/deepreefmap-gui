@@ -1,4 +1,10 @@
-"""QPainter-rendered icons for consistent, DPI-aware toolbar buttons."""
+"""QPainter-rendered icons for consistent, DPI-aware toolbar buttons.
+
+Three sizes and one stroke weight. Every icon used to carry its own default
+size and its own pen width -- six weights between 1.2 and 2.2 at the same
+nominal size -- so a tick sat visibly bolder than the copy sheets it replaced in
+the same button.
+"""
 
 from __future__ import annotations
 
@@ -14,8 +20,19 @@ from deepreefmap_gui.core.theme import (
     WINDOW,
 )
 
+# Inline with text, on a toolbar button, and on the transport controls.
+ICON_SM, ICON_MD, ICON_LG = 16, 20, 24
 
-def _px(size: int = 24, bg: QColor | None = None) -> tuple[QPixmap, QPainter]:
+# One stroke weight, scaled with the icon so a 16px glyph is not drawn with the
+# line weight of a 24px one.
+_STROKE = 1.6
+
+
+def _stroke(size: int) -> float:
+    return max(1.0, _STROKE * size / ICON_LG)
+
+
+def _px(size: int = ICON_LG, bg: QColor | None = None) -> tuple[QPixmap, QPainter]:
     pm = QPixmap(size, size)
     pm.fill(bg or Qt.GlobalColor.transparent)
     p = QPainter(pm)
@@ -23,10 +40,10 @@ def _px(size: int = 24, bg: QColor | None = None) -> tuple[QPixmap, QPainter]:
     return pm, p
 
 
-def crosshair_icon(size: int = 24, color: QColor | None = None) -> QIcon:
+def crosshair_icon(size: int = ICON_MD, color: QColor | None = None) -> QIcon:
     c = color or QColor(230, 230, 230)
     pm, p = _px(size)
-    pen = QPen(c, 1.6)
+    pen = QPen(c, _stroke(size))
     p.setPen(pen)
     cx, cy = size / 2, size / 2
     r = size * 0.32
@@ -40,10 +57,10 @@ def crosshair_icon(size: int = 24, color: QColor | None = None) -> QIcon:
     return QIcon(pm)
 
 
-def refresh_icon(size: int = 24, color: QColor | None = None) -> QIcon:
+def refresh_icon(size: int = ICON_MD, color: QColor | None = None) -> QIcon:
     c = color or QColor(230, 230, 230)
     pm, p = _px(size)
-    pen = QPen(c, 1.8)
+    pen = QPen(c, _stroke(size))
     pen.setCapStyle(Qt.PenCapStyle.RoundCap)
     p.setPen(pen)
     cx, cy = size / 2, size / 2
@@ -57,7 +74,7 @@ def refresh_icon(size: int = 24, color: QColor | None = None) -> QIcon:
     return QIcon(pm)
 
 
-def play_icon(size: int = 24, color: QColor | None = None) -> QIcon:
+def play_icon(size: int = ICON_MD, color: QColor | None = None) -> QIcon:
     c = color or QColor(230, 230, 230)
     pm, p = _px(size)
     p.setPen(Qt.PenStyle.NoPen)
@@ -75,7 +92,7 @@ def play_icon(size: int = 24, color: QColor | None = None) -> QIcon:
     return QIcon(pm)
 
 
-def pause_icon(size: int = 24, color: QColor | None = None) -> QIcon:
+def pause_icon(size: int = ICON_MD, color: QColor | None = None) -> QIcon:
     c = color or QColor(230, 230, 230)
     pm, p = _px(size)
     p.setPen(Qt.PenStyle.NoPen)
@@ -90,10 +107,10 @@ def pause_icon(size: int = 24, color: QColor | None = None) -> QIcon:
     return QIcon(pm)
 
 
-def plus_icon(size: int = 24, color: QColor | None = None) -> QIcon:
+def plus_icon(size: int = ICON_MD, color: QColor | None = None) -> QIcon:
     c = color or QColor(230, 230, 230)
     pm, p = _px(size)
-    pen = QPen(c, 2.0)
+    pen = QPen(c, _stroke(size))
     pen.setCapStyle(Qt.PenCapStyle.RoundCap)
     p.setPen(pen)
     cx, cy = size / 2, size / 2
@@ -104,10 +121,10 @@ def plus_icon(size: int = 24, color: QColor | None = None) -> QIcon:
     return QIcon(pm)
 
 
-def arrow_right_icon(size: int = 24, color: QColor | None = None) -> QIcon:
+def arrow_right_icon(size: int = ICON_MD, color: QColor | None = None) -> QIcon:
     c = color or QColor(230, 230, 230)
     pm, p = _px(size)
-    pen = QPen(c, 1.8)
+    pen = QPen(c, _stroke(size))
     pen.setCapStyle(Qt.PenCapStyle.RoundCap)
     pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
     p.setPen(pen)
@@ -121,10 +138,10 @@ def arrow_right_icon(size: int = 24, color: QColor | None = None) -> QIcon:
     return QIcon(pm)
 
 
-def check_icon(size: int = 16, color: QColor | None = None) -> QIcon:
+def check_icon(size: int = ICON_SM, color: QColor | None = None) -> QIcon:
     c = color or QColor(SUCCESS)
     pm, p = _px(size)
-    pen = QPen(c, 2.0)
+    pen = QPen(c, _stroke(size))
     pen.setCapStyle(Qt.PenCapStyle.RoundCap)
     pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
     p.setPen(pen)
@@ -135,10 +152,10 @@ def check_icon(size: int = 16, color: QColor | None = None) -> QIcon:
     return QIcon(pm)
 
 
-def download_icon(size: int = 16, color: QColor | None = None) -> QIcon:
+def download_icon(size: int = ICON_SM, color: QColor | None = None) -> QIcon:
     c = color or QColor(WARNING)
     pm, p = _px(size)
-    pen = QPen(c, 1.8)
+    pen = QPen(c, _stroke(size))
     pen.setCapStyle(Qt.PenCapStyle.RoundCap)
     p.setPen(pen)
     cx = size / 2
@@ -154,11 +171,70 @@ def download_icon(size: int = 16, color: QColor | None = None) -> QIcon:
     return QIcon(pm)
 
 
-def copy_icon(size: int = 16, color: QColor | None = None) -> QIcon:
+def warning_icon(size: int = ICON_SM, color: QColor | None = None) -> QIcon:
+    """Triangle and exclamation: something needs looking at, nothing is stopped."""
+    c = color or QColor(WARNING)
+    pm, p = _px(size)
+    pen = QPen(c, _stroke(size))
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    p.setPen(pen)
+    cx = size / 2
+    top = size * 0.16
+    bot = size * 0.82
+    half = size * 0.38
+    p.drawPolyline(
+        [
+            QPointF(cx, top),
+            QPointF(cx + half, bot),
+            QPointF(cx - half, bot),
+            QPointF(cx, top),
+        ]
+    )
+    p.drawLine(QPointF(cx, size * 0.40), QPointF(cx, size * 0.60))
+    p.drawPoint(QPointF(cx, size * 0.71))
+    p.end()
+    return QIcon(pm)
+
+
+def blocked_icon(size: int = ICON_SM, color: QColor | None = None) -> QIcon:
+    """Ringed cross: distinct in silhouette from the warning triangle, so the
+    two are told apart without relying on their colours."""
+    c = color or QColor(ERROR)
+    pm, p = _px(size)
+    pen = QPen(c, _stroke(size))
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    p.setPen(pen)
+    cx = size / 2
+    r = size * 0.38
+    p.drawEllipse(QPointF(cx, cx), r, r)
+    arm = size * 0.17
+    p.drawLine(QPointF(cx - arm, cx - arm), QPointF(cx + arm, cx + arm))
+    p.drawLine(QPointF(cx + arm, cx - arm), QPointF(cx - arm, cx + arm))
+    p.end()
+    return QIcon(pm)
+
+
+def machine_icon(size: int = ICON_SM, color: QColor | None = None) -> QIcon:
+    """A laptop, for the destination that describes the computer you are on."""
+    c = color or QColor(TEXT_MUTED)
+    pm, p = _px(size)
+    pen = QPen(c, _stroke(size))
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    p.setPen(pen)
+    p.drawRoundedRect(
+        QRectF(size * 0.18, size * 0.22, size * 0.64, size * 0.44), 1.5, 1.5
+    )
+    p.drawLine(QPointF(size * 0.08, size * 0.78), QPointF(size * 0.92, size * 0.78))
+    p.end()
+    return QIcon(pm)
+
+
+def copy_icon(size: int = ICON_SM, color: QColor | None = None) -> QIcon:
     """Two offset sheets, the usual shorthand for copy-to-clipboard."""
     c = color or QColor(230, 230, 230)
     pm, p = _px(size)
-    pen = QPen(c, 1.4)
+    pen = QPen(c, _stroke(size))
     pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
     p.setPen(pen)
     w = size * 0.42
@@ -192,7 +268,7 @@ _STEP_INK = {
 }
 
 
-def step_badge_icon(number: int, state: str, size: int = 20) -> QIcon:
+def step_badge_icon(number: int, state: str, size: int = ICON_MD) -> QIcon:
     """Numbered disc for the wizard stepper.
 
     A satisfied step carries a tick and a blocked one an exclamation, so the
@@ -213,7 +289,7 @@ def step_badge_icon(number: int, state: str, size: int = 20) -> QIcon:
     ink = QColor(_STEP_INK[state])
 
     if state == "ok":
-        pen = QPen(ink, 1.8)
+        pen = QPen(ink, _stroke(size))
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         p.setPen(pen)
@@ -231,10 +307,10 @@ def step_badge_icon(number: int, state: str, size: int = 20) -> QIcon:
     return QIcon(pm)
 
 
-def lock_icon(size: int = 16, color: QColor | None = None) -> QIcon:
+def lock_icon(size: int = ICON_SM, color: QColor | None = None) -> QIcon:
     c = color or QColor(WARNING)
     pm, p = _px(size)
-    pen = QPen(c, 1.6)
+    pen = QPen(c, _stroke(size))
     pen.setCapStyle(Qt.PenCapStyle.RoundCap)
     p.setPen(pen)
     cx = size / 2

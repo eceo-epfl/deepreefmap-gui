@@ -31,20 +31,14 @@ class PastRunsMixin(MixinBase):
     def _on_new_reconstruction(self) -> None:
         self._viewer._clear_scene_data()
         self._results_group.setVisible(False)
+        self._results_empty.setVisible(True)
         self._viewer.legend_overlay.setVisible(False)
         # The display controls act on a loaded cloud, so they go with it.
         self._set_overlay_controls_visible(False)
-        self._sidebar_tabs.setTabEnabled(self._TAB_RESULTS, False)
         self._hide_run_meta_banner()
         self._clear_run_warnings()
         self._active_run_dir = None
         self._active_run_manifest = None
         self._set_ortho_sources(None, None, None)
-        from datetime import datetime
-
-        self._run_name_input.setText(datetime.now().strftime("%Y%m%d-%H%M%S"))  # noqa: DTZ005 (local time is intended: this is a user-facing default name)
-        if getattr(self, "_ui_mode", "advanced") == "simple":
-            self._status_label.setText("Workspace cleared.")
-        else:
-            self._status_label.setText(self._idle_status_text())
+        self._status_label.setText("Workspace cleared.")
         self._set_app_mode("SETUP")

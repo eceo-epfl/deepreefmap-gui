@@ -18,7 +18,19 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from deepreefmap_gui.core.theme import OVERLAY_TEXT
+from deepreefmap_gui.core.theme import (
+    BRIGHT_TEXT,
+    FONT_SM,
+    FONT_XS,
+    OVERLAY_BG,
+    OVERLAY_BORDER,
+    OVERLAY_FILL,
+    OVERLAY_FILL_HI,
+    OVERLAY_TEXT,
+    OVERLAY_TEXT_DIM,
+    OVERLAY_TEXT_LINK,
+    RADIUS,
+)
 from deepreefmap_gui.viewer.render import _format_point_count
 
 
@@ -40,40 +52,40 @@ class LegendOverlay(QWidget):
         self.setStyleSheet(
             f"""
             LegendOverlay {{
-                background-color: rgba(20, 20, 20, 200);
-                border: 1px solid rgba(255, 255, 255, 40);
-                border-radius: 6px;
+                background-color: {OVERLAY_BG};
+                border: 1px solid {OVERLAY_BORDER};
+                border-radius: {RADIUS}px;
             }}
             LegendOverlay QLabel#legend_title {{
                 color: {OVERLAY_TEXT};
-                font-size: 11px;
+                font-size: {FONT_SM};
                 font-weight: bold;
             }}
             LegendOverlay QLabel#legend_count {{
-                color: #b8b8b8;
-                font-size: 10px;
+                color: {OVERLAY_TEXT_DIM};
+                font-size: {FONT_XS};
             }}
             LegendOverlay QToolButton#sort_header {{
-                color: #cfd6dd;
+                color: {OVERLAY_TEXT_LINK};
                 background: transparent;
                 border: none;
-                font-size: 10px;
+                font-size: {FONT_XS};
                 padding: 0px 2px;
             }}
-            LegendOverlay QToolButton#sort_header:hover {{ color: #ffffff; }}
-            LegendOverlay QCheckBox {{ color: {OVERLAY_TEXT}; font-size: 11px; spacing: 4px; }}
+            LegendOverlay QToolButton#sort_header:hover {{ color: {BRIGHT_TEXT}; }}
+            LegendOverlay QCheckBox {{ color: {OVERLAY_TEXT}; font-size: {FONT_SM}; spacing: 4px; }}
             LegendOverlay QCheckBox::indicator {{ width: 12px; height: 12px; }}
             LegendOverlay QScrollArea {{ background: transparent; border: none; }}
             LegendOverlay QWidget#legend_inner {{ background: transparent; }}
             LegendOverlay QToolButton {{
                 color: {OVERLAY_TEXT};
-                background-color: rgba(255, 255, 255, 20);
+                background-color: {OVERLAY_FILL};
                 border: 1px solid rgba(255, 255, 255, 60);
                 border-radius: 3px;
-                font-size: 10px;
+                font-size: {FONT_XS};
                 padding: 0px;
             }}
-            LegendOverlay QToolButton:hover {{ background-color: rgba(255, 255, 255, 50); }}
+            LegendOverlay QToolButton:hover {{ background-color: {OVERLAY_FILL_HI}; }}
             LegendOverlay QToolButton:pressed {{ background-color: rgba(255, 255, 255, 80); }}
             """
         )
@@ -273,7 +285,7 @@ class LegendOverlay(QWidget):
             swatch.setFixedSize(12, 12)
             swatch.setStyleSheet(
                 f"background-color: rgb({r},{g},{b}); "
-                "border: 1px solid rgba(255,255,255,80);"
+                "border: 1px solid {OVERLAY_BORDER_STRONG};"
             )
             cb = QCheckBox(name)
             cb.setChecked(True)

@@ -320,7 +320,7 @@ def test_a_new_run_does_not_inherit_the_last_one(qapp) -> None:
     """Scenario: run A finishes with all three layers, run B starts.
 
     Expected behaviour: nothing of A survives. Stacked layers make this matter in
-    a way three thumbnails did not — A's depth left under B's frame blends into a
+    a way three thumbnails did not: A's depth left under B's frame blends into a
     picture that looks like a result rather than like a bug.
     """
     viewer = _viewer_with_frames(qapp, {"rgb": (200, 0, 0), "seg": (0, 200, 0), "depth": (0, 0, 200)})

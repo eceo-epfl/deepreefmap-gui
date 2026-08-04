@@ -26,6 +26,7 @@ class SpinnerStopButton(QAbstractButton):
         self.setFixedSize(size, size)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setToolTip("Stop the running job")
+        self.setAccessibleName("Stop the running job")
         self._angle = 0.0
         self._hovered = False
         self._stopping = False

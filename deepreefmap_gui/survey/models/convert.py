@@ -138,7 +138,7 @@ def run_provenance(
 def survey_manifest_block(
     run: RunRecord,
     pass_: TransectPass,
-    transect: Transect,
+    transect: Transect | None,
     batch: SurveyBatch | None,
     provenance: dict[str, Any] | None = None,
     config: dict[str, Any] | None = None,
@@ -163,7 +163,10 @@ def survey_manifest_block(
             "begin_s": pass_.begin_s,
             "end_s": pass_.end_s,
         },
-        "transect": {
+        # None for a pass run without one. rebuild_from_scan reads the absence
+        # rather than a placeholder, so a copied output folder restores the pass
+        # unassigned instead of inventing a transect to hang it on.
+        "transect": None if transect is None else {
             "id": str(transect.id),
             "name": transect.name,
             "start_lat": transect.start_lat,

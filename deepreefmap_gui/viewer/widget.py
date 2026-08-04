@@ -40,12 +40,14 @@ from PySide6.QtWidgets import (
 from deepreefmap_gui.core.image_view import ImageDialog
 from deepreefmap_gui.core.theme import (
     BORDER,
+    BRIGHT_TEXT,
     CARD_BG,
     GROOVE,
     OVERLAY_TEXT,
     PRIMARY,
     PRIMARY_DARK,
     SLIDER_HANDLE,
+    TEXT_DIM,
     TEXT_SECONDARY,
 )
 from deepreefmap_gui.viewer.frame_stack import (
@@ -146,7 +148,7 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         # through the reconstruction, so we give it a tall handle, a clear
         # groove, and tick marks.
         slider_row = QWidget()
-        slider_row.setStyleSheet("background-color: #202020;")
+        slider_row.setStyleSheet("background-color: {PREVIEW_BG};")
         slider_layout = QHBoxLayout(slider_row)
         slider_layout.setContentsMargins(8, 4, 8, 6)
         slider_layout.setSpacing(8)
@@ -185,8 +187,8 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
                 margin: -10px 0;
                 border-radius: 4px;
             }}
-            QSlider::handle:horizontal:hover {{ background: #ffffff; }}
-            QSlider::tick:horizontal {{ background: #777; }}
+            QSlider::handle:horizontal:hover {{ background: {BRIGHT_TEXT}; }}
+            QSlider::tick:horizontal {{ background: {TEXT_DIM}; }}
             """
         )
         slider_layout.addWidget(self.frame_slider, 1)
@@ -534,7 +536,7 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         self._canvas_stack.setCurrentWidget(self._canvas_container)
         # Re-apply on every call: an early bail leaves the bottom panel oversized
         # after the second set_data (semantic, following the geometry preview) and
-        # after the sidebar switches to Results.
+        # after the results panel appears beside the cloud.
         total = max(self._main_splitter.height(), self._main_splitter.sizeHint().height(), 400)
         self._main_splitter.setSizes([int(total * 0.75), int(total * 0.25)])
 
@@ -1602,7 +1604,7 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
     @Slot(str, object)
     def _on_mark_outputs(self, output_dir: str, output_files: object) -> None:
         self._notify_status("mark_outputs", output_dir=output_dir, output_files=output_files)
-        # The callback above switches the sidebar to Results, which reflows the
+        # The callback above reveals the results panel, which reflows the
         # central pane and can leave setSizes stale. Defer a re-apply until the
         # event queue has caught up.
         if self._canvas_revealed:

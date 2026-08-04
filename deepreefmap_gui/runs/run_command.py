@@ -6,7 +6,7 @@ run, which is exactly what auditing a result or reproducing it elsewhere needs.
 
 This module translates that same kwargs dict into argv, so the command shown to
 the user cannot drift from the run it describes. Every flag is emitted even when
-it holds its default, so the command doubles as a full settings record — except
+it holds its default, so the command doubles as a full settings record, except
 for the options in ``_OPTIONAL``, whose only "unset" spelling is omission.
 
 ``tests/gui/test_run_command.py`` checks the translation table against the
@@ -118,8 +118,8 @@ _SCS_OPTION_FLAGS: tuple[tuple[str, str], ...] = (
 _LOGER_OPTION_DEFAULTS = {"window_size": 32, "overlap_size": 3}
 _SCS_OPTION_DEFAULTS = {"target_width": 512, "target_height": 256}
 
-# Shown in place of a path the form has not been given yet, so the advanced
-# preview still reads as a command while the run is being set up.
+# Shown in place of a path a set of run kwargs does not carry, so the command
+# still reads as one rather than breaking off mid-flag.
 PLACEHOLDER_VIDEO = "<no video selected>"
 
 VIDEO_COMMA_WARNING = (
@@ -276,7 +276,7 @@ def kwargs_from_manifest(manifest: Mapping[str, Any], run_dir: Path) -> dict[str
 
     The fallback for runs written before ``cli_command`` was recorded. The
     manifest carries no ``preprocess_batch_size`` or ``require_gravity_telemetry``
-    and, on a skip-segmentation run, no segmentation model name — those come back
+    and, on a skip-segmentation run, no segmentation model name. Those come back
     as the CLI defaults, which is the closest honest answer available.
     """
     transect = manifest.get("transect")
@@ -336,8 +336,8 @@ def command_from_manifest(
 def write_run_command_script(output_dir: Path, args: Sequence[str]) -> Path:
     """Drop a runnable `run_command.sh` beside the run's outputs.
 
-    Written before the pipeline starts, so a run that crashes or is cancelled —
-    the one most worth auditing — still says what it was asked to do.
+    Written before the pipeline starts, so a run that crashes or is cancelled,
+    the one most worth auditing, still says what it was asked to do.
     """
     path = output_dir / "run_command.sh"
     body = format_command(args, multiline=True)

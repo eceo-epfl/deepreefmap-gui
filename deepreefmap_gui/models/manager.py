@@ -209,10 +209,10 @@ DPT_BACKBONE_MAP: dict[str, str] = {
 }
 
 # Mapping backends with no processor fallback: without a card they do not run
-# slowly, they do not run at all. Both modes gate their Start button on this, so
-# it lives here rather than as a tuple literal in each: the advanced form and
-# the simple wizard disagreeing about which backends need a GPU is the failure
-# this is preventing.
+# slowly, they do not run at all. Every gate reads this one list rather than
+# keeping a tuple literal of its own: the Run step and the setup step's
+# readiness row disagreeing about which backends need a GPU is the failure this
+# is preventing.
 GPU_ONLY_BACKENDS: frozenset[str] = frozenset({"loger", "loger_star"})
 
 ALL_MODELS = SEGMENTATION_MODELS + MAPPING_MODELS + BACKBONE_MODELS

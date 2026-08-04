@@ -1,9 +1,9 @@
-"""Run settings dialog for simple mode.
+"""The run settings dialog, and the live form it edits.
 
 Rather than keep a second copy of the run form, the dialog borrows the real one
-out of the advanced sidebar and hands it back when it closes. Simple mode never
-shows that sidebar, so there is nothing to take it from, and every setting stays
-a single widget with a single value.
+out of the hidden holder that owns it and hands it back when it closes. The form
+is never on screen otherwise, so this is the only place its settings are edited,
+and every setting stays a single widget with a single value.
 
 Borrowing the live form means the widgets are edited in place, so Cancel cannot
 simply drop a pending copy. The caller snapshots the settings before opening and
@@ -51,6 +51,13 @@ class RunSettingsDialog(QDialog):
             | QDialogButtonBox.StandardButton.Cancel
             | QDialogButtonBox.StandardButton.Reset
         )
+        # Named for what they do to the settings. "OK" and "Cancel" say nothing
+        # about whether the edit is kept, which is the only question here.
+        ok = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        ok.setText("Save settings")
+        ok.setProperty("cta", "true")
+        ok.setDefault(True)
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Discard")
         reset = buttons.button(QDialogButtonBox.StandardButton.Reset)
         # The standard is the organisation preset, not the values a fresh window
         # happens to construct: those two drifted apart the moment a preset
@@ -68,19 +75,19 @@ class RunSettingsDialog(QDialog):
         layout.addWidget(buttons)
         self.resize(560, 640)
 
-        # Per-run values come from the pass table in simple mode, so showing
+        # Per-run values come from the pass table on the Run step, so showing
         # them here would invite edits that go nowhere.
         for widget in per_run:
             widget.setVisible(False)
 
     def restore_form(self) -> None:
-        """Put the form back in the sidebar. Safe to call more than once."""
+        """Put the form back in its holder. Safe to call more than once."""
         if self._restored:
             return
         self._restored = True
         for widget in self._per_run:
             widget.setVisible(True)
-        self._window._run_tab_layout.addWidget(self._form)
+        self._window._form_home_layout.addWidget(self._form)
 
     def done(self, result: int) -> None:
         # Covers OK, Cancel and Escape: the form must never be left inside a

@@ -1,11 +1,16 @@
-"""System tab: gauges tick only while visible, benchmark fills from the probe.
+"""The system panel: its gauges, its recorded history, and the memory grade.
 
 Colour assertions go through core.theme rather than hex literals, so a palette
 change moves the theme test and these together instead of failing here for a
 reason that has nothing to do with the panel.
+
+Where the panel is shown, and when its 1 Hz poll runs, belongs to This machine
+and is covered in tests/gui/test_machine_page.py.
 """
 
 from __future__ import annotations
+
+from types import SimpleNamespace
 
 from deepreefmap_gui.core.theme import BLOCK, UPDATE
 
@@ -20,17 +25,6 @@ def _recorded_runs_text(window) -> str:
     parts += [w.text() for w in window._recorded_runs_container.findChildren(QLabel)]
     parts += [w.styleSheet() for w in window._recorded_runs_container.findChildren(QProgressBar)]
     return " ".join(parts)
-
-
-def test_system_tab_is_registered(window) -> None:
-    assert window._sidebar_tabs.tabText(window._TAB_SYSTEM) == "System"
-
-
-def test_gauge_timer_runs_only_on_the_system_tab(window) -> None:
-    window._on_sidebar_tab_changed(window._TAB_SYSTEM)
-    assert window._sys_timer.isActive()
-    window._on_sidebar_tab_changed(window._TAB_RUN)
-    assert not window._sys_timer.isActive()
 
 
 def test_gauges_reflect_a_sampled_utilisation(window, monkeypatch) -> None:
@@ -87,34 +81,40 @@ def _low_ram_profile(probe):
     )
 
 
-def test_memory_warning_shows_inline_notice_and_icon(window, monkeypatch) -> None:
+def _queue_pass(window, *, seconds: float, fps: int) -> None:
+    """Give the grade a pass to read: it sizes the longest one queued."""
+    window._survey_rows = [SimpleNamespace(begin_s=0.0, end_s=seconds)]
+    window._fps_spin.setValue(fps)
+
+
+def test_a_memory_risk_shows_the_inline_notice(window, monkeypatch) -> None:
     import deepreefmap_gui.profiling.system_probe as probe
 
-    # Advanced grades the one video in the form; simple grades the queued batch.
-    window._set_ui_mode("advanced")
     monkeypatch.setattr(probe, "probe_system", lambda *a, **k: _low_ram_profile(probe))
-    window._video_duration_s = 378.0
-    window._fps_spin.setValue(5)
+    _queue_pass(window, seconds=378.0, fps=5)
     window._update_memory_profile_warning()
+
     assert not window._memory_notice.isHidden()
-    assert not window._memory_warn_icon.isHidden()
-    # The icon tooltip is multiline rich text, not one long plain line.
-    assert "<br>" in window._memory_warn_icon.toolTip()
+    # A whole sentence in a narrow column, so it wraps rather than clipping.
+    assert window._memory_notice.wordWrap()
+    # The same grade in plain words, for the readiness view and the header button.
+    assert "exhaust memory" in window._memory_advisory
 
 
-def test_memory_warning_hidden_without_a_video(window) -> None:
-    window._video_duration_s = None  # no frame count is knowable yet
+def test_no_memory_notice_until_a_pass_is_queued(window) -> None:
+    window._survey_rows = []  # no frame count is knowable yet
     window._update_memory_profile_warning()
+
     assert window._memory_notice.isHidden()
-    assert window._memory_warn_icon.isHidden()
+    assert window._memory_advisory == ""
 
 
-def test_memory_icon_colour_tracks_warn_vs_block(window, monkeypatch) -> None:
+def test_the_memory_notice_colour_tracks_warn_against_block(window, monkeypatch) -> None:
+    """Amber and red have to stay distinguishable: one says the pass may spill
+    into swap, the other says it is expected to run out and stop."""
     import deepreefmap_gui.profiling.system_probe as probe
 
-    window._set_ui_mode("advanced")
-    window._video_duration_s = 378.0
-    window._fps_spin.setValue(5)
+    _queue_pass(window, seconds=378.0, fps=5)
 
     def profile(avail_gb, swap_gb):
         return probe.SystemProfile(
@@ -128,21 +128,14 @@ def test_memory_icon_colour_tracks_warn_vs_block(window, monkeypatch) -> None:
     # Fits only with swap -> amber warn.
     monkeypatch.setattr(probe, "probe_system", lambda *a, **k: profile(20, 30))
     window._update_memory_profile_warning()
-    assert UPDATE in window._memory_warn_icon.text()
+    assert not window._memory_notice.isHidden()
+    assert UPDATE in window._memory_notice.styleSheet()
+    assert BLOCK not in window._memory_notice.styleSheet()
 
-    # Exceeds RAM and swap -> red block. The icon colour must change, not just the text.
+    # Exceeds RAM and swap -> red block.
     monkeypatch.setattr(probe, "probe_system", lambda *a, **k: profile(6, 0))
     window._update_memory_profile_warning()
-    assert BLOCK in window._memory_warn_icon.text()
-
-
-def test_memory_icon_click_opens_system_tab(window) -> None:
-    # The System tab is the advanced destination. Simple mode routes the same
-    # icon to the setup step instead (see tests/gui/test_simple_setup.py).
-    window._set_ui_mode("advanced")
-    window._sidebar_tabs.setCurrentIndex(window._TAB_RUN)
-    window._memory_warn_icon.clicked.emit()
-    assert window._sidebar_tabs.currentIndex() == window._TAB_SYSTEM
+    assert BLOCK in window._memory_notice.styleSheet()
 
 
 def test_recorded_runs_summary_shows_peak_and_risk(window, monkeypatch) -> None:

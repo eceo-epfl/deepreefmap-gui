@@ -8,14 +8,13 @@ from deepreefmap_gui.survey.models import RunRecord
 
 
 @pytest.fixture
-def analysis_window(simple_window, tmp_path):
-    window = simple_window
+def analysis_window(window, out_root):
     store = window._survey_store()
     _transect, _video, pass_ = seed_pass(store)
     run = RunRecord(pass_id=pass_.id, run_dir_name="t1__p01", status="succeeded")
     store.add_run(run)
     cls = window._classes_config.classes[0]
-    run_dir = tmp_path / "t1__p01"
+    run_dir = out_root / "t1__p01"
     run_dir.mkdir()
     (run_dir / "benthic_cover.json").write_text(json.dumps({
         "classes": {str(cls.id): {"name": cls.name, "count": 30.0, "fraction": 0.3}},

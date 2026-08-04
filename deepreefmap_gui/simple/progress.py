@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-# Badge vocabulary. Position is not a state here — the checked pill in the
+# Badge vocabulary. Position is not a state here: the checked pill in the
 # header already says which step you are on, so the badge is free to carry
 # meaning only.
 TODO = "todo"  # nothing done yet, and nothing wrong
@@ -23,10 +23,10 @@ SECTION_STATES = (TODO, OK, ATTENTION, BLOCKED)
 # the user can get there, so the verdict carries the destination rather than
 # spelling out directions the page cannot follow for them.
 FIX_HERE = ""  # fixed on the page that shows it, so no destination
-FIX_SETUP = "setup"  # this machine is not ready, and setup holds the actions
+FIX_MACHINE = "machine"  # this computer is not ready, and This machine holds the actions
 FIX_SETTINGS = "settings"  # the run settings are at fault, and the dialog holds them
 
-FIX_DESTINATIONS = (FIX_HERE, FIX_SETUP, FIX_SETTINGS)
+FIX_DESTINATIONS = (FIX_HERE, FIX_MACHINE, FIX_SETTINGS)
 
 
 @dataclass(frozen=True)
@@ -110,12 +110,6 @@ def run_gate(
         return SectionState(TODO, "no videos yet", "Add the videos you want processed.")
 
     counts = _passes(pass_count)
-    if unassigned:
-        return SectionState(
-            BLOCKED,
-            f"{counts} · {unassigned} to assign",
-            f"{_passes(unassigned)} still need a transect before this batch can run.",
-        )
     if not has_preset:
         return SectionState(
             BLOCKED,
@@ -129,7 +123,7 @@ def run_gate(
             counts,
             f"The {gpu_only_mapper} processing method requires a graphics card, "
             "and none was detected.",
-            fix=FIX_SETUP,
+            fix=FIX_MACHINE,
         )
     if missing_models:
         return SectionState(
@@ -137,7 +131,7 @@ def run_gate(
             counts,
             f"{_plural(len(missing_models), 'required model')} not installed "
             f"({', '.join(missing_models)}).",
-            fix=FIX_SETUP,
+            fix=FIX_MACHINE,
         )
     if failed:
         return SectionState(
@@ -145,6 +139,64 @@ def run_gate(
             f"{counts} · {failed} failed",
             f"{_passes(failed)} failed. The log holds the error; the batch can be run again.",
         )
+    # Not a blocker, and deliberately below the ones that are. A pass with no
+    # transect processes perfectly well; it just cannot be compared against
+    # repeat passes of the same place afterwards, which is worth saying once
+    # while there is still time to assign it.
+    if unassigned:
+        return SectionState(
+            OK,
+            f"{counts} · {unassigned} without a transect",
+            f"{_passes(unassigned)} will run without a transect, so they will not be "
+            "compared against repeat passes.",
+        )
     if remaining:
         return SectionState(OK, f"{counts} · {remaining} to process")
     return SectionState(OK, f"{counts} · all processed")
+
+
+def machine_state(
+    *,
+    unmet: int,
+    advisory: str = "",
+    update_version: str = "",
+) -> SectionState:
+    """What the computer itself has to say, for the header button that opens it.
+
+    Deliberately the same vocabulary as the steps, and computed from the same
+    checks the Run gate blocks on, so the header cannot report a healthy machine
+    while the Process button refuses to start for want of a model.
+
+    Two things are reported, and they are different in kind. An unmet
+    requirement stops work and is the state; an available update is a chore that
+    can wait, so it is never the state and only ever named in the sentence. The
+    button paints it as its own glyph, which is why it is returned separately
+    rather than folded into a severity.
+    """
+    version_note = f"Version {update_version} is available." if update_version else ""
+    if unmet:
+        return SectionState(
+            BLOCKED,
+            _plural(unmet, "requirement") + " not met",
+            " ".join(
+                filter(
+                    None,
+                    [
+                        f"{_plural(unmet, 'requirement')} for processing not met.",
+                        version_note,
+                    ],
+                )
+            ),
+        )
+    if advisory:
+        # Not a bare "Ready": the button paints a warning glyph in this state,
+        # and a name that says the machine is fine beside an icon that says it
+        # is not leaves a screen-reader user with the half that is wrong.
+        return SectionState(
+            ATTENTION,
+            "Ready, with a warning",
+            " ".join(filter(None, [advisory, version_note])),
+        )
+    if update_version:
+        return SectionState(OK, "Ready", version_note)
+    return SectionState(OK, "Ready", "This computer is ready to process.")

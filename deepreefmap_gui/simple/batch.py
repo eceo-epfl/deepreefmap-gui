@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
 from deepreefmap_gui.core.theme import (
     GUTTER,
     RADIUS_SM,
+    SPACE_SM,
     TEXT_DIM,
     TEXT_MUTED,
     WARN_BG,
@@ -57,8 +58,8 @@ from deepreefmap_gui.simple.progress import (
     ATTENTION,
     BLOCKED,
     FIX_HERE,
+    FIX_MACHINE,
     FIX_SETTINGS,
-    FIX_SETUP,
     SectionState,
     run_gate,
 )
@@ -114,7 +115,7 @@ _ProbedClip = tuple[str, tuple[float, float]]
 
 # Button text per fix destination, so the strip names the place it goes rather
 # than describing the journey. The header entry point uses the same words.
-_FIX_ACTIONS = {FIX_SETUP: "Open Environment", FIX_SETTINGS: "Edit settings…"}
+_FIX_ACTIONS = {FIX_MACHINE: "Open This machine", FIX_SETTINGS: "Edit settings…"}
 
 def _mmss(seconds: float) -> str:
     return f"{int(seconds) // 60}:{int(seconds) % 60:02d}"
@@ -142,7 +143,7 @@ def _diagnose_failure(text: str) -> str:
     if "no space left" in low or "disk" in low and "full" in low:
         return "Out of disk space. Free space and process the pass again."
     if "not found" in low and ("model" in low or "checkpoint" in low or ".pt" in low):
-        return "A required model is not installed. Install it under Environment."
+        return "A required model is not installed. Install it under This machine."
     if any(word in low for word in ("decode", "codec", "corrupt", "unreadable")):
         return "The video could not be read. Check the clip copied off the camera intact."
     return _one_sentence(text) or "The run failed. No cause was recorded."
@@ -199,13 +200,21 @@ def _failed_pass_label(transect: Transect | None, run_dir_name: str) -> str:
     return f"{name} pass {number}" if number is not None else name
 
 
+def _action_label(text: str) -> QLabel:
+    """What a row of actions acts on, so the buttons need not say it each."""
+    label = QLabel(text)
+    label.setStyleSheet(f"color: {TEXT_MUTED};")
+    return label
+
+
 def _style_warning_combo(combo: QComboBox, *, ok: bool, filled: bool = True) -> None:
     """Mark a dropdown that needs a second look.
 
-    ``filled`` is for the cell that stops the batch — an unassigned transect —
-    which has to look wrong from across the room. The outlined variant is for a
-    cell that is merely worth checking, and which may be right: filling every
-    row of a genuinely one-way survey turns the table amber and says nothing.
+    ``filled`` is for a cell that has to look wrong from across the room. The
+    outlined variant is for one that is merely worth checking, and which may be
+    right: filling every row of a genuinely one-way survey turns the table amber
+    and says nothing. A skipped transect takes the outlined variant, because
+    skipping is a choice rather than an omission.
 
     A per-widget stylesheet replaces the global QComboBox rule outright, so both
     variants restate the padding and radius they displace.
@@ -357,7 +366,9 @@ def _clip_sort_key(row: _PassRow) -> tuple[int, str]:
 class _SurveyJob:
     run: RunRecord
     pass_: TransectPass
-    transect: Transect
+    # None for a pass processed without one. The run is then unscaled and carries
+    # no transect block in its manifest.
+    transect: Transect | None
     videos: list[VideoAsset]
     dir_name: str
 
@@ -396,7 +407,7 @@ class SimpleBatchMixin(MixinBase):
         # one block: they answer the same question, "what is about to happen".
         header_card, header_layout = section_card()
         name_row = QHBoxLayout()
-        name_row.setSpacing(6)
+        name_row.setSpacing(SPACE_SM)
         name_row.addWidget(QLabel("Batch"))
         self._survey_batch_name = QLineEdit(datetime.now().strftime("%Y-%m-%d"))  # noqa: DTZ005 (local time is intended: this is a user-facing default name)
         name_row.addWidget(self._survey_batch_name, 1)
@@ -409,7 +420,7 @@ class SimpleBatchMixin(MixinBase):
         header_layout.addLayout(name_row)
 
         preset_row = QHBoxLayout()
-        preset_row.setSpacing(6)
+        preset_row.setSpacing(SPACE_SM)
         self._survey_preset_label = QLabel(self._survey_preset_summary())
         self._survey_preset_label.setWordWrap(True)
         self._survey_preset_label.setStyleSheet(f"color: {TEXT_MUTED};")
@@ -509,44 +520,21 @@ class SimpleBatchMixin(MixinBase):
         self._survey_summary_label.setStyleSheet(f"color: {TEXT_MUTED};")
         self._survey_summary_label.setVisible(False)
         passes_layout.addWidget(self._survey_summary_label)
-        layout.addWidget(passes_card, 1)
 
-        # Two rows: what you do to the whole batch, then what you do to one pass.
-        bulk_buttons = QHBoxLayout()
-        bulk_buttons.setSpacing(6)
+        # The actions live inside the card, under the table they act on. Loose
+        # beneath it they were seven controls in two ungrouped rows, with no
+        # indication of which ones needed a selection first.
+        #
+        # Each row is labelled with what it acts on, which is also what makes
+        # "Assign to…" readable: it used to finish its sentence in the label of
+        # the checkbox beside it.
+        add_row = QHBoxLayout()
+        add_row.setSpacing(SPACE_SM)
+        add_row.addWidget(_action_label("Add to this batch"))
         self._survey_add_btn = QPushButton("Add videos…")
+        self._survey_add_btn.setToolTip("Pick clips off the card to queue as passes.")
         self._survey_add_btn.clicked.connect(self._on_survey_add_videos)
-        self._survey_assign_btn = QPushButton("Assign selected to…")
-        self._survey_assign_btn.setToolTip(
-            "Set the transect on every selected row at once. Shift-click or "
-            "Ctrl-click to select a run of rows."
-        )
-        self._survey_assign_btn.clicked.connect(self._on_survey_assign_selected)
-        # Named for the action it modifies rather than for what it does: on its
-        # own "Alternate direction" says nothing about when it takes effect.
-        self._survey_alternate_check = QCheckBox("…alternating forward/reverse")
-        self._survey_alternate_check.setToolTip(
-            "Changes what Assign does: it sets forward, reverse, forward… down "
-            "the selected rows, for a transect swum out and back."
-        )
-        self._survey_sort_btn = QPushButton("Sort by time")
-        self._survey_sort_btn.setProperty("quiet", "true")
-        self._survey_sort_btn.setToolTip("Order the rows by when each clip was recorded.")
-        self._survey_sort_btn.clicked.connect(self._on_survey_sort_by_time)
-        for widget in (
-            self._survey_add_btn,
-            self._survey_assign_btn,
-            self._survey_alternate_check,
-            self._survey_sort_btn,
-        ):
-            bulk_buttons.addWidget(widget)
-        bulk_buttons.addStretch(1)
-        layout.addLayout(bulk_buttons)
-
-        row_buttons = QHBoxLayout()
-        row_buttons.setSpacing(6)
-        # A CSV of the day's dives is a queue too, so it fills this one rather
-        # than starting a second kind of batch somewhere else.
+        add_row.addWidget(self._survey_add_btn)
         self._survey_import_btn = QPushButton("Import queue from CSV…")
         self._survey_import_btn.setToolTip(
             "Queue passes from a spreadsheet. Columns: videos, timestamps "
@@ -554,6 +542,35 @@ class SimpleBatchMixin(MixinBase):
             "transect naming a planned transect."
         )
         self._survey_import_btn.clicked.connect(self._on_survey_import_csv)
+        add_row.addWidget(self._survey_import_btn)
+        add_row.addStretch(1)
+        self._survey_sort_btn = QPushButton("Sort by time")
+        self._survey_sort_btn.setProperty("quiet", "true")
+        self._survey_sort_btn.setToolTip("Order the rows by when each clip was recorded.")
+        self._survey_sort_btn.clicked.connect(self._on_survey_sort_by_time)
+        add_row.addWidget(self._survey_sort_btn)
+        passes_layout.addLayout(add_row)
+
+        selection_row = QHBoxLayout()
+        selection_row.setSpacing(SPACE_SM)
+        self._survey_selection_label = _action_label("With the selected rows")
+        selection_row.addWidget(self._survey_selection_label)
+        self._survey_assign_btn = QPushButton("Assign to…")
+        self._survey_assign_btn.setToolTip(
+            "Set the transect on every selected row at once. Shift-click or "
+            "Ctrl-click to select a run of rows."
+        )
+        self._survey_assign_btn.clicked.connect(self._on_survey_assign_selected)
+        selection_row.addWidget(self._survey_assign_btn)
+        # Reads on its own. It used to be "…alternating forward/reverse",
+        # finishing a sentence begun by the button beside it, so the label said
+        # nothing at all if you happened to read it first.
+        self._survey_alternate_check = QCheckBox("Alternate direction")
+        self._survey_alternate_check.setToolTip(
+            "Changes what Assign does: it sets forward, reverse, forward… down "
+            "the selected rows, for a transect swum out and back."
+        )
+        selection_row.addWidget(self._survey_alternate_check)
         self._survey_split_btn = QPushButton("Add another pass from this clip")
         self._survey_split_btn.setToolTip(
             "One recording can hold several swims. This copies the selected row "
@@ -565,14 +582,12 @@ class SimpleBatchMixin(MixinBase):
             "Take the selected pass out of this batch. The video file is left alone."
         )
         self._survey_remove_btn.clicked.connect(self._on_survey_remove_pass)
-        for btn in (
-            self._survey_import_btn,
-            self._survey_split_btn,
-            self._survey_remove_btn,
-        ):
-            row_buttons.addWidget(btn)
-        row_buttons.addStretch(1)
-        layout.addLayout(row_buttons)
+        selection_row.addWidget(self._survey_split_btn)
+        selection_row.addWidget(self._survey_remove_btn)
+        selection_row.addStretch(1)
+        passes_layout.addLayout(selection_row)
+
+        layout.addWidget(passes_card, 1)
         self._recompute_row_actions()
 
         # The run button is the Run step's forward action, so the wizard footer
@@ -666,8 +681,9 @@ class SimpleBatchMixin(MixinBase):
         if not run_dir.is_dir():
             self._status_label.setText(f"Run folder is missing: {run_dir.name}")
             return
-        # Travel first: _update_work_area only reveals the viewer in Browse, so
-        # loading from the Run step would leave the cloud with nowhere to render.
+        # Land in Browse first, so the run that just finished is opened from the
+        # archive it now belongs to. The load itself enters View mode when the
+        # cloud is on screen, which is where the viewer pane is revealed.
         self._go_to_step("browse")
         self._auto_load_run(run_dir)
 
@@ -678,22 +694,19 @@ class SimpleBatchMixin(MixinBase):
         if self._survey_worker_running:
             self._status_label.setText("Unavailable while processing.")
             return
-        per_run = [
-            self._video_row_widget,
-            self._range_row_widget,
-            self._run_name_widget,
-            self._transect_length_widget,
-        ]
+        # The output root is the one thing left in the form that is not a
+        # setting, and This machine is where it is edited. The group goes rather
+        # than the row inside it, because This machine has borrowed the controls
+        # out of it and an empty titled frame says nothing.
+        per_run: list[QWidget] = [self._output_group]
         # The dialog edits the live form widgets, so abandoning the edit means
         # putting the values back here rather than dropping a pending copy.
         before = self._snapshot_form_settings()
         dialog = RunSettingsDialog(self, self._setup_page, per_run)
-        self._settings_dialog_open = True
         try:
             accepted = dialog.exec() == QDialog.DialogCode.Accepted
         finally:
             dialog.restore_form()
-            self._settings_dialog_open = False
         if accepted:
             self._adopt_form_as_preset()
         else:
@@ -809,15 +822,31 @@ class SimpleBatchMixin(MixinBase):
                 self._fill_transect_combo(combo, row.transect_id)
 
     def _fill_transect_combo(self, combo: QComboBox, selected: uuid.UUID | None) -> None:
+        """The transects this pass could belong to, or none of them.
+
+        "Skip transect" rather than "Not assigned yet": the pass runs either way,
+        so this is a choice with a consequence you can read, not a blank waiting
+        to be filled. What it costs is comparison -- a pass filed against no
+        transect cannot be set beside repeat passes of the same place.
+        """
         combo.blockSignals(True)
         combo.clear()
-        combo.addItem("Not assigned yet", None)
+        combo.addItem("Skip transect", None)
+        combo.setItemData(
+            0,
+            "Process this clip without filing it against a transect. It will not "
+            "be scaled to a tape length, and it will not appear in the "
+            "repeatability comparison.",
+            Qt.ItemDataRole.ToolTipRole,
+        )
         for transect in self._survey_transects:
             combo.addItem(transect.name, str(transect.id))
             if selected is not None and transect.id == selected:
                 combo.setCurrentIndex(combo.count() - 1)
         combo.blockSignals(False)
-        _style_warning_combo(combo, ok=combo.currentData() is not None)
+        # Outlined rather than filled: skipping is allowed, so the cell says
+        # "this one is different" rather than "this one is wrong".
+        _style_warning_combo(combo, ok=combo.currentData() is not None, filled=False)
 
     # --- Table shape ---
 
@@ -975,9 +1004,13 @@ class SimpleBatchMixin(MixinBase):
         paths, _ = QFileDialog.getOpenFileNames(
             self,
             "Add videos",
-            str(self._settings.value("last_video_path", "")),
+            str(self._settings.value("last_video_dir", "")),
             "Videos (*.mp4 *.mov *.avi *.mkv);;All files (*)",
         )
+        if paths:
+            # Footage arrives a card at a time, so the next batch of clips is
+            # almost always in the folder the last one came from.
+            self._settings.setValue("last_video_dir", str(Path(paths[0]).parent))
         self._add_video_paths(paths)
 
     def _add_video_paths(self, paths: list[str]) -> None:
@@ -1092,8 +1125,10 @@ class SimpleBatchMixin(MixinBase):
             end_s=sum(video.duration_s or 0.0 for video in videos),
             transect_id=only,
         ))
-        if only is not None:
-            self._persist_survey_row(self._survey_rows[-1])
+        # Written whether or not a transect was picked. A queued pass is a real
+        # thing the moment the clip is added; waiting for a transect was what
+        # made "process this clip" impossible without one.
+        self._persist_survey_row(self._survey_rows[-1])
 
     def _on_survey_assign_selected(self) -> None:
         """Offer the transect list for every selected row at once."""
@@ -1158,11 +1193,12 @@ class SimpleBatchMixin(MixinBase):
         path_str, _ = QFileDialog.getOpenFileName(
             self,
             "Import passes from CSV",
-            str(self._settings.value("last_video_path", "")),
+            str(self._settings.value("last_csv_dir", "")),
             "CSV files (*.csv);;All files (*)",
         )
         if not path_str:
             return
+        self._settings.setValue("last_csv_dir", str(Path(path_str).parent))
         try:
             jobs = load_batch_csv(Path(path_str))
         except (OSError, ValueError) as exc:
@@ -1342,13 +1378,15 @@ class SimpleBatchMixin(MixinBase):
         self._recompute_survey_start()
 
     def _write_survey_row(self, row: _PassRow) -> None:
-        """Insert or update this row's pass. An unassigned row has no pass yet.
+        """Insert or update this row's pass.
+
+        A row with no transect is written like any other: a pass may name none,
+        and refusing to record one was what made "process this clip" impossible
+        without leaving the survey behind.
 
         Separate from _persist_survey_row so a bulk action can write every row it
         touches and rebuild the gate once at the end rather than per row.
         """
-        if row.transect_id is None:
-            return
         store = self._survey_store()
         batch = self._ensure_survey_batch()
         extra_video_ids = [video.id for video in row.videos[1:]]
@@ -1507,7 +1545,6 @@ class SimpleBatchMixin(MixinBase):
             return
 
         unassigned = sum(1 for row in self._survey_rows if row.transect_id is None)
-        # An unassigned row has no pass yet, so it never counts as remaining.
         remaining = self._survey_remaining_rows() if self._survey_rows else []
         missing = self._survey_missing_models() if self._survey_preset is not None else []
         gate = run_gate(
@@ -1525,10 +1562,6 @@ class SimpleBatchMixin(MixinBase):
         if gate.state == BLOCKED:
             self._set_survey_forward_action("process", count=len(remaining))
             self._survey_start_btn.setEnabled(False)
-            if unassigned:
-                # The message sits on the button itself: the status label is at
-                # the far end of the window, easy to miss from the pass table.
-                self._survey_start_btn.setText(f"Assign transects first ({unassigned} to do)")
             self._status_label.setText(gate.reason)
         elif gate.state == ATTENTION and gate.reason:
             # A warning still leaves the batch runnable, so the button carries no
@@ -1540,22 +1573,28 @@ class SimpleBatchMixin(MixinBase):
         elif remaining:
             self._set_survey_forward_action("process", count=len(remaining))
             self._survey_start_btn.setEnabled(True)
-        else:
+        elif self._survey_rows:
+            # Everything queued has run, so going to look at it is the forward
+            # move. Only once there is something to look at: on an empty batch
+            # this button used to greet a diver who had just arrived with
+            # "Open Browse", as though the day's work were already done.
             self._set_survey_forward_action("browse")
-            self._survey_start_btn.setEnabled(bool(self._survey_rows))
+            self._survey_start_btn.setEnabled(True)
+        else:
+            self._set_survey_forward_action("process", count=0)
+            self._survey_start_btn.setEnabled(False)
         self._survey_start_btn.setToolTip(gate.reason)
         self._refresh_section_state()
         # The queued passes drive both the memory grade and the setup step's
         # models row, so re-read them whenever the batch changes.
         self._update_memory_profile_warning()
-        self._refresh_setup_page()
+        self._refresh_readiness_view()
 
     def _paint_not_ready_strip(self, gate: SectionState) -> None:
         """Show the blocker only when getting to it needs leaving this page.
 
-        An unassigned transect is fixed in the table two rows down, so a strip
-        pointing at it would be noise. A missing model or a missing graphics card
-        is not fixable from here at all, which is what the strip is for.
+        A missing model or a missing graphics card is not fixable from here at
+        all, which is what the strip is for.
         """
         if gate.state != BLOCKED or gate.fix == FIX_HERE:
             self._survey_not_ready.clear()
@@ -1567,8 +1606,12 @@ class SimpleBatchMixin(MixinBase):
         gate = getattr(self, "_survey_gate", None)
         if gate is None:
             return
-        if gate.fix == FIX_SETUP:
-            self._set_simple_section("setup")
+        if gate.fix == FIX_MACHINE:
+            self._set_simple_section("machine")
+            # The view is sticky, so naming the destination is not enough: every
+            # blocker that routes here is explained on the readiness rows, and
+            # each of those rows carries the button that fixes it.
+            self._set_machine_view("readiness")
         elif gate.fix == FIX_SETTINGS:
             self._on_edit_run_settings()
 
@@ -1586,7 +1629,11 @@ class SimpleBatchMixin(MixinBase):
             # started: the word is the promise that the finished ones stay done
             # and the half-processed one picks up from its cached frames.
             verb = "Continue batch" if self._survey_processed_count() else "Next: Process"
-            self._survey_start_btn.setText(f"{verb} ({count}) →")
+            # No count on an empty batch: "(0)" reads as a quantity when what it
+            # means is that nothing has been queued yet.
+            self._survey_start_btn.setText(
+                f"{verb} ({count}) →" if count else f"{verb} →"
+            )
             self._survey_start_btn.clicked.connect(self._on_survey_start)
 
     def _survey_processed_count(self) -> int:
@@ -1661,7 +1708,7 @@ class SimpleBatchMixin(MixinBase):
         return answer == QMessageBox.StandardButton.Yes
 
     def _pass_dir_name(
-        self, pass_: TransectPass, transect: Transect, store: SurveyStore
+        self, pass_: TransectPass, transect: Transect | None, store: SurveyStore
     ) -> str:
         """The run-dir name a pass keeps for every attempt at it.
 
@@ -1670,13 +1717,22 @@ class SimpleBatchMixin(MixinBase):
         scratch. Keying the name on the pass id makes a retry land back in the
         directory holding that work, where the library's own resume cache picks
         it up. The ordinal is there only so the folder reads as a pass.
+
+        A pass with no transect is named after its clip instead, which is the
+        only thing it has to be recognised by in a folder listing.
         """
-        siblings = store.list_passes(transect_id=pass_.transect_id)
+        if transect is not None:
+            siblings = store.list_passes(transect_id=pass_.transect_id)
+            stem = transect.name
+        else:
+            siblings = [p for p in store.list_passes() if p.transect_id is None]
+            video = store.get_video(pass_.video_id)
+            stem = Path(video.file_name).stem if video is not None else "unassigned"
         number = next(
             (index for index, sibling in enumerate(siblings, start=1) if sibling.id == pass_.id),
             1,
         )
-        return self._sanitize_run_name(f"{transect.name}__p{number:02d}__{pass_.id.hex[:8]}")
+        return self._sanitize_run_name(f"{stem}__p{number:02d}__{pass_.id.hex[:8]}")
 
     def _on_survey_start(self) -> None:
         if self._survey_preset is None or self._survey_worker_running:
@@ -1694,9 +1750,11 @@ class SimpleBatchMixin(MixinBase):
             pass_ = store.get_pass(row.pass_id)
             if pass_ is None:
                 continue
-            transect = store.get_transect(pass_.transect_id)
-            if transect is None:
-                continue
+            transect = (
+                store.get_transect(pass_.transect_id)
+                if pass_.transect_id is not None
+                else None
+            )
             dir_name = self._pass_dir_name(pass_, transect, store)
             run = RunRecord(pass_id=pass_.id, run_dir_name=dir_name)
             store.add_run(run)
@@ -1762,6 +1820,7 @@ class SimpleBatchMixin(MixinBase):
         from deepreefmap_gui.profiling.instrumentation import instrumented_reconstruction
         from deepreefmap_gui.runs.seeding import seed_from_settings
         from deepreefmap_gui.simple.setup import ROUGH_PASS_BYTES
+        from deepreefmap_gui.system.log_view import close_run_log_file, open_run_log_file
 
         # Which model versions this batch ran against, constant across its passes.
         # These are HuggingFace commit revisions read off the cache, so the call
@@ -1793,8 +1852,11 @@ class SimpleBatchMixin(MixinBase):
                     store.set_run_status(pending.run.id, "cancelled")
                 break
             # The transect name reads as a place, not the run-dir slug: the panel
-            # already carries the "pass N of M" number, so the name need not.
-            self._sig_survey_progress.emit(index, len(jobs), job.transect.name)
+            # already carries the "pass N of M" number, so the name need not. A
+            # pass with no transect is named by its clip, which is the only
+            # thing it has to be recognised by.
+            label = job.transect.name if job.transect else job.videos[0].file_name
+            self._sig_survey_progress.emit(index, len(jobs), label)
             store.set_run_status(job.run.id, "running")
             out_dir = out_root / job.dir_name
             out_dir.mkdir(parents=True, exist_ok=True)
@@ -1816,11 +1878,21 @@ class SimpleBatchMixin(MixinBase):
                     f"Pass {index} of {len(jobs)}: reusing prepared frames from an "
                     "earlier attempt."
                 )
+            # A log file per pass, beside the outputs it describes. The live log
+            # view is in memory and a batch runs unattended for hours, so
+            # without this a pass that failed overnight leaves nothing to read
+            # in the morning. RunDetailPanel already looks for run.log here.
+            log_handler = open_run_log_file(out_dir)
+            # Published on the window as well as held here, so closing the
+            # window mid-pass detaches it. The handler is on the root logger,
+            # and one left attached goes on writing into a run directory
+            # nothing is running in any more.
+            self._run_log_file_handler = log_handler
             try:
                 instrumented_reconstruction(
                     video_paths=[video.path for video in job.videos],
                     output_dir=out_dir,
-                    transect_length=job.transect.length_m,
+                    transect_length=job.transect.length_m if job.transect else None,
                     begin_s=job.pass_.begin_s,
                     end_s=job.pass_.end_s,
                     run_name=job.dir_name,
@@ -1843,6 +1915,12 @@ class SimpleBatchMixin(MixinBase):
                 logger.exception("Pass %s failed", job.dir_name)
                 last_error = f"{job.dir_name}: {exc}"
                 store.set_run_status(job.run.id, "failed", error=str(exc)[:300])
+            finally:
+                # Closed per pass, not per batch: the next pass opens its own,
+                # and a handler left attached would keep writing into the
+                # previous pass's directory.
+                close_run_log_file(log_handler)
+                self._run_log_file_handler = None
         if disk_stopped and not last_error:
             last_error = "Ran out of disk space before every pass finished."
         self._sig_survey_done.emit(ok, len(jobs), last_error[:300])
@@ -1863,9 +1941,12 @@ class SimpleBatchMixin(MixinBase):
         # the processed ones once the batch that redid it has finished.
         for row in self._survey_rows:
             row.requeued = False
-        # These passes are the newest evidence of what a run costs on disk, so
-        # the setup step's footage capacity is measured again rather than kept.
+        # These passes are the newest evidence of what a run costs, so both
+        # estimates built on past runs are recomputed rather than kept: the
+        # footage capacity on disk, and the memory grade, which reads the peaks
+        # the batch just recorded instead of an analytic guess.
         self._footage_rate_cache = None
+        self._update_memory_profile_warning()
         self._end_run_controls()
         self._set_wizard_navigation_enabled(True)
         self._reset_progress_bars()
@@ -1909,14 +1990,6 @@ class SimpleBatchMixin(MixinBase):
         self._recompute_survey_start()
         self._refresh_data_manager()
         self._refresh_survey_analysis()
-
-    def _on_survey_stop(self) -> None:
-        if self._survey_cancel_event is not None:
-            self._survey_cancel_event.set()
-            # Release a paused worker, or it never reaches the cancel check.
-            if getattr(self, "_pause_event", None) is not None:
-                self._pause_event.set()
-            self._status_label.setText("Stopping survey batch…")
 
     def _running_status_item(self) -> QTableWidgetItem | None:
         """The status cell of the pass being processed, if one is."""

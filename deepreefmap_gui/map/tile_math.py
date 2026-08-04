@@ -43,7 +43,7 @@ def tile2deg(x: float, y: float, zoom: float) -> tuple[float, float]:
 def clamp_zoom(zoom: float) -> float:
     """Hold a zoom inside the layer's range.
 
-    Zoom is continuous — the map draws between tile levels — so this takes and
+    Zoom is continuous, because the map draws between tile levels, so this takes and
     returns a float; the integer level whose tiles are fetched is derived from it.
     """
     return max(float(MIN_ZOOM), min(float(MAX_ZOOM), zoom))

@@ -25,27 +25,41 @@ def require_torch() -> None:
 
 
 @pytest.fixture(autouse=True)
-def _reset_ui_mode(qapp):
-    """Keep the persisted UI mode from leaking between tests."""
+def _reset_setup_complete(qapp):
+    """Keep the persisted readiness acknowledgement from leaking between tests.
+
+    It decides whether a window opens on This machine or straight on Plan, so a
+    test that reaches ready would otherwise change where the next one starts.
+    """
     from PySide6.QtCore import QSettings
 
     settings = QSettings("ECEO", "deepreefmap")
-    for key in ("ui_mode", "setup_complete"):
-        settings.remove(key)
+    settings.remove("setup_complete")
     yield
-    for key in ("ui_mode", "setup_complete"):
-        settings.remove(key)
+    settings.remove("setup_complete")
+
+
+@pytest.fixture
+def out_root(tmp_path):
+    """The one output root every window in the suite writes under.
+
+    A subdirectory rather than tmp_path itself, so the input files a test writes
+    into tmp_path (videos, CSVs, preset files) are not inside the archive the run
+    scanner walks.
+    """
+    return tmp_path / "out"
 
 
 @pytest.fixture(autouse=True)
-def _tmp_output_root(qapp, tmp_path):
-    """Point the persisted output root at a temp dir: windows open in simple
-    mode by default and create survey.db under the root at construction."""
+def _tmp_output_root(qapp, out_root):
+    """Point the persisted output root at the temp dir: a window creates
+    survey.db under its root at construction, so this must be set before one is
+    built."""
     from PySide6.QtCore import QSettings
 
     settings = QSettings("ECEO", "deepreefmap")
     old = settings.value("output_root_dir")
-    settings.setValue("output_root_dir", str(tmp_path / "out"))
+    settings.setValue("output_root_dir", str(out_root))
     yield
     if old is None:
         settings.remove("output_root_dir")
@@ -61,9 +75,9 @@ def _machine_preset_path(tmp_path):
 def _isolate_survey_preset(tmp_path, monkeypatch):
     """Keep GUI tests off the developer's real survey settings.
 
-    Windows build in simple mode and load the settings at construction, and
-    _adopt_form_as_preset writes the machine override back on the return to
-    simple mode, so an unguarded test would both read and overwrite the file at
+    A window loads the settings at construction, and _adopt_form_as_preset
+    writes the machine override back when the settings dialog is accepted, so an
+    unguarded test would both read and overwrite the file at
     ~/.local/share/deepreefmap/survey_preset.yaml. Point it at a tmp path that
     does not exist and clear the admin override so the bundled preset loads.
     Follows the pattern in tests/survey/conftest.py.
@@ -155,19 +169,15 @@ def make_window(qapp):
 
 
 @pytest.fixture
-def window(make_window):
-    """A fresh DeepReefMapWindow. Function-scoped: tests mutate form state,
-    legend toggles and signals, so sharing an instance would leak state."""
-    return make_window()
+def window(make_window, out_root):
+    """A fresh DeepReefMapWindow rooted at out_root. Function-scoped: tests
+    mutate form state, legend toggles and signals, so sharing an instance would
+    leak state.
 
-
-@pytest.fixture
-def simple_window(window, tmp_path):
-    """A window in simple mode with its output root under tmp_path.
-
-    The starting point for the plan, batch, analysis and settings-dialog suites,
-    which each used to carry an identical copy of these two lines.
+    The root is set on the field as well as through the persisted setting the
+    window read at construction, so a test asserting where a run landed can read
+    that root off out_root rather than inferring it from QSettings.
     """
-    window._out_root_input.setText(str(tmp_path))
-    window._set_ui_mode("simple")
+    window = make_window()
+    window._out_root_input.setText(str(out_root))
     return window

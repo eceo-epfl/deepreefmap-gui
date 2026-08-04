@@ -15,14 +15,18 @@ import pytest
 
 
 @pytest.fixture
-def rooted(simple_window, tmp_path):
-    window = simple_window
+def window_at_first_root(window, tmp_path):
+    """A window rooted somewhere it can be moved off.
+
+    Two roots of its own rather than the suite's out_root, since what is under
+    test is the move between them.
+    """
     window._out_root_input.setText(str(tmp_path / "first"))
-    return window, tmp_path
+    return window
 
 
-def test_a_new_root_swaps_the_store_when_nothing_is_running(rooted):
-    window, tmp_path = rooted
+def test_a_new_root_swaps_the_store_when_nothing_is_running(window_at_first_root, tmp_path):
+    window = window_at_first_root
     first = window._survey_store()
 
     window._out_root_input.setText(str(tmp_path / "second"))
@@ -32,8 +36,8 @@ def test_a_new_root_swaps_the_store_when_nothing_is_running(rooted):
     assert second.path != first.path
 
 
-def test_a_running_batch_keeps_the_store_it_was_handed(rooted, caplog):
-    window, tmp_path = rooted
+def test_a_running_batch_keeps_the_store_it_was_handed(window_at_first_root, tmp_path, caplog):
+    window = window_at_first_root
     running = window._survey_store()
     window._survey_worker_running = True
 
@@ -45,8 +49,8 @@ def test_a_running_batch_keeps_the_store_it_was_handed(rooted, caplog):
     assert "while a batch is running" in caplog.text
 
 
-def test_the_swap_happens_once_the_batch_ends(rooted):
-    window, tmp_path = rooted
+def test_the_swap_happens_once_the_batch_ends(window_at_first_root, tmp_path):
+    window = window_at_first_root
     running = window._survey_store()
     window._survey_worker_running = True
     window._out_root_input.setText(str(tmp_path / "second"))

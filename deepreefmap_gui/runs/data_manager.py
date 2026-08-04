@@ -35,18 +35,17 @@ from PySide6.QtWidgets import (
 )
 
 from deepreefmap_gui.core.theme import (
-    BORDER,
-    BUTTON,
     GUTTER,
-    PRIMARY,
-    RADIUS_SM,
-    SURFACE_HI,
-    TEXT_MUTED,
+    SPACE_SM,
+    SPACE_XS,
     TEXT_SECONDARY,
-    WINDOW,
-    WINDOW_TEXT,
 )
-from deepreefmap_gui.core.widgets import EmptyState, FilterChips, section_card
+from deepreefmap_gui.core.widgets import (
+    EmptyState,
+    FilterChips,
+    section_card,
+    segmented_qss,
+)
 from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.map.overlays import transect_overlays
 from deepreefmap_gui.map.widget import SlippyMapWidget
@@ -55,15 +54,25 @@ from deepreefmap_gui.profiling.system_probe import format_bytes
 from deepreefmap_gui.runs.run_cards import points_label, related_run_counts
 from deepreefmap_gui.runs.run_detail import RunDetailPanel
 from deepreefmap_gui.runs.run_table import COL_NAME, RunTable
+from deepreefmap_gui.runs.video_detail import VideoDetailPanel
 from deepreefmap_gui.survey import catalogue
-from deepreefmap_gui.survey.catalogue import FacetGroup, RunEntry
+from deepreefmap_gui.survey.catalogue import (
+    VIDEO_FAILED,
+    VIDEO_PENDING,
+    VIDEO_PROCESSED,
+    VIDEO_UNPROCESSED,
+    FacetGroup,
+    RunEntry,
+    VideoLibraryEntry,
+)
 from deepreefmap_gui.survey.models.transect_pass import PASS_DIRECTIONS
 
 logger = logging.getLogger(__name__)
 
-# How the runs are grouped, not what they are: the clip library is its own
-# workspace now, so every entry here is a way of arranging the same runs.
-# Keys are persisted and test-pinned; only the labels say what each view does.
+# How the archive is arranged. The first two group runs; By video groups the
+# footage instead, and lists clips nothing has been cut from yet, which no
+# run-shaped view can show. Keys are persisted and test-pinned; only the labels
+# say what each view does.
 _FACETS = (
     ("runs", "All runs"),
     ("transects", "By transect"),
@@ -74,7 +83,7 @@ _FACETS = (
 # rail is hidden.
 _GROUPED_FACETS = ("transects", "videos")
 
-_RAIL_TITLES = {"transects": "Transects", "videos": "Videos"}
+_RAIL_TITLES = {"transects": "Transects", "videos": "Clips"}
 
 # Outcome filters over the listed runs. Counts come from the scan, so a chip
 # reading "Failed 3" answers the question without being clicked.
@@ -98,11 +107,21 @@ _SCOPE_TOOLTIP = (
     "not on the map, so they appear under All transects."
 )
 
+# Clip outcomes, offered only under the By video grouping. Chip order is the
+# order work moves through: nothing done, part done, broken, finished.
+_CLIP_FILTERS = (
+    ("all", "All"),
+    (VIDEO_UNPROCESSED, "Not processed"),
+    (VIDEO_PENDING, "Part processed"),
+    (VIDEO_FAILED, "Failed"),
+    (VIDEO_PROCESSED, "Processed"),
+)
+
 # Right-pane pages inside the runs stack.
 _RUN_LIST_PAGE, _EMPTY_PAGE = 0, 1
 
-# Detail pane pages: nothing selected, a run, a transect.
-_DETAIL_EMPTY, _DETAIL_RUN, _DETAIL_TRANSECT = 0, 1, 2
+# Detail pane pages: nothing selected, a run, a transect, a clip.
+_DETAIL_EMPTY, _DETAIL_RUN, _DETAIL_TRANSECT, _DETAIL_VIDEO = 0, 1, 2, 3
 
 # What a dropped file has to be to queue as a pass.
 _VIDEO_SUFFIXES = {".mp4", ".mov", ".avi", ".mkv"}
@@ -135,8 +154,8 @@ _DETAIL_SHARE = 0.30
 # those do need close to half.
 _DETAIL_SHARE_ANALYSIS = 0.45
 
-# Narrow enough that the proportion still holds in the advanced sidebar,
-# which is a fraction of the width simple mode gives Browse.
+# Narrow enough that the proportion still holds on a laptop screen, where
+# the rail and the table have already taken their share.
 _DETAIL_MIN_WIDTH = 260
 
 
@@ -148,31 +167,12 @@ def _entries_in_view(entries: list[RunEntry], visible: frozenset[str]) -> list[R
     return [e for e in entries if e.transect_id is not None and str(e.transect_id) in visible]
 
 
-def _facet_qss(*, first: bool, last: bool) -> str:
-    """One segment of the joined facet switch; only the outer corners round."""
-    corners = ""
-    if first:
-        corners += f"border-top-left-radius: {RADIUS_SM}px;"
-        corners += f"border-bottom-left-radius: {RADIUS_SM}px;"
-    else:
-        corners += "border-left: none;"
-    if last:
-        corners += f"border-top-right-radius: {RADIUS_SM}px;"
-        corners += f"border-bottom-right-radius: {RADIUS_SM}px;"
-    return (
-        f"QToolButton {{ border: 1px solid {BORDER}; border-radius: 0; {corners}"
-        f" padding: 4px 8px; background: {BUTTON}; color: {TEXT_MUTED}; }}"
-        f" QToolButton:hover {{ background: {SURFACE_HI}; color: {WINDOW_TEXT}; }}"
-        f" QToolButton:checked {{ background: {PRIMARY}; color: {WINDOW};"
-        " font-weight: 600; }"
-    )
-
-
 class DataManagerMixin(MixinBase):
-    """DeepReefMapWindow methods for Browse, one panel hosted by both modes."""
+    """DeepReefMapWindow methods for Browse: the run archive and its detail pane."""
 
     _data_facet: str = "runs"
     _data_status_filter: str = "all"
+    _data_clip_filter: str = "all"
     _data_scope_filter: str = "in_view"
     _data_visible_ids: frozenset[str] | None = None
     _data_selected_key: tuple | None = None
@@ -189,7 +189,7 @@ class DataManagerMixin(MixinBase):
 
         panel = QWidget()
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(0, 4, 0, 0)
+        layout.setContentsMargins(0, SPACE_XS, 0, 0)
         layout.setSpacing(GUTTER)
 
         # Facets and the disk total sit above the split, so neither disappears
@@ -208,8 +208,9 @@ class DataManagerMixin(MixinBase):
             # One joined control, so it reads as three views of the same data
             # rather than three unrelated buttons.
             btn.setStyleSheet(
-                _facet_qss(first=index == 0, last=index == len(_FACETS) - 1)
+                segmented_qss(first=index == 0, last=index == len(_FACETS) - 1)
             )
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
             group.addButton(btn)
             facet_row.addWidget(btn)
             btn.toggled.connect(
@@ -219,6 +220,8 @@ class DataManagerMixin(MixinBase):
         top_row.addWidget(QLabel("Group"))
         top_row.addLayout(facet_row)
         self._data_search = QLineEdit()
+        # The placeholder follows the grouping: under By video the rail lists
+        # clips, and searching for a run name there finds nothing.
         self._data_search.setPlaceholderText("Search runs…")
         self._data_search.setClearButtonEnabled(True)
         self._data_search.setMaximumWidth(240)
@@ -234,6 +237,16 @@ class DataManagerMixin(MixinBase):
         self._data_scope_chips.changed.connect(self._on_data_scope_filter_changed)
         self._data_scope_chips.setVisible(False)
         top_row.addWidget(self._data_scope_chips)
+        # Clip outcome, for the same reason and in the same place: it only means
+        # something while the rail is listing clips rather than transects.
+        self._data_clip_chips = FilterChips(_CLIP_FILTERS)
+        self._data_clip_chips.setToolTip(
+            "Where each clip stands: whether every pass cut from it has been "
+            "processed, and whether any of them failed."
+        )
+        self._data_clip_chips.changed.connect(self._on_data_clip_filter_changed)
+        self._data_clip_chips.setVisible(False)
+        top_row.addWidget(self._data_clip_chips)
         top_row.addStretch(1)
         layout.addLayout(top_row)
 
@@ -306,7 +319,7 @@ class DataManagerMixin(MixinBase):
         # buttons: opening and finding a run are what you do constantly, the
         # rest are occasional housekeeping.
         actions = QHBoxLayout()
-        actions.setSpacing(6)
+        actions.setSpacing(SPACE_SM)
         self._data_open_btn = QPushButton("Open")
         self._data_open_btn.clicked.connect(self._on_data_open_clicked)
         actions.addWidget(self._data_open_btn)
@@ -348,16 +361,27 @@ class DataManagerMixin(MixinBase):
             EmptyState("Nothing selected", "Pick a run or a transect to see its detail.")
         )
         self._run_detail = RunDetailPanel()
+        # Opening the selected run is the pane's own primary action, beside the
+        # small Open under the table: the pane is where you decide, so the
+        # button belongs where the deciding happens.
+        self._run_detail.set_open_action_visible(True)
+        self._run_detail.open_requested.connect(self._on_data_open_clicked)
         self._data_detail_stack.addWidget(self._run_detail)
         # Scrolled, so the chart and stats table below it stop dictating how
         # narrow the pane may be. A splitter only divides the space left over
         # above each pane's minimum, and this page's minimum was wide enough to
         # hold Browse at half and half however wide the window got.
+        self._video_detail = VideoDetailPanel()
+        self._video_detail.queue_requested.connect(self._on_data_queue_clip)
+        self._video_detail.show_in_folder_requested.connect(self._on_data_show_clip_folder)
+        self._video_detail.pass_activated.connect(self._on_data_clip_pass_activated)
+
         analysis_scroll = QScrollArea()
         analysis_scroll.setWidgetResizable(True)
         analysis_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         analysis_scroll.setWidget(self._build_analysis_page())
         self._data_detail_stack.addWidget(analysis_scroll)
+        self._data_detail_stack.addWidget(self._video_detail)
         self._data_detail_stack.setMinimumWidth(_DETAIL_MIN_WIDTH)
         self._data_split.addWidget(self._data_detail_stack)
 
@@ -381,21 +405,6 @@ class DataManagerMixin(MixinBase):
         self._data_panel = panel
         self._data_facet_buttons["runs"].setChecked(True)
         return panel
-
-    def _build_simple_data_host(self) -> QWidget:
-        # The panel cards its own halves, so the host is a bare slot in both
-        # modes rather than a card wrapping cards.
-        self._data_host_simple = QWidget()
-        host_layout = QVBoxLayout(self._data_host_simple)
-        host_layout.setContentsMargins(0, 0, 0, 0)
-        return self._data_host_simple
-
-    def _host_data_panel(self, simple: bool) -> None:
-        """Move the single Browse panel into whichever mode is showing."""
-        host = self._data_host_simple if simple else self._data_tab
-        layout = host.layout()
-        if layout is not None and self._data_panel.parentWidget() is not host:
-            layout.addWidget(self._data_panel)
 
     def _request_data_refresh(self) -> None:
         if hasattr(self, "_data_refresh_timer"):
@@ -431,6 +440,7 @@ class DataManagerMixin(MixinBase):
                 store = None
         self._data_entries = entries
         self._data_store_ok = store is not None
+        self._video_entries = self._load_video_entries(store)
         live = {e.dir_name for e in entries}
         for name in [n for n in self._run_size_cache if n not in live]:
             del self._run_size_cache[name]
@@ -480,6 +490,10 @@ class DataManagerMixin(MixinBase):
         finally:
             tree.blockSignals(False)
         self._set_rail_visible(grouped)
+        self._data_search.setPlaceholderText(
+            "Search clips…" if self._data_facet == "videos" else "Search runs…"
+        )
+        self._refresh_data_clip_chips()
         self._refresh_data_map()
         self._rebuild_data_run_list()
 
@@ -556,7 +570,7 @@ class DataManagerMixin(MixinBase):
 
         The table is the page: it is what you scan, sort and select in, so it
         takes the bulk. The detail pane only has to hold one run's facts and its
-        ortho strip. Grouping by transect is the exception — there the pane holds
+        ortho strip. Grouping by transect is the exception: there the pane holds
         a chart and a stats table, which need closer to half.
 
         The sizes are set outright rather than left to stretch factors. A
@@ -573,8 +587,13 @@ class DataManagerMixin(MixinBase):
         if total < _SPLIT_MIN_TOTAL:
             total = sum(self._data_split.sizes()) or 1200
         rail = getattr(self, "_data_rail_width", _RAIL_WIDTH) if rail_visible else 0
-        share = _DETAIL_SHARE_ANALYSIS if self._data_facet == "transects" else _DETAIL_SHARE
-        detail = max(_DETAIL_MIN_WIDTH, int((total - rail) * share))
+        if self._data_detail_stack.currentIndex() == _DETAIL_EMPTY:
+            # Nothing selected, so the table takes the whole width rather than
+            # sharing it with a pane that has nothing to say.
+            detail = 0
+        else:
+            share = _DETAIL_SHARE_ANALYSIS if self._data_facet == "transects" else _DETAIL_SHARE
+            detail = max(_DETAIL_MIN_WIDTH, int((total - rail) * share))
         # Every pane gets a size. Handing setSizes fewer entries than the
         # splitter has children leaves the rest at zero, which collapsed the
         # detail pane to a hairline the moment a grouping was picked.
@@ -585,13 +604,13 @@ class DataManagerMixin(MixinBase):
             self._data_split_applying = False
 
     def _data_split_event_filter(self, obj, event) -> None:
-        """Re-divide Browse when the splitter is resized, in either UI mode.
+        """Re-divide Browse when its splitter is resized.
 
-        Browse is re-parented between the simple shell and the advanced tab, and
-        each host hands it a different width; recomputing on resize is what makes
-        the proportion the same in both.
+        Guarded on the splitter existing: the filter is installed on the
+        application, so it starts receiving events while the window is still
+        being built and Browse is one of the last pages assembled.
         """
-        if obj is self._data_split and event.type() == QEvent.Type.Resize:
+        if obj is getattr(self, "_data_split", None) and event.type() == QEvent.Type.Resize:
             self._apply_data_split_sizes(rail_visible=bool(self._data_rail_shown))
 
     def _on_data_split_moved(self, *_args) -> None:
@@ -604,6 +623,90 @@ class DataManagerMixin(MixinBase):
         if label is not None:
             label.setText(title)
 
+    def _load_video_entries(self, store) -> list[VideoLibraryEntry]:
+        """Every clip the survey has imported, runs or no runs.
+
+        Read here rather than per repaint: the By video rail, its outcome chips
+        and the clip detail pane all describe the same library, and three
+        independent reads of one SQLite file drifted apart mid-batch.
+        """
+        if store is None:
+            return []
+        try:
+            return catalogue.video_library(
+                store.list_videos(), store.list_passes(), store.list_runs()
+            )
+        except Exception:
+            logger.exception("Could not list the video library")
+            return []
+
+    def _clip_for_key(self, key: tuple | None) -> VideoLibraryEntry | None:
+        """The library entry a By video group node stands for."""
+        if key is None or key[0] != "video":
+            return None
+        for clip in getattr(self, "_video_entries", []):
+            if catalogue.video_group_key(clip.video.hash, clip.video.file_name) == key:
+                return clip
+        return None
+
+    def _visible_clips(self) -> list[VideoLibraryEntry]:
+        clips = getattr(self, "_video_entries", [])
+        if self._data_clip_filter != "all":
+            clips = [c for c in clips if c.outcome == self._data_clip_filter]
+        needle = self._data_search.text().strip().lower()
+        if needle:
+            clips = [c for c in clips if needle in c.video.file_name.lower()]
+        return clips
+
+    def _on_data_clip_filter_changed(self, key: str) -> None:
+        self._data_clip_filter = key
+        self._rebuild_data_tree()
+
+    def _refresh_data_clip_chips(self) -> None:
+        """Clip outcome replaces run outcome under the By video grouping.
+
+        Not beside it: the two rows read "Failed 0" next to "Failed 1" and there
+        is nothing in either chip saying that one counts runs and the other
+        counts the clips they came from.
+        """
+        applies = self._data_facet == "videos"
+        self._data_clip_chips.setVisible(applies)
+        self._data_status_chips.setVisible(not applies)
+        if not applies:
+            self._data_clip_chips.set_current("all")
+            return
+        clips = getattr(self, "_video_entries", [])
+        counts = {key: 0 for key, _ in _CLIP_FILTERS}
+        counts["all"] = len(clips)
+        for clip in clips:
+            counts[clip.outcome] = counts.get(clip.outcome, 0) + 1
+        self._data_clip_chips.set_counts(counts)
+
+    def _transect_name_for(self, transect_id) -> str | None:
+        if transect_id is None or not getattr(self, "_data_store_ok", False):
+            return None
+        try:
+            transect = self._survey_store().get_transect(transect_id)
+        except Exception:
+            logger.exception("Could not read the transect for a pass")
+            return None
+        return transect.name if transect is not None else None
+
+    def _on_data_queue_clip(self) -> None:
+        clip = self._video_detail.entry
+        if clip is not None:
+            self._queue_video_path(clip.video.path)
+
+    def _on_data_show_clip_folder(self) -> None:
+        """Open the clip's folder, not the clip: a player is not what is wanted here."""
+        clip = self._video_detail.entry
+        if clip is not None:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(clip.video.path).parent)))
+
+    def _on_data_clip_pass_activated(self, _pass_id: str) -> None:
+        """A pass is a run's worth of work, so show what it produced."""
+        self._data_facet_buttons["runs"].click()
+
     def _data_facet_groups(self) -> list[FacetGroup]:
         if self._data_facet == "transects":
             transects = []
@@ -613,7 +716,10 @@ class DataManagerMixin(MixinBase):
                 except Exception:
                     logger.exception("Could not list transects")
             return catalogue.transects_facet(self._data_entries, transects)
-        return catalogue.videos_facet(self._data_entries)
+        # Filtered here rather than after the fact: an outcome chip narrows which
+        # clips the rail lists, which is the whole point of having it beside a
+        # rail that lists clips.
+        return catalogue.videos_facet(self._data_entries, self._visible_clips())
 
     def _add_tree_group(self, group: FacetGroup, parent: QTreeWidgetItem | None) -> None:
         count = len(group.all_entries())
@@ -697,17 +803,51 @@ class DataManagerMixin(MixinBase):
 
         The run wins when both are selected: it is the more specific of the two,
         and it is what was clicked last to get here.
+
+        A group holding exactly one run falls through to that run. Without it,
+        clicking a leaf of the tree -- a single pass under a transect -- lit the
+        row up and left the pane saying nothing was selected, which is not what
+        a visible selection means.
         """
         entry = self._data_selected_entry()
         if entry is not None:
             self._run_detail.show_entry(entry)
-            self._data_detail_stack.setCurrentIndex(_DETAIL_RUN)
+            self._set_data_detail_page(_DETAIL_RUN)
             return
         key = self._data_selected_key
         if self._data_facet == "transects" and key is not None and key[0] == "transect":
-            self._data_detail_stack.setCurrentIndex(_DETAIL_TRANSECT)
+            self._set_data_detail_page(_DETAIL_TRANSECT)
             return
-        self._data_detail_stack.setCurrentIndex(_DETAIL_EMPTY)
+        clip = self._clip_for_key(key)
+        if clip is not None:
+            self._video_detail.show_entry(clip, self._transect_name_for)
+            self._video_detail.set_queue_enabled(not self._run_in_flight())
+            self._set_data_detail_page(_DETAIL_VIDEO)
+            return
+        # A group of one is that run. Selecting a leaf of the tree -- a single
+        # pass under a transect -- used to light the row up and leave the pane
+        # saying nothing was selected, which is not what a visible selection
+        # means. Below the transect case, which owns its own page.
+        grouped = self._data_groups.get(key) if key is not None else None
+        if grouped and len(grouped) == 1:
+            self._run_detail.show_entry(grouped[0])
+            self._set_data_detail_page(_DETAIL_RUN)
+            return
+        self._set_data_detail_page(_DETAIL_EMPTY)
+
+    def _set_data_detail_page(self, page: int) -> None:
+        """Switch the detail pane, and re-divide when it comes or goes.
+
+        An empty pane takes no width. It used to hold its 260px minimum while
+        showing "Nothing selected", which is a third of the window spent saying
+        nothing -- and it was taken from the run table, whose names then elided
+        and whose columns needed a horizontal scrollbar.
+        """
+        was_empty = self._data_detail_stack.currentIndex() == _DETAIL_EMPTY
+        self._data_detail_stack.setCurrentIndex(page)
+        self._data_detail_stack.setVisible(page != _DETAIL_EMPTY)
+        if was_empty != (page == _DETAIL_EMPTY):
+            self._apply_data_split_sizes(rail_visible=bool(self._data_rail_shown))
 
     def _on_data_facet_changed(self, name: str) -> None:
         # _focus_data_on_transect sets the facet and the key together and then
@@ -891,8 +1031,9 @@ class DataManagerMixin(MixinBase):
                 if hi_p != lo_p
                 else f"{points_label(hi_p)} points"
             )
-        if stats.total_bytes is not None:
-            bits.append(f"{format_bytes(stats.total_bytes)} on disk")
+        # Disk is deliberately absent: the label at the other end of this row
+        # already carries it, and printing it twice on one line read as two
+        # different figures that happened to agree.
         return " · ".join(bits)
 
     def _on_data_run_activated(self, _item) -> None:
@@ -1206,13 +1347,15 @@ class DataManagerMixin(MixinBase):
         self._rebuild_data_run_list()
 
     def _update_data_disk_label(self) -> None:
+        """What the output folder costs, said once.
+
+        The run count belongs to the group header beside it, so this says the
+        size and only qualifies it when some runs have not been measured yet.
+        """
         sized = [e for e in self._data_entries if e.size_bytes is not None]
         if not sized:
             self._data_disk_label.setText("")
             return
         total = sum(e.size_bytes for e in sized if e.size_bytes is not None)
-        n = len(self._data_entries)
-        suffix = "" if len(sized) == n else " so far"
-        self._data_disk_label.setText(
-            f"Space used: {format_bytes(total)} across {n} run{'s' if n != 1 else ''}{suffix}"
-        )
+        suffix = "" if len(sized) == len(self._data_entries) else " so far"
+        self._data_disk_label.setText(f"{format_bytes(total)} on disk{suffix}")

@@ -48,22 +48,21 @@ def captured_audit_dialogs(monkeypatch) -> list:
     return shown
 
 
-def test_run_step_names_the_active_settings(simple_window):
-    label = simple_window._survey_preset_label.text()
+def test_run_step_names_the_active_settings(window):
+    label = window._survey_preset_label.text()
     assert "Settings: Standard reef survey (v1)" in label
     # The technical line stays: the models are what a diver is asked about.
-    assert simple_window._collect_run_settings()["mapping_name"] in label
+    assert window._collect_run_settings()["mapping_name"] in label
 
 
-def test_locked_settings_say_who_set_them(simple_window, tmp_path, monkeypatch):
-    publish_org_preset(simple_window, tmp_path, monkeypatch)
-    label = simple_window._survey_preset_label.text()
+def test_locked_settings_say_who_set_them(window, tmp_path, monkeypatch):
+    publish_org_preset(window, tmp_path, monkeypatch)
+    label = window._survey_preset_label.text()
     assert "Reef Watch (v2)" in label
     assert "set by your organisation" in label
 
 
-def test_a_deviation_is_named_on_the_run_step(simple_window):
-    window = simple_window
+def test_a_deviation_is_named_on_the_run_step(window):
     window._batch_size_spin.setValue(1)
     window._recompute_survey_start()
     assert "Changed on this machine: frames processed at once." in (
@@ -72,8 +71,7 @@ def test_a_deviation_is_named_on_the_run_step(simple_window):
     assert window._survey_restore_btn.isEnabled()
 
 
-def test_restore_is_offered_only_when_something_deviates(simple_window):
-    window = simple_window
+def test_restore_is_offered_only_when_something_deviates(window):
     assert not window._survey_restore_btn.isEnabled()
     assert "Already on the standard" in window._survey_restore_btn.toolTip()
     window._batch_size_spin.setValue(1)
@@ -82,11 +80,10 @@ def test_restore_is_offered_only_when_something_deviates(simple_window):
 
 
 def test_locked_preset_puts_back_an_edit_it_does_not_allow(
-    simple_window, tmp_path, monkeypatch, machine_preset_path
+    window, tmp_path, monkeypatch, machine_preset_path
 ):
     """Expected behaviour: an authoritative configuration the next run would
     silently ignore is not authoritative, so the form goes back to standard."""
-    window = simple_window
     publish_org_preset(window, tmp_path, monkeypatch, grid_bins=1500)
     window._grid_bins_spin.setValue(1234)
     window._adopt_form_as_preset()
@@ -98,9 +95,8 @@ def test_locked_preset_puts_back_an_edit_it_does_not_allow(
 
 
 def test_locked_preset_still_allows_a_machine_setting(
-    simple_window, tmp_path, monkeypatch, machine_preset_path
+    window, tmp_path, monkeypatch, machine_preset_path
 ):
-    window = simple_window
     publish_org_preset(window, tmp_path, monkeypatch)
     window._batch_size_spin.setValue(1)
     window._adopt_form_as_preset()
@@ -111,34 +107,33 @@ def test_locked_preset_still_allows_a_machine_setting(
     assert "Saved for this machine: frames processed at once." in window._status_label.text()
 
 
-def test_admin_preset_drives_the_run(simple_window, tmp_path, monkeypatch):
-    publish_org_preset(simple_window, tmp_path, monkeypatch, fps=2)
-    assert simple_window._collect_run_settings()["fps"] == 2
+def test_admin_preset_drives_the_run(window, tmp_path, monkeypatch):
+    publish_org_preset(window, tmp_path, monkeypatch, fps=2)
+    assert window._collect_run_settings()["fps"] == 2
 
 
 def test_malformed_admin_preset_blocks_the_gate_rather_than_the_app(
-    simple_window, tmp_path, monkeypatch
+    window, tmp_path, monkeypatch
 ):
     """A field laptop must still open, and say why it cannot process."""
     admin = tmp_path / "org_preset.yaml"
     admin.write_text("not: [valid yaml")
     monkeypatch.setenv("DEEPREEFMAP_SURVEY_PRESET", str(admin))
-    simple_window._reload_active_preset()
-    simple_window._recompute_survey_start()
+    window._reload_active_preset()
+    window._recompute_survey_start()
 
-    assert simple_window._active_preset is None
-    assert simple_window._survey_preset is None
-    assert "could not be loaded" in simple_window._survey_preset_label.text()
-    assert not simple_window._survey_start_btn.isEnabled()
+    assert window._active_preset is None
+    assert window._survey_preset is None
+    assert "could not be loaded" in window._survey_preset_label.text()
+    assert not window._survey_start_btn.isEnabled()
 
 
-def test_settings_history_lists_what_past_runs_used(simple_window, tmp_path, monkeypatch):
+def test_settings_history_lists_what_past_runs_used(window, out_root, monkeypatch):
     """The audit surface reads each run's own manifest, so it reports history
     rather than reconstructing it from the current settings."""
-    window = simple_window
     org = window._active_preset.org
     for dir_name, deviations in (("run_a", {}), ("run_b", {"preprocess_batch_size": 1})):
-        run_dir = tmp_path / dir_name
+        run_dir = out_root / dir_name
         run_dir.mkdir()
         (run_dir / "run_manifest.json").write_text(
             json.dumps({
@@ -157,7 +152,7 @@ def test_settings_history_lists_what_past_runs_used(simple_window, tmp_path, mon
     assert "frames processed at once" in notes["run_b"]
 
 
-def test_settings_history_with_no_runs_says_so(simple_window, monkeypatch):
+def test_settings_history_with_no_runs_says_so(window, monkeypatch):
     shown = captured_audit_dialogs(monkeypatch)
-    simple_window._on_show_config_audit()
+    window._on_show_config_audit()
     assert shown[0]._rows == []

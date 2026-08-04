@@ -156,8 +156,8 @@ class RunTable(QTableWidget):
         header = self.horizontalHeader()
         header.setStretchLastSection(False)
         # A floor under every column, because the content-sized ones are greedy:
-        # left alone they took the whole viewport and squeezed Name — the one
-        # column identifying the row — down to an ellipsis.
+        # left alone they took the whole viewport and squeezed Name, the one
+        # column identifying the row, down to an ellipsis.
         header.setMinimumSectionSize(_MIN_SECTION_WIDTH)
         for column in range(len(_HEADERS)):
             mode = (

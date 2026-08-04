@@ -52,7 +52,7 @@ dependencies = [
   #   platformdirs  paths.py, imported by nearly every module
   #   numpy         io/scene_file.py, viewer/*, runs/loaded_run.py
   #   opencv-python form/video_scrub.py; matches what deepreefmap[gopro] resolves
-  #   huggingface-hub  models/manager.py — cache scan, auth and delete are ours
+  #   huggingface-hub  models/manager.py: cache scan, auth and delete are ours
   "platformdirs>=4.0",
   "numpy>=1.26",
   "opencv-python>=4.9",
@@ -191,7 +191,7 @@ extend-select = [
 #   uv run ruff check --preview --select PLW1514 deepreefmap_gui tests
 # RUF100 (unused noqa) is deliberately NOT here yet. It only knows about enabled
 # rules, so turning it on before N and S would delete the `# noqa: N802 (Qt
-# override)` and `# noqa: S310` comments this codebase already carries — real
+# override)` and `# noqa: S310` comments this codebase already carries. Real
 # documentation, removed for being unenforced. It belongs with the exception
 # sweep, alongside N, S110, S112 and S310.
 extend-ignore = [

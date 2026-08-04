@@ -30,16 +30,13 @@ if TYPE_CHECKING:
         QSplitter,
         QStackedWidget,
         QTableWidget,
-        QTabWidget,
         QToolButton,
         QTreeWidget,
-        QVBoxLayout,
         QWidget,
     )
 
     from deepreefmap_gui.core.spinner import SpinnerStopButton
     from deepreefmap_gui.core.widgets import NotReadyStrip
-    from deepreefmap_gui.form.time_edit import TimeSecondsEdit
     from deepreefmap_gui.io.lazy_frames import FrameAccessor
     from deepreefmap_gui.map.widget import SlippyMapWidget
     from deepreefmap_gui.models.library_ui import PackProgressDialog
@@ -65,7 +62,6 @@ if TYPE_CHECKING:
         _classes_config: ClassConfig
         _classes_path: Path | None
         _active_run_dir: Path | None
-        _video_duration_s: float | None
         _settings: QSettings
         _playback_timer: QTimer
         _pipeline_thread: threading.Thread | None
@@ -77,12 +73,6 @@ if TYPE_CHECKING:
         _status_phase_started: float
         _active_run_manifest: dict | None
         _results_output_dir: Path | None
-        _TAB_RUN: int
-        _TAB_RESULTS: int
-        _TAB_DATA: int
-        _TAB_SYSTEM: int
-        _TAB_MODELS: int
-        _ui_mode: str
         _app_mode: str
         _form_preferred_width: int
         _survey_store_obj: SurveyStore | None
@@ -98,7 +88,6 @@ if TYPE_CHECKING:
         _active_preset: ActivePreset | None
         _survey_cancel_event: threading.Event | None
         _survey_worker_running: bool
-        _settings_dialog_open: bool
         _analysis_covers: list
         _analysis_all_covers: list
         _downloading: set[str]
@@ -135,8 +124,8 @@ if TYPE_CHECKING:
         _legend_order_cache: list[int] | None
         _legend_solo_buttons: dict[int, QToolButton]
         _legend_toggles: dict[int, QCheckBox]
-        _run_log_file_handler: logging.FileHandler | None
         _scene_accessor: FrameAccessor | None
+        _run_log_file_handler: logging.FileHandler | None
         _available_releases: list[dict]
         _current_version_str: str
 
@@ -148,19 +137,16 @@ if TYPE_CHECKING:
         _update_show_all: QCheckBox
 
         # --- buttons -----------------------------------------------------
-        _batch_btn: QPushButton
         _desktop_entry_btn: QPushButton
         _discover_btn: QPushButton
         _export_models_btn: QPushButton
         _hf_auth_btn: QPushButton
-        _copy_command_btn: QPushButton
-        _copy_command_toolbtn: QToolButton
-        _command_preview_box: QWidget
         _import_pack_btn: QPushButton
         _pause_btn: QPushButton
-        _scrub_btn: QPushButton
         _spinner_stop: SpinnerStopButton
-        _start_btn: QPushButton
+        _out_root_widget: QWidget
+        _output_group: QGroupBox
+        _results_empty: QWidget
         _update_btn: QPushButton
 
         # --- spin boxes --------------------------------------------------
@@ -172,14 +158,11 @@ if TYPE_CHECKING:
         _rr_est_frames_spin: QSpinBox
         _scs_height_spin: QSpinBox
         _scs_width_spin: QSpinBox
-        _begin_spin: TimeSecondsEdit
         _crop_width: QDoubleSpinBox
-        _end_spin: TimeSecondsEdit
         _results_crop_width: QDoubleSpinBox
         _results_transect_length: QDoubleSpinBox
         _rr_factor_spin: QDoubleSpinBox
         _rr_override_spin: QDoubleSpinBox
-        _transect_length: QDoubleSpinBox
 
         # --- sliders -----------------------------------------------------
         _frame_slider: QSlider
@@ -194,7 +177,6 @@ if TYPE_CHECKING:
         _ortho_seg_preview: QLabel
         _run_meta_banner: QLabel
         _memory_notice: QLabel
-        _memory_warn_icon: QLabel
         _recorded_runs_caption: QLabel
         _status_label: QLabel
         _update_status_label: QLabel
@@ -202,17 +184,11 @@ if TYPE_CHECKING:
         _warnings_label: QLabel
         _warnings_label_running: QLabel
 
-        # --- run form, borrowed by the simple-mode settings dialog ----------
+        # --- run form, borrowed by the run settings dialog ------------------
         _setup_page: QWidget
-        _run_tab_layout: QVBoxLayout
-        _video_row_widget: QWidget
-        _range_row_widget: QWidget
-        _run_name_widget: QWidget
-        _transect_length_widget: QWidget
 
         # --- data section --------------------------------------------------
         _data_panel: QWidget
-        _data_tab: QWidget
         _data_host_simple: QWidget
         _data_tree: QTreeWidget
         _data_run_table: RunTable
@@ -238,8 +214,6 @@ if TYPE_CHECKING:
         _data_sizes_scan_running: bool
 
         # --- survey mode -------------------------------------------------
-        _mode_toggle_btn: QWidget
-        _mode_buttons: dict[str, QToolButton]
         _plan_map: SlippyMapWidget
         _simple_header: QWidget
         _view_bar: QWidget
@@ -257,6 +231,20 @@ if TYPE_CHECKING:
         _survey_import_btn: QPushButton
         _survey_not_ready: NotReadyStrip
         _setup_memory_label: QLabel
+        # This machine: the panels it borrows from their homes, the slots it
+        # lends them to, and the two advisories its header button reports.
+        _models_page: QWidget
+        _system_page: QWidget
+        _out_root_home: QWidget
+        _machine_models_host: QWidget
+        _machine_system_host: QWidget
+        _machine_out_root_host: QWidget
+        _machine_stack: QStackedWidget
+        _machine_view_buttons: dict[str, QToolButton]
+        _machine_nav_button: QToolButton
+        _memory_advisory: str
+        _update_available: str
+        _sys_timer: QTimer
         _hf_auth_user: str | None
         _analysis_transect_combo: QComboBox
         _analysis_level_combo: QComboBox
@@ -283,25 +271,23 @@ if TYPE_CHECKING:
         _seg_combo: QComboBox
         _update_version_combo: QComboBox
         _out_root_input: QLineEdit
-        _run_name_input: QLineEdit
         _scs_checkpoint_input: QLineEdit
-        _video_input: QLineEdit
 
         # --- containers / layouts ----------------------------------------
         _crop_box: QGroupBox
         _results_group: QGroupBox
+        _results_page: QWidget
         _models_grid: QGridLayout
-        _sidebar_tabs: QTabWidget
-        _left_stack: QStackedWidget
         _simple_stack: QStackedWidget
         _wizard_back_buttons: dict[str, QPushButton]
         _wizard_next_buttons: dict[str, QPushButton]
         _work_hsplitter: QSplitter
-        _new_run_btn: QPushButton
         _progress_bar: QProgressBar
         _total_progress_bar: QProgressBar
         _bottom_progress_bar: QProgressBar
         _bottom_bar: QWidget
+        _log_toggle_btn: QPushButton
+        _top_bar: QWidget
         _progress_stack: HoverColumn
         _eta_total_label: QLabel
         _eta: RunEtaEstimator | None
@@ -310,8 +296,6 @@ if TYPE_CHECKING:
         # --- signals (defined as class attrs on DeepReefMapWindow) --------
         _sig_update_check_done = Signal(str, object, object)
         _sig_model_status_done = Signal(object, object)
-        _sig_pipeline_error = Signal(str)
-        _sig_pipeline_cancelled = Signal()
         _sig_status_text = Signal(str)
         _sig_hf_auth_done = Signal(object, str)
         _sig_download_progress = Signal(str, int)
@@ -320,8 +304,6 @@ if TYPE_CHECKING:
         _sig_run_loaded = Signal(object, str, str, int)
         _sig_load_progress = Signal(str, int, int)
         _sig_scene_file_done = Signal()
-        _sig_batch_progress = Signal(int, int, str)
-        _sig_batch_done = Signal(int, int, str)
         _sig_qc_render_progress = Signal(int, int)
         _sig_qc_render_done = Signal(bool, str)
         _sig_discovery_done = Signal(object, object)
@@ -356,28 +338,19 @@ if TYPE_CHECKING:
         def _build_system_panel(self, layout: object) -> None: ...
         def _on_sidebar_tab_changed(self, index: int) -> None: ...
         def _refresh_recorded_runs(self) -> None: ...
+        def _refresh_system_gauges(self) -> None: ...
         def _update_memory_profile_warning(self) -> None: ...
         def _cancel_load(self) -> None: ...
         def _check_for_update(self) -> None: ...
         def _clear_run_warnings(self) -> None: ...
         def _collect_loger_options(self, mapping_name: str) -> dict | None: ...
         def _collect_run_settings(self) -> dict: ...
-        def _collect_full_run_kwargs(self) -> dict: ...
-        def _effective_time_range(
-            self,
-        ) -> tuple[float | None, float | None]: ...
-        def _copy_run_command(self) -> None: ...
-        def _refresh_command_preview(self) -> None: ...
-        def _command_preview_applies(self) -> bool: ...
-
-        def _estimate_frame_count(self, fps: int) -> int | None: ...
-        def _recompute_submit_state(self) -> None: ...
+        def _update_gated_warning(self) -> None: ...
         def _gpu_only_mapper(self) -> str: ...
         def _gpu_available(self) -> bool: ...
         def _refresh_desktop_entry_button(self) -> None: ...
         def _refresh_model_status(self) -> None: ...
         def _build_data_panel(self) -> QWidget: ...
-        def _build_simple_data_host(self) -> QWidget: ...
         def _build_browse_page(self) -> QWidget: ...
         def _refresh_section_state(self) -> None: ...
         def _refresh_browse_state(self) -> None: ...
@@ -385,7 +358,6 @@ if TYPE_CHECKING:
         def _set_scope_transect(self, transect_id: uuid.UUID | None) -> None: ...
         def _on_survey_pass_activated(self, row_index: int, column: int) -> None: ...
         def _on_analysis_transect_changed(self) -> None: ...
-        def _host_data_panel(self, simple: bool) -> None: ...
         def _refresh_data_manager(self) -> None: ...
         def _focus_data_on_transect(self, transect_id: uuid.UUID) -> None: ...
         def _request_data_refresh(self) -> None: ...
@@ -413,18 +385,19 @@ if TYPE_CHECKING:
         def _new_run_estimator(self) -> RunEtaEstimator: ...
         def _reveal_legend_overlay(self) -> None: ...
         def _set_app_mode(self, mode: str) -> None: ...
-        def _set_form_enabled(self, enabled: bool) -> None: ...
-        def _build_mode_toggle(self) -> QWidget: ...
         def _build_plan_page(self) -> QWidget: ...
         def _build_simple_run_page(self) -> QWidget: ...
         def _build_analysis_page(self) -> QWidget: ...
         def _build_simple_shell(self) -> QWidget: ...
-        def _build_setup_page(self) -> QWidget: ...
-        def _build_videos_page(self) -> QWidget: ...
-        def _refresh_videos_page(self) -> None: ...
+        def _build_readiness_view(self) -> QWidget: ...
         def _queue_video_path(self, path: str | None) -> None: ...
-        def _build_setup_nav_button(self) -> QToolButton: ...
-        def _refresh_setup_page(self) -> None: ...
+        def _build_machine_page(self) -> QWidget: ...
+        def _build_machine_nav_button(self) -> QToolButton: ...
+        def _host_machine_panels(self) -> None: ...
+        def _set_machine_view(self, view: str) -> None: ...
+        def _sync_system_gauges_running(self) -> None: ...
+        def _refresh_machine_button(self) -> None: ...
+        def _refresh_readiness_view(self) -> None: ...
         def _current_setup_checks(self) -> list: ...
         def _initial_simple_section(self) -> str: ...
         def _reveal_memory_detail(self) -> None: ...
@@ -432,15 +405,13 @@ if TYPE_CHECKING:
         def _survey_missing_models(self) -> list[str]: ...
         def _download_model(self, model_name: str) -> None: ...
         def _set_simple_section(self, name: str) -> None: ...
+        def _current_section(self) -> str: ...
 
         def _enter_view_mode(self, run_dir: Path) -> None: ...
         def _go_to_step(self, name: str) -> None: ...
         def _set_wizard_navigation_enabled(self, enabled: bool) -> None: ...
         def _wrap_wizard_page(self, name: str, page: QWidget) -> QWidget: ...
         def _update_work_area(self) -> None: ...
-        def _init_ui_mode(self) -> None: ...
-        def _request_ui_mode(self, mode: str) -> None: ...
-        def _set_ui_mode(self, mode: str) -> None: ...
         def _survey_store(self) -> SurveyStore: ...
         def _survey_data_changed(self) -> None: ...
         def _refresh_transect_list(self, select_id: uuid.UUID | None = None) -> None: ...
@@ -466,10 +437,8 @@ if TYPE_CHECKING:
         ) -> None: ...
         def _show_viewer_controls(self) -> None: ...
         def _set_overlay_controls_visible(self, visible: bool) -> None: ...
-        def _update_effective_dir_label(self) -> None: ...
 
         # event handlers invoked across mixins
-        def _on_batch_clicked(self) -> None: ...
         def _on_discover_clicked(self) -> None: ...
         def _on_export_cover_csv(self) -> None: ...
         def _on_export_current_frame(self) -> None: ...
@@ -496,7 +465,6 @@ if TYPE_CHECKING:
         def _on_results_transect_length_changed(self, value: float) -> None: ...
         def _on_results_transect_slider_changed(self, value: int) -> None: ...
         def _on_stop_clicked(self) -> None: ...
-        def _on_submit(self) -> None: ...
         def _on_sunburst_selection(self, class_ids: list) -> None: ...
         def _on_toggle_desktop_entry(self) -> None: ...
         def _on_toggle_show_all_versions(self, _checked: bool) -> None: ...

@@ -17,7 +17,7 @@ Directories mirror `deepreefmap_gui/` subpackages. The split that matters is
 `tests/gui/conftest.py` build a `QApplication` and a full `DeepReefMapWindow`, so
 a test only belongs there if it genuinely needs a window. Pure logic goes in the
 directory named after its module and stays fast. A standalone widget or dialog
-can take the root `qapp` fixture from wherever it lives — that costs a
+can take the root `qapp` fixture from wherever it lives, and that costs a
 `QApplication`, not a window.
 
 `tests/e2e/update_e2e.sh` is not run by pytest. It builds two real binaries and
@@ -46,7 +46,7 @@ push, and `--interactive` drives it locally.
 - **Nothing may touch your real config or data dirs.** `tests/conftest.py`
   redirects `QSettings` and the run-timings profile; `tests/survey/conftest.py`
   redirects the survey preset. `tests/gui/test_qsettings_sandbox.py` guards the
-  first of those — if it fails, tests are writing to your home directory.
+  first of those: if it fails, tests are writing to your home directory.
 - **No test may reach the network.** Release/update tests serve their own
   `HTTPServer` on loopback. A test that asserts a failure result would otherwise
   pass offline for the wrong reason.

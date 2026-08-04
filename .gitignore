@@ -46,3 +46,6 @@ tests/e2e/_work/
 *.tgz
 
 *.tmp
+
+# Screenshot captures from scripts/screenshots.py
+shots/

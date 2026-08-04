@@ -93,7 +93,7 @@ class ScrubSlider(QSlider):
     """A slider that jumps to where it is clicked and drags on from there.
 
     Qt's default is a page-step towards the click, so placing a value means
-    finding the handle first and nudging it — which is most of the work when
+    finding the handle first and nudging it, which is most of the work when
     three of these are being compared against each other.
     """
 

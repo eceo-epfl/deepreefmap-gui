@@ -27,7 +27,7 @@ from deepreefmap_gui.survey.models.transect import (
 def _segment_intersects_rect(a: QPointF, b: QPointF, rect: QRectF) -> bool:
     """Cohen-Sutherland: does the segment a-b touch ``rect`` at all?
 
-    Endpoint containment is not enough — a transect longer than the viewport
+    Endpoint containment is not enough: a transect longer than the viewport
     crosses it with both ends off screen.
     """
 

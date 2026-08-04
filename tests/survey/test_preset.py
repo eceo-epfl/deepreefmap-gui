@@ -212,8 +212,8 @@ def test_native_processing_size_stays_null_by_default():
 
 
 def test_save_keeps_only_the_allow_listed_change(machine_path, org):
-    """Scenario: a diver in advanced mode changes both a machine setting and one
-    the organisation owns.
+    """Scenario: a diver changes both a machine setting and one the organisation
+    owns.
 
     Expected behaviour: the machine setting persists, the other is refused, and
     the file holds a two-line override rather than a copy of the whole preset.

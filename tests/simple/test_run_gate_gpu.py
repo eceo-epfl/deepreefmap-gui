@@ -1,9 +1,8 @@
 """One list of GPU-only backends, read by every gate.
 
-The advanced form, the wizard's run gate and the setup step each decide whether
-the chosen mapping backend needs a graphics card. Any of them keeping its own
-list is the failure this guards against: the modes disagreeing about which
-backends need a GPU the first time the sets diverge.
+The Run step's gate and the setup step's readiness row each decide whether the
+chosen mapping backend needs a graphics card. Either keeping its own list is the
+failure this guards against: the two disagreeing the first time the sets diverge.
 """
 
 from __future__ import annotations

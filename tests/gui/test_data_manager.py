@@ -88,19 +88,17 @@ def write_survey_run(root: Path, dir_name: str, transect: Transect | None = None
     return transect
 
 
-def test_runs_facet_lists_all_runs(tmp_path, make_window):
-    root = tmp_path / "out"
-    write_run(root, "run_a")
-    write_run(root, "run_b", run_timestamp="2026-07-02T10:00:00+00:00")
+def test_runs_facet_lists_all_runs(out_root, make_window):
+    write_run(out_root, "run_a")
+    write_run(out_root, "run_b", run_timestamp="2026-07-02T10:00:00+00:00")
     window = make_window()
     assert window._data_facet == "runs"
     assert listed_runs(window) == ["run_b", "run_a"]
 
 
-def test_transects_facet_groups_and_buckets_unassigned(tmp_path, make_window):
-    root = tmp_path / "out"
-    write_survey_run(root, "assigned")
-    write_run(root, "loose", video_hashes=["cd" * 16])
+def test_transects_facet_groups_and_buckets_unassigned(out_root, make_window):
+    write_survey_run(out_root, "assigned")
+    write_run(out_root, "loose", video_hashes=["cd" * 16])
     window = make_window()
     window._data_facet_buttons["transects"].click()
     titles = [
@@ -111,20 +109,18 @@ def test_transects_facet_groups_and_buckets_unassigned(tmp_path, make_window):
     assert any(t.startswith("T1") for t in titles)
 
 
-def test_videos_facet_splits_time_windows(tmp_path, make_window):
-    root = tmp_path / "out"
-    write_run(root, "first", begin_s=0.0, end_s=60.0)
-    write_run(root, "second", begin_s=60.0, end_s=120.0)
+def test_videos_facet_splits_time_windows(out_root, make_window):
+    write_run(out_root, "first", begin_s=0.0, end_s=60.0)
+    write_run(out_root, "second", begin_s=60.0, end_s=120.0)
     window = make_window()
     window._data_facet_buttons["videos"].click()
     assert window._data_tree.topLevelItemCount() == 1
     assert window._data_tree.topLevelItem(0).childCount() == 2
 
 
-def test_tree_selection_filters_run_list(tmp_path, make_window):
-    root = tmp_path / "out"
-    write_run(root, "first", begin_s=0.0, end_s=60.0)
-    write_run(root, "second", begin_s=60.0, end_s=120.0)
+def test_tree_selection_filters_run_list(out_root, make_window):
+    write_run(out_root, "first", begin_s=0.0, end_s=60.0)
+    write_run(out_root, "second", begin_s=60.0, end_s=120.0)
     window = make_window()
     window._data_facet_buttons["videos"].click()
     assert len(listed_runs(window)) == 2
@@ -133,9 +129,8 @@ def test_tree_selection_filters_run_list(tmp_path, make_window):
     assert len(listed_runs(window)) == 1
 
 
-def test_open_routes_through_auto_load(tmp_path, make_window, monkeypatch):
-    root = tmp_path / "out"
-    run_dir = write_run(root, "run_a")
+def test_open_routes_through_auto_load(out_root, make_window, monkeypatch):
+    run_dir = write_run(out_root, "run_a")
     window = make_window()
     loaded = []
     monkeypatch.setattr(window, "_auto_load_run", loaded.append)
@@ -145,29 +140,19 @@ def test_open_routes_through_auto_load(tmp_path, make_window, monkeypatch):
     assert window._run_meta_banner.isVisibleTo(window)
 
 
-def test_data_panel_moves_between_hosts(make_window):
+def test_browse_is_the_workspace_holding_the_run_browser(make_window):
+    """One widget, one name: the workspace called Browse is the run browser."""
     window = make_window()
-    assert window._data_panel.parentWidget() is window._data_host_simple
-    window._mode_buttons["advanced"].click()
-    assert window._data_panel.parentWidget() is window._data_tab
-    window._mode_buttons["simple"].click()
-    assert window._data_panel.parentWidget() is window._data_host_simple
-
-
-def test_data_tab_and_nav_registered(make_window):
-    """One widget, one name: both modes call the run browser Browse."""
-    window = make_window()
-    assert window._sidebar_tabs.tabText(window._TAB_DATA) == "Browse"
+    assert list(window._workspace_buttons) == ["survey", "browse"]
     assert window._workspace_buttons["browse"].text() == "Browse"
-    assert window._sidebar_tabs.tabText(window._TAB_SYSTEM) == "System"
     assert list(window._simple_nav_buttons) == ["plan", "run"]
-    assert list(window._workspace_buttons) == ["survey", "browse", "videos"]
-    assert window._data_host_simple.isAncestorOf(window._data_panel)
+
+    window._set_simple_section("browse")
+    assert window._simple_stack.currentWidget().isAncestorOf(window._data_panel)
 
 
-def test_rename_updates_manifest_and_card(tmp_path, make_window, monkeypatch):
-    root = tmp_path / "out"
-    run_dir = write_run(root, "run_a")
+def test_rename_updates_manifest_and_card(out_root, make_window, monkeypatch):
+    run_dir = write_run(out_root, "run_a")
     window = make_window()
     select_run(window, 0)
     monkeypatch.setattr(
@@ -180,11 +165,10 @@ def test_rename_updates_manifest_and_card(tmp_path, make_window, monkeypatch):
     assert listed_runs(window) == ["reef north  (run_a)"]
 
 
-def test_delete_removes_run_after_confirmation(tmp_path, make_window, monkeypatch):
+def test_delete_removes_run_after_confirmation(out_root, make_window, monkeypatch):
     from PySide6.QtWidgets import QMessageBox
 
-    root = tmp_path / "out"
-    run_dir = write_run(root, "doomed")
+    run_dir = write_run(out_root, "doomed")
     window = make_window()
     select_run(window, 0)
     monkeypatch.setattr(
@@ -196,9 +180,8 @@ def test_delete_removes_run_after_confirmation(tmp_path, make_window, monkeypatc
     assert listed_runs(window) == []
 
 
-def test_delete_refuses_open_run(tmp_path, make_window, monkeypatch):
-    root = tmp_path / "out"
-    run_dir = write_run(root, "active")
+def test_delete_refuses_open_run(out_root, make_window, monkeypatch):
+    run_dir = write_run(out_root, "active")
     window = make_window()
     window._active_run_dir = run_dir
     select_run(window, 0)
@@ -212,10 +195,9 @@ def test_delete_refuses_open_run(tmp_path, make_window, monkeypatch):
     assert warnings
 
 
-def test_assign_moves_loose_run_under_transect(tmp_path, make_window, monkeypatch):
-    root = tmp_path / "out"
-    transect = write_survey_run(root, "assigned")
-    write_run(root, "loose", video_hashes=["cd" * 16])
+def test_assign_moves_loose_run_under_transect(out_root, make_window, monkeypatch):
+    transect = write_survey_run(out_root, "assigned")
+    write_run(out_root, "loose", video_hashes=["cd" * 16])
     window = make_window()
     select_run(window, row_of(window, "loose"))
     monkeypatch.setattr(
@@ -226,24 +208,24 @@ def test_assign_moves_loose_run_under_transect(tmp_path, make_window, monkeypatc
     assert entries["loose"].transect_name == "T1"
 
 
-def test_size_scan_slot_updates_label_and_cards(tmp_path, make_window):
-    root = tmp_path / "out"
-    write_run(root, "run_a")
+def test_size_scan_slot_updates_label_and_cards(out_root, make_window):
+    write_run(out_root, "run_a")
     window = make_window()
     window._apply_run_sizes({"run_a": 2_000_000_000})
     assert "1.9 GB" in window._data_disk_label.text()
-    assert "Space used" in window._data_disk_label.text()
+    assert "on disk" in window._data_disk_label.text()
+    # The run count belongs to the group header beside this label, not to both.
+    assert "run" not in window._data_disk_label.text()
     assert cell(window, 0, COL_SIZE) == "1.9 GB"
 
 
-def test_rescan_reruns_the_manifest_rebuild(tmp_path, make_window, monkeypatch):
+def test_rescan_reruns_the_manifest_rebuild(out_root, make_window, monkeypatch):
     """Scenario: a colleague's run is copied in while the app is open.
 
     Expected behaviour: the once-per-session rebuild gate does not re-link it,
     but Rescan resets the gate and reads the folder back.
     """
-    root = tmp_path / "out"
-    write_run(root, "first")
+    write_run(out_root, "first")
     window = make_window()
 
     calls = []
@@ -258,7 +240,7 @@ def test_rescan_reruns_the_manifest_rebuild(tmp_path, make_window, monkeypatch):
     assert calls == []  # gated to once per root
 
     window._on_data_rescan_clicked()
-    assert calls == [root]
+    assert calls == [out_root]
     assert "Rescanned" in window._status_label.text()
 
 
@@ -301,9 +283,8 @@ def test_open_run_folder_refused_while_running(make_window, monkeypatch):
 # --- T1.2 show in folder ---
 
 
-def test_show_in_folder_opens_the_run_dir(tmp_path, make_window, monkeypatch):
-    root = tmp_path / "out"
-    run_dir = write_run(root, "run_a")
+def test_show_in_folder_opens_the_run_dir(out_root, make_window, monkeypatch):
+    run_dir = write_run(out_root, "run_a")
     window = make_window()
     opened = []
     monkeypatch.setattr(
@@ -339,8 +320,8 @@ def test_dropped_video_queues_a_pass(tmp_path, make_window, monkeypatch):
     assert "Queued 1 pass from 1 video." in window._status_label.text()
 
 
-def test_dropped_run_folder_opens_it(tmp_path, make_window, monkeypatch):
-    run_dir = write_run(tmp_path / "out", "dropped")
+def test_dropped_run_folder_opens_it(out_root, make_window, monkeypatch):
+    run_dir = write_run(out_root, "dropped")
     window = make_window()
     loaded = []
     monkeypatch.setattr(window, "_auto_load_run", loaded.append)
@@ -359,12 +340,11 @@ def test_dropped_unsupported_file_reports(tmp_path, make_window):
 # --- T1.5 failed / incomplete runs ---
 
 
-def test_incomplete_run_is_listed_distinctly_and_deletable(tmp_path, make_window, monkeypatch):
+def test_incomplete_run_is_listed_distinctly_and_deletable(out_root, make_window, monkeypatch):
     from PySide6.QtWidgets import QMessageBox
 
-    root = tmp_path / "out"
-    write_run(root, "done")
-    crashed = root / "crashed"
+    write_run(out_root, "done")
+    crashed = out_root / "crashed"
     crashed.mkdir(parents=True)
     (crashed / "run.log").write_text("boom")
     window = make_window()
@@ -394,13 +374,12 @@ def _select_rows(window, names):
             window._data_run_table.item(row, column).setSelected(selected)
 
 
-def test_multi_select_delete_removes_every_selected_run(tmp_path, make_window, monkeypatch):
+def test_multi_select_delete_removes_every_selected_run(out_root, make_window, monkeypatch):
     from PySide6.QtWidgets import QMessageBox
 
-    root = tmp_path / "out"
-    write_run(root, "a")
-    write_run(root, "b")
-    write_run(root, "c")
+    write_run(out_root, "a")
+    write_run(out_root, "b")
+    write_run(out_root, "c")
     window = make_window()
     window._data_run_table.selectAll()
     monkeypatch.setattr(
@@ -411,10 +390,9 @@ def test_multi_select_delete_removes_every_selected_run(tmp_path, make_window, m
     assert listed_runs(window) == []
 
 
-def test_multi_select_delete_refused_when_one_is_open(tmp_path, make_window, monkeypatch):
-    root = tmp_path / "out"
-    run_a = write_run(root, "a")
-    write_run(root, "b")
+def test_multi_select_delete_refused_when_one_is_open(out_root, make_window, monkeypatch):
+    run_a = write_run(out_root, "a")
+    write_run(out_root, "b")
     window = make_window()
     window._active_run_dir = run_a
     window._data_run_table.selectAll()
@@ -428,11 +406,10 @@ def test_multi_select_delete_refused_when_one_is_open(tmp_path, make_window, mon
     assert run_a.exists()
 
 
-def test_multi_select_assign_moves_all_selected(tmp_path, make_window, monkeypatch):
-    root = tmp_path / "out"
-    transect = write_survey_run(root, "assigned")
-    write_run(root, "loose_a", video_hashes=["cd" * 16])
-    write_run(root, "loose_b", video_hashes=["ef" * 16])
+def test_multi_select_assign_moves_all_selected(out_root, make_window, monkeypatch):
+    transect = write_survey_run(out_root, "assigned")
+    write_run(out_root, "loose_a", video_hashes=["cd" * 16])
+    write_run(out_root, "loose_b", video_hashes=["ef" * 16])
     window = make_window()
     _select_rows(window, {"loose_a", "loose_b"})
     monkeypatch.setattr(
@@ -447,47 +424,33 @@ def test_multi_select_assign_moves_all_selected(tmp_path, make_window, monkeypat
 # --- T1.6 video library facet ---
 
 
-def test_videos_workspace_surfaces_orphan_video(tmp_path, make_window):
-    """A clip nobody has processed is invisible to every run-shaped view, which
-    is why the clip library is its own workspace rather than a facet here."""
-    root = tmp_path / "out"
-    root.mkdir(parents=True)
-    add_library_video(root, "/data/orphan.mp4", "ff" * 16)
-    window = make_window()
-    window._refresh_videos_page()
-    labels = [window._video_list.item(i).text() for i in range(window._video_list.count())]
-    assert len(labels) == 1
-    assert labels[0].startswith("orphan.mp4")
-    assert "library" not in window._data_facet_buttons
-
-
-def test_videos_queue_as_pass_adds_a_row(tmp_path, make_window, monkeypatch):
-    root = tmp_path / "out"
-    root.mkdir(parents=True)
+def test_queue_as_pass_adds_a_row(tmp_path, out_root, make_window, monkeypatch):
+    """The clip detail is the one route from imported footage into a batch."""
+    out_root.mkdir(parents=True)
     clip = tmp_path / "clip.mp4"
     clip.write_bytes(b"x" * 4096)
-    add_library_video(root, str(clip), "aa" * 16)
+    add_library_video(out_root, str(clip), "aa" * 16)
     window = make_window()
     monkeypatch.setattr(
         "deepreefmap_gui.simple.batch._probe_video", lambda _p: (60.0, 30.0)
     )
-    window._refresh_videos_page()
-    window._video_list.setCurrentRow(0)
+    window._refresh_data_manager()
+    window._data_facet_buttons["videos"].click()
+    window._data_tree.setCurrentItem(window._data_tree.topLevelItem(0))
     before = len(window._survey_rows)
-    window._on_video_queue_clicked()
+    window._on_data_queue_clip()
     assert wait_until(lambda: len(window._survey_rows) == before + 1)
 
 
-def test_status_chips_count_and_filter_runs(tmp_path, make_window):
+def test_status_chips_count_and_filter_runs(out_root, make_window):
     """Scenario: a batch left two finished runs and one that crashed.
 
     Expected behaviour: the chip says how many of each before it is clicked, and
     clicking one narrows the list to those.
     """
-    root = tmp_path / "out"
-    write_run(root, "good_a")
-    write_run(root, "good_b")
-    write_crashed_run(root, "crashed")
+    write_run(out_root, "good_a")
+    write_run(out_root, "good_b")
+    write_crashed_run(out_root, "crashed")
     window = make_window()
     chips = window._data_status_chips
     assert chips._buttons["all"].text().endswith("3")
@@ -500,10 +463,9 @@ def test_status_chips_count_and_filter_runs(tmp_path, make_window):
     assert len(listed_runs(window)) == 2
 
 
-def test_search_narrows_the_run_list(tmp_path, make_window):
-    root = tmp_path / "out"
-    write_run(root, "north_reef")
-    write_run(root, "south_lagoon")
+def test_search_narrows_the_run_list(out_root, make_window):
+    write_run(out_root, "north_reef")
+    write_run(out_root, "south_lagoon")
     window = make_window()
     window._data_search.setText("lagoon")
     assert listed_runs(window) == ["south_lagoon"]
@@ -511,19 +473,17 @@ def test_search_narrows_the_run_list(tmp_path, make_window):
     assert len(listed_runs(window)) == 2
 
 
-def test_filtered_empty_state_says_why(tmp_path, make_window):
-    root = tmp_path / "out"
-    write_run(root, "north_reef")
+def test_filtered_empty_state_says_why(out_root, make_window):
+    write_run(out_root, "north_reef")
     window = make_window()
     window._data_search.setText("nothing matches this")
     assert window._data_run_stack.currentWidget() is window._data_empty_state
     assert "No runs match" in window._data_empty_state._message.text()
 
 
-def test_detail_pane_follows_the_selection(tmp_path, make_window):
+def test_detail_pane_follows_the_selection(out_root, make_window):
     """Nothing transect-shaped appears until a transect is what is selected."""
-    root = tmp_path / "out"
-    write_survey_run(root, "assigned")
+    write_survey_run(out_root, "assigned")
     window = make_window()
 
     select_run(window, 0)
@@ -540,10 +500,9 @@ def test_detail_pane_follows_the_selection(tmp_path, make_window):
     assert window._data_detail_stack.currentIndex() == 2
 
 
-def test_unfinished_run_detail_carries_its_reason(tmp_path, make_window):
+def test_unfinished_run_detail_carries_its_reason(out_root, make_window):
     """The status bar loses a failure on the next event; the pane keeps it."""
-    root = tmp_path / "out"
-    write_crashed_run(root, "crashed")
+    write_crashed_run(out_root, "crashed")
     window = make_window()
     select_run(window, 0)
     assert not window._run_detail.error.isHidden()
@@ -556,11 +515,10 @@ def test_unfinished_run_detail_carries_its_reason(tmp_path, make_window):
 # --- Sorting, and the map that drives the transect facet ---
 
 
-def test_columns_sort_by_value_not_by_their_formatting(tmp_path, make_window):
+def test_columns_sort_by_value_not_by_their_formatting(out_root, make_window):
     """"988k pts" is smaller than "1.2M pts", and every string comparison disagrees."""
-    root = tmp_path / "out"
-    write_run(root, "small", semantic_reference_points=988_000)
-    write_run(root, "large", semantic_reference_points=1_200_000)
+    write_run(out_root, "small", semantic_reference_points=988_000)
+    write_run(out_root, "large", semantic_reference_points=1_200_000)
     window = make_window()
 
     table = window._data_run_table
@@ -570,11 +528,10 @@ def test_columns_sort_by_value_not_by_their_formatting(tmp_path, make_window):
     assert listed_runs(window) == ["large", "small"]
 
 
-def test_runs_missing_a_fact_sort_last_in_both_directions(tmp_path, make_window):
+def test_runs_missing_a_fact_sort_last_in_both_directions(out_root, make_window):
     """A blank is not a zero: it sinks whichever way the column is pointed."""
-    root = tmp_path / "out"
-    write_run(root, "counted", semantic_reference_points=500)
-    write_crashed_run(root, "crashed")
+    write_run(out_root, "counted", semantic_reference_points=500)
+    write_crashed_run(out_root, "crashed")
     window = make_window()
 
     table = window._data_run_table
@@ -583,10 +540,9 @@ def test_runs_missing_a_fact_sort_last_in_both_directions(tmp_path, make_window)
         assert listed_runs(window)[-1] == "crashed"
 
 
-def test_map_click_narrows_the_table_to_that_transect(tmp_path, make_window):
-    root = tmp_path / "out"
-    transect = write_survey_run(root, "assigned")
-    write_run(root, "loose", video_hashes=["cd" * 16])
+def test_map_click_narrows_the_table_to_that_transect(out_root, make_window):
+    transect = write_survey_run(out_root, "assigned")
+    write_run(out_root, "loose", video_hashes=["cd" * 16])
     window = make_window()
     window._data_facet_buttons["transects"].click()
     window._data_scope_chips.set_current("all")
@@ -618,14 +574,13 @@ def look_at(window, lat: float, lon: float, zoom: float = 14) -> None:
     window._apply_data_view_change()
 
 
-def test_browse_lists_only_the_runs_the_map_is_showing(tmp_path, make_window):
+def test_browse_lists_only_the_runs_the_map_is_showing(out_root, make_window):
     """Scenario: a survey spanning two sites, browsed by transect.
 
     Expected behaviour: the map is the filter, the same way it is in Plan, and
     panning to one site leaves the other site's runs behind.
     """
-    root = tmp_path / "out"
-    two_sites(root)
+    two_sites(out_root)
     window = browse_by_transect(make_window)
     assert sorted(listed_runs(window)) == ["azores", "fiji"]
 
@@ -635,9 +590,8 @@ def test_browse_lists_only_the_runs_the_map_is_showing(tmp_path, make_window):
     assert listed_runs(window) == ["azores"]
 
 
-def test_all_transects_brings_back_the_runs_off_screen(tmp_path, make_window):
-    root = tmp_path / "out"
-    two_sites(root)
+def test_all_transects_brings_back_the_runs_off_screen(out_root, make_window):
+    two_sites(out_root)
     window = browse_by_transect(make_window)
     look_at(window, -17.5, 177.1)
     assert listed_runs(window) == ["fiji"]
@@ -648,9 +602,8 @@ def test_all_transects_brings_back_the_runs_off_screen(tmp_path, make_window):
     assert listed_runs(window) == ["fiji"]
 
 
-def test_scope_chips_count_what_each_side_would_list(tmp_path, make_window):
-    root = tmp_path / "out"
-    two_sites(root)
+def test_scope_chips_count_what_each_side_would_list(out_root, make_window):
+    two_sites(out_root)
     window = browse_by_transect(make_window)
     look_at(window, -17.5, 177.1)
     chips = window._data_scope_chips
@@ -658,10 +611,9 @@ def test_scope_chips_count_what_each_side_would_list(tmp_path, make_window):
     assert chips._buttons["all"].text().endswith("2")
 
 
-def test_the_in_view_count_follows_the_map_while_showing_all(tmp_path, make_window):
+def test_the_in_view_count_follows_the_map_while_showing_all(out_root, make_window):
     """Switching back has to be an informed choice, so the count keeps moving."""
-    root = tmp_path / "out"
-    two_sites(root)
+    two_sites(out_root)
     window = browse_by_transect(make_window)
     window._data_scope_chips.set_current("all")
     look_at(window, -17.5, 177.1)
@@ -670,11 +622,10 @@ def test_the_in_view_count_follows_the_map_while_showing_all(tmp_path, make_wind
     assert window._data_scope_chips._buttons["in_view"].text().endswith("0")
 
 
-def test_runs_with_no_transect_are_not_in_view(tmp_path, make_window):
+def test_runs_with_no_transect_are_not_in_view(out_root, make_window):
     """A run assigned to nothing is nowhere on the map, so only All lists it."""
-    root = tmp_path / "out"
-    write_survey_run(root, "assigned")
-    write_run(root, "loose", video_hashes=["cd" * 16])
+    write_survey_run(out_root, "assigned")
+    write_run(out_root, "loose", video_hashes=["cd" * 16])
     window = browse_by_transect(make_window)
     assert listed_runs(window) == ["assigned"]
 
@@ -682,9 +633,8 @@ def test_runs_with_no_transect_are_not_in_view(tmp_path, make_window):
     assert sorted(listed_runs(window)) == ["assigned", "loose"]
 
 
-def test_the_map_scope_appears_only_where_it_decides_anything(tmp_path, make_window):
-    root = tmp_path / "out"
-    write_survey_run(root, "assigned")
+def test_the_map_scope_appears_only_where_it_decides_anything(out_root, make_window):
+    write_survey_run(out_root, "assigned")
     window = make_window()
     chips = window._data_scope_chips
     assert not chips.isVisibleTo(window._data_panel)
@@ -695,10 +645,9 @@ def test_the_map_scope_appears_only_where_it_decides_anything(tmp_path, make_win
     assert not chips.isVisibleTo(window._data_panel)
 
 
-def test_a_transect_picked_in_the_tree_outranks_the_map(tmp_path, make_window):
+def test_a_transect_picked_in_the_tree_outranks_the_map(out_root, make_window):
     """Panning away from a chosen transect must not empty the list underneath."""
-    root = tmp_path / "out"
-    two_sites(root)
+    two_sites(out_root)
     window = browse_by_transect(make_window)
     window._on_data_map_transect_clicked(str(window._data_map._transects[0].id))
     picked = listed_runs(window)
@@ -709,19 +658,17 @@ def test_a_transect_picked_in_the_tree_outranks_the_map(tmp_path, make_window):
     assert not window._data_scope_chips.isVisibleTo(window._data_panel)
 
 
-def test_empty_state_blames_the_map_when_the_map_is_the_reason(tmp_path, make_window):
-    root = tmp_path / "out"
-    two_sites(root)
+def test_empty_state_blames_the_map_when_the_map_is_the_reason(out_root, make_window):
+    two_sites(out_root)
     window = browse_by_transect(make_window)
     look_at(window, 0.0, 0.0)
     assert window._data_run_stack.currentWidget() is window._data_empty_state
     assert "part of the map" in window._data_empty_state._message.text()
 
 
-def test_the_map_draws_transects_only_while_grouping_by_them(tmp_path, make_window):
+def test_the_map_draws_transects_only_while_grouping_by_them(out_root, make_window):
     """Grouping by video says nothing about where anything is."""
-    root = tmp_path / "out"
-    write_survey_run(root, "assigned")
+    write_survey_run(out_root, "assigned")
     window = make_window()
 
     window._data_facet_buttons["transects"].click()
@@ -732,10 +679,9 @@ def test_the_map_draws_transects_only_while_grouping_by_them(tmp_path, make_wind
     assert not window._data_map.isVisibleTo(window._data_rail)
 
 
-def test_opening_a_run_lands_in_view_mode(tmp_path, make_window, monkeypatch):
+def test_opening_a_run_lands_in_view_mode(out_root, make_window, monkeypatch):
     """Browsing and viewing each get the whole window, never half of it each."""
-    root = tmp_path / "out"
-    run_dir = write_run(root, "run_a")
+    run_dir = write_run(out_root, "run_a")
     window = make_window()
     monkeypatch.setattr(window._viewer, "_ensure_plotter", lambda: None)
 
@@ -754,34 +700,68 @@ def detail_share(window) -> float:
     return detail / (table + detail)
 
 
-def test_the_table_gets_the_bulk_of_browse(tmp_path, make_window):
+def select_transect(window, name: str) -> None:
+    """Pick a transect group in the Browse rail by its displayed name."""
+    window._data_run_table.setCurrentCell(-1, -1)
+    for index in range(window._data_tree.topLevelItemCount()):
+        item = window._data_tree.topLevelItem(index)
+        if item.text(0).startswith(name):
+            window._data_tree.setCurrentItem(item)
+    window._update_data_actions()
+
+
+def test_the_table_gets_the_bulk_of_browse(out_root, make_window):
     """The table is the page; the detail pane holds one run's facts beside it."""
-    write_run(tmp_path / "out", "run_a")
+    write_run(out_root, "run_a")
     window = make_window()
     window._data_split.resize(1200, 600)
 
+    select_run(window, 0)
     window._apply_data_split_sizes(rail_visible=False)
     assert detail_share(window) == pytest.approx(0.30, abs=0.02)
 
 
-def test_grouping_by_transect_widens_the_detail_pane(tmp_path, make_window):
+def test_an_empty_detail_pane_gives_its_width_back_to_the_table(out_root, make_window):
+    """Scenario: Browse is open with nothing selected.
+
+    Expected behaviour: the pane that would say "Nothing selected" takes no
+    width at all, rather than holding a third of the window for a sentence while
+    the table beside it elides its names.
+    """
+    write_run(out_root, "run_a")
+    window = make_window()
+    window._data_split.resize(1200, 600)
+    window._apply_data_split_sizes(rail_visible=False)
+
+    assert window._data_split.sizes()[2] == 0
+    assert window._data_detail_stack.isHidden()
+
+    select_run(window, 0)
+    assert detail_share(window) > 0.2
+    assert not window._data_detail_stack.isHidden()
+
+
+def test_grouping_by_transect_widens_the_detail_pane(out_root, make_window):
     """A chart and a stats table need more room than a metadata card."""
-    write_survey_run(tmp_path / "out", "assigned")
+    write_survey_run(out_root, "assigned")
     window = make_window()
     window._data_split.resize(1200, 600)
 
     window._data_facet_buttons["transects"].click()
+    select_transect(window, "T1")
     assert detail_share(window) > 0.35
 
     window._data_facet_buttons["runs"].click()
+    select_run(window, 0)
     assert detail_share(window) == pytest.approx(0.30, abs=0.02)
 
 
-def test_a_dragged_handle_survives_the_next_resize(tmp_path, make_window):
+def test_a_dragged_handle_survives_the_next_resize(out_root, make_window):
     """Re-dividing on every resize must not undo a deliberate drag."""
-    write_run(tmp_path / "out", "run_a")
+    write_run(out_root, "run_a")
     window = make_window()
     window._data_split.resize(1200, 600)
+    select_run(window, 0)
     window._apply_data_split_sizes(rail_visible=False)
 
     window._on_data_split_moved()
@@ -790,10 +770,9 @@ def test_a_dragged_handle_survives_the_next_resize(tmp_path, make_window):
     assert window._data_split.sizes()[2] > window._data_split.sizes()[1]
 
 
-def test_detail_pane_shows_the_ortho_a_run_produced(tmp_path, make_window):
-    root = tmp_path / "out"
-    run_dir = write_run(root, "with_ortho")
-    write_run(root, "no_ortho")
+def test_detail_pane_shows_the_ortho_a_run_produced(out_root, make_window):
+    run_dir = write_run(out_root, "with_ortho")
+    write_run(out_root, "no_ortho")
     QImage(60, 20, QImage.Format.Format_RGB32).save(str(run_dir / "ortho.png"))
     window = make_window()
 
@@ -805,15 +784,15 @@ def test_detail_pane_shows_the_ortho_a_run_produced(tmp_path, make_window):
     assert window._run_detail.ortho.isHidden()
 
 
-def test_the_ortho_never_widens_the_detail_pane(tmp_path, make_window):
+def test_the_ortho_never_widens_the_detail_pane(out_root, make_window):
     """A pixmap's size hint is its own width; the pane must not follow it."""
-    root = tmp_path / "out"
-    run_dir = write_run(root, "wide_ortho")
+    run_dir = write_run(out_root, "wide_ortho")
     QImage(2000, 400, QImage.Format.Format_RGB32).save(str(run_dir / "ortho.png"))
     window = make_window()
 
-    before = window._data_split.sizes()
     select_run(window, 0)
+    before = window._data_split.sizes()
+    window._run_detail.show_entry(window._data_entries[0])
     assert window._data_split.sizes() == before
 
     strip = window._run_detail.ortho
@@ -821,9 +800,8 @@ def test_the_ortho_never_widens_the_detail_pane(tmp_path, make_window):
     assert strip.pixmap().width() <= window._run_detail.width()
 
 
-def test_clicking_the_ortho_opens_it_full_size(tmp_path, make_window, monkeypatch):
-    root = tmp_path / "out"
-    run_dir = write_run(root, "clickable")
+def test_clicking_the_ortho_opens_it_full_size(out_root, make_window, monkeypatch):
+    run_dir = write_run(out_root, "clickable")
     QImage(800, 200, QImage.Format.Format_RGB32).save(str(run_dir / "ortho.png"))
     window = make_window()
     select_run(window, 0)

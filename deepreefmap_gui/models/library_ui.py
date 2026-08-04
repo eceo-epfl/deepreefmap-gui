@@ -1,4 +1,4 @@
-"""Models tab: reveal the cache folder and export/import portable model packs.
+"""Model library: reveal the cache folder and export/import portable model packs.
 
 Kept apart from management.py (download/delete/auth) so each mixin stays focused. All
 heavy work runs on a daemon thread and marshals back through the _sig_pack_* signals,

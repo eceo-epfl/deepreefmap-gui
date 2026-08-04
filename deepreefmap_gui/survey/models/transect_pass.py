@@ -20,9 +20,14 @@ class TransectPass:
     rest in playing order. ``begin_s`` and ``end_s`` are offsets into the
     chapters played back to back, which is how the pipeline reads a list of
     videos.
+
+    ``transect_id`` may be None. Footage worth processing is not always footage
+    laid against a tape: a spot check, a clip from a colleague, a swim nobody
+    planned. Such a pass carries no tape length, so its run is left unscaled --
+    which is already what a planned transect with no tape reading does.
     """
 
-    transect_id: uuid.UUID
+    transect_id: uuid.UUID | None
     video_id: uuid.UUID
     begin_s: float
     end_s: float

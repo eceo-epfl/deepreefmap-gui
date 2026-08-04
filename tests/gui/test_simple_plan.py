@@ -40,8 +40,8 @@ def select_row(window, index):
     tree.setCurrentItem(group.child(index))
 
 
-def test_transect_autosaves_once_complete(simple_window):
-    w = simple_window
+def test_transect_autosaves_once_complete(window):
+    w = window
     w._tr_name_input.setText("T1")
     type_coord(w, "start", "-17.5 177.1")
     assert w._survey_store().list_transects() == []
@@ -61,10 +61,10 @@ def test_transect_autosaves_once_complete(simple_window):
     assert rows[0][:2] == ("T1", "50 m tape")
 
 
-def test_draft_row_tracks_typing_before_save(simple_window):
+def test_draft_row_tracks_typing_before_save(window):
     from PySide6.QtCore import Qt
 
-    w = simple_window
+    w = window
     w._refresh_transect_list()
     assert row_texts(w) == []
     w._tr_name_input.setText("Nor")
@@ -77,9 +77,9 @@ def test_draft_row_tracks_typing_before_save(simple_window):
     assert w._survey_store().list_transects() == []
 
 
-def test_out_of_range_coordinate_is_reported(simple_window):
+def test_out_of_range_coordinate_is_reported(window):
     """The range check that used to live on the Quick field still applies."""
-    w = simple_window
+    w = window
     w._tr_name_input.setText("T1")
     type_coord(w, "start", "-17.5, 177.1")
     type_coord(w, "end", "95.0, 177.1")
@@ -88,20 +88,20 @@ def test_out_of_range_coordinate_is_reported(simple_window):
         w._form_coordinates()
 
 
-def test_garbage_coordinate_never_saves(simple_window):
-    w = simple_window
+def test_garbage_coordinate_never_saves(window):
+    w = window
     w._tr_name_input.setText("T1")
     type_coord(w, "start", "junk")
     type_coord(w, "end", "-17.5, 177.1")
     assert w._survey_store().list_transects() == []
 
 
-def test_new_transect_arrives_named_and_ready_to_draw(simple_window):
+def test_new_transect_arrives_named_and_ready_to_draw(window):
     """Scenario: New, then the two clicks that place the line.
 
     Expected behaviour: nothing to name and nothing to arm in between.
     """
-    w = simple_window
+    w = window
     w._survey_store().add_transect(make_transect("Transect 1"))
     w._refresh_transect_list()
     w._on_transect_new()
@@ -112,15 +112,15 @@ def test_new_transect_arrives_named_and_ready_to_draw(simple_window):
     assert [t.name for t in w._survey_store().list_transects()] == ["Transect 1", "Transect 2"]
 
 
-def test_new_name_skips_numbers_already_taken(simple_window):
-    w = simple_window
+def test_new_name_skips_numbers_already_taken(window):
+    w = window
     for name in ("Transect 1", "Transect 3"):
         w._survey_store().add_transect(make_transect(name))
     w._on_transect_new()
     assert w._tr_name_input.text() == "Transect 2"
 
 
-def test_copy_endpoint_puts_latlon_on_clipboard(simple_window, monkeypatch):
+def test_copy_endpoint_puts_latlon_on_clipboard(window, monkeypatch):
     # Stubbed clipboard: the real X11 selection is shared with the desktop and
     # races with clipboard managers.
     captured = []
@@ -135,7 +135,7 @@ def test_copy_endpoint_puts_latlon_on_clipboard(simple_window, monkeypatch):
             return _Clipboard()
 
     monkeypatch.setattr("deepreefmap_gui.simple.plan.QGuiApplication", _App)
-    w = simple_window
+    w = window
     w._tr_start_coord.setText("-17.500000, 177.100000")
     w._copy_endpoint("start")
     assert captured == ["-17.500000, 177.100000"]
@@ -143,15 +143,15 @@ def test_copy_endpoint_puts_latlon_on_clipboard(simple_window, monkeypatch):
     assert "No end point to copy" in w._status_label.text()
 
 
-def test_map_click_without_armed_button_is_ignored(simple_window):
-    w = simple_window
+def test_map_click_without_armed_button_is_ignored(window):
+    w = window
     w._plan_map.map_clicked.emit(-17.5, 177.1)
     assert w._tr_start_coord.text() == ""
     assert w._tr_end_coord.text() == ""
 
 
-def test_draft_line_appears_once_both_endpoints_set(simple_window):
-    w = simple_window
+def test_draft_line_appears_once_both_endpoints_set(window):
+    w = window
     w._pick_both_btn.setChecked(True)
     w._plan_map.map_clicked.emit(-17.5, 177.1)
     assert not any(t.id == "draft" for t in w._plan_map._transects)
@@ -163,8 +163,8 @@ def test_draft_line_appears_once_both_endpoints_set(simple_window):
     assert len(w._plan_map._transects) == 1
 
 
-def test_duplicate_name_reports_and_keeps_one(simple_window):
-    w = simple_window
+def test_duplicate_name_reports_and_keeps_one(window):
+    w = window
     w._survey_store().add_transect(make_transect())
     w._tr_name_input.setText("T1")
     type_coord(w, "start", "-17.6 177.2")
@@ -174,8 +174,8 @@ def test_duplicate_name_reports_and_keeps_one(simple_window):
     assert len(w._survey_store().list_transects()) == 1
 
 
-def test_edit_selected_transect_updates_row(simple_window):
-    w = simple_window
+def test_edit_selected_transect_updates_row(window):
+    w = window
     w._survey_store().add_transect(make_transect())
     w._refresh_transect_list()
     select_row(w, 0)
@@ -187,8 +187,8 @@ def test_edit_selected_transect_updates_row(simple_window):
     assert stored[0].end_lat == -17.502
 
 
-def test_delete_with_passes_is_blocked(simple_window):
-    w = simple_window
+def test_delete_with_passes_is_blocked(window):
+    w = window
     store = w._survey_store()
     transect = make_transect()
     video = VideoAsset(file_name="a.mp4", path="/a.mp4", hash="cd" * 16)
@@ -204,8 +204,8 @@ def test_delete_with_passes_is_blocked(simple_window):
     assert len(store.list_transects()) == 1
 
 
-def test_import_csv_skips_existing(simple_window, tmp_path, monkeypatch):
-    w = simple_window
+def test_import_csv_skips_existing(window, tmp_path, monkeypatch):
+    w = window
     existing = make_transect()
     w._survey_store().add_transect(existing)
     csv_path = tmp_path / "in.csv"
@@ -220,8 +220,8 @@ def test_import_csv_skips_existing(simple_window, tmp_path, monkeypatch):
     assert [t.name for t in w._survey_store().list_transects()] == ["T1", "T2"]
 
 
-def test_export_csv_round_trip(simple_window, tmp_path, monkeypatch):
-    w = simple_window
+def test_export_csv_round_trip(window, tmp_path, monkeypatch):
+    w = window
     w._survey_store().add_transect(make_transect())
     out_path = tmp_path / "out.csv"
     monkeypatch.setattr(
@@ -232,12 +232,12 @@ def test_export_csv_round_trip(simple_window, tmp_path, monkeypatch):
     assert "T1" in out_path.read_text()
 
 
-def test_pick_both_walks_start_then_end(simple_window):
+def test_pick_both_walks_start_then_end(window):
     """Scenario: a new transect drawn entirely on the map.
 
     Expected behaviour: one button, two clicks, then it disarms itself.
     """
-    w = simple_window
+    w = window
     w._pick_both_btn.setChecked(True)
     assert w._plan_map._pick_mode
     w._plan_map.map_clicked.emit(-17.5, 177.1)
@@ -250,8 +250,8 @@ def test_pick_both_walks_start_then_end(simple_window):
     assert not w._plan_map._pick_mode
 
 
-def test_notes_round_trip_through_the_store(simple_window):
-    w = simple_window
+def test_notes_round_trip_through_the_store(window):
+    w = window
     w._tr_name_input.setText("T1")
     type_coord(w, "start", "-17.5, 177.1")
     type_coord(w, "end", "-17.5005, 177.1005")
@@ -265,8 +265,8 @@ def test_notes_round_trip_through_the_store(simple_window):
     assert w._tr_description.toPlainText() == "tape run W→E\nviz ~12 m"
 
 
-def test_selecting_a_transect_filters_the_browser(simple_window):
-    w = simple_window
+def test_selecting_a_transect_filters_the_browser(window):
+    w = window
     transect = make_transect()
     w._survey_store().add_transect(transect)
     w._refresh_transect_list()
@@ -275,10 +275,10 @@ def test_selecting_a_transect_filters_the_browser(simple_window):
     assert w._data_selected_key == ("transect", str(transect.id))
 
 
-def test_a_selected_transect_is_locked_against_dragging(simple_window):
+def test_a_selected_transect_is_locked_against_dragging(window):
     """Expected behaviour: reading a transect off the map leaves its endpoints
     fixed; only pressing Edit puts them under the pointer."""
-    w = simple_window
+    w = window
     transect = make_transect()
     w._survey_store().add_transect(transect)
     w._refresh_transect_list()
@@ -293,8 +293,8 @@ def test_a_selected_transect_is_locked_against_dragging(simple_window):
     assert w._plan_map._endpoint_at(start_px) is not None
 
 
-def test_leaving_edit_mode_saves_and_locks(simple_window):
-    w = simple_window
+def test_leaving_edit_mode_saves_and_locks(window):
+    w = window
     transect = make_transect()
     w._survey_store().add_transect(transect)
     w._refresh_transect_list()
@@ -312,18 +312,18 @@ def test_leaving_edit_mode_saves_and_locks(simple_window):
     assert saved.end_lon == pytest.approx(177.2)
 
 
-def test_a_new_transect_starts_editable(simple_window):
-    w = simple_window
+def test_a_new_transect_starts_editable(window):
+    w = window
     w._on_transect_new()
     assert w._transect_editing
     assert w._pick_both_btn.isChecked()
     assert w._plan_map._editable_id == DRAFT_ID
 
 
-def test_dragging_an_end_of_an_uncommitted_draft_moves_it(simple_window):
+def test_dragging_an_end_of_an_uncommitted_draft_moves_it(window):
     """A line drawn before it has a name stays a draft, and its ends still follow
     the pointer rather than being frozen until it is saved."""
-    w = simple_window
+    w = window
     w._on_transect_new()
     w._tr_name_input.clear()
     w._plan_map.map_clicked.emit(-17.5, 177.1)
@@ -335,8 +335,8 @@ def test_dragging_an_end_of_an_uncommitted_draft_moves_it(simple_window):
     assert w._tr_end_coord.text() == "-17.600000, 177.200000"
 
 
-def test_columns_count_the_passes_and_runs_on_each_transect(simple_window):
-    w = simple_window
+def test_columns_count_the_passes_and_runs_on_each_transect(window):
+    w = window
     store = w._survey_store()
     transect = make_transect()
     video = VideoAsset(file_name="a.mp4", path="/a.mp4", hash="cd" * 16)
@@ -349,13 +349,13 @@ def test_columns_count_the_passes_and_runs_on_each_transect(simple_window):
     assert row_texts(w, "All transects")[0][3:] == ("1", "1")
 
 
-def test_in_view_section_holds_what_the_map_shows(simple_window):
+def test_in_view_section_holds_what_the_map_shows(window):
     """Scenario: two transects far apart, the map on one of them.
 
     Expected behaviour: the visible one is duplicated into a section at the top,
     and stays in the full list below.
     """
-    w = simple_window
+    w = window
     w._plan_map.resize(400, 300)
     w._survey_store().add_transect(make_transect("Near"))
     w._survey_store().add_transect(
@@ -369,8 +369,8 @@ def test_in_view_section_holds_what_the_map_shows(simple_window):
     assert sorted(r[0] for r in row_texts(w, "All transects")) == ["Far", "Near"]
 
 
-def test_panning_away_empties_the_in_view_section(simple_window):
-    w = simple_window
+def test_panning_away_empties_the_in_view_section(window):
+    w = window
     w._plan_map.resize(400, 300)
     w._survey_store().add_transect(make_transect("Near"))
     w._survey_store().add_transect(
@@ -385,8 +385,8 @@ def test_panning_away_empties_the_in_view_section(simple_window):
     assert group_titles(w) == ["All transects  (2)"]
 
 
-def test_selecting_a_transect_moves_the_map_to_it(simple_window):
-    w = simple_window
+def test_selecting_a_transect_moves_the_map_to_it(window):
+    w = window
     w._plan_map.resize(400, 300)
     transect = make_transect()
     w._survey_store().add_transect(transect)
@@ -403,8 +403,8 @@ def test_selecting_a_transect_moves_the_map_to_it(simple_window):
     assert 0 < span <= 0.6 * min(w._plan_map.width(), w._plan_map.height())
 
 
-def test_typing_a_coordinate_redraws_without_saving_it(simple_window):
-    w = simple_window
+def test_typing_a_coordinate_redraws_without_saving_it(window):
+    w = window
     transect = make_transect()
     w._survey_store().add_transect(transect)
     w._refresh_transect_list()
@@ -415,8 +415,8 @@ def test_typing_a_coordinate_redraws_without_saving_it(simple_window):
     assert w._survey_store().get_transect(transect.id).end_lat == transect.end_lat
 
 
-def test_geometry_readout_states_length_and_heading(simple_window):
-    w = simple_window
+def test_geometry_readout_states_length_and_heading(window):
+    w = window
     assert "once both ends are set" in w._tr_geometry.text()
     type_coord(w, "start", "0.0, 0.0")
     type_coord(w, "end", "0.0, 0.01")
@@ -425,8 +425,8 @@ def test_geometry_readout_states_length_and_heading(simple_window):
     assert "090° E" in text
 
 
-def test_copy_action_appears_only_once_there_is_a_coordinate(simple_window):
-    w = simple_window
+def test_copy_action_appears_only_once_there_is_a_coordinate(window):
+    w = window
     assert not w._coord_copy_actions["start"].isVisible()
     w._tr_start_coord.setText("-17.5, 177.1")
     assert w._coord_copy_actions["start"].isVisible()
@@ -434,8 +434,8 @@ def test_copy_action_appears_only_once_there_is_a_coordinate(simple_window):
     assert not w._coord_copy_actions["start"].isVisible()
 
 
-def test_draw_tool_narrates_the_click_it_wants(simple_window):
-    w = simple_window
+def test_draw_tool_narrates_the_click_it_wants(window):
+    w = window
     assert w._pick_both_btn.text() == "Draw"
     w._pick_both_btn.setChecked(True)
     assert w._pick_both_btn.text() == "Click start"
@@ -447,7 +447,7 @@ def test_draw_tool_narrates_the_click_it_wants(simple_window):
     assert w._plan_map._pending_start is None
 
 
-def test_copy_confirms_at_the_field_and_in_the_status_bar(simple_window, monkeypatch):
+def test_copy_confirms_at_the_field_and_in_the_status_bar(window, monkeypatch):
     captured = []
     shown = []
 
@@ -465,7 +465,7 @@ def test_copy_confirms_at_the_field_and_in_the_status_bar(simple_window, monkeyp
         "deepreefmap_gui.simple.plan.QToolTip.showText",
         staticmethod(lambda *args: shown.append(args[1])),
     )
-    w = simple_window
+    w = window
     w._tr_start_coord.setText("-17.500000, 177.100000")
     w._copy_endpoint("start")
     assert captured == ["-17.500000, 177.100000"]
@@ -473,8 +473,8 @@ def test_copy_confirms_at_the_field_and_in_the_status_bar(simple_window, monkeyp
     assert "clipboard" in w._status_label.text()
 
 
-def test_unset_length_and_depth_read_as_nothing_recorded(simple_window):
-    w = simple_window
+def test_unset_length_and_depth_read_as_nothing_recorded(window):
+    w = window
     assert w._tr_length.text() == "—"
     assert w._tr_depth.text() == "—"
     w._tr_depth.setValue(8.5)

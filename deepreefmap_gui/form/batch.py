@@ -1,12 +1,13 @@
+"""The batch CSV a survey queue can be imported from.
+
+Parsing only: the Run step reads a file through here and turns each row into a
+pass, which is the one way a CSV reaches the pipeline.
+"""
+
 from __future__ import annotations
 
 import logging
-import threading
 from pathlib import Path
-
-from PySide6.QtWidgets import QFileDialog
-
-from deepreefmap_gui.core.window_protocol import MixinBase
 
 logger = logging.getLogger(__name__)
 
@@ -88,9 +89,8 @@ def _open_csv(path: Path):
 def load_batch_csv(path: Path) -> list[BatchJob]:
     """Read a CSV with case-insensitive columns and return parsed rows.
 
-    One parser for both readers: the advanced batch runs these rows straight
-    through the pipeline, and the survey queue imports them as passes. Only
-    `transect` is optional, and only the survey queue reads it.
+    Only `transect` is optional. It names a planned transect to assign the row's
+    pass to, and a row without one lands unassigned rather than being refused.
     """
     import csv
 
@@ -137,140 +137,3 @@ def load_batch_csv(path: Path) -> list[BatchJob]:
     if not jobs:
         raise ValueError("No usable rows in CSV.")
     return jobs
-
-
-class BatchMixin(MixinBase):
-    """DeepReefMapWindow methods that drive CSV-driven batch reconstruction."""
-
-    def _on_batch_clicked(self) -> None:
-        path_str, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select batch CSV",
-            self._out_root_input.text(),
-            "CSV files (*.csv);;All files (*)",
-        )
-        if not path_str:
-            return
-        try:
-            jobs = load_batch_csv(Path(path_str))
-        except Exception as exc:
-            self._status_label.setText(f"Batch CSV error: {exc}")
-            logger.exception("Failed to load batch CSV")
-            return
-
-        # One subdirectory per job, straight under the user's output root rather
-        # than a batch_out/ level below it, so the run browser's single-level
-        # scan lists batch jobs alongside single runs.
-        base_out = Path(self._out_root_input.text()).expanduser()
-        base_out.mkdir(parents=True, exist_ok=True)
-
-        self._set_form_enabled(False)
-        self._batch_btn.setEnabled(False)
-        # Same transport controls a single run gets: start goes away so a second
-        # pipeline cannot be launched over this one, and stop/pause appear with
-        # events behind them for _on_stop_clicked to signal.
-        self._cancel_event = threading.Event()
-        self._pause_event = threading.Event()
-        self._pause_event.set()
-        self._begin_run_controls()
-        self._status_label.setText(f"Batch starting: {len(jobs)} job(s)")
-        self._progress_bar.setRange(0, len(jobs))
-        self._progress_bar.setValue(0)
-        self._set_progress_widgets_visible(True)
-
-        # Snapshot the form once so a user editing it mid-batch doesn't
-        # produce mixed configurations across jobs.
-        common = {
-            "fps": self._fps_spin.value(),
-            "segmentation_name": self._seg_combo.currentText(),
-            "mapping_name": self._map_combo.currentText(),
-            "camera_profile_name": self._profile_combo.currentText(),
-            "enable_tsdf": self._tsdf_check.isChecked(),
-            "skip_segmentation": self._skip_seg_check.isChecked(),
-            "classes_path": self._classes_path,
-        }
-        self._pipeline_thread = threading.Thread(
-            target=self._run_batch_worker,
-            args=(jobs, base_out, common, self._cancel_event, self._pause_event),
-            daemon=True,
-        )
-        self._pipeline_thread.start()
-
-    def _run_batch_worker(
-        self,
-        jobs: list[BatchJob],
-        base_out: Path,
-        common: dict,
-        cancel_event: threading.Event,
-        pause_event: threading.Event,
-    ) -> None:
-        from deepreefmap.pipeline.artifacts import ReconstructionCancelled
-
-        from deepreefmap_gui.profiling.instrumentation import instrumented_reconstruction
-
-        ok = 0
-        last_error = ""
-        for idx, job in enumerate(jobs, start=1):
-            # Between jobs as well as inside one, so pausing does not let the
-            # next video start and stopping does not have to wait for it.
-            pause_event.wait()
-            if cancel_event.is_set():
-                break
-            self._sig_batch_progress.emit(idx, len(jobs), job.name)
-            video_path = Path(job.video).expanduser()
-            if not video_path.exists():
-                last_error = f"row {idx}: {video_path} not found"
-                logger.error("Batch %s/%s: %s", idx, len(jobs), last_error)
-                continue
-            out_dir = base_out / self._sanitize_run_name(job.name)
-            out_dir.mkdir(parents=True, exist_ok=True)
-            try:
-                instrumented_reconstruction(
-                    video_paths=[str(video_path)],
-                    output_dir=out_dir,
-                    transect_length=job.transect_length,
-                    transect_crop_width=job.crop_width,
-                    begin_s=job.begin_s,
-                    end_s=job.end_s,
-                    run_name=job.name,
-                    viewer=None,
-                    cancel_event=cancel_event,
-                    pause_event=pause_event,
-                    **common,
-                )
-                ok += 1
-            except ReconstructionCancelled:
-                break
-            except Exception as exc:
-                logger.exception("Batch job %s failed", job.name)
-                last_error = f"{job.name}: {exc}"
-        self._sig_batch_done.emit(ok, len(jobs), last_error[:300])
-
-    def _on_batch_progress(self, idx: int, total: int, name: str) -> None:
-        self._status_label.setText(f"Batch: job {idx} of {total}: {name}")
-        if self._progress_bar.maximum() != total:
-            self._progress_bar.setRange(0, total)
-        self._progress_bar.setValue(idx - 1)
-        self._set_progress_widgets_visible(True)
-
-    def _on_batch_done(self, ok: int, total: int, last_error: str) -> None:
-        self._progress_bar.setValue(total)
-        self._reset_progress_bars()
-        # Read off the event rather than routing a flag through the signal: a
-        # stopped batch reports fewer jobs than it started, which on its own
-        # reads the same as a batch that failed most of them.
-        cancel = getattr(self, "_cancel_event", None)
-        if cancel is not None and cancel.is_set():
-            self._status_label.setText(f"Batch stopped: {ok}/{total} job(s) finished.")
-        elif ok == total:
-            self._status_label.setText(f"Batch complete: {ok}/{total} job(s) succeeded.")
-        elif last_error:
-            self._status_label.setText(
-                f"Batch finished: {ok}/{total} succeeded. Last error: {last_error}"
-            )
-        else:
-            self._status_label.setText(f"Batch finished: {ok}/{total} succeeded.")
-        self._set_form_enabled(True)
-        self._batch_btn.setEnabled(True)
-        self._end_run_controls()
-        self._refresh_data_manager()

@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
 )
 
 from deepreefmap_gui.core.fonts import BASE_POINT_SIZE, MONO_FONT_FAMILY
-from deepreefmap_gui.core.icons import check_icon, copy_icon, crosshair_icon
+from deepreefmap_gui.core.icons import ICON_MD, ICON_SM, check_icon, copy_icon, crosshair_icon
 from deepreefmap_gui.core.theme import (
     BORDER,
     GUTTER,
@@ -322,7 +322,6 @@ class SimplePlanMixin(MixinBase):
         export_btn.clicked.connect(self._on_transects_export)
         # Creating and deleting a transect is a different kind of act from
         # moving the whole set in and out of a file, so the two groups separate.
-        buttons.addWidget(new_btn)
         buttons.addWidget(self._transect_edit_btn)
         buttons.addWidget(delete_btn)
         buttons.addStretch(1)
@@ -331,6 +330,14 @@ class SimplePlanMixin(MixinBase):
         group_layout.addLayout(buttons)
 
         details, details_layout = section_card("Details")
+        # New sits at the top of the card it fills. At the far corner of the
+        # table card below, the eye had to travel bottom-left to top-right to
+        # follow one action to its effect.
+        new_btn.setText("New transect")
+        new_row = QHBoxLayout()
+        new_row.addStretch(1)
+        new_row.addWidget(new_btn)
+        details_layout.addLayout(new_row)
         grid = QGridLayout()
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setHorizontalSpacing(8)
@@ -362,7 +369,8 @@ class SimplePlanMixin(MixinBase):
         # Drawing is the primary way to place a transect and typing the fallback,
         # so the tool stands beside the pair of fields it fills, spanning both.
         self._pick_both_btn = QToolButton()
-        self._pick_both_btn.setIcon(crosshair_icon(20))
+        self._pick_both_btn.setIcon(crosshair_icon(ICON_MD))
+        self._pick_both_btn.setAccessibleName("Draw the transect on the map")
         self._pick_both_btn.setCheckable(True)
         self._pick_both_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
         self._pick_both_btn.setSizePolicy(
@@ -427,11 +435,15 @@ class SimplePlanMixin(MixinBase):
         details.setMinimumWidth(360)
         page.addWidget(top)
         page.addWidget(transects_group)
-        page.setStretchFactor(0, 7)
-        page.setStretchFactor(1, 3)
-        page.setSizes([620, 320])
+        # Proportional rather than a pixel pair: 620 + 320 is taller than the
+        # body of a 900px window, so the table was handed whatever was left and
+        # clipped its last row. Both halves are working surfaces, so the map
+        # takes a little more and the table keeps enough to read.
+        page.setStretchFactor(0, 11)
+        page.setStretchFactor(1, 9)
+        page.setSizes([550, 450])
         transects_group.setMinimumHeight(220)
-        # No list refresh here: refreshes happen when the simple mode is entered,
+        # No list refresh here: refreshes happen when the interface is built,
         # so opening the store (which creates survey.db) waits until then.
         return page
 
@@ -451,8 +463,12 @@ class SimplePlanMixin(MixinBase):
             self._transect_list.clear()
             # Duplicating the on-screen transects into a section of their own is
             # what makes a long list usable while panning: the map is the filter.
-            # Below two transects there is nothing to filter, only a double entry.
+            # Only when it is filtering something, though -- when the map holds
+            # every transect the two sections are the same list twice, which
+            # doubled the rows and pushed the last one under the card's edge.
             in_view = [t for t in saved if str(t.id) in visible] if len(saved) > 1 else []
+            if len(in_view) == len(saved):
+                in_view = []
             if in_view:
                 self._add_transect_group("In view", in_view, counts)
             all_group = self._add_transect_group("All transects", saved, counts, always=True)
@@ -623,8 +639,8 @@ class SimplePlanMixin(MixinBase):
     def _on_transect_new(self) -> None:
         """Start a transect that is already named and already being drawn.
 
-        Naming is the step with nothing to decide — the store only needs the
-        name unique — so it is filled in and left selected for anyone who has a
+        Naming is the step with nothing to decide (the store only needs the
+        name unique), so it is filled in and left selected for anyone who has a
         better one, and the map tool arms itself for the two clicks that matter.
         """
         self._transect_form_id = None
@@ -837,8 +853,10 @@ class SimplePlanMixin(MixinBase):
         """Copy button living inside the coordinate field, shown once it holds
         something worth copying."""
         edit = self._coord_edit(which)
-        action = edit.addAction(copy_icon(16), QLineEdit.ActionPosition.TrailingPosition)
+        action = edit.addAction(copy_icon(ICON_SM), QLineEdit.ActionPosition.TrailingPosition)
         action.setToolTip(f"Copy the {which} coordinates")
+        # QLineEdit renders the action as a QToolButton with no text of its own.
+        action.setText(f"Copy the {which} coordinates")
         action.triggered.connect(lambda _=False, w=which: self._copy_endpoint(w))
         action.setVisible(False)
         edit.textChanged.connect(lambda text, a=action: a.setVisible(bool(text.strip())))
@@ -859,7 +877,7 @@ class SimplePlanMixin(MixinBase):
             edit.mapToGlobal(edit.rect().topRight()), "Copied to clipboard", edit
         )
         action = self._coord_copy_actions[which]
-        action.setIcon(check_icon(16))
+        action.setIcon(check_icon(ICON_SM))
         QTimer.singleShot(1200, lambda a=action: a.setIcon(copy_icon(16)))
 
     def _set_transect_editing(self, on: bool) -> None:
@@ -950,7 +968,6 @@ class SimplePlanMixin(MixinBase):
         """Refresh survey views that mirror the store."""
         self._refresh_survey_transect_combos()
         self._refresh_survey_analysis()
-        self._refresh_videos_page()
         # Creating the transect an unassigned pass was waiting for has to
         # re-evaluate the Run gate, or the batch stays blocked with nothing left
         # to fix.

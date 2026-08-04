@@ -282,7 +282,6 @@ def test_worker_thread_writes_are_visible(store):
     "corruption, why",
     [
         ({"transect": {"id": "not-a-uuid"}}, "unparseable id"),
-        ({"transect": None}, "null section"),
         ({"pass": {"direction": "sideways"}}, "invalid enum"),
         ({"pass": {"begin_s": "soon"}}, "wrong type"),
         ({"transect": {"start_lat": 999.0}}, "out-of-range coordinate"),
@@ -411,6 +410,83 @@ def test_a_database_written_before_chapters_migrates(tmp_path):
     assert restored.video_ids() == [video_id]
     version = sqlite3.connect(db_path).execute("PRAGMA user_version").fetchone()[0]
     assert version == len(_MIGRATIONS)
+
+
+def test_a_database_written_before_optional_transects_migrates(tmp_path):
+    """Scenario: a survey.db from the build where every pass needed a transect.
+
+    Expected behaviour: it opens, its passes keep the transects they had, their
+    runs survive the table rebuild, and a new pass may now name none. The rebuild
+    is the only way SQLite can relax NOT NULL, so it is worth proving against a
+    database written the old way rather than one this build made.
+    """
+    from deepreefmap_gui.survey.store import _MIGRATIONS
+
+    transect_id, video_id, pass_id, run_id = (uuid.uuid4() for _ in range(4))
+    now = "2026-08-01T00:00:00+00:00"
+    db_path = tmp_path / "old.db"
+    conn = sqlite3.connect(db_path)
+    with conn:
+        for number, script in enumerate(_MIGRATIONS[:3], start=1):
+            conn.executescript(script)
+            conn.execute(f"PRAGMA user_version = {number}")
+        conn.execute(
+            "INSERT INTO transect VALUES (?,?,'',?,?,?,?,?,?,?,?)",
+            (str(transect_id), "T1", -17.5, 177.1, -17.5005, 177.1005, 50.0, 8.0, now, now),
+        )
+        conn.execute(
+            "INSERT INTO video_asset VALUES (?,?,?,?,?,?,?,?,?)",
+            (str(video_id), "GX010001.MP4", "/data/GX010001.MP4", "ab" * 16, 1024, now, 90.0,
+             30.0, now),
+        )
+        conn.execute(
+            "INSERT INTO transect_pass (id, transect_id, video_id, batch_id, direction,"
+            " begin_s, end_s, notes, created_at, extra_video_ids, held)"
+            " VALUES (?,?,?,NULL,'forward',0,90,'',?,'[]',0)",
+            (str(pass_id), str(transect_id), str(video_id), now),
+        )
+        conn.execute(
+            "INSERT INTO run_record VALUES (?,?,?,?,?,?,'',?)",
+            (str(run_id), str(pass_id), "t1__p01", "succeeded", now, now, now),
+        )
+    conn.close()
+
+    store = SurveyStore(db_path)
+    kept = store.get_pass(pass_id)
+    assert kept is not None
+    assert kept.transect_id == transect_id
+    assert kept.extra_video_ids == []
+    assert store.get_run(run_id) is not None
+    assert store.runs_for_transect(transect_id) != []
+
+    unfiled = TransectPass(transect_id=None, video_id=video_id, begin_s=0.0, end_s=30.0)
+    store.add_pass(unfiled)
+    assert store.get_pass(unfiled.id).transect_id is None
+
+
+def test_rebuild_restores_a_pass_that_named_no_transect(store, tmp_path):
+    """Scenario: a clip was processed with the transect skipped.
+
+    Expected behaviour: its manifest carries a null transect block, and a rebuild
+    restores the pass unassigned rather than skipping the run or inventing a
+    transect to hang it on.
+    """
+    _transect, _video, pass_ = seed_pass(store)
+    pass_.transect_id = None
+    store.update_pass(pass_)
+    run = RunRecord(pass_id=pass_.id, run_dir_name="unfiled")
+    store.add_run(run)
+
+    out_root = tmp_path / "out"
+    write_manifest(out_root, "unfiled", survey_manifest_block(run, pass_, None, None))
+
+    fresh = SurveyStore(tmp_path / "rebuilt.db")
+    report = fresh.rebuild_from_scan(out_root)
+    assert report.skipped == []
+    assert report.passes == 1
+    restored = fresh.get_pass(pass_.id)
+    assert restored is not None
+    assert restored.transect_id is None
 
 
 def test_rebuild_restores_every_chapter_of_a_pass(store, tmp_path):

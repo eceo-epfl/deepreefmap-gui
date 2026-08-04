@@ -17,8 +17,7 @@ from deepreefmap_gui.simple.batch import _COL_TRANSECT, _COL_TRIM
 
 
 @pytest.fixture
-def import_window(simple_window, monkeypatch):
-    window = simple_window
+def import_window(window, monkeypatch):
     monkeypatch.setattr(window, "_survey_missing_models", list)
     monkeypatch.setattr("deepreefmap_gui.simple.batch._probe_video", lambda _p: (60.0, 30.0))
     return window
@@ -120,7 +119,9 @@ def test_an_unknown_transect_lands_unassigned_and_says_so(import_window, tmp_pat
 
     assert window._survey_rows[0].transect_id is None
     assert "not yet planned" in window._status_label.text()
-    assert not window._survey_start_btn.isEnabled()
+    # Named, not refused: the row queues without a transect and the import says
+    # which name it did not recognise.
+    assert window._survey_start_btn.isEnabled()
 
 
 def test_a_bad_csv_queues_nothing(import_window, tmp_path, monkeypatch):

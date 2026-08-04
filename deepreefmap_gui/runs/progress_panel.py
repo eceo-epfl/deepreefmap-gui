@@ -1,7 +1,7 @@
 """Run progress shown in place of the 3D canvas until a cloud arrives.
 
 One of two progress sinks: this one rides with the viewer and reports a single
-run; simple mode's BatchProgressCard reports the batch around it. Both take the
+run; BatchProgressCard reports the batch around it. Both take the
 same calls from ProgressMixin, so either may be absent.
 """
 

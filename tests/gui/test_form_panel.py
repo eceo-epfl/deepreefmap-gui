@@ -63,13 +63,3 @@ def test_time_edit_parses_clamps_and_reverts(qapp) -> None:
     assert edit.value() == 30.0
     assert edit.text() == "30.00"
 
-
-def test_begin_and_end_snap_together(window) -> None:
-    window._end_spin.setValue(50.0)
-    window._begin_spin.setValue(80.0)
-    assert window._begin_spin.value() == 50.0
-
-    window._begin_spin.setValue(20.0)
-    window._end_spin.setValue(10.0)
-    assert window._end_spin.value() == 20.0
-

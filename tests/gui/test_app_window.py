@@ -1,5 +1,5 @@
-"""Main window assembly: creation, cache seeding on submit, updates tab,
-desktop entry controls."""
+"""Main window assembly: creation, cache seeding from the form's settings,
+updates tab, desktop entry controls."""
 
 from __future__ import annotations
 
@@ -12,8 +12,12 @@ def test_window_creates(window) -> None:
     assert window.windowTitle() == "DeepReefMap"
 
 
-def test_submit_seeds_cache_from_matching_prior_run(window, tmp_path) -> None:
+def test_a_pass_seeds_its_cache_from_a_matching_prior_run(window, tmp_path) -> None:
+    """The batch worker seeds each pass from the settings the form holds, so a
+    second attempt at the same clip reuses the frames the first one prepared."""
     from deepreefmap.pipeline import resume as resume_mod
+
+    from deepreefmap_gui.runs.seeding import seed_from_settings
 
     video = tmp_path / "clip.mp4"
     video.write_bytes(b"not really a video")
@@ -38,7 +42,9 @@ def test_submit_seeds_cache_from_matching_prior_run(window, tmp_path) -> None:
 
     out_dir = tmp_path / "runs" / "20260102-000000"
     out_dir.mkdir()
-    window._seed_run_cache(out_dir, video, None, None)
+    seed_from_settings(
+        out_dir, out_dir.parent, window._collect_run_settings(), [video], None, None
+    )
     assert (out_dir / "frames" / "000000.png").exists()
     sidecar = resume_mod.read_sidecar(out_dir, resume_mod.STAGE_PREPROCESS)
     assert sidecar is not None and sidecar["key"] == prep_key

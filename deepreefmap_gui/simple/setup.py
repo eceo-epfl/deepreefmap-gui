@@ -1,8 +1,12 @@
-"""First-run environment check, shown before planning.
+"""The readiness check, shown before planning on a machine that is not ready.
 
 Three rows say whether this machine can process a dive: the graphics card, the
 models it needs, and disk space. Each failing row carries the one action that
-fixes it. When all three pass the step stops leading on launch.
+fixes it. When all three pass the check stops leading on launch.
+
+It is the first view of the This machine destination, which is why the page is
+a bare card rather than a titled one: simple/machine.py owns the heading and the
+switch that reaches the other two views.
 
 The verdict functions are pure and Qt-free so the pass/fail logic is tested
 without a window, the same split progress.py uses for the step badges.
@@ -21,7 +25,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QSizePolicy,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -45,6 +48,15 @@ ROUGH_PASS_BYTES = 3 * 1024**3
 # Sizing a run means walking every cached frame in it, and this runs whenever the
 # setup page repaints, so only the most recent runs are measured.
 _SIZED_RUNS = 5
+
+# A readable measure for a checklist: wide enough for the longest verdict line
+# without the eye having to track across a 1500px window to reach its button.
+_PAGE_WIDTH = 900
+
+# Where the footage estimate stops being a figure and becomes a reassurance.
+# Well beyond any single field season, so the only readings it suppresses are
+# the ones a near-zero measured rate produced.
+_FOOTAGE_CEILING_HOURS = 500
 
 
 def measure_bytes_per_footage_minute(out_root: Path, limit: int = _SIZED_RUNS) -> float | None:
@@ -129,14 +141,18 @@ def _coarse_footage(minutes: float) -> str:
     """Round a capacity to the precision it actually carries.
 
     Extrapolated from a handful of runs, so a figure like "157h 51m" would claim
-    an accuracy the estimate does not have.
+    an accuracy the estimate does not have. Past a few days of footage it stops
+    quoting a number at all: the extrapolation is from a rate measured over
+    minutes, and "612490 hours" is not a capacity, it is a division.
     """
     if minutes < 90:
-        return f"{max(5, round(minutes / 5) * 5)} minutes"
+        return f"about {max(5, round(minutes / 5) * 5)} minutes"
     hours = minutes / 60
     if hours < 10:
-        return f"{hours:.0f} hours"
-    return f"{round(hours / 10) * 10} hours"
+        return f"about {hours:.0f} hours"
+    if hours > _FOOTAGE_CEILING_HOURS:
+        return f"well over {_FOOTAGE_CEILING_HOURS} hours"
+    return f"about {round(hours / 10) * 10} hours"
 
 
 def space_check(
@@ -158,7 +174,7 @@ def space_check(
             "space",
             True,
             "Disk space",
-            f"{free} free, about {capacity} of footage at recent run sizes.",
+            f"{free} free, {capacity} of footage at recent run sizes.",
         )
     # Deliberately no capacity figure: nothing has been processed here to size
     # against, and ROUGH_PASS_BYTES is a fallback for blocking a doomed batch,
@@ -215,19 +231,37 @@ _CROSS = f'<span style="color:{ERROR}; font-weight:bold;">&#10007;</span>'
 class SimpleSetupMixin(MixinBase):
     """DeepReefMapWindow methods for the first-run laptop setup step."""
 
-    def _build_setup_page(self) -> QWidget:
-        """The setup step: three status rows and the actions that fix them.
+    def _build_readiness_view(self) -> QWidget:
+        """Readiness: three status rows and the actions that fix them.
 
         The models row carries the two provisioning actions, so a diver never
-        has to leave simple mode to get the models a survey needs.
+        has to leave the page to get the models a survey needs.
         """
         page = QWidget()
-        layout = QVBoxLayout(page)
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        # Three rows of status is a short page. Stretched to fill the window it
+        # is a card with a hole in it, so it is capped at the width of what it
+        # has to say. Pinned to the top left rather than centred in the window:
+        # the heading and the view switch above it start at the page margin, and
+        # a card that floats away from the control that opened it reads as a
+        # separate thing.
+        row = QHBoxLayout()
+        column = QWidget()
+        column.setMaximumWidth(_PAGE_WIDTH)
+        layout = QVBoxLayout(column)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(GUTTER)
+        row.addWidget(column, 1)
+        row.addStretch(0)
+        outer.addLayout(row)
+        outer.addStretch(1)
 
-        card, card_layout = section_card("Environment")
-        intro = QLabel("Requirements for processing a dive on this machine.")
+        # Untitled: the page it sits on is already headed This machine, and the
+        # segmented control above says which of its views this is.
+        card, card_layout = section_card()
+        intro = QLabel("What processing a dive needs, and whether it is here.")
         intro.setWordWrap(True)
         intro.setStyleSheet(f"color: {TEXT_MUTED};")
         card_layout.addWidget(intro)
@@ -258,21 +292,24 @@ class SimpleSetupMixin(MixinBase):
         self._setup_memory_label.setVisible(False)
         card_layout.addWidget(self._setup_memory_label)
 
-        layout.addWidget(card)
-
+        # Inside the card and at its foot, so the summary and the way out sit
+        # with the checks they describe. Loose underneath, with the page's empty
+        # space below them, they read as a second unrelated thing.
+        card_layout.addStretch(1)
         footer = QHBoxLayout()
         self._setup_summary = QLabel("")
         self._setup_summary.setWordWrap(True)
         self._setup_summary.setStyleSheet(f"color: {TEXT_MUTED};")
         footer.addWidget(self._setup_summary, 1)
-        continue_btn = QPushButton("Start planning →")
-        continue_btn.setProperty("cta", "true")
-        continue_btn.clicked.connect(self._on_setup_continue)
-        footer.addWidget(continue_btn)
-        layout.addLayout(footer)
-        layout.addStretch(1)
+        self._setup_continue_btn = QPushButton("Start planning →")
+        self._setup_continue_btn.setProperty("cta", "true")
+        self._setup_continue_btn.clicked.connect(self._on_setup_continue)
+        footer.addWidget(self._setup_continue_btn)
+        card_layout.addLayout(footer)
 
-        self._refresh_setup_page()
+        layout.addWidget(card)
+
+        self._refresh_readiness_view()
         return page
 
     def _build_setup_row(self, key: str, actions: list[QWidget]) -> QWidget:
@@ -308,16 +345,6 @@ class SimpleSetupMixin(MixinBase):
         title.setText({"graphics": "Graphics card", "models": "Models", "space": "Disk space"}[key])
         return row
 
-    def _build_setup_nav_button(self) -> QToolButton:
-        """Header entry point, so the step is reopenable after the first launch."""
-        button = QToolButton()
-        button.setText("Environment")
-        button.setProperty("quiet", "true")
-        button.setToolTip("Check this machine meets the requirements for processing.")
-        button.clicked.connect(lambda: self._set_simple_section("setup"))
-        self._setup_nav_button = button
-        return button
-
     def _current_setup_checks(self) -> list[SetupCheck]:
         """Probe the machine and the current settings into the three verdicts."""
         from deepreefmap_gui.models.manager import _MIN_FREE_BYTES
@@ -325,8 +352,12 @@ class SimpleSetupMixin(MixinBase):
         out_root = Path(self._out_root_input.text()).expanduser()
         profile = probe_system(out_root)
         gpu_name = profile.gpu.name if profile.gpu.kind != GPU_NONE else None
-        preset = getattr(self, "_survey_preset", None) or {}
-        mapping = preset.get("mapping_name") or self._map_combo.currentText()
+        # The form, not the preset. _gpu_only_mapper and _required_model_names
+        # both read these widgets, and the batch runs from them via
+        # _collect_run_settings, so reading the preset here left the readiness
+        # rows judging a different configuration from the one the Run gate
+        # blocks on. They agree today; nothing was keeping them that way.
+        mapping = self._map_combo.currentText()
         return evaluate_setup(
             gpu_name=gpu_name,
             requires_gpu=mapping in GPU_ONLY_BACKENDS,
@@ -350,7 +381,7 @@ class SimpleSetupMixin(MixinBase):
         self._footage_rate_cache = (out_root, rate)
         return rate
 
-    def _refresh_setup_page(self) -> None:
+    def _refresh_readiness_view(self) -> None:
         """Repaint the rows from a fresh probe, and record readiness once reached."""
         if not hasattr(self, "_setup_check_rows"):
             return
@@ -364,27 +395,40 @@ class SimpleSetupMixin(MixinBase):
                 action.setVisible(not check.ok)
         ready = setup_ready(checks)
         unmet = sum(1 for check in checks if not check.ok)
+        # Says what the unmet count means for the button beside it. "1
+        # requirement not met" next to a lit-up Start planning read as a
+        # contradiction; planning is genuinely still available, and processing
+        # genuinely is not, so the sentence says both.
         self._setup_summary.setText(
             "All requirements met."
             if ready
-            else f"{unmet} requirement{'' if unmet == 1 else 's'} not met."
+            else f"{unmet} requirement{'' if unmet == 1 else 's'} not met. You can still"
+            " plan transects; processing will not run until this is fixed."
         )
+        # When something is broken the loudest button on the page should be the
+        # one that fixes it, not the one that carries on past it.
+        self._setup_continue_btn.setProperty("cta", "true" if ready else None)
+        self._setup_continue_btn.style().unpolish(self._setup_continue_btn)
+        self._setup_continue_btn.style().polish(self._setup_continue_btn)
         if ready:
-            # Once the machine can run, setup stops leading on launch.
+            # Once the machine can run, readiness stops leading on launch.
             self._settings.setValue("setup_complete", True)
+        # The header button says the same thing from the other side of the
+        # window, so it is repainted from the same verdict rather than its own.
+        self._refresh_machine_button()
 
     def _initial_simple_section(self) -> str:
-        """Lead to setup on first launch, unless the laptop is already ready."""
+        """Lead to readiness on first launch, unless the laptop is already ready."""
         if str(self._settings.value("setup_complete", "false")).lower() == "true":
             return "plan"
         if setup_ready(self._current_setup_checks()):
             self._settings.setValue("setup_complete", True)
             return "plan"
-        return "setup"
+        return "machine"
 
     def _on_setup_continue(self) -> None:
-        # Acknowledging the step is itself a reason to stop leading with it: the
-        # diver has seen the state and chosen to move on.
+        # Acknowledging the check is itself a reason to stop leading with it:
+        # the diver has seen the state and chosen to move on.
         self._settings.setValue("setup_complete", True)
         self._set_simple_section("plan")
 
@@ -402,7 +446,7 @@ class SimpleSetupMixin(MixinBase):
         missing = self._survey_missing_models()
         if not missing:
             self._status_label.setText("All required models are already installed.")
-            self._refresh_setup_page()
+            self._refresh_readiness_view()
             return
         from deepreefmap_gui.models.manager import all_known_models
 

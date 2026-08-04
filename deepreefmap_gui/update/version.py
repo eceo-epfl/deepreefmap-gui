@@ -28,6 +28,10 @@ _UPDATE_ACCENT = QColor(UPDATE)
 class VersionCheckMixin(MixinBase):
     """DeepReefMapWindow methods for checking GitHub releases and installing updates."""
 
+    # The newest release worth offering, or "" when this is already it. Read by
+    # the This machine button, which paints its own slot for it.
+    _update_available: str = ""
+
     def _check_for_update(self) -> None:
         current = current_version()
         releases = fetch_releases()
@@ -35,20 +39,13 @@ class VersionCheckMixin(MixinBase):
         self._sig_update_check_done.emit(current, releases, pyapp_bin)
 
     def _set_updates_tab_alert(self, latest: str | None) -> None:
-        """Flag the System tab (which hosts updates) amber when `latest` is available.
+        """Say a release is waiting, wherever the running interface can show it.
 
-        Passing None clears the alert and restores the default tab style.
+        The This machine button carries a slot for it, so a release waiting is
+        visible without opening anything. Passing None clears it.
         """
-        bar = self._sidebar_tabs.tabBar()
-        idx = self._TAB_SYSTEM
-        if latest is None:
-            bar.setTabText(idx, "System")
-            bar.setTabTextColor(idx, QColor())  # invalid color falls back to theme default
-            self._sidebar_tabs.setTabToolTip(idx, "")
-            return
-        bar.setTabText(idx, "System ●")
-        bar.setTabTextColor(idx, _UPDATE_ACCENT)
-        self._sidebar_tabs.setTabToolTip(idx, f"Version {latest} is available")
+        self._update_available = latest or ""
+        self._refresh_machine_button()
 
     def _apply_update_check(self, current: str, releases: list[dict] | None, pyapp_bin: str | None) -> None:
         self._current_version_str = current

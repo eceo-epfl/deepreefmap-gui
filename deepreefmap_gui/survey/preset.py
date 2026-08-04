@@ -7,7 +7,7 @@ is treated as authoritative: the preset it holds is locked.
 
 The machine override is the small set of settings one laptop is allowed to differ
 on. Only the keys in ``MACHINE_OVERRIDABLE_KEYS`` may be written there, so a
-curious diver in advanced mode cannot permanently rebrand a field machine's
+curious diver cannot permanently rebrand a field machine's
 method. Everything else follows the organisation preset, and a deviation is named
 to the user and recorded in the run manifest.
 """
@@ -42,7 +42,7 @@ _SUPPORTED_VERSIONS = (1, 2, 3)
 # the file in place and just logs, rather than spinning forever.
 _MAX_QUARANTINE = 100
 
-# A snapshot of every run-form setting, so simple mode can offer the full form
+# A snapshot of every run-form setting, so the settings dialog can offer the full form
 # and have the choices survive a restart. Per-pass values (transect length,
 # begin/end trim) come from the survey database, never from here.
 PRESET_KEYS = {
@@ -98,7 +98,7 @@ MACHINE_OVERRIDABLE_KEYS = frozenset({
     "scs_checkpoint_path",
 })
 
-# Plain-language names for the settings simple mode has to talk about. Keys with
+# Plain-language names for the settings the interface has to talk about. Keys with
 # names that already read as English fall through to _prettify.
 _KEY_LABELS = {
     "mapping_name": "processing method",
@@ -391,7 +391,7 @@ def parse_machine_override(text: str, org: OrgPreset) -> dict[str, Any]:
     """The allow-listed deviations a machine file asks for.
 
     Schema 1 and 2 stored a whole copy of the preset per machine, which is what
-    let one edit in advanced mode rewrite the method for every dive after. Such a
+    let one curious edit rewrite the method for every dive after. Such a
     file is read as a snapshot: the allow-listed settings that differ are kept as
     the machine's own, and the rest returns to the organisation preset.
     """

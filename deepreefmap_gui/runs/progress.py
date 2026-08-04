@@ -239,7 +239,7 @@ class ProgressBarsMixin(MixinBase):
     def _progress_sinks(self) -> list:
         """Every widget mirroring the run in flight.
 
-        Advanced mode has the viewer's placeholder panel, simple mode the Run
+        The viewer's placeholder panel has one, and the Run
         step's batch card, and a window under construction has neither.
         """
         return [
@@ -292,8 +292,13 @@ class ProgressBarsMixin(MixinBase):
         return RunEtaEstimator(frames=0, priors=priors, expected_points=expected_points)
 
     def _set_progress_widgets_visible(self, visible: bool) -> None:
-        """Progress readouts belong to a run in flight; idle shows none of them."""
+        """Progress readouts belong to a run in flight; idle shows none of them.
+
+        The top bar holds nothing else, so it goes with them rather than sitting
+        empty above the work for the whole time nothing is running.
+        """
         self._progress_stack.setVisible(visible)
+        self._top_bar.setVisible(visible)
         self._eta_total_label.setVisible(visible)
         self._bottom_progress_bar.setVisible(visible)
 

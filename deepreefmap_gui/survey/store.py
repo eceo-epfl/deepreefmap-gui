@@ -105,6 +105,38 @@ _MIGRATIONS = [
     """
     ALTER TABLE transect_pass ADD COLUMN held INTEGER NOT NULL DEFAULT 0;
     """,
+    # A pass may name no transect. Footage worth processing is not always footage
+    # laid against a tape: a spot check, a clip a colleague sent, a swim whose
+    # transect was never planned. Refusing to process it was an artefact of the
+    # survey model rather than a scientific rule -- such a run simply reports no
+    # tape length and is not scaled, exactly as a planned transect with no tape
+    # reading already does.
+    #
+    # SQLite cannot relax NOT NULL in place, so this is the documented 12-step
+    # table rebuild. Foreign keys are off for the duration (they are enabled
+    # per-connection in _conn), and the rebuild happens inside the migration's
+    # own transaction.
+    """
+    CREATE TABLE transect_pass_new (
+        id TEXT PRIMARY KEY,
+        transect_id TEXT REFERENCES transect(id),
+        video_id TEXT NOT NULL REFERENCES video_asset(id),
+        batch_id TEXT REFERENCES survey_batch(id),
+        direction TEXT NOT NULL CHECK (direction IN ('forward', 'reverse')),
+        begin_s REAL NOT NULL,
+        end_s REAL NOT NULL,
+        notes TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        extra_video_ids TEXT NOT NULL DEFAULT '[]',
+        held INTEGER NOT NULL DEFAULT 0
+    );
+    INSERT INTO transect_pass_new
+        SELECT id, transect_id, video_id, batch_id, direction, begin_s, end_s,
+               notes, created_at, extra_video_ids, held
+        FROM transect_pass;
+    DROP TABLE transect_pass;
+    ALTER TABLE transect_pass_new RENAME TO transect_pass;
+    """,
 ]
 
 
@@ -170,6 +202,26 @@ class SurveyStore:
     def _migrate(self) -> None:
         conn = self._conn()
         conn.execute("PRAGMA journal_mode = WAL")
+        # Foreign keys off for the duration. A migration that rebuilds a table
+        # (the only way SQLite can relax a NOT NULL) has to drop it while
+        # run_record still references it, and the pragma is a no-op inside a
+        # transaction, so it has to be set out here.
+        conn.execute("PRAGMA foreign_keys = OFF")
+        try:
+            self._run_migrations(conn)
+        finally:
+            conn.execute("PRAGMA foreign_keys = ON")
+        # Logged, never raised. Orphan rows predate the migration -- a database
+        # written with foreign keys off can carry them -- and refusing to open a
+        # survey over one would strand a field laptop on the thing least worth
+        # stopping for. The log is enough to find it.
+        broken = conn.execute("PRAGMA foreign_key_check").fetchall()
+        if broken:
+            logger.warning(
+                "survey.db has %d row(s) referencing something that is not there", len(broken)
+            )
+
+    def _run_migrations(self, conn: sqlite3.Connection) -> None:
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         # A database stamped newer than this build knows must not be opened: the
         # empty migration slice would run nothing and then read a schema whose
@@ -475,7 +527,11 @@ class SurveyStore:
         survey: dict[str, Any],
         report: RebuildReport,
     ) -> None:
-        transect_id = self._restore_transect(survey["transect"], report)
+        # A run written without a transect has no transect block to restore.
+        transect_snapshot = survey.get("transect")
+        transect_id = (
+            self._restore_transect(transect_snapshot, report) if transect_snapshot else None
+        )
         batch_id = self._restore_batch(survey, report)
         video_ids = self._restore_videos(manifest, report)
         pass_id = self._restore_pass(survey["pass"], transect_id, video_ids, batch_id, report)
@@ -552,7 +608,7 @@ class SurveyStore:
     def _restore_pass(
         self,
         snapshot: dict[str, Any],
-        transect_id: uuid.UUID,
+        transect_id: uuid.UUID | None,
         video_ids: list[uuid.UUID],
         batch_id: uuid.UUID | None,
         report: RebuildReport,

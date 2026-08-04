@@ -1,5 +1,5 @@
 """Run progress: the detail and total bars, the status ticker, the ETA readout,
-and the transport controls that replace the start button while a run is live.
+and the transport controls that appear while a run is live.
 
 Split out of test_spinner.py, which had grown to cover all of this while its name
 promised only the spinner widget. The pure ProgressModel maths lives in
@@ -109,36 +109,17 @@ def test_cloud_subphases_hold_one_continuous_bar(make_window) -> None:
     assert window._progress_bar.value() >= filled
 
 
-def test_start_button_disabled_when_form_invalid(make_window) -> None:
+def test_transport_controls_appear_only_while_a_run_is_in_flight(make_window) -> None:
     window = make_window()
-    window._video_input.setText("")
-    window._recompute_submit_state()
-    assert not window._start_btn.isEnabled()
-    assert "Cannot start" in window._start_btn.toolTip()
-
-
-def test_run_controls_morph_setup_to_running(make_window) -> None:
-    window = make_window()
-    window._set_ui_mode("advanced")
     # isHidden, not isVisible: the offscreen test window is never shown on screen.
+    assert window._pause_btn.isHidden()
+    assert window._spinner_stop.isHidden()
     window._begin_run_controls()
-    assert window._start_btn.isHidden()
     assert not window._pause_btn.isHidden()
     assert not window._spinner_stop.isHidden()
     window._end_run_controls()
-    assert not window._start_btn.isHidden()
     assert window._pause_btn.isHidden()
     assert window._spinner_stop.isHidden()
-
-
-def test_simple_mode_never_shows_a_start_button(make_window) -> None:
-    """Simple mode launches runs from its Run step, so start would be a decoy."""
-    window = make_window()
-    assert window._ui_mode == "simple"
-    window._begin_run_controls()
-    assert not window._pause_btn.isHidden()
-    window._end_run_controls()
-    assert window._start_btn.isHidden()
 
 
 def test_bars_carry_no_text_and_overall_estimate_is_visible(make_window, monkeypatch, tmp_path) -> None:
@@ -228,7 +209,8 @@ def test_bottom_bar_mirrors_total_progress(window) -> None:
 
 
 def test_status_and_transport_live_in_the_bottom_bar(window) -> None:
-    for widget in (window._status_label, window._start_btn, window._spinner_stop):
+    """Interrupting a run belongs with the progress bar it interrupts."""
+    for widget in (window._status_label, window._pause_btn, window._spinner_stop):
         assert window._bottom_bar.isAncestorOf(widget)
 
 

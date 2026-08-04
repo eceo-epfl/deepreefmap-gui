@@ -1,4 +1,4 @@
-"""System tab: live RAM/VRAM/CPU/disk gauges and a no-video machine benchmark.
+"""System panel: live RAM/VRAM/CPU/disk gauges and a no-video machine benchmark.
 
 Reads system_probe, the same source the pre-flight check uses, so the numbers the
 user sees match the ones the guard decides on.
@@ -18,7 +18,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from deepreefmap_gui.core.theme import BAR_HEIGHT, BLOCK, PRIMARY, TEXT_MUTED, UPDATE, bar_qss
+from deepreefmap_gui.core.theme import (
+    BAR_HEIGHT,
+    BLOCK,
+    FONT_LG,
+    FONT_SM,
+    PRIMARY,
+    TEXT_MUTED,
+    UPDATE,
+    bar_qss,
+)
 from deepreefmap_gui.core.window_protocol import MixinBase
 
 
@@ -50,7 +59,7 @@ def _meter_bar(percent: float) -> QProgressBar:
 
 
 class SystemPanelMixin(MixinBase):
-    """Builds and drives the System tab. Gauges tick only while the tab is visible."""
+    """Builds and drives the system panel. Gauges tick only while it is on screen."""
 
     def _build_system_panel(self, layout: object) -> None:
         assert isinstance(layout, QVBoxLayout)
@@ -89,7 +98,7 @@ class SystemPanelMixin(MixinBase):
         # crash each came. A divider plus larger caption make this a section
         # heading of its own, so the per-group workload titles below read as its
         # children rather than siblings. The per-run meters are real
-        # QProgressBars rebuilt into the container on entering the tab.
+        # QProgressBars rebuilt into the container on entering the view.
         runs_divider = QFrame()
         runs_divider.setFrameShape(QFrame.Shape.HLine)
         runs_divider.setFrameShadow(QFrame.Shadow.Sunken)
@@ -124,7 +133,7 @@ class SystemPanelMixin(MixinBase):
         self._refresh_recorded_runs()
 
         # The updates section (version, install, desktop entry) is appended to
-        # this same layout by _build_form_panel; give it a labelled break. No
+        # this same layout by _build_form_widgets; give it a labelled break. No
         # trailing stretch here, the updates block ends with one.
         divider = QFrame()
         divider.setFrameShape(QFrame.Shape.HLine)
@@ -133,22 +142,13 @@ class SystemPanelMixin(MixinBase):
         updates_header = QLabel("<b>Updates</b>")
         layout.addWidget(updates_header)
 
-        # 1 Hz gauge tick, created lazily and run only while the tab is showing so
-        # an idle background poll never costs anything.
+        # 1 Hz gauge tick, run only while the gauges are on screen so an idle
+        # background poll never costs anything.
         self._sys_timer = QTimer(self)
         self._sys_timer.setInterval(1000)
         self._sys_timer.timeout.connect(self._refresh_system_gauges)
-        self._sidebar_tabs.currentChanged.connect(self._on_sidebar_tab_changed)
 
-    def _on_sidebar_tab_changed(self, index: int) -> None:
-        if index == self._TAB_SYSTEM:
-            self._refresh_system_gauges()
-            self._refresh_recorded_runs()
-            self._sys_timer.start()
-        else:
-            self._sys_timer.stop()
-
-    _RECORDED_RUNS_HEADING = "<span style='font-size:15px'><b>Recorded runs on this machine</b></span>"
+    _RECORDED_RUNS_HEADING = f"<span style='font-size:{FONT_LG}'><b>Recorded runs on this machine</b></span>"
 
     def _refresh_recorded_runs(self) -> None:
         """Reload history, repopulate the model-combination filter, then render."""
@@ -223,7 +223,7 @@ class SystemPanelMixin(MixinBase):
                 models = " &middot; ".join(
                     str(params.get(k, "?")) for k in ("mapping_backend", "segmentation_model")
                 )
-                subtitle = QLabel(f"<span style='color:{TEXT_MUTED}; font-size:11px'>{models}</span>")
+                subtitle = QLabel(f"<span style='color:{TEXT_MUTED}; font-size:{FONT_SM}'>{models}</span>")
                 subtitle.setTextFormat(Qt.TextFormat.RichText)
                 vbox.addWidget(subtitle)
             grid = QGridLayout()
@@ -343,7 +343,7 @@ class SystemPanelMixin(MixinBase):
             gpu_text = gpu.name
         cores = f"{profile.cpu_logical} logical / {profile.cpu_physical or '?'} physical cores"
         self._machine_specs_label.setText(
-            f"<span style='color:{TEXT_MUTED}; font-size:11px'>{gpu_text}<br>"
+            f"<span style='color:{TEXT_MUTED}; font-size:{FONT_SM}'>{gpu_text}<br>"
             f"{cores} · {profile.os_name} {profile.os_release}</span>"
         )
 
@@ -359,12 +359,21 @@ class SystemPanelMixin(MixinBase):
         value.setText(text)
 
 
-def build_system_tab(parent: QWidget) -> tuple[QWidget, QVBoxLayout]:
-    """A blank System tab widget + its layout, mirroring the other sidebar tabs."""
+def build_system_home(parent: QWidget) -> tuple[QWidget, QWidget, QVBoxLayout]:
+    """The system panel's home, the page inside it, and that page's layout.
+
+    Two widgets rather than one because the page is lent to This machine and
+    handed back; the home is the empty holder it returns to.
+    """
     # No layout-level AlignTop: it shrinks the layout to its size hint and wraps
     # word-wrapped labels narrow. The updates block the form panel appends ends
     # with a stretch that top-aligns instead.
-    tab = QWidget(parent)
-    tab_layout = QVBoxLayout(tab)
-    tab_layout.setContentsMargins(4, 6, 4, 4)
-    return tab, tab_layout
+    home = QWidget(parent)
+    home.setVisible(False)
+    home_layout = QVBoxLayout(home)
+    home_layout.setContentsMargins(0, 0, 0, 0)
+    page = QWidget()
+    page_layout = QVBoxLayout(page)
+    page_layout.setContentsMargins(0, 0, 0, 0)
+    home_layout.addWidget(page)
+    return home, page, page_layout

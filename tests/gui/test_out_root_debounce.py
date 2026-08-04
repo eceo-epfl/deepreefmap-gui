@@ -84,11 +84,12 @@ def test_typing_leaves_no_database_in_the_parents_it_passes(window, tmp_path):
     assert not strays, f"a survey database was created under {sorted(str(p) for p in strays)}"
 
 
-def test_the_label_still_updates_while_typing(window, scan_spy, tmp_path):
-    """The debounce must not defer the feedback the user is reading."""
+def test_the_field_holds_what_was_typed_while_the_scan_waits(window, scan_spy, tmp_path):
+    """The debounce defers the scan, not the text: the field is what the user
+    reads back, and every later run resolves its output root from it."""
     target = tmp_path / "surveys"
     target.mkdir(parents=True)
 
     _type(window, str(target))
 
-    assert str(target) in window._effective_dir_label.text()
+    assert window._out_root_input.text() == str(target)

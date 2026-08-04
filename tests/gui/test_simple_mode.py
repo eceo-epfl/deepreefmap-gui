@@ -1,29 +1,32 @@
-def test_starts_in_simple_mode(window):
-    assert window._ui_mode == "simple"
-    assert window._left_stack.currentIndex() == 1
-    # The filled segment names the live mode, not the one you would switch to.
-    assert window._mode_buttons["simple"].isChecked()
-    assert not window._mode_buttons["advanced"].isChecked()
+from deepreefmap_gui.simple.mode import SIMPLE_SECTIONS
 
 
-def test_toggle_switches_to_advanced_and_back(window):
-    window._mode_buttons["advanced"].click()
-    assert window._ui_mode == "advanced"
-    assert window._left_stack.currentIndex() == 0
-    assert window._mode_buttons["advanced"].isChecked()
-    assert not window._mode_buttons["simple"].isChecked()
-    assert window._sidebar_tabs.currentIndex() == window._TAB_RUN
-    window._mode_buttons["simple"].click()
-    assert window._ui_mode == "simple"
-    assert window._left_stack.currentIndex() == 1
+def test_the_run_form_is_kept_off_screen_in_its_holder(window):
+    """The form is only ever shown inside the run settings dialog.
+
+    It sits in a hidden holder owned by the window the rest of the time, so none
+    of it reaches the screen. The way to start work is the Run step's own button.
+    """
+    assert window._form_home.isAncestorOf(window._setup_page)
+    assert not window._form_home.isVisibleTo(window)
+    assert not window._setup_page.isVisibleTo(window)
 
 
-def test_mode_persists_across_windows(window, make_window):
-    window._mode_buttons["advanced"].click()
-    assert window._ui_mode == "advanced"
-    other = make_window()
-    assert other._ui_mode == "advanced"
-    assert other._left_stack.currentIndex() == 0
+def test_bundled_preset_reaches_the_run_settings(window):
+    """A fresh window must carry the saved preset into the run.
+
+    The batch runs from _collect_run_settings(), so populating only the preset
+    dict is not enough: the form has to hold the preset's values on startup, and
+    since the form is never on screen nothing else would catch it keeping its
+    constructor defaults. transect_crop_width is the tell, because the form
+    default is 0.0, which _collect_run_settings maps to None (crop disabled),
+    while the bundled preset asks for 1.0.
+    """
+    settings = window._collect_run_settings()
+    assert settings["transect_crop_width"] == window._survey_preset["transect_crop_width"]
+    assert settings["transect_crop_width"] == 1.0
+    assert settings["fps"] == window._survey_preset["fps"]
+    assert settings["segmentation_name"] == window._survey_preset["segmentation_name"]
 
 
 def test_simple_nav_switches_sections(window):
@@ -59,8 +62,8 @@ def test_browse_stays_reachable_while_a_batch_runs(window):
     assert window._workspace_buttons["browse"].isEnabled()
 
 
-def test_app_mode_targets_sections_in_simple(window, monkeypatch):
-    """Only a starting batch relocates the user; opening a run never does."""
+def test_only_a_starting_batch_relocates_the_user(window, monkeypatch):
+    """Opening a run never moves the page; a batch starting is the one exception."""
     monkeypatch.setattr(window._viewer, "_ensure_plotter", lambda: None)
     window._set_app_mode("RUNNING")
     assert window._simple_stack.currentIndex() == 1
@@ -71,17 +74,23 @@ def test_app_mode_targets_sections_in_simple(window, monkeypatch):
     assert window._simple_stack.currentIndex() == 2
 
 
-def test_viewer_pane_follows_section_in_simple(window, monkeypatch):
-    """The cloud belongs to View mode: no app mode brings it onto another page."""
+def test_the_viewer_pane_follows_the_section(window, monkeypatch):
+    """The cloud belongs to View: no app mode brings it onto another page."""
     monkeypatch.setattr(window._viewer, "_ensure_plotter", lambda: None)
     assert not window._viewer.isVisibleTo(window)
-    for section in ("run", "browse"):
-        window._set_simple_section(section)
+    for section in (name for name in SIMPLE_SECTIONS if name != "view"):
         for mode in ("RUNNING", "VIEWING", "SETUP"):
             window._set_app_mode(mode)
+            window._set_simple_section(section)
             assert not window._viewer.isVisibleTo(window)
     window._set_simple_section("view")
     assert window._viewer.isVisibleTo(window)
+
+
+def test_leaving_view_mode_takes_the_viewer_with_it(window):
+    window._set_simple_section("view")
+    window._set_simple_section("browse")
+    assert window._viewer.isHidden()
 
 
 def test_view_mode_gives_the_viewport_the_window(window, monkeypatch):
@@ -96,16 +105,17 @@ def test_view_mode_gives_the_viewport_the_window(window, monkeypatch):
     assert window._work_hsplitter.sizes()[0] > 0
 
 
-def test_advanced_run_controls_hidden_in_simple(window):
-    assert not window._start_btn.isVisibleTo(window)
-    assert window._new_run_btn.isVisibleTo(window)
-    window._mode_buttons["advanced"].click()
-    assert window._start_btn.isVisibleTo(window)
-    assert window._new_run_btn.isVisibleTo(window)
-    assert not hasattr(window, "_past_runs_combo")
+def test_revealing_the_canvas_needs_no_permission(window, monkeypatch):
+    """The canvas gate is gone: scene data arriving is what reveals the cloud."""
+    viewer = window._viewer
+    monkeypatch.setattr(viewer, "_ensure_plotter", lambda: None)
+    viewer._reveal_canvas()
+    assert viewer._canvas_stack.currentWidget() is viewer._canvas_container
+    viewer._hide_canvas()
+    assert viewer._canvas_stack.currentWidget() is viewer._placeholder_container
 
 
-def test_simple_mode_creates_survey_db_under_root(window):
+def test_the_survey_db_is_created_under_the_output_root(window):
     from pathlib import Path
 
     from deepreefmap_gui.survey.store import SURVEY_DB_NAME

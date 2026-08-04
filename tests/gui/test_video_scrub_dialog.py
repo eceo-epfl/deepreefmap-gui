@@ -27,8 +27,8 @@ def test_defaults_span_the_full_video(qapp, tiny_video) -> None:
 
 
 def test_end_at_slider_max_returns_exact_duration(qapp, tiny_video) -> None:
-    # _effective_time_range() only collapses end to "full length" when it
-    # matches the probed duration, so the max tick must not round away from it.
+    # An untrimmed pass has to come back reading as the whole clip, so the max
+    # tick must not round away from the probed duration.
     from deepreefmap_gui.form.video_scrub import VideoScrubDialog
 
     path, _ = tiny_video

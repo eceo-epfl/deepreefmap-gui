@@ -13,36 +13,47 @@ logger = logging.getLogger(__name__)
 # sit above it, and hovered/raised controls above those. Each step is far enough
 # from the last to be visible, and all carry the same faint blue-grey cast so
 # they read as one surface family rather than as unrelated greys.
-WINDOW = "#16191d"  # app shell, behind everything
+#
+# The steps are wide on purpose. An earlier ramp put only 13 points of lightness
+# between the shell and a card, and 20 between a card and its own border, which
+# is why panels read as text floating on the window rather than as panels. The
+# separation a reader actually sees between two large adjacent fills is the
+# lightness delta, not the WCAG ratio (which is near 1:1 for any two dark greys),
+# so the ramp is spaced by lightness and asserted that way in test_theme.py.
+WINDOW = "#101317"  # app shell, behind everything
 WINDOW_TEXT = "#dfe5ec"
-BASE = "#1b1f24"  # text fields and item views, recessed into a panel
-ALT_BASE = "#20252b"
-BUTTON = "#2a3038"
-BORDER = "#333a42"  # hairline: above the panel fills, below the top of the ramp
-GROOVE = "#2a3038"
-TEXT_MUTED = "#93a0ad"
-DISABLED_FG = "#6f6f6f"
+BASE = "#181c21"  # text fields and item views, recessed into a panel
+ALT_BASE = "#1e232a"
+BUTTON = "#2f363f"
+BORDER = "#3e4751"  # hairline: above the panel fills, below the top of the ramp
+GROOVE = "#14181d"  # recessed track (progress bars, sliders): below BASE, not level with BUTTON
 
 # Recurring dark fills and text shades that sit between the palette roles above.
-CARD_BG = "#21262c"  # raised card/panel fill, one notch off WINDOW
-SURFACE_HI = "#373f4a"  # hover and raised states, the top of the fill ramp
-BORDER_STRONG = "#46505a"  # dividers and hovered control borders
-PREVIEW_BG = "#121417"  # backdrop behind image/preview panels before they load
+CARD_BG = "#242a31"  # raised card/panel fill, a visible step off WINDOW
+SURFACE_HI = "#434d59"  # hover and raised states, the top of the fill ramp
+BORDER_STRONG = "#57626f"  # dividers and hovered control borders
+PREVIEW_BG = "#0b0d10"  # backdrop behind image/preview panels before they load
 OVERLAY_TEXT = "#e8e8e8"  # bright label text on the dark viewer overlays
 TEXT_SECONDARY = "#b9c4cf"  # readouts a shade brighter than TEXT_MUTED
-TEXT_DIM = "#6f7c89"  # least prominent text, dimmer than TEXT_MUTED
+TEXT_MUTED = "#93a0ad"  # labels and captions beside the text they describe
+TEXT_DIM = "#8b98a6"  # least prominent text, dimmer than TEXT_MUTED
+DISABLED_FG = "#7d8590"  # unavailable controls; dimmer again, but still readable
+PLACEHOLDER_TEXT = "#9aa3ad"  # prompt text inside an empty field
 SLIDER_HANDLE = "#f0f0f0"  # near-white grab handle on trim/timeline sliders
 
 # Item-view selection. A soft PRIMARY tint under unchanged body text, rather
 # than a full-bleed PRIMARY slab with near-black text: a selected row should be
 # legible at a glance, not the loudest thing on the page. Line edits keep the
 # strong palette Highlight, where a hard selection colour is what you want.
-SELECTION_BG = "#2b4763"
+SELECTION_BG = "#2f5478"
 
 # Named semantic accents. These consolidate several inconsistent spellings that
 # were scattered across the GUI (e.g. success was both "#4a4" and
 # QColor(74, 170, 74)); migrate call sites onto these so there's one value each.
-SUCCESS = "#4aaa4a"
+#
+# Every one of these clears 4.5:1 against WINDOW, BASE and CARD_BG, and against
+# the tinted status pill each one paints for itself. See test_theme.py.
+SUCCESS = "#5cbf5c"
 WARNING = "#e8a04a"
 ERROR = "#ff6b5e"  # brighter than the old #c0392b/#c84 for contrast on dark
 PRIMARY = "#4aa3ff"
@@ -50,7 +61,28 @@ PRIMARY_DARK = "#2a78c8"  # PRIMARY's outline/handle-border shade
 LINK = "#9ecbff"
 UPDATE = "#e0a030"
 DANGER_BG = "#8a2222"  # filled "Confirm delete?" button; distinct from ERROR text
-BLOCK = "#e05050"  # hard "blocked" red on gauges and pre-flight verdicts; distinct from ERROR text
+BLOCK = "#ff7a70"  # hard "blocked" red on gauges and pre-flight verdicts; distinct from ERROR text
+
+# Text laid over a filled accent, rather than beside it: the CTA label, the
+# selected segment of a segmented control, a highlighted item.
+ON_ACCENT = WINDOW
+BRIGHT_TEXT = "#ffffff"
+
+# Panels that float over the 3D canvas rather than over the shell. They are
+# deliberately translucent -- the point of an overlay is that the cloud shows
+# through it -- so they are their own small ramp rather than values off the
+# surface one, which assumes an opaque parent.
+OVERLAY_BG = "rgba(20, 20, 20, 200)"
+OVERLAY_BG_STRONG = "rgba(28, 28, 28, 240)"
+OVERLAY_BORDER = "rgba(255, 255, 255, 40)"
+OVERLAY_BORDER_STRONG = "rgba(255, 255, 255, 80)"
+OVERLAY_FILL = "rgba(255, 255, 255, 20)"
+OVERLAY_FILL_HI = "rgba(255, 255, 255, 50)"
+OVERLAY_ACCENT_FILL = "rgba(74, 163, 255, 90)"
+OVERLAY_HANDLE = "#dddddd"
+OVERLAY_TEXT_DIM = "#b8b8b8"
+OVERLAY_TEXT_LINK = "#cfd6dd"
+OVERLAY_DANGER = "#ff8080"
 
 # Compound tokens that travel together (background + text + border).
 BANNER_BG, BANNER_TEXT, BANNER_BORDER = "#1f2a36", "#d8e2ec", "#2f3f50"
@@ -60,19 +92,50 @@ WARN_BG, WARN_TEXT, WARN_BORDER = "#4a3a14", "#ffd98a", "#8a6b1a"
 # the app reads the same. Height in px; bar_qss colors the fill chunk.
 BAR_HEIGHT = 8
 
-# Geometry, in px. Two radii (cards, controls) and two spacings (page padding,
-# gap between panes) are enough to keep every screen on the same rhythm.
+# Geometry, in px. Two radii (cards, controls) keep every corner on the same
+# rhythm; anything spelling its own 3px or 5px has drifted off it.
 RADIUS = 6
 RADIUS_SM = 4
-PAGE_MARGIN = 14
-GUTTER = 10
+
+# Spacing scale. Every margin and gap in the app comes from here, so vertical
+# rhythm is a choice of step rather than a fresh number per call site. PAGE_MARGIN
+# and GUTTER name the two steps used most, and stay as names because they say
+# what they are for.
+SPACE_XS = 4
+SPACE_SM = 8
+SPACE_MD = 12
+SPACE_LG = 16
+SPACE_XL = 24
+SPACE_XXL = 32
+PAGE_MARGIN = SPACE_LG  # padding between a page's content and the window edge
+GUTTER = SPACE_MD  # gap between two panes, cards, or rows of controls
+
+# Smallest comfortable click target. Chips, inline cell buttons and icon buttons
+# all sit on this floor: below it they are fiddly with a trackpad, which is how
+# this app is driven in the field.
+CONTROL_HEIGHT = 28
+
+# Type scale, in points rather than pixels so it follows the user's font-size
+# preference the way the base font does. The strings are for QSS; the numbers for
+# QFont.setPointSize. FONT_MD matches core.fonts.BASE_POINT_SIZE.
+FONT_XS_PT, FONT_SM_PT, FONT_MD_PT, FONT_LG_PT, FONT_XL_PT = 8, 9, 10, 12, 14
+FONT_XS = f"{FONT_XS_PT}pt"
+FONT_SM = f"{FONT_SM_PT}pt"
+FONT_MD = f"{FONT_MD_PT}pt"
+FONT_LG = f"{FONT_LG_PT}pt"
+FONT_XL = f"{FONT_XL_PT}pt"
+
+# Two weights above body. Semibold carries section titles and labels; bold is for
+# the one thing on a screen that has to be read first.
+WEIGHT_SEMIBOLD = 600
+WEIGHT_BOLD = 700
 
 
 def _chevron_file(direction: str, color: str, size: int = 16) -> str:
     """Path to a painted chevron, for the QSS rules that need an `image:`.
 
     Styling a QComboBox or QAbstractSpinBox box model hands arrow drawing to the
-    stylesheet engine, which then draws nothing unless given an image — so a
+    stylesheet engine, which then draws nothing unless given an image, so a
     styled combo loses the one mark that says it opens. Qt stylesheets take only
     a URL, and this project ships no icon resources, so the arrows are painted
     once into the cache dir and referenced from there.
@@ -226,15 +289,22 @@ QPushButton[cta="true"]:disabled {{
     border-color: {BORDER};
 }}
 
-/* Secondary actions that should not compete: Back, inline cell buttons. */
+/* Secondary actions that should not compete: Back, inline cell buttons. Quieter
+   than a default button, but still a button at rest -- with no border at all
+   these read as static labels sitting between the real controls. */
 QPushButton[quiet="true"], QToolButton[quiet="true"] {{
     background-color: transparent;
-    color: {TEXT_MUTED};
-    border-color: transparent;
+    color: {TEXT_SECONDARY};
+    border-color: {BORDER};
 }}
 QPushButton[quiet="true"]:hover, QToolButton[quiet="true"]:hover {{
     background-color: {SURFACE_HI};
     color: {WINDOW_TEXT};
+    border-color: {BORDER_STRONG};
+}}
+QPushButton[quiet="true"]:disabled, QToolButton[quiet="true"]:disabled {{
+    background-color: transparent;
+    color: {DISABLED_FG};
     border-color: {BORDER};
 }}
 
@@ -370,12 +440,38 @@ QSplitter::handle {{
 QSplitter::handle:hover {{
     background-color: {BORDER};
 }}
-*:focus {{
-    outline: none;
-}}
+/* Keyboard focus has to be visible on every focusable thing, not just the text
+   inputs. Fusion draws no focus rect of its own once a widget is QSS-styled, so
+   a blanket `outline: none` (which this used to carry) left a keyboard user with
+   nothing at all to follow through a dialog. Each control below states the
+   focused border itself, because a per-widget stylesheet elsewhere replaces
+   these rules rather than merging with them. */
 QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus, QSpinBox:focus,
 QDoubleSpinBox:focus, QComboBox:focus, QAbstractSpinBox:focus {{
     border: 1px solid {PRIMARY};
+}}
+QPushButton:focus, QToolButton:focus {{
+    border: 1px solid {PRIMARY};
+    background-color: {SURFACE_HI};
+}}
+QPushButton[cta="true"]:focus {{
+    border: 1px solid {WINDOW_TEXT};
+    background-color: {LINK};
+}}
+QPushButton[quiet="true"]:focus, QToolButton[quiet="true"]:focus {{
+    border: 1px solid {PRIMARY};
+    color: {WINDOW_TEXT};
+}}
+QCheckBox:focus, QRadioButton:focus, QGroupBox:focus {{
+    color: {LINK};
+}}
+QListWidget:focus, QListView:focus, QTreeWidget:focus, QTreeView:focus,
+QTableWidget:focus, QTableView:focus {{
+    border: 1px solid {PRIMARY};
+}}
+QTabBar::tab:focus {{
+    border-color: {PRIMARY};
+    color: {WINDOW_TEXT};
 }}
 """
 
@@ -407,13 +503,13 @@ def apply_theme(app: QApplication) -> None:
     pal.setColor(role.ToolTipBase, QColor(GROOVE))
     pal.setColor(role.ToolTipText, QColor(WINDOW_TEXT))
     pal.setColor(role.Text, QColor(WINDOW_TEXT))
-    pal.setColor(role.PlaceholderText, QColor("#8a8a8a"))
+    pal.setColor(role.PlaceholderText, QColor(PLACEHOLDER_TEXT))
     pal.setColor(role.Button, QColor(BUTTON))
     pal.setColor(role.ButtonText, QColor(WINDOW_TEXT))
-    pal.setColor(role.BrightText, QColor("#ffffff"))
+    pal.setColor(role.BrightText, QColor(BRIGHT_TEXT))
     pal.setColor(role.Link, QColor(LINK))
     pal.setColor(role.Highlight, QColor(PRIMARY))
-    pal.setColor(role.HighlightedText, QColor("#101010"))
+    pal.setColor(role.HighlightedText, QColor(ON_ACCENT))
 
     pal.setColor(group.Disabled, role.Text, QColor(DISABLED_FG))
     pal.setColor(group.Disabled, role.WindowText, QColor(DISABLED_FG))

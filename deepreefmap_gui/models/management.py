@@ -1,4 +1,4 @@
-"""Models tab: per-weight cache status, download progress, and gated-login prompts."""
+"""Model library: per-weight cache status, download progress, and gated-login prompts."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import threading
 from typing import TYPE_CHECKING, cast
 
 from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -18,7 +19,19 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from deepreefmap_gui.core.theme import BORDER, CARD_BG, DANGER_BG, SUCCESS, TEXT_DIM, WARNING
+from deepreefmap_gui.core.theme import (
+    BORDER,
+    CARD_BG,
+    DANGER_BG,
+    FONT_XS,
+    RADIUS_SM,
+    SPACE_XS,
+    SUCCESS,
+    TEXT_DIM,
+    WARNING,
+    WEIGHT_BOLD,
+    WINDOW_TEXT,
+)
 from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.models.hf_dialog import HfLoginDialog
 
@@ -36,9 +49,13 @@ class ModelManagementMixin(MixinBase):
         return None, False
 
     def _jump_to_model(self, model_name: str | None = None) -> None:
-        """Switch the sidebar to the Models tab and reveal one row."""
-        if hasattr(self, "_sidebar_tabs") and hasattr(self, "_TAB_MODELS"):
-            self._sidebar_tabs.setCurrentIndex(self._TAB_MODELS)
+        """Show the model library and reveal one row, wherever it is hosted.
+
+        The library is one widget, lent from its home to This machine, so
+        getting to it means going to the view that is showing it.
+        """
+        self._set_simple_section("machine")
+        self._set_machine_view("models")
         if not hasattr(self, "_models_group"):
             return
         scroll_area = self._models_group.parentWidget()
@@ -52,9 +69,15 @@ class ModelManagementMixin(MixinBase):
 
     def _flash_model_row(self, label: QWidget) -> None:
         prev = label.styleSheet()
+        # Derived from WARNING rather than restated in decimal, which is what
+        # rgba(232, 160, 74, 60) was.
+        flash = QColor(WARNING)
+        flash.setAlpha(60)
         label.setStyleSheet(
-            "QLabel { background-color: rgba(232, 160, 74, 60);"
-            f" border: 1px solid {WARNING}; border-radius: 3px; padding: 2px; }}"
+            f"QLabel {{ background-color: rgba({flash.red()}, {flash.green()},"
+            f" {flash.blue()}, {flash.alpha()});"
+            f" border: 1px solid {WARNING}; border-radius: {RADIUS_SM}px;"
+            f" padding: {SPACE_XS}px; }}"
         )
 
         def _clear() -> None:
@@ -69,7 +92,7 @@ class ModelManagementMixin(MixinBase):
         # Compact action button next to the model dropdown. The click
         # behaviour depends on the current state of the selected model:
         # ⬇ downloads, 🔒 opens the HF login dialog, ✓ jumps to the row in
-        # the Models tab so the user can delete it.
+        # the model library so the user can delete it.
         btn = QPushButton("…")
         btn.setFixedWidth(28)
         btn.setToolTip("Open Models")
@@ -104,16 +127,16 @@ class ModelManagementMixin(MixinBase):
             btn.setToolTip("Open Models")
             btn.setStyleSheet("")
             return
-        from deepreefmap_gui.core.icons import check_icon, download_icon, lock_icon
+        from deepreefmap_gui.core.icons import ICON_SM, check_icon, download_icon, lock_icon
 
         if cached:
             btn.setText("")
-            btn.setIcon(check_icon(16))
+            btn.setIcon(check_icon(ICON_SM))
             btn.setToolTip(f"{selected_name} is downloaded. Click to manage cache.")
             btn.setStyleSheet("")
         elif info.gated and self._hf_auth_user is None:
             btn.setText("")
-            btn.setIcon(lock_icon(16))
+            btn.setIcon(lock_icon(ICON_SM))
             btn.setToolTip(
                 f"{selected_name} is gated. Click to log in to Hugging Face."
             )
@@ -123,7 +146,7 @@ class ModelManagementMixin(MixinBase):
 
             status, why = model_status(info)
             btn.setText("")
-            btn.setIcon(download_icon(16))
+            btn.setIcon(download_icon(ICON_SM))
             if status == ModelStatus.PARTIAL:
                 btn.setToolTip(f"{selected_name} download incomplete ({why}). Click to re-download.")
             else:
@@ -149,13 +172,17 @@ class ModelManagementMixin(MixinBase):
             btn.setToolTip(f"Downloading {model_name} ({pct}%). Click to cancel.")
             btn.setEnabled(True)
         btn.setProperty("downloadPercent", pct)
+        # The fill is SUCCESS dimmed against the card, not a green invented for
+        # this one button: it is the same "this is going well" colour the status
+        # pills use, and the app has exactly one of those.
+        fill = QColor(SUCCESS).darker(160).name()
         btn.setStyleSheet(
             "QPushButton {"
-            " color: #fff; font-weight: bold;"
-            f" background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,"
-            f" stop:0 #3a7a3a, stop:{stop:.4f} #3a7a3a,"
+            f" color: {WINDOW_TEXT}; font-weight: {WEIGHT_BOLD};"
+            " background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,"
+            f" stop:0 {fill}, stop:{stop:.4f} {fill},"
             f" stop:{min(stop + 0.0001, 1.0):.4f} {CARD_BG}, stop:1 {CARD_BG});"
-            f" border: 1px solid {BORDER}; border-radius: 3px;"
+            f" border: 1px solid {BORDER}; border-radius: {RADIUS_SM}px;"
             "}"
         )
 
@@ -228,7 +255,7 @@ class ModelManagementMixin(MixinBase):
             self._refresh_seg_combo_items()
         else:
             self._status_label.setText("No new models found.")
-        # Re-render the Models tab so newly registered models get cards.
+        # Re-render the library so newly registered models get cards.
         threading.Thread(target=self._refresh_model_status, daemon=True).start()
 
     def _refresh_seg_combo_items(self) -> None:
@@ -334,15 +361,15 @@ class ModelManagementMixin(MixinBase):
                     if info.approx_size_mb >= 1024
                     else f"~{info.approx_size_mb} MB"
                 )
-                meta_parts.append(f'<span style="color:{TEXT_DIM}; font-size:10px">{size_text}</span>')
+                meta_parts.append(f'<span style="color:{TEXT_DIM}; font-size:{FONT_XS}">{size_text}</span>')
             if info.release_date:
                 meta_parts.append(
-                    f'<span style="color:{TEXT_DIM}; font-size:10px">({info.release_date})</span>'
+                    f'<span style="color:{TEXT_DIM}; font-size:{FONT_XS}">({info.release_date})</span>'
                 )
             if info.name in required:
                 meta_parts.append(
                     f'<span style="color:{WARNING}; '
-                    'font-size:10px; font-weight:bold">REQUIRED</span>'
+                    f'font-size:{FONT_XS}; font-weight:{WEIGHT_BOLD}">REQUIRED</span>'
                 )
             if meta_parts:
                 name_html += "<br>" + "&nbsp;".join(meta_parts)
@@ -358,11 +385,14 @@ class ModelManagementMixin(MixinBase):
             self._model_rows[info.name] = name_label
             self._model_actions[info.name] = action
 
-        self._recompute_submit_state()
+        # A gated repo's warning is written from the cached-state list this
+        # method has just rebuilt, so it is refreshed from here rather than
+        # waiting for the next form edit.
+        self._update_gated_warning()
         # Provisioning from the simple-mode setup step changes what is cached, so
-        # its "Models ready" row follows the same status refresh the Models tab does.
+        # its "Models ready" row follows the same status refresh the library does.
         if hasattr(self, "_setup_check_rows"):
-            self._refresh_setup_page()
+            self._refresh_readiness_view()
 
     def _required_model_names(self) -> set[str]:
         required = {self._map_combo.currentText()}
@@ -379,7 +409,9 @@ class ModelManagementMixin(MixinBase):
     def _on_required_models_changed(self, _value: object = "") -> None:
         if self._last_model_states:
             self._apply_model_status(self._hf_auth_user, self._last_model_states)
-        self._recompute_submit_state()
+        # Which repos are gated depends on the segmentation model just chosen,
+        # so the warning is recomputed even when there are no states to reapply.
+        self._update_gated_warning()
 
     def _make_action_widget(self, info, cached: bool, auth_user: str | None) -> QWidget:
         from deepreefmap_gui.models.manager import model_available

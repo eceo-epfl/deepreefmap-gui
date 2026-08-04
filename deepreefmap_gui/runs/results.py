@@ -71,6 +71,7 @@ class ResultsMixin(MixinBase):
                 logger.debug("Failed to render the published cover report", exc_info=True)
 
         self._results_group.setVisible(True)
+        self._results_empty.setVisible(False)
         self._reveal_legend_overlay()
         self._set_app_mode("VIEWING")
 

@@ -1,10 +1,10 @@
 """instrumented_reconstruction: the wrapper every run actually goes through.
 
-Called from form/batch.py, runs/loading.py and simple/batch.py, and previously
-untested end to end -- the existing tests all hand-build mark dicts and call
-durations_from_marks directly, which is how the missing ortho/save marks went
-unnoticed. These drive the real wrapper with a stubbed orchestrator and assert on
-what lands in run_manifest.json and the timing profile.
+Called from simple/batch.py, once per pass. The other timing tests hand-build
+mark dicts and call durations_from_marks directly, which is how the missing
+ortho/save marks went unnoticed. These drive the real wrapper with a stubbed
+orchestrator and assert on what lands in run_manifest.json and the timing
+profile.
 """
 
 from __future__ import annotations

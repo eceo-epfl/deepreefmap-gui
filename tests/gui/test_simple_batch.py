@@ -49,8 +49,7 @@ def test_rough_batch_time_scales_with_the_pass_count(monkeypatch):
 
 
 @pytest.fixture
-def batch_window(simple_window, tmp_path, monkeypatch):
-    window = simple_window
+def batch_window(window, tmp_path, monkeypatch):
     window._survey_store().add_transect(make_transect())
     window._refresh_survey_batch_tab()
     monkeypatch.setattr(window, "_survey_missing_models", list)
@@ -150,12 +149,14 @@ def test_add_video_stays_unassigned_between_transects(batch_window, tmp_path, mo
     assert len(batch_window._survey_rows) == 1
     assert batch_window._survey_rows[0].transect_id is None
     assert batch_window._survey_rows[0].end_s == 60.0
-    assert not batch_window._survey_start_btn.isEnabled()
-    assert batch_window._survey_start_btn.text() == "Assign transects first (1 to do)"
+    # Runnable as it stands: skipping the transect costs the comparison against
+    # repeat passes, not the run.
+    assert batch_window._survey_start_btn.isEnabled()
     combo = batch_window._survey_pass_table.cellWidget(batch_window._table_row_of(0), _COL_TRANSECT)
-    assert combo.currentText() == "Not assigned yet"
+    assert combo.currentText() == "Skip transect"
     assert combo.styleSheet() != ""
-    assert batch_window._survey_store().list_passes() == []
+    assert len(batch_window._survey_store().list_passes()) == 1
+    assert batch_window._survey_store().list_passes()[0].transect_id is None
 
 
 def test_add_video_preselects_the_only_transect(batch_window, tmp_path, monkeypatch):
@@ -171,10 +172,12 @@ def test_add_video_preselects_the_only_transect(batch_window, tmp_path, monkeypa
 def test_assigning_transect_persists_pass(batch_window, tmp_path, monkeypatch):
     add_second_transect(batch_window)
     add_video(batch_window, tmp_path, monkeypatch)
-    assert batch_window._survey_store().list_passes() == []
+    # Queued before a transect is chosen, and updated in place when one is.
+    assert [p.transect_id for p in batch_window._survey_store().list_passes()] == [None]
     assign_transect(batch_window, 0)
     passes = batch_window._survey_store().list_passes()
     assert len(passes) == 1
+    assert passes[0].transect_id is not None
     assert passes[0].begin_s == 0.0
     assert passes[0].end_s == 60.0
     assert passes[0].direction == "forward"
@@ -192,8 +195,33 @@ def test_split_pass_duplicates_row(batch_window, tmp_path, monkeypatch):
     assert len(batch_window._survey_store().list_passes()) == 2
 
 
+def test_each_pass_leaves_a_log_beside_its_outputs(
+    batch_window, tmp_path, out_root, monkeypatch, qapp
+):
+    """A batch runs unattended for hours and the log view is in memory, so a
+    pass that failed overnight has to leave something on disk to read.
+
+    RunDetailPanel looks for run.log in the run directory, so this is the file
+    it looks for, not a file of our own choosing.
+    """
+    import logging
+
+    def fake_run(**kwargs):
+        logging.getLogger("deepreefmap").info("a line from inside the pass")
+
+    monkeypatch.setattr("deepreefmap.pipeline.orchestrator.run_reconstruction", fake_run)
+    add_video(batch_window, tmp_path, monkeypatch)
+    assign_transect(batch_window, 0)
+    batch_window._on_survey_start()
+    await_batch(batch_window, qapp)
+
+    logs = list(out_root.glob("*/run.log"))
+    assert len(logs) == 1
+    assert "a line from inside the pass" in logs[0].read_text()
+
+
 def test_run_batch_records_success_and_links_manifest(
-    batch_window, tmp_path, monkeypatch, qapp
+    batch_window, tmp_path, out_root, monkeypatch, qapp
 ):
     calls = []
 
@@ -217,7 +245,7 @@ def test_run_batch_records_success_and_links_manifest(
     assert kwargs["begin_s"] == 0.0
     assert kwargs["end_s"] == 60.0
     assert kwargs["transect_length"] == 50.0
-    assert kwargs["output_dir"].parent == tmp_path
+    assert kwargs["output_dir"].parent == out_root
     # run_name and the survey block are no longer passed to run_reconstruction;
     # they land in the manifest instrumented_reconstruction writes afterward.
     manifest = json.loads((kwargs["output_dir"] / "run_manifest.json").read_text())
@@ -233,7 +261,7 @@ def test_run_batch_records_success_and_links_manifest(
 
 
 def test_manifest_records_the_configuration_and_any_deviation(
-    batch_window, tmp_path, monkeypatch, qapp
+    batch_window, tmp_path, out_root, monkeypatch, qapp
 ):
     """Scenario: a diver processes a pass after changing one setting.
 
@@ -251,7 +279,7 @@ def test_manifest_records_the_configuration_and_any_deviation(
     batch_window._on_survey_start()
     await_batch(batch_window, qapp)
 
-    run_dir = next(p for p in tmp_path.iterdir() if p.is_dir() and p.name.startswith("T1__"))
+    run_dir = next(p for p in out_root.iterdir() if p.is_dir() and p.name.startswith("T1__"))
     survey = json.loads((run_dir / "run_manifest.json").read_text())["survey"]
     config = survey["provenance"]["config"]
     assert config["preset_name"] == org.name
@@ -263,7 +291,7 @@ def test_manifest_records_the_configuration_and_any_deviation(
 
 
 def test_manifest_of_a_standard_run_records_no_deviation(
-    batch_window, tmp_path, monkeypatch, qapp
+    batch_window, tmp_path, out_root, monkeypatch, qapp
 ):
     def fake_run(**kwargs):
         (kwargs["output_dir"] / "run_manifest.json").write_text(json.dumps({"mode": "semantic"}))
@@ -274,7 +302,7 @@ def test_manifest_of_a_standard_run_records_no_deviation(
     batch_window._on_survey_start()
     await_batch(batch_window, qapp)
 
-    run_dir = next(p for p in tmp_path.iterdir() if p.is_dir() and p.name.startswith("T1__"))
+    run_dir = next(p for p in out_root.iterdir() if p.is_dir() and p.name.startswith("T1__"))
     config = json.loads((run_dir / "run_manifest.json").read_text())["survey"]["provenance"]["config"]
     assert config["deviated"] is False
     assert config["deviations"] == {}
@@ -494,10 +522,15 @@ def test_refresh_restores_batch_from_store(batch_window, tmp_path, monkeypatch):
     assert batch_window._survey_rows[0].transect_id is not None
 
 
-def test_survey_run_can_be_paused_and_stopped(batch_window, tmp_path, monkeypatch, qapp):
-    """Scenario: a field worker pauses a batch, then stops it while paused.
+def test_the_worker_is_handed_the_windows_own_pause_and_cancel_events(
+    batch_window, tmp_path, monkeypatch, qapp
+):
+    """The two objects the transport controls set have to be the two the pass is
+    waiting on, or pausing and stopping reach nothing.
 
-    Expected behaviour: the worker is released rather than wedged in wait().
+    That they release a paused worker rather than wedging it is exercised
+    against a batch that is genuinely still running, in
+    test_stopping_a_batch_ends_it_before_the_next_pass.
     """
     seen = {}
     monkeypatch.setattr(
@@ -511,11 +544,6 @@ def test_survey_run_can_be_paused_and_stopped(batch_window, tmp_path, monkeypatc
 
     assert seen["pause_event"] is batch_window._pause_event
     assert seen["cancel_event"] is batch_window._survey_cancel_event
-
-    batch_window._pause_event.clear()
-    batch_window._on_survey_stop()
-    assert batch_window._pause_event.is_set()
-    assert batch_window._survey_cancel_event.is_set()
 
 
 def test_pause_button_drives_the_survey_pause_event(batch_window, tmp_path, monkeypatch, qapp):
@@ -533,7 +561,148 @@ def test_pause_button_drives_the_survey_pause_event(batch_window, tmp_path, monk
     assert batch_window._pause_event.is_set()
 
 
-def test_double_click_opens_the_run_that_succeeded(batch_window, tmp_path, monkeypatch):
+# --- Transport controls over a batch that is still running ---
+
+
+class _BlockingPass:
+    """Stands in for the pipeline, holding each pass open until it is released.
+
+    Records the kwargs it was called with so a test can count the passes that
+    ran, and honours the cancel event the way the real pipeline does.
+    """
+
+    def __init__(self):
+        self.calls: list[dict] = []
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def __call__(self, **kwargs):
+        self.calls.append(kwargs)
+        self.entered.set()
+        self.release.wait(timeout=5)
+        cancel = kwargs.get("cancel_event")
+        if cancel is not None and cancel.is_set():
+            raise ReconstructionCancelled
+
+
+@pytest.fixture
+def blocking_pass(monkeypatch):
+    """A pipeline that stays inside a pass, so a live batch can be inspected."""
+    stub = _BlockingPass()
+    monkeypatch.setattr("deepreefmap.pipeline.orchestrator.run_reconstruction", stub)
+    yield stub
+    # Released whatever the test did with it, so a failed assertion leaves no
+    # worker wedged in wait().
+    stub.release.set()
+
+
+def test_a_running_batch_puts_start_out_of_reach(
+    batch_window, tmp_path, monkeypatch, blocking_pass, qapp
+):
+    """A second launch would share the viewer and overwrite _pipeline_thread, so
+    while a batch runs there is no way to start another, and the transport
+    controls stand in its place until it ends."""
+    add_video(batch_window, tmp_path, monkeypatch)
+    assign_transect(batch_window, 0)
+    assert batch_window._survey_start_btn.isEnabled()
+
+    batch_window._on_survey_start()
+    assert blocking_pass.entered.wait(timeout=5)
+
+    assert not batch_window._survey_start_btn.isEnabled()
+    assert not batch_window._pause_btn.isHidden()
+
+    blocking_pass.release.set()
+    await_batch(batch_window, qapp)
+
+    assert batch_window._survey_start_btn.isEnabled()
+    assert batch_window._pause_btn.isHidden()
+
+
+def test_stopping_a_batch_ends_it_before_the_next_pass(
+    batch_window, tmp_path, monkeypatch, blocking_pass, qapp
+):
+    for name in ("GX010001.MP4", "GX010002.MP4"):
+        add_video(batch_window, tmp_path, monkeypatch, name=name)
+    assign_transect(batch_window, 0)
+    assign_transect(batch_window, 1)
+    batch_window._on_survey_start()
+    assert blocking_pass.entered.wait(timeout=5)
+
+    batch_window._on_stop_clicked()
+    blocking_pass.release.set()
+    await_batch(batch_window, qapp)
+
+    assert len(blocking_pass.calls) == 1, "the remaining passes ran after the stop"
+
+
+def test_a_paused_batch_does_not_start_the_next_pass(
+    batch_window, tmp_path, monkeypatch, blocking_pass, qapp
+):
+    for name in ("GX010001.MP4", "GX010002.MP4"):
+        add_video(batch_window, tmp_path, monkeypatch, name=name)
+    assign_transect(batch_window, 0)
+    assign_transect(batch_window, 1)
+    batch_window._on_survey_start()
+    assert blocking_pass.entered.wait(timeout=5)
+
+    batch_window._pause_btn.setChecked(True)
+    blocking_pass.entered.clear()
+    blocking_pass.release.set()
+    assert not blocking_pass.entered.wait(timeout=0.5), "a pass started while paused"
+
+    batch_window._pause_btn.setChecked(False)
+    await_batch(batch_window, qapp)
+    assert len(blocking_pass.calls) == 2
+
+
+def test_a_stopped_batch_is_not_reported_as_failures(
+    batch_window, tmp_path, monkeypatch, qapp
+):
+    """One of two finishing reads identically whether the diver stopped the batch
+    or the other pass blew up, so the outcome has to tell them apart."""
+    for name in ("GX010001.MP4", "GX010002.MP4"):
+        add_video(batch_window, tmp_path, monkeypatch, name=name)
+    assign_transect(batch_window, 0)
+    assign_transect(batch_window, 1)
+
+    def cancel_immediately(**kwargs):
+        batch_window._survey_cancel_event.set()
+        raise ReconstructionCancelled
+
+    monkeypatch.setattr(
+        "deepreefmap.pipeline.orchestrator.run_reconstruction", cancel_immediately
+    )
+    batch_window._on_survey_start()
+    await_batch(batch_window, qapp)
+
+    summary = batch_window._survey_summary_label.text()
+    assert "0 of 2 passes succeeded" in summary
+    assert "Failed" not in summary
+    assert "Failed" not in batch_window._status_label.text()
+
+
+def test_a_finished_batch_lands_in_browse(batch_window, tmp_path, monkeypatch, qapp):
+    """What a batch wrote is listed as finished without anyone asking for a
+    rescan. The out-root watcher notices the folder on its own, but only as the
+    half-built directory the pass started in, so the status is what pins this."""
+    from deepreefmap_gui.runs import run_table
+
+    def fake_run(**kwargs):
+        (kwargs["output_dir"] / "run_manifest.json").write_text(json.dumps({"mode": "semantic"}))
+
+    monkeypatch.setattr("deepreefmap.pipeline.orchestrator.run_reconstruction", fake_run)
+    add_video(batch_window, tmp_path, monkeypatch)
+    assign_transect(batch_window, 0)
+    batch_window._on_survey_start()
+    await_batch(batch_window, qapp)
+
+    table = batch_window._data_run_table
+    assert table.rowCount() == 1
+    assert table.item(0, run_table.COL_STATUS).text() == "Succeeded"
+
+
+def test_double_click_opens_the_run_that_succeeded(batch_window, tmp_path, out_root, monkeypatch):
     """Scenario: a pass failed, was retried, and succeeded the second time.
 
     Expected behaviour: the row opens the successful run. Taking the most
@@ -551,12 +720,12 @@ def test_double_click_opens_the_run_that_succeeded(batch_window, tmp_path, monke
         record = RunRecord(pass_id=pass_id, run_dir_name=name)
         store.add_run(record)
         store.set_run_status(record.id, status)
-        (tmp_path / name).mkdir()
+        (out_root / name).mkdir()
 
     opened = []
     monkeypatch.setattr(batch_window, "_auto_load_run", opened.append)
     batch_window._on_survey_pass_activated(batch_window._table_row_of(0), 0)
-    assert opened == [tmp_path / "run_good"]
+    assert opened == [out_root / "run_good"]
 
 
 def test_double_click_is_refused_while_a_batch_runs(batch_window, tmp_path, monkeypatch):
@@ -581,7 +750,7 @@ def test_unprocessed_row_says_so_rather_than_doing_nothing(batch_window, tmp_pat
     assert "no successful run" in batch_window._status_label.text()
 
 
-def test_gate_summary_and_run_settings_agree(simple_window, monkeypatch):
+def test_gate_summary_and_run_settings_agree(window, monkeypatch):
     """The gate, the summary label and the run all derive from the form.
 
     With one shared source they cannot disagree: the models the gate blocks on
@@ -591,18 +760,18 @@ def test_gate_summary_and_run_settings_agree(simple_window, monkeypatch):
     from deepreefmap_gui.models import manager
 
     monkeypatch.setattr(manager, "is_model_cached", lambda info: False)
-    simple_window._skip_seg_check.setChecked(False)
-    simple_window._seg_combo.setCurrentText("segformer-b2")
-    simple_window._map_combo.setCurrentText("scsfmlearner")
-    simple_window._recompute_survey_start()
+    window._skip_seg_check.setChecked(False)
+    window._seg_combo.setCurrentText("segformer-b2")
+    window._map_combo.setCurrentText("scsfmlearner")
+    window._recompute_survey_start()
 
-    settings = simple_window._collect_run_settings()
-    required = simple_window._required_model_names()
+    settings = window._collect_run_settings()
+    required = window._required_model_names()
     # Nothing is cached, so every required model is missing and nothing else is.
-    assert set(simple_window._survey_missing_models()) == required
+    assert set(window._survey_missing_models()) == required
     assert settings["mapping_name"] in required
     assert settings["segmentation_name"] in required
-    label = simple_window._survey_preset_label.text()
+    label = window._survey_preset_label.text()
     assert settings["segmentation_name"] in label
     assert settings["mapping_name"] in label
 
@@ -618,8 +787,6 @@ def test_corrupt_user_preset_falls_back_and_does_not_block(make_window, tmp_path
     monkeypatch.setattr("deepreefmap_gui.survey.preset.survey_preset_path", lambda: bad)
 
     window = make_window()
-    window._out_root_input.setText(str(tmp_path))
-    window._set_ui_mode("simple")
     window._survey_store().add_transect(make_transect())
     window._refresh_survey_batch_tab()
     monkeypatch.setattr(window, "_survey_missing_models", list)
@@ -897,14 +1064,18 @@ def test_retrying_a_pass_reuses_its_run_dir(batch_window, tmp_path, monkeypatch,
     assert "__p01__" in dirs[0].name
 
 
-def test_survey_worker_seeds_from_a_matching_run(batch_window, tmp_path, monkeypatch, qapp):
+def test_survey_worker_seeds_from_a_matching_run(
+    batch_window, tmp_path, out_root, monkeypatch, qapp
+):
     """A pass of a clip another run already preprocessed skips preprocessing."""
     from deepreefmap.pipeline import resume as resume_mod
 
     from deepreefmap_gui.runs.seeding import preprocess_key_for_settings
 
     clip = add_video(batch_window, tmp_path, monkeypatch)
-    prior = tmp_path / "earlier-run"
+    # A sibling of the run the pass is about to create: seeding only searches
+    # the output root.
+    prior = out_root / "earlier-run"
     for dirname in ("frames", "labels", "masks"):
         (prior / dirname).mkdir(parents=True)
         (prior / dirname / "000000.png").write_bytes(b"data")

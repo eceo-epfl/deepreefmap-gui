@@ -1,7 +1,7 @@
-"""The CLI command the GUI shows for a run it is about to start or has finished.
+"""The CLI command the GUI records for a run and hands back once it has finished.
 
 Scenario: the GUI never shells out, so the only guarantee that the command it
-displays would actually reproduce the run is that both are built from the same
+offers would actually reproduce the run is that both are built from the same
 kwargs dict and that the flag names still match the installed library's CLI.
 Expected behaviour: the translation is faithful, and a library whose CLI has
 moved on fails `test_every_emitted_flag_exists_in_the_cli` rather than silently
@@ -395,7 +395,7 @@ def test_kwargs_the_cli_has_no_equivalent_for_are_not_emitted(tmp_path):
         assert "object object at" not in token
 
 
-# --- Wiring into the window ---------------------------------------------------
+# --- Wiring into Browse -------------------------------------------------------
 
 
 @pytest.fixture
@@ -413,77 +413,18 @@ def clipboard(monkeypatch):
         def clipboard():
             return _Clipboard()
 
-    monkeypatch.setattr("deepreefmap_gui.form.panel.QGuiApplication", _App)
     monkeypatch.setattr("deepreefmap_gui.runs.data_manager.QGuiApplication", _App)
     return captured
 
 
-def test_the_form_copies_the_command_it_would_run(window, tmp_path, clipboard):
-    window._set_ui_mode("advanced")
-    window._video_input.setText(str(tmp_path / "dive.mp4"))
-    window._out_root_input.setText(str(tmp_path / "out"))
-    window._run_name_input.setText("my-run")
-
-    window._copy_run_command()
-
-    assert len(clipboard) == 1
-    tokens = shlex.split(clipboard[0].replace("\\\n", " "))
-    assert str(tmp_path / "dive.mp4") in tokens
-    assert str(tmp_path / "out" / "my-run") in tokens
-
-
-def test_the_preview_tracks_the_form(window, tmp_path):
-    window._set_ui_mode("advanced")
-    window._video_input.setText(str(tmp_path / "dive.mp4"))
-    window._fps_spin.setValue(7)
-    window._refresh_command_preview()
-
-    assert "--fps 7" in window._command_preview.toPlainText()
-
-    window._fps_spin.setValue(12)
-    window._refresh_command_preview()
-
-    assert "--fps 12" in window._command_preview.toPlainText()
-
-
-def test_the_preview_swaps_backend_blocks(window):
-    window._set_ui_mode("advanced")
-    window._map_combo.setCurrentText("scsfmlearner")
-    window._refresh_command_preview()
-    text = window._command_preview.toPlainText()
-    assert "--scsfmlearner-width" in text
-    assert "--loger-window-size" not in text
-
-    window._map_combo.setCurrentText("loger")
-    window._refresh_command_preview()
-    text = window._command_preview.toPlainText()
-    assert "--loger-window-size" in text
-    assert "--scsfmlearner-width" not in text
-
-
-def test_the_preview_is_hidden_in_simple_mode(window):
-    """Simple mode borrows this form into a dialog with the per-run rows hidden
-    and launches a batch of passes, so a command naming one video would describe
-    a run nobody is about to start."""
-    window._set_ui_mode("simple")
-    assert not window._command_preview_box.isVisibleTo(window)
-    assert not window._copy_command_toolbtn.isVisibleTo(window)
-
-    window._set_ui_mode("advanced")
-    window._advanced_toggle.setChecked(True)
-    assert window._command_preview_box.isVisibleTo(window)
-    assert window._copy_command_toolbtn.isVisibleTo(window)
-
-
-def test_browse_copies_a_finished_run_command(window, tmp_path, clipboard):
-    run_dir = tmp_path / "out" / "run-1"
-    run_dir.mkdir(parents=True)
+def test_browse_copies_a_finished_run_command(window, tmp_path, out_root, clipboard):
+    run_dir = out_root / "run-1"
+    run_dir.mkdir()
     manifest = {
         "input_videos": [str(tmp_path / "dive.mp4")],
         "cli_argv": ["--videos", str(tmp_path / "dive.mp4"), "--fps", "9"],
     }
     (run_dir / "run_manifest.json").write_text(json.dumps(manifest))
-    window._out_root_input.setText(str(tmp_path / "out"))
     window._refresh_data_manager()
     assert window._data_run_table.select_run_dir(str(run_dir))
 

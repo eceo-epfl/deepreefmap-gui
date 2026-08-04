@@ -18,7 +18,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from deepreefmap_gui.core.theme import BORDER, CARD_BG, PREVIEW_BG, PRIMARY, PRIMARY_DARK, SLIDER_HANDLE
+from deepreefmap_gui.core.theme import (
+    BORDER,
+    CARD_BG,
+    PREVIEW_BG,
+    PRIMARY,
+    PRIMARY_DARK,
+    SLIDER_HANDLE,
+)
 
 # 10 ms ticks: fine enough to trim by eye, coarse enough for int slider ranges.
 _TICKS_PER_S = 100
@@ -165,7 +172,7 @@ class VideoScrubDialog(QDialog):
         self._preview = QLabel()
         self._preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._preview.setMinimumSize(560, 315)
-        self._preview.setStyleSheet(f"background: {PREVIEW_BG}; border: 1px solid #444;")
+        self._preview.setStyleSheet(f"background: {PREVIEW_BG}; border: 1px solid {BORDER};")
         layout.addWidget(self._preview, 1)
 
         max_tick = max(1, round(self._duration_s * _TICKS_PER_S))
@@ -203,9 +210,9 @@ class VideoScrubDialog(QDialog):
 
     def time_range(self) -> tuple[float, float]:
         """(begin_s, end_s), snapping the end to the probed duration at the slider max."""
-        # The snap only reaches _effective_time_range() intact for durations the
-        # form's 2dp end spinbox can hold, so an untrimmed run is not guaranteed to
-        # read as full length. Harmless: a sub-10ms trim drops no frame at <=60fps.
+        # The slider is quantised to 10 ms, so an untrimmed pass is not
+        # guaranteed to read as exactly full length. Harmless: a sub-10ms trim
+        # drops no frame at <=60fps.
         begin = self._range_slider.begin() / _TICKS_PER_S
         if self._range_slider.end() >= self._range_slider.maximum():
             return begin, self._duration_s

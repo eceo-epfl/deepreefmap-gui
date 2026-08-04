@@ -17,6 +17,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from deepreefmap_gui.core.theme import FONT_SM_PT, PREVIEW_BG, TEXT_SECONDARY
+
 _FMT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 _DATEFMT = "%H:%M:%S"
 _MAX_LINES = 5000
@@ -84,10 +86,10 @@ class LogView(QWidget):
 
         font = QFont(MONO_FONT_FAMILY)
         font.setStyleHint(QFont.StyleHint.TypeWriter)
-        font.setPointSize(9)
+        font.setPointSize(FONT_SM_PT)
         self._text.setFont(font)
         self._text.setStyleSheet(
-            "QPlainTextEdit { background-color: #111; color: #ddd; }"
+            f"QPlainTextEdit {{ background-color: {PREVIEW_BG}; color: {TEXT_SECONDARY}; }}"
         )
         layout.addWidget(self._text, 1)
 

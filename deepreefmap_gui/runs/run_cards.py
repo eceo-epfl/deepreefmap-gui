@@ -1,7 +1,7 @@
 """Run metadata formatting, shared by every widget that describes a run.
 
-Formatting only: the widgets that arrange these strings — the run table, the
-detail pane, the top banner — each own their own layout.
+Formatting only: the widgets that arrange these strings (the run table, the
+detail pane, the top banner) each own their own layout.
 """
 
 from __future__ import annotations
@@ -9,7 +9,10 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from deepreefmap_gui.core.theme import BANNER_TEXT
+from deepreefmap_gui.core.theme import (
+    BANNER_TEXT,
+    FONT_LG,
+)
 from deepreefmap_gui.profiling.eta import format_duration
 from deepreefmap_gui.profiling.system_probe import format_bytes
 from deepreefmap_gui.survey.catalogue import run_duration_s
@@ -109,7 +112,7 @@ def format_run_metadata(
     include_disk_size: bool,
     disk_bytes: int | None = None,
 ) -> str:
-    """Multi-line format used in tooltips and the sidebar Results block."""
+    """Multi-line format used in tooltips and the results block."""
     lines: list[str] = []
     name = (manifest.get("name") or "").strip() or run_dir.name
     lines.append(f"<b>{name}</b>  <i>({run_dir.name})</i>")
@@ -178,7 +181,7 @@ def format_run_metadata_compact(
     """Single-line wrapping format used in the inline top banner."""
     name = (manifest.get("name") or "").strip() or run_dir.name
     header = (
-        f'<b style="font-size:13px">{name}</b>'
+        f'<b style="font-size:{FONT_LG}">{name}</b>'
         f'&nbsp;<span style="color:#7a8a99">({run_dir.name})</span>'
     )
     facts: list[str] = []

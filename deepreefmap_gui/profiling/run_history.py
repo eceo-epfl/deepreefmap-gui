@@ -88,7 +88,7 @@ def load_expected_peaks(key: str, path: Path | None = None) -> dict | None:
 
 
 def summarise_recorded_runs(path: Path | None = None) -> list[dict]:
-    """One row per recorded run that captured peaks, for the System tab."""
+    """One row per recorded run that captured peaks, for the system panel."""
     rows: list[dict] = []
     for key, entries in _load_all(path or timings_path()).items():
         for entry in entries:
@@ -102,7 +102,7 @@ def summarise_recorded_runs(path: Path | None = None) -> list[dict]:
             gpu = profile.get("gpu") or {}
             durations = entry.get("stage_durations") or {}
             # Sum of the timed stages = wall-clock cost of the run, the figure the
-            # System tab reports and normalises per frame across configs.
+            # the system panel reports and normalises per frame across configs.
             run_seconds = sum(float(v) for v in durations.values()) if durations else None
             rows.append(
                 {
@@ -132,7 +132,7 @@ def summarise_recorded_runs(path: Path | None = None) -> list[dict]:
 def group_recorded_runs(path: Path | None = None) -> list[dict]:
     """Collapse repeat runs of the same config into one median-averaged entry.
 
-    The typical-cost view for the System tab. The pre-run check instead reasons from
+    The typical-cost view for the system panel. The pre-run check instead reasons from
     the worst recent run (load_expected_peaks), which is the crash predictor.
     """
     groups: dict[tuple, list[dict]] = {}
@@ -182,7 +182,7 @@ def group_recorded_runs(path: Path | None = None) -> list[dict]:
 
 
 def distinct_model_combinations(rows: list[dict]) -> list[tuple[str, str]]:
-    """Unique (mapping_backend, segmentation_model) pairs feeding the System tab filter."""
+    """Unique (mapping_backend, segmentation_model) pairs feeding the system filter."""
     seen: dict[tuple[str, str], None] = {}
     for row in rows:
         p = row["params"]

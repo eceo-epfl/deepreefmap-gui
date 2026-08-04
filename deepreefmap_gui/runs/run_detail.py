@@ -2,7 +2,7 @@
 
 One widget, shown twice: in Browse beside the run table, and in View mode beside
 the cloud. A failure reason belongs here rather than in the status bar, which the
-next event overwrites — the run that broke is still selected long after the
+next event overwrites: the run that broke is still selected long after the
 message that explained it has gone.
 """
 
@@ -10,9 +10,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt, QTimer
-from PySide6.QtGui import QGuiApplication, QImageReader, QPixmap
+from PySide6.QtCore import QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QFont, QGuiApplication, QImageReader, QPixmap
 from PySide6.QtWidgets import (
+    QHBoxLayout,
     QLabel,
     QPushButton,
     QSizePolicy,
@@ -21,12 +22,19 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from deepreefmap_gui.core.icons import check_icon, copy_icon
+from deepreefmap_gui.core.icons import ICON_SM, check_icon, copy_icon
 from deepreefmap_gui.core.image_view import ClickableLabel, ImageDialog
-from deepreefmap_gui.core.theme import TEXT_MUTED, TEXT_SECONDARY, WARN_TEXT
-from deepreefmap_gui.core.widgets import STATUS_COLORS, section_card
+from deepreefmap_gui.core.theme import (
+    FONT_LG_PT,
+    SPACE_SM,
+    TEXT_MUTED,
+    WARN_TEXT,
+    WEIGHT_SEMIBOLD,
+)
+from deepreefmap_gui.core.widgets import STATUS_COLORS, KeyValueList, section_card
 from deepreefmap_gui.profiling.eta import format_duration
 from deepreefmap_gui.profiling.system_probe import format_bytes
+from deepreefmap_gui.runs.run_cards import points_label
 from deepreefmap_gui.survey import catalogue
 from deepreefmap_gui.survey.catalogue import RunEntry
 
@@ -74,28 +82,28 @@ def _load_ortho(run_dir: Path) -> QPixmap | None:
 class RunDetailPanel(QWidget):
     """A titled card describing the selected run."""
 
+    open_requested = Signal()
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._open_action_allowed = False
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         card, layout = section_card()
 
         self.title = QLabel("")
         self.title.setWordWrap(True)
-        self.title.setStyleSheet("font-weight: bold;")
+        title_font = self.title.font()
+        title_font.setWeight(QFont.Weight.DemiBold)
+        title_font.setPointSize(FONT_LG_PT)
+        self.title.setFont(title_font)
         layout.addWidget(self.title)
 
         self.status = QLabel("")
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
 
-        self.facts = QLabel("")
-        self.facts.setWordWrap(True)
-        self.facts.setTextFormat(Qt.TextFormat.RichText)
-        self.facts.setStyleSheet(f"color: {TEXT_SECONDARY};")
-        self.facts.setAlignment(
-            Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft
-        )
+        self.facts = KeyValueList()
         layout.addWidget(self.facts)
 
         # What the run actually produced, which no amount of metadata conveys.
@@ -126,20 +134,37 @@ class RunDetailPanel(QWidget):
         self.error.setVisible(False)
         layout.addWidget(self.error)
 
-        # What this run was, as a terminal command. Below everything else because
-        # it is for taking away — reproducing the run elsewhere or filing it in a
-        # bug report — not for reading in place.
-        self.copy_command_btn = QPushButton("Copy CLI command")
-        self.copy_command_btn.setIcon(copy_icon(14))
+        # Opening the run is what this pane is for; copying its command line is
+        # for taking away, so it sits beside as a quiet action rather than
+        # holding the only full-width button in the pane, which is what it did.
+        actions = QHBoxLayout()
+        actions.setSpacing(SPACE_SM)
+        self.open_btn = QPushButton("Open run")
+        self.open_btn.setProperty("cta", "true")
+        self.open_btn.setToolTip("Load this run into the 3D viewer")
+        self.open_btn.clicked.connect(self.open_requested)
+        self.open_btn.setVisible(False)
+        actions.addWidget(self.open_btn)
+        actions.addStretch(1)
+
+        self.copy_command_btn = QPushButton("Copy command")
+        self.copy_command_btn.setProperty("quiet", "true")
+        self.copy_command_btn.setIcon(copy_icon(ICON_SM))
         self.copy_command_btn.setToolTip(
             "Copy the command that reproduces this run in a terminal"
         )
         self.copy_command_btn.clicked.connect(self._copy_command)
         self.copy_command_btn.setVisible(False)
-        layout.addWidget(self.copy_command_btn)
+        actions.addWidget(self.copy_command_btn)
+        layout.addLayout(actions)
         self._entry: RunEntry | None = None
 
         outer.addWidget(card)
+
+    def set_open_action_visible(self, visible: bool) -> None:
+        """Hide the opener where opening means nothing: View mode is already in it."""
+        self._open_action_allowed = visible
+        self.open_btn.setVisible(visible and self._entry is not None and not self._entry.incomplete)
 
     def _copy_command(self) -> None:
         from deepreefmap_gui.runs.run_command import command_from_manifest
@@ -153,8 +178,8 @@ class RunDetailPanel(QWidget):
             "Copied to clipboard",
             self.copy_command_btn,
         )
-        self.copy_command_btn.setIcon(check_icon(14))
-        QTimer.singleShot(1200, lambda: self.copy_command_btn.setIcon(copy_icon(14)))
+        self.copy_command_btn.setIcon(check_icon(ICON_SM))
+        QTimer.singleShot(1200, lambda: self.copy_command_btn.setIcon(copy_icon(ICON_SM)))
 
     def show_entry(self, entry: RunEntry) -> None:
         # Imported here rather than at module scope: simple.batch reaches back
@@ -165,7 +190,8 @@ class RunDetailPanel(QWidget):
         colour = STATUS_COLORS.get(status, TEXT_MUTED)
         self.title.setText(entry.display_name)
         self.status.setText(
-            f'<span style="color:{colour}; font-weight:600;">{status.capitalize()}</span>'
+            f'<span style="color:{colour}; font-weight:{WEIGHT_SEMIBOLD};">'
+            f"{status.capitalize()}</span>"
         )
         rows = [
             ("Folder", entry.dir_name),
@@ -175,12 +201,12 @@ class RunDetailPanel(QWidget):
         if entry.duration_s:
             rows.append(("Runtime", format_duration(entry.duration_s)))
         if entry.points:
-            rows.append(("Points", f"{entry.points:,}"))
+            # Same abbreviation the run table uses. Spelling it 1,200,000 here
+            # and 1.2M there made one number look like two.
+            rows.append(("Points", points_label(entry.points)))
         if entry.size_bytes is not None:
             rows.append(("On disk", format_bytes(entry.size_bytes)))
-        self.facts.setText(
-            "<br>".join(f"<b>{label}</b>  {value}" for label, value in rows)
-        )
+        self.facts.set_rows(rows)
         error = entry.db_run.error if entry.db_run is not None else ""
         if entry.incomplete:
             self.error.setText(
@@ -190,9 +216,10 @@ class RunDetailPanel(QWidget):
             )
         self.error.setVisible(bool(entry.incomplete))
         self._entry = entry
-        # An incomplete run still has a command worth copying — the run_command.sh
+        # An incomplete run still has a command worth copying: the run_command.sh
         # it wrote before it failed is exactly what a diagnosis starts from.
         self.copy_command_btn.setVisible(True)
+        self.open_btn.setVisible(self._open_action_allowed and not entry.incomplete)
         self._show_ortho(entry.run_dir, entry.display_name)
 
     def _show_ortho(self, run_dir: Path, title: str) -> None:
@@ -243,10 +270,11 @@ class RunDetailPanel(QWidget):
     def clear(self) -> None:
         self.title.setText("")
         self.status.setText("")
-        self.facts.setText("")
+        self.facts.clear()
         self.error.setVisible(False)
         self._entry = None
         self.copy_command_btn.setVisible(False)
+        self.open_btn.setVisible(False)
         self._ortho_source = None
         self._ortho_run_dir = None
         self._rescale_ortho()

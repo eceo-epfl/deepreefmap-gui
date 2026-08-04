@@ -2,7 +2,7 @@
 
 The filesystem is the source of truth for which runs exist; the database is
 the source of truth for how they relate to transects. Manifests are never
-rewritten here — they snapshot what the run believed when it executed, and
+rewritten here: they snapshot what the run believed when it executed, and
 rebuild_from_scan depends on that staying intact.
 """
 
@@ -297,7 +297,9 @@ def reconcile(entries: list[RunEntry], store: SurveyStore) -> None:
         if pass_ is None:
             continue
         entry.db_pass = pass_
-        transect = transects.get(pass_.transect_id)
+        transect = (
+            transects.get(pass_.transect_id) if pass_.transect_id is not None else None
+        )
         entry.db_transect_name = transect.name if transect is not None else None
         if (
             entry.manifest_transect_name
@@ -361,13 +363,31 @@ def transects_facet(
     return groups
 
 
-def videos_facet(entries: list[RunEntry]) -> list[FacetGroup]:
+def video_group_key(video_hash: str | None, fallback: str) -> tuple:
+    """The facet key a clip is filed under, from either side of the join.
+
+    A run knows its video by hash; the library knows the clip itself. Both have
+    to arrive at the same key or an imported clip and the runs cut from it would
+    appear as two separate groups.
+    """
+    return ("video", video_hash or fallback)
+
+
+def videos_facet(
+    entries: list[RunEntry], library: Iterable[VideoLibraryEntry] = ()
+) -> list[FacetGroup]:
     """Video-file groups over time-window groups. One file can hold several
-    transect passes, so the window level is what keeps them apart."""
+    transect passes, so the window level is what keeps them apart.
+
+    ``library`` lists every clip the survey has imported, so a clip that has
+    never been processed still gets a group. Without it the facet can only show
+    footage that already produced a run -- exactly the wrong half when the
+    question being asked is what still needs doing.
+    """
     by_video: dict[tuple, FacetGroup] = {}
     for entry in entries:
         video_hash = entry.video_hashes[0] if entry.video_hashes else None
-        key = ("video", video_hash or entry.dir_name)
+        key = video_group_key(video_hash, entry.dir_name)
         group = by_video.get(key)
         if group is None:
             title = entry.video_name or "Unknown video"
@@ -375,6 +395,14 @@ def videos_facet(entries: list[RunEntry]) -> list[FacetGroup]:
                 title += f" · #{video_hash[:8]}"
             group = by_video[key] = FacetGroup(key=key, title=title)
         _child_for(group, group_key(entry), _window_title(entry)).entries.append(entry)
+    for clip in library:
+        key = video_group_key(clip.video.hash, clip.video.file_name)
+        if key in by_video:
+            continue
+        title = clip.video.file_name
+        if clip.video.hash:
+            title += f" · #{clip.video.hash[:8]}"
+        by_video[key] = FacetGroup(key=key, title=title)
     return sorted(by_video.values(), key=lambda g: g.title)
 
 

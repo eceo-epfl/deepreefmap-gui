@@ -1,7 +1,7 @@
 """What the user is told when exporting the current frame fails.
 
 Scenario: the export reads a composite from the viewer. That read can fail for
-two unrelated reasons — the viewer genuinely has no such capability, or the call
+two unrelated reasons: the viewer genuinely has no such capability, or the call
 raised while doing its job.
 
 Expected behaviour: the two are reported differently. They were not: the second

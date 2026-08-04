@@ -83,7 +83,7 @@ def test_load_batch_csv_skips_blank_rows(tmp_path) -> None:
 
 
 def test_load_batch_csv_reads_an_optional_transect(tmp_path) -> None:
-    """The survey queue assigns passes from this column; the advanced batch ignores it."""
+    """The Run step assigns each imported pass to the transect this column names."""
     from deepreefmap_gui.form.batch import load_batch_csv
 
     csv_path = tmp_path / "jobs.csv"
@@ -97,7 +97,7 @@ def test_load_batch_csv_reads_an_optional_transect(tmp_path) -> None:
 
 
 def test_load_batch_csv_without_a_transect_column(tmp_path) -> None:
-    """One parser reads both callers, so the added column stays optional."""
+    """A sheet written before the column existed still imports, unassigned."""
     from deepreefmap_gui.form.batch import load_batch_csv
 
     csv_path = tmp_path / "jobs.csv"

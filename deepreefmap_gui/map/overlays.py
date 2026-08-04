@@ -1,7 +1,7 @@
 """Transect overlay model, pixel-space hit testing, and the survey overlay set.
 
-Every map that draws the surveyed transects — the Browse rail and the transect
-analysis pane — draws the same ones the same way, so the set is built here
+Every map that draws the surveyed transects (the Browse rail and the transect
+analysis pane) draws the same ones the same way, so the set is built here
 rather than once per page.
 """
 

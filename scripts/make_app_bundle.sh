@@ -4,7 +4,7 @@
 # A bare Mach-O is unusable for non-technical users: Finder opens it in
 # Terminal, and Gatekeeper on macOS 15+ has no right-click bypass. The bundle
 # gives Finder/Dock identity; the dmg gives drag-to-Applications install.
-# Unsigned for now — first open needs System Settings > Privacy & Security >
+# Unsigned for now: first open needs System Settings > Privacy & Security >
 # "Open Anyway" once. Signing/notarization will reuse this same structure.
 #
 # Usage: make_app_bundle.sh <binary-path> <version> <dmg-output-path>
