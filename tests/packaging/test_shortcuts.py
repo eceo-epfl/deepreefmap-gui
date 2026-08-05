@@ -82,6 +82,26 @@ def test_an_unsupported_platform_says_so_rather_than_failing(monkeypatch):
     assert "freebsd14" in status.detail
 
 
+def test_a_source_checkout_offers_nothing_to_install(monkeypatch):
+    """Scenario: `uv run deepreefmap-gui` from a checkout, where PYAPP is unset.
+
+    Expected behaviour: say why rather than offering an Add that cannot work.
+    The console script lives inside .venv, so an entry pointing at it would
+    break the next time the environment is rebuilt.
+    """
+    monkeypatch.setattr(sc.sys, "platform", "linux")
+    monkeypatch.delenv("DEEPREEFMAP_MOCK_PYAPP", raising=False)
+    monkeypatch.delenv("PYAPP", raising=False)
+
+    status = shortcut_status()
+    assert status.state is ShortcutState.UNSUPPORTED
+    assert "source checkout" in status.detail
+
+    result = install_shortcut()
+    assert not result.ok
+    assert result.message
+
+
 # --- Linux ---
 
 
@@ -187,6 +207,21 @@ def test_an_entry_we_did_not_create_is_left_alone(monkeypatch, binary):
     result = remove_shortcut()
     assert not result.ok
     assert "installer" in result.message
+    assert sc._backend().location().exists()
+
+
+def test_the_ownership_guard_holds_without_a_resolvable_binary(monkeypatch, binary):
+    """Ownership is a fact about the record and the location, not about which
+    binary is running. Deriving it from the binary let the guard lapse whenever
+    the binary could not be resolved, which is every source checkout."""
+    monkeypatch.setattr(sc.sys, "platform", "linux")
+    install_shortcut(binary)
+    sc.clear_record()
+    monkeypatch.delenv("DEEPREEFMAP_MOCK_PYAPP", raising=False)
+    monkeypatch.delenv("PYAPP", raising=False)
+
+    result = remove_shortcut()
+    assert not result.ok
     assert sc._backend().location().exists()
 
 

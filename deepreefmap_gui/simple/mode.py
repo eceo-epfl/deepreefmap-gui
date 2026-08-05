@@ -817,8 +817,22 @@ class InterfaceShellMixin(MixinBase):
         corrupt file, an output root on an unplugged drive -- would otherwise
         take the whole launch down before there is anything to show the error in.
         Every caller that runs during construction goes through here.
+
+        An open store is its own verdict, so a root that has already been opened
+        is not re-inspected: refreshes arrive by the handful whenever the output
+        folder changes, and the answer can only change when the root changes or
+        the store is dropped, both of which clear ``_survey_store_obj``.
         """
         db_path = Path(self._out_root_input.text()).expanduser() / SURVEY_DB_NAME
+        open_store = self._survey_store_obj
+        health = self._survey_health
+        if (
+            open_store is not None
+            and open_store.path == db_path
+            and health is not None
+            and health.state is SurveyDbState.OK
+        ):
+            return open_store
         health = inspect_survey_db(db_path)
         if not health.openable:
             self._survey_health = health

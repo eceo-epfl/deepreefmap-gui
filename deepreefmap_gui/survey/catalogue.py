@@ -215,7 +215,11 @@ def scan_out_root(out_root: Path) -> list[RunEntry]:
 
 def _entry_from_manifest(run_dir: Path, manifest: dict, mtime: float) -> RunEntry:
     name = manifest.get("name")
-    display = f"{name}  ({run_dir.name})" if name else run_dir.name
+    # The folder only when it adds something. A run left unnamed takes its
+    # timestamp as a name, so spelling both printed "20260716-135235
+    # (20260716-135235)" and spent half the table's widest column saying it
+    # twice.
+    display = f"{name}  ({run_dir.name})" if name and name != run_dir.name else run_dir.name
     videos = manifest.get("input_videos") or []
     survey = _dict_or_empty(manifest.get("survey"))
     pass_block = _dict_or_empty(survey.get("pass"))
@@ -464,7 +468,18 @@ def _plural(count: int, noun: str) -> str:
     return f"{count} {noun}{'' if count == 1 else 's'}"
 
 
-def video_group_key(video_hash: str | None, fallback: str) -> tuple:
+# The bucket for runs that name no video at all: no hash, and no file name in
+# the manifest. A run that crashed before writing one lands here, so on a machine
+# that has seen a few failures this is most of them.
+NO_VIDEO_TITLE = "No video recorded"
+
+# The window label for a run that took the whole clip. Named because
+# _fold_lone_window keys off it: a single such child is the one window level
+# that tells you nothing its parent has not already said.
+_WHOLE_VIDEO = "whole video"
+
+
+def video_group_key(video_hash: str | None, fallback: str | None) -> tuple:
     """The facet key a clip is filed under, from either side of the join.
 
     A run knows its video by hash; the library knows the clip itself. Both have
@@ -474,8 +489,13 @@ def video_group_key(video_hash: str | None, fallback: str) -> tuple:
     The fallback is the video's *file name* on both sides. It is a weak identity
     (every card's first clip is GX010001.MP4), which is why hashing is repaired
     rather than the fallback relied on.
+
+    With neither, the run is anonymous, and every anonymous run is equally so:
+    they share the one `None` key rather than each landing in a group of its own.
+    Keying those on something unique per run -- the run directory, say -- is what
+    turned twelve crashed runs into twelve identically titled groups of one.
     """
-    return ("video", video_hash or fallback)
+    return ("video", video_hash or fallback or None)
 
 
 def videos_facet(
@@ -490,25 +510,68 @@ def videos_facet(
     question being asked is what still needs doing.
     """
     by_video: dict[tuple, FacetGroup] = {}
+    # Kept beside the groups rather than spelled into the title as they are
+    # built: whether a checksum is worth showing depends on the other groups,
+    # which are not all known until the loops below have run.
+    hashes: dict[tuple, str | None] = {}
     for entry in entries:
         video_hash = entry.video_hashes[0] if entry.video_hashes else None
-        key = video_group_key(video_hash, entry.video_name or entry.dir_name)
+        key = video_group_key(video_hash, entry.video_name)
         group = by_video.get(key)
         if group is None:
-            title = entry.video_name or "Unknown video"
-            if video_hash:
-                title += f" · #{video_hash[:8]}"
-            group = by_video[key] = FacetGroup(key=key, title=title)
+            group = by_video[key] = FacetGroup(
+                key=key, title=entry.video_name or NO_VIDEO_TITLE
+            )
+            hashes[key] = video_hash
         _child_for(group, group_key(entry), _window_title(entry)).entries.append(entry)
     for clip in library:
         key = video_group_key(clip.video.hash, clip.video.file_name)
         if key in by_video:
             continue
-        title = clip.video.file_name
-        if clip.video.hash:
-            title += f" · #{clip.video.hash[:8]}"
-        by_video[key] = FacetGroup(key=key, title=title)
+        by_video[key] = FacetGroup(key=key, title=clip.video.file_name)
+        hashes[key] = clip.video.hash
+    for group in by_video.values():
+        _fold_lone_window(group)
+    _name_clips_apart(by_video.values(), hashes)
     return sorted(by_video.values(), key=lambda g: g.title)
+
+
+def _fold_lone_window(group: FacetGroup) -> None:
+    """Drop a window level that restates the clip row above it.
+
+    A clip processed once, whole and unassigned, gets a single child reading
+    "whole video" beneath a parent already counting one run. That is a tree row,
+    an indent and a shortened parent title spent saying nothing new.
+
+    Clips holding several passes keep their children, and so does a lone pass
+    that names a transect or a time window: there the window is exactly what
+    tells the runs apart.
+    """
+    if len(group.children) != 1:
+        return
+    child = group.children[0]
+    if child.title != _WHOLE_VIDEO or child.children:
+        return
+    group.entries.extend(child.entries)
+    group.children.clear()
+
+
+def _name_clips_apart(
+    groups: Iterable[FacetGroup], hashes: dict[tuple, str | None]
+) -> None:
+    """Spell the checksum into a clip title only where the file name is ambiguous.
+
+    Every card's first clip is GX010001.MP4, so the hash is what tells two of
+    them apart -- but only while both are on screen. Carried on every row it
+    costs ~70px of a rail that is already eliding the names the hash exists to
+    disambiguate, which is the opposite of the point.
+    """
+    groups = list(groups)
+    shared = Counter(group.title for group in groups)
+    for group in groups:
+        digest = hashes.get(group.key)
+        if digest and shared[group.title] > 1:
+            group.title += f" · #{digest[:8]}"
 
 
 # Whether the file a clip names is still where the survey last saw it. Checked
@@ -640,7 +703,7 @@ def _child_for(parent: FacetGroup, key: tuple, title: str) -> FacetGroup:
 
 def _window_title(entry: RunEntry) -> str:
     if entry.begin_s is None and entry.end_s is None:
-        label = "whole video"
+        label = _WHOLE_VIDEO
     else:
         begin = f"{entry.begin_s:g}" if entry.begin_s is not None else "0"
         end = f"{entry.end_s:g}" if entry.end_s is not None else "end"

@@ -115,6 +115,24 @@ def test_a_healthy_database_reports_ready(make_window, out_root, monkeypatch):
     assert checks["survey"].action_label == ""
 
 
+def test_an_open_survey_is_not_inspected_again(make_window, out_root, monkeypatch):
+    """Refreshes arrive by the handful whenever the output folder changes, and
+    the verdict cannot change while the same store stays open."""
+    window = _window_on(make_window, out_root, monkeypatch)
+    window._try_survey_store()
+
+    calls = []
+    import deepreefmap_gui.simple.mode as mode
+
+    real = mode.inspect_survey_db
+    monkeypatch.setattr(
+        mode, "inspect_survey_db", lambda path: calls.append(path) or real(path)
+    )
+    for _ in range(3):
+        assert window._try_survey_store() is not None
+    assert calls == []
+
+
 def test_recovering_reopens_the_survey(make_window, rolled_back_root, monkeypatch):
     """After recovery the window goes back to reading the database rather than
     needing a restart."""

@@ -123,25 +123,15 @@ def _running_binary(binary_path: str | Path | None) -> Path | None:
     return Path(found) if found else None
 
 
-def shortcut_status(binary_path: str | Path | None = None) -> ShortcutStatus:
-    """Whether the applications menu holds an entry, and whether it still works."""
-    backend = _backend()
-    if backend is None:
-        return ShortcutStatus(
-            ShortcutState.UNSUPPORTED,
-            detail=f"Adding to the applications menu is not supported on {sys.platform}.",
-        )
-    binary = _running_binary(binary_path)
-    if binary is not None:
-        already = backend.preinstalled(binary)
-        if already:
-            return ShortcutStatus(ShortcutState.CURRENT, owned=False, detail=already)
+def _placement(backend: ShortcutBackend) -> tuple[Path, bool, bool]:
+    """Where the entry goes, whether one is there, and whether it is ours.
 
-    try:
-        location = backend.location()
-    except Exception as exc:
-        return ShortcutStatus(ShortcutState.UNKNOWN, detail=str(exc))
-
+    Deliberately independent of which binary is running: ownership is a fact
+    about the record and the location. Deciding it from the running binary would
+    make the guard in remove_shortcut stop protecting the installer's entry
+    whenever the binary cannot be resolved.
+    """
+    location = backend.location()
     # Existence is always a filesystem question. Letting the record answer it
     # would report a shortcut the user deleted by hand as still present.
     exists = False
@@ -151,6 +141,38 @@ def shortcut_status(binary_path: str | Path | None = None) -> ShortcutStatus:
         pass
     record = read_record()
     owned = bool(record and record.get("location") == str(location) and exists)
+    return location, exists, owned
+
+
+def shortcut_status(binary_path: str | Path | None = None) -> ShortcutStatus:
+    """Whether the applications menu holds an entry, and whether it still works."""
+    backend = _backend()
+    if backend is None:
+        return ShortcutStatus(
+            ShortcutState.UNSUPPORTED,
+            detail=f"Adding to the applications menu is not supported on {sys.platform}.",
+        )
+    binary = _running_binary(binary_path)
+    if binary is None:
+        # A source checkout launches through a console script inside .venv,
+        # which is rebuilt and moved often enough that a menu entry pointing at
+        # it would break. Only the packaged binary has a path worth recording.
+        return ShortcutStatus(
+            ShortcutState.UNSUPPORTED,
+            detail=(
+                "Only the installed application can add itself to the "
+                "applications menu. This copy is running from a source checkout."
+            ),
+        )
+    already = backend.preinstalled(binary)
+    if already:
+        return ShortcutStatus(ShortcutState.CURRENT, owned=False, detail=already)
+
+    try:
+        location, exists, owned = _placement(backend)
+    except Exception as exc:
+        return ShortcutStatus(ShortcutState.UNKNOWN, detail=str(exc))
+    record = read_record()
 
     if not exists:
         if record:
@@ -168,9 +190,7 @@ def shortcut_status(binary_path: str | Path | None = None) -> ShortcutStatus:
             owned=owned,
             detail="An entry is present, but what it launches could not be read.",
         )
-    if binary is not None and _same_path(target, binary):
-        return ShortcutStatus(ShortcutState.CURRENT, location=location, target=target, owned=owned)
-    if binary is None:
+    if _same_path(target, binary):
         return ShortcutStatus(ShortcutState.CURRENT, location=location, target=target, owned=owned)
     return ShortcutStatus(
         ShortcutState.STALE,
@@ -224,12 +244,19 @@ def remove_shortcut() -> ShortcutResult:
     if backend is None:
         status = shortcut_status()
         return ShortcutResult(False, "remove", status, "There is nothing to remove.")
-    before = shortcut_status()
-    if before.state is ShortcutState.CURRENT and not before.owned:
+    # Asked of the location and the record, not of shortcut_status: the guard
+    # below has to hold even when the running binary cannot be resolved.
+    try:
+        _location, exists, owned = _placement(backend)
+    except Exception as exc:
+        return ShortcutResult(
+            False, "remove", shortcut_status(), f"The entry could not be read: {exc}", error=str(exc)
+        )
+    if exists and not owned:
         return ShortcutResult(
             False,
             "remove",
-            before,
+            shortcut_status(),
             "This entry was created by the installer, so DeepReefMap will not remove it.",
         )
     try:

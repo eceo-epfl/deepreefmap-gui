@@ -254,6 +254,44 @@ def test_size_scan_slot_updates_label_and_cards(out_root, make_window):
     assert cell(window, 0, COL_SIZE) == "1.9 GB"
 
 
+def test_a_watch_refresh_keeps_the_sizes_it_has(out_root, make_window):
+    """Scenario: the output folder changes under a window that is showing sizes.
+
+    Expected behaviour: the size is re-measured, but the number already on screen
+    stays there while that happens rather than blanking out and coming back.
+    """
+    write_run(out_root, "run_a")
+    window = make_window()
+    window._apply_run_sizes({"run_a": 2_000_000_000})
+
+    window._on_data_watch_refresh()
+
+    assert cell(window, 0, COL_SIZE) == "1.9 GB"
+    assert "1.9 GB" in window._data_disk_label.text()
+    assert wait_until(lambda: not window._data_sizes_scan_running)
+    assert window._data_entries[0].size_bytes is not None
+
+
+def test_refreshing_does_not_disturb_the_folder_it_watches(out_root, make_window):
+    """Scenario: the window watches the output root so runs finished elsewhere
+    appear unprompted.
+
+    Expected behaviour: refreshing writes nothing into that folder. Anything it
+    left there would wake the watcher, which refreshes again, forever.
+    """
+    write_run(out_root, "run_a")
+    window = make_window()
+    window._refresh_data_manager()
+    # Folder mtime, not its listing: a file created and deleted inside one
+    # refresh leaves the listing identical and still wakes the watcher.
+    before = out_root.stat().st_mtime_ns
+
+    for _ in range(3):
+        window._refresh_data_manager()
+
+    assert out_root.stat().st_mtime_ns == before
+
+
 def test_rescan_reruns_the_manifest_rebuild(out_root, make_window, monkeypatch):
     """Scenario: a colleague's run is copied in while the app is open.
 

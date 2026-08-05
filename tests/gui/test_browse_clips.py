@@ -137,8 +137,35 @@ def test_a_clip_nobody_processed_is_still_listed(out_root, make_window):
 
     window = make_window()
     show_clips(window)
-    # The trailing count is runs, and none have been cut from it yet.
-    assert clip_titles(window) == ["orphan.mp4 · #ffffffff  (0)"]
+    # The trailing count is runs, and none have been cut from it yet. No
+    # checksum: nothing else is called orphan.mp4, so there is nothing to tell
+    # it apart from.
+    assert clip_titles(window) == ["orphan.mp4  (0)"]
+
+
+def test_clips_sharing_a_file_name_are_told_apart_by_checksum(out_root, make_window):
+    """Scenario: two cards each hold their own GX010001.MP4.
+
+    Expected behaviour: both rows carry a checksum. The file name is a weak
+    identity, so it is only worth spending rail width on the hash at the point
+    two clips actually collide on it.
+    """
+    from deepreefmap_gui.survey.store import SurveyStore
+
+    out_root.mkdir(parents=True)
+    store = SurveyStore(out_root / "survey.db")
+    for digest in ("aa" * 16, "bb" * 16):
+        store.upsert_video(
+            VideoAsset(file_name="GX010001.MP4", path=f"/data/{digest}.MP4", hash=digest)
+        )
+    store.close()
+
+    window = make_window()
+    show_clips(window)
+    assert clip_titles(window) == [
+        "GX010001.MP4 · #aaaaaaaa  (0)",
+        "GX010001.MP4 · #bbbbbbbb  (0)",
+    ]
 
 
 def test_empty_library_says_nothing_is_grouped(window):

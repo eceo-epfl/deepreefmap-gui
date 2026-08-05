@@ -219,6 +219,9 @@ class BrowseMixin(MixinBase):
         # more pair of things to keep in step.
         self._data_groups: dict[tuple, FacetGroup] = {}
         self._run_size_cache: dict[str, int] = {}
+        # Cached sizes due a re-measure. Held apart from the cache so the last
+        # known number stays on screen while the new one is being counted.
+        self._run_size_stale: set[str] = set()
         self._data_sizes_scan_running = False
         # Keyed by path, not by clip id, so an answer survives the library being
         # rebuilt on every refresh.
@@ -495,6 +498,7 @@ class BrowseMixin(MixinBase):
         live = {e.dir_name for e in entries}
         for name in [n for n in self._run_size_cache if n not in live]:
             del self._run_size_cache[name]
+        self._run_size_stale &= live
         for entry in entries:
             entry.size_bytes = self._run_size_cache.get(entry.dir_name)
         self._rebuild_data_tree()
@@ -506,7 +510,10 @@ class BrowseMixin(MixinBase):
             self._refresh_browse_state()
 
     def _on_data_watch_refresh(self) -> None:
-        self._run_size_cache.clear()
+        # A run in progress grows its folder, so every size is due a re-measure;
+        # marking them stale rather than dropping them keeps the count that is
+        # already on screen there until the new one arrives.
+        self._run_size_stale.update(self._run_size_cache)
         self._refresh_data_manager()
 
     def _on_data_rescan_clicked(self) -> None:
@@ -517,7 +524,9 @@ class BrowseMixin(MixinBase):
         clears the gate and reads it back.
         """
         self._data_rebuilt_root = None
+        # Asked for, so it may show its work: sizes go blank and are counted again.
         self._run_size_cache.clear()
+        self._run_size_stale.clear()
         self._refresh_data_manager()
         self._status_label.setText("Rescanned the output folder.")
 
@@ -1654,11 +1663,12 @@ class BrowseMixin(MixinBase):
         todo = [
             (e.dir_name, e.run_dir)
             for e in self._data_entries
-            if e.dir_name not in self._run_size_cache
+            if e.dir_name not in self._run_size_cache or e.dir_name in self._run_size_stale
         ]
         if not todo:
             return
         self._data_sizes_scan_running = True
+        self._run_size_stale.difference_update(name for name, _ in todo)
 
         def worker() -> None:
             sizes: dict[str, int] = {}
@@ -1716,6 +1726,9 @@ class BrowseMixin(MixinBase):
             entry.size_bytes = self._run_size_cache.get(entry.dir_name)
         self._update_data_disk_label()
         self._rebuild_data_run_list()
+        # Anything marked stale while that scan was in flight was skipped by it.
+        if self._run_size_stale:
+            self._start_data_size_scan()
 
     def _update_data_disk_label(self) -> None:
         """What the output folder costs, said once.

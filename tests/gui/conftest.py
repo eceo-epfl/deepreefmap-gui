@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+from types import SimpleNamespace
 
 import pytest
 
@@ -189,6 +190,33 @@ def make_window(qapp):
         window.deleteLater()
     qapp.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     qapp.processEvents()
+
+
+# Roomy enough that no batch estimate ever trips the pre-flight.
+_PLENTY_FREE = 4 * 1024**4
+
+
+@pytest.fixture(autouse=True)
+def _plenty_of_disk(monkeypatch):
+    """Give the disk pre-flight a deterministic drive to measure.
+
+    `_confirm_batch_space` reads the real filesystem under the run root, and
+    tmp_path lives on /tmp -- a tmpfs on many Linux boxes. A developer whose
+    tmpfs holds less than the batch estimate gets a blocking "Insufficient disk
+    space" modal, and the suite stops dead until someone clicks it. The GUI suite
+    passed or hung depending on the machine running it.
+
+    A fixed generous reading rather than stubbing the check away: the tests that
+    are *about* the pre-flight set their own free space over this one and go on
+    exercising the real code path.
+    """
+    import shutil
+
+    monkeypatch.setattr(
+        shutil,
+        "disk_usage",
+        lambda _p: SimpleNamespace(total=_PLENTY_FREE, used=0, free=_PLENTY_FREE),
+    )
 
 
 @pytest.fixture

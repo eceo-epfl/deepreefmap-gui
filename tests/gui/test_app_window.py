@@ -102,8 +102,30 @@ def test_the_shortcut_row_is_advisory(make_window, monkeypatch, tmp_path) -> Non
     missing requirement or hold the Setup summary back."""
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
     monkeypatch.setenv("DEEPREEFMAP_SHORTCUT_MANIFEST", str(tmp_path / "shortcut.json"))
+    monkeypatch.setenv("DEEPREEFMAP_MOCK_PYAPP", "1")
     window = make_window()
     checks = {c.key: c for c in window._current_setup_checks()}
     assert checks["shortcut"].advisory
     assert "requirement" not in checks["shortcut"].detail.lower()
+
+
+def test_the_shortcut_row_offers_no_action_from_a_source_checkout(
+    make_window, monkeypatch, tmp_path
+) -> None:
+    """Running from a checkout there is no installed program to point an entry
+    at, so the row explains itself instead of showing a button that fails."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    monkeypatch.setenv("DEEPREEFMAP_SHORTCUT_MANIFEST", str(tmp_path / "shortcut.json"))
+    monkeypatch.delenv("DEEPREEFMAP_MOCK_PYAPP", raising=False)
+    monkeypatch.delenv("PYAPP", raising=False)
+
+    window = make_window()
+    window._refresh_readiness_view()
+
+    check = {c.key: c for c in window._current_setup_checks()}["shortcut"]
+    assert check.action_label == ""
+    assert "source checkout" in check.detail
+
+    _icon, _detail, actions = window._setup_check_rows["shortcut"]
+    assert actions[0].isHidden()
 

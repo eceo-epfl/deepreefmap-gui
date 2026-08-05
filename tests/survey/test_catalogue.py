@@ -185,6 +185,22 @@ def test_an_unhashed_clip_and_its_runs_are_one_group(out_root, store):
     assert len(groups[0].all_entries()) == 1
 
 
+def test_runs_naming_no_video_share_one_group(out_root):
+    """Scenario: several runs crashed before recording a video, so they carry
+    neither a checksum nor a file name.
+
+    Expected behaviour: one group holding all of them. Keying each on something
+    unique to itself turned a handful of crashes into a rail full of identically
+    titled groups of one.
+    """
+    for name in ("crashed_a", "crashed_b", "crashed_c"):
+        write_run(out_root, name, video_hashes=[], input_videos=[])
+
+    groups = catalogue.videos_facet(scan(out_root))
+    assert [g.title for g in groups] == [catalogue.NO_VIDEO_TITLE]
+    assert len(groups[0].all_entries()) == 3
+
+
 def test_reconcile_database_wins_and_records_move(out_root, store):
     transect, pass_, _run = seed_survey_run(store, out_root, "run1")
     elsewhere = make_transect("Elsewhere")

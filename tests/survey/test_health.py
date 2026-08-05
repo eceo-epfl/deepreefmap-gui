@@ -70,6 +70,23 @@ def test_a_read_only_folder_reads_as_unwritable(tmp_path):
         root.chmod(0o700)
 
 
+def test_inspecting_an_existing_database_leaves_the_folder_alone(tmp_path):
+    """Expected behaviour: the folder is watched for new runs, so a check that
+    wrote anything into it would wake the watcher, which asks again."""
+    path = tmp_path / "survey.db"
+    store = SurveyStore(path)
+    try:
+        inspect_survey_db(path)
+        # Folder mtime, not its listing: a file created and deleted inside one
+        # call leaves the listing identical and still wakes a watcher.
+        before = tmp_path.stat().st_mtime_ns
+        for _ in range(5):
+            assert inspect_survey_db(path).state is SurveyDbState.OK
+        assert tmp_path.stat().st_mtime_ns == before
+    finally:
+        store.close()
+
+
 def test_inspecting_never_creates_or_migrates(tmp_path):
     """Expected behaviour: looking is free. A missing database stays missing, so
     merely asking cannot litter an output root with empty survey files."""

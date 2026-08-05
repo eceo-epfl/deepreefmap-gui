@@ -11,6 +11,7 @@ Qt-free and read-only: nothing here migrates, writes, or raises.
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
 from dataclasses import dataclass
 from enum import Enum
@@ -61,11 +62,24 @@ def _writable(path: Path) -> tuple[bool, str]:
 
     WAL needs to create sidecar files beside the database, so the directory has
     to be writable even when the database itself already exists.
+
+    Once the database exists this answers from permissions alone. The probe file
+    it used to write instead landed inside the output root, which the window
+    watches for new runs: creating and deleting it woke the watcher, which
+    refreshed Browse, which asked here again, about three times a second.
     """
+    if path.exists():
+        if not os.access(path.parent, os.W_OK | os.X_OK):
+            return False, f"The folder {path.parent} cannot be written to."
+        if not os.access(path, os.W_OK):
+            return False, f"{path} cannot be written to."
+        return True, ""
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         return False, f"The folder {path.parent} could not be created ({exc.strerror or exc})."
+    # Only on the way to creating the database, so this fires once per output
+    # root rather than on every health check.
     probe = path.parent / f".{path.name}.probe"
     try:
         probe.touch()

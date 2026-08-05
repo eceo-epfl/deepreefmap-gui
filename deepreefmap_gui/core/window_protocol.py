@@ -198,6 +198,7 @@ if TYPE_CHECKING:
         _data_entries: list
         _data_store_ok: bool
         _run_size_cache: dict[str, int]
+        _run_size_stale: set[str]
         # (output root, measured bytes per footage minute); None until measured.
         _footage_rate_cache: tuple[Path, float | None] | None
 
