@@ -72,7 +72,3 @@ class Transect:
     def geodesic_length_m(self) -> float:
         """Great-circle length of the line, shown beside the tape length as a QC hint."""
         return haversine_m(self.start_lat, self.start_lon, self.end_lat, self.end_lon)
-
-    def bearing_deg(self) -> float:
-        """Heading a diver swims to go from the start marker to the end marker."""
-        return initial_bearing_deg(self.start_lat, self.start_lon, self.end_lat, self.end_lon)

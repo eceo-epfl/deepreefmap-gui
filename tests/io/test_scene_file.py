@@ -15,9 +15,8 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from deepreefmap.config.classes import ClassConfig, SemanticClass
-from deepreefmap.pipeline.artifacts import FrameBatch, MappingSequenceResult, PreparedFrame
-from deepreefmap.pointcloud.final_cloud_index import FinalCloudIndex
+from _factories import make_classes_config, make_scene
+from deepreefmap.config.classes import ClassConfig
 
 from deepreefmap_gui.io.scene_file import (
     SCENE_FILE_SUFFIX,
@@ -31,76 +30,27 @@ from deepreefmap_gui.io.scene_file import (
 )
 
 H, W = 4, 6
-N_FRAMES = 3
+FRAME_INDICES = (0, 2, 4)  # non-contiguous on purpose: indices are data, not positions
+N_FRAMES = len(FRAME_INDICES)
 CLASS_IDS = (1, 5)
+POINTS_BY_CLASS = {1: 7, 5: 4}
 
 
 @pytest.fixture
 def classes_config() -> ClassConfig:
-    return ClassConfig(
-        classes=[
-            SemanticClass(id=1, name="reef", color=(10, 20, 30), roles=frozenset()),
-            SemanticClass(id=5, name="sand", color=(200, 200, 100), roles=frozenset()),
-        ],
-        path=None,
-    )
+    return make_classes_config(CLASS_IDS)
 
 
 @pytest.fixture
-def scene(classes_config):
+def scene():
     """A small but structurally complete scene: frames, mapping, cloud index."""
-    rng = np.random.default_rng(0)
-
-    frames = tuple(
-        PreparedFrame(
-            frame_index=i * 2,  # non-contiguous on purpose: indices are data, not positions
-            image_rgb=rng.integers(0, 255, (H, W, 3), dtype=np.uint8),
-            labels=rng.choice(CLASS_IDS, size=(H, W)).astype(np.uint8),
-            keep_mask=(rng.random((H, W)) > 0.5).astype(np.uint8),
-            image_path=None,
-            labels_path=None,
-            mask_path=None,
-        )
-        for i in range(N_FRAMES)
-    )
-    intrinsics = np.array([[100.0, 0, W / 2], [0, 100.0, H / 2], [0, 0, 1]])
-    frame_batch = FrameBatch(
-        frames=frames,
-        intrinsics=intrinsics,
-        image_size=(W, H),
-        clip_counts=(2, 1),
-        gravity_vectors=None,
-    )
-
-    mapping = MappingSequenceResult(
-        frame_indices=np.array([f.frame_index for f in frames], dtype=np.int32),
-        depth_maps=rng.random((N_FRAMES, H, W)).astype(np.float32),
-        poses_w_c=np.stack([np.eye(4) for _ in range(N_FRAMES)]).astype(np.float64),
-        intrinsics=intrinsics,
-        world_points=rng.random((N_FRAMES, H, W, 3)).astype(np.float32),
-        local_points=None,
-        confidence=rng.random((N_FRAMES, H, W)).astype(np.float32),
-        scale_type="metric",
-        gravity_vectors=None,
-    )
-
-    counts = {1: 7, 5: 4}
-    fci = FinalCloudIndex(
-        frame_order=tuple(f.frame_index for f in frames),
+    return make_scene(
+        frame_indices=FRAME_INDICES,
+        size=(W, H),
         class_ids=CLASS_IDS,
-        xyz_by_class={c: rng.random((n, 3)).astype(np.float32) for c, n in counts.items()},
-        rgb_by_class={
-            c: rng.integers(0, 255, (n, 3), dtype=np.uint8) for c, n in counts.items()
-        },
-        semrgb_by_class={
-            c: rng.integers(0, 255, (n, 3), dtype=np.uint8) for c, n in counts.items()
-        },
-        conf_by_class={c: rng.random(n).astype(np.float32) for c, n in counts.items()},
-        prefix_end_by_class={
-            c: np.linspace(0, n, N_FRAMES, dtype=np.int64) for c, n in counts.items()
-        },
+        clip_counts=(2, 1),
+        points_by_class=POINTS_BY_CLASS,
     )
-    return frame_batch, mapping, fci
 
 
 @pytest.fixture
@@ -119,17 +69,40 @@ def run_dir(tmp_path) -> Path:
 
 
 def _save(path, scene, classes_config, manifest=None, run_dir=None, progress_cb=None):
-    frame_batch, mapping, fci = scene
     save_scene_file(
         path,
         manifest=manifest if manifest is not None else {"name": "reef north", "mode": "semantic"},
         classes_config=classes_config,
-        mapping_result=mapping,
-        frame_batch=frame_batch,
-        final_cloud_index=fci,
+        mapping_result=scene.mapping,
+        frame_batch=scene.frame_batch,
+        final_cloud_index=scene.cloud_index,
         run_dir=run_dir,
         progress_cb=progress_cb,
     )
+
+
+class _BrokenIndex:
+    """A cloud index that passes the writer's early sections, then fails in _save_fci."""
+
+    frame_order = FRAME_INDICES
+    class_ids = (1,)
+    xyz_by_class = {1: np.zeros((2, 3), dtype=np.float32)}
+
+    def __getattr__(self, name):
+        raise OSError(28, "No space left on device")
+
+
+def _save_out_of_space(path, scene, classes_config):
+    """A save that dies partway through the cloud index, as a full disk would."""
+    with pytest.raises(OSError):
+        save_scene_file(
+            path,
+            manifest={"name": "x"},
+            classes_config=classes_config,
+            mapping_result=scene.mapping,
+            frame_batch=scene.frame_batch,
+            final_cloud_index=_BrokenIndex(),
+        )
 
 
 # --- naming and discovery ---------------------------------------------------
@@ -191,7 +164,6 @@ def test_fingerprint_of_an_empty_dir_is_stable(tmp_path):
 # --- round trip -------------------------------------------------------------
 
 def test_round_trip_preserves_every_section(tmp_path, scene, classes_config):
-    frame_batch, mapping, fci = scene
     path = tmp_path / ("s" + SCENE_FILE_SUFFIX)
     _save(path, scene, classes_config)
 
@@ -206,13 +178,12 @@ def test_round_trip_preserves_every_section(tmp_path, scene, classes_config):
     assert loaded.classes_config.id_to_color[1] == (10, 20, 30)
 
     # Frame metadata, not frame pixels: enough to reopen the run's PNG caches.
-    np.testing.assert_array_equal(
-        loaded.frame_indices, [f.frame_index for f in frame_batch.frames]
-    )
+    np.testing.assert_array_equal(loaded.frame_indices, FRAME_INDICES)
     assert loaded.clip_counts == (2, 1)
     assert loaded.image_size == (W, H)
     assert loaded.schema_version == SCHEMA_VERSION
 
+    fci = scene.cloud_index
     out = loaded.final_cloud_index
     assert out.frame_order == fci.frame_order
     assert tuple(out.class_ids) == CLASS_IDS
@@ -252,31 +223,19 @@ def test_the_file_does_not_grow_with_the_frames(tmp_path, scene, classes_config)
     scene file, so a reinstated copy is only visible at full size. Comparing two
     resolutions catches it on a toy scene, where a byte-count ceiling cannot.
     """
-    rng = np.random.default_rng(1)
-    frame_batch, mapping, fci = scene
-    big = FrameBatch(
-        frames=tuple(
-            PreparedFrame(
-                frame_index=f.frame_index,
-                image_rgb=rng.integers(0, 255, (H * 4, W * 4, 3), dtype=np.uint8),
-                labels=rng.choice(CLASS_IDS, size=(H * 4, W * 4)).astype(np.uint8),
-                keep_mask=(rng.random((H * 4, W * 4)) > 0.5).astype(np.uint8),
-                image_path=None,
-                labels_path=None,
-                mask_path=None,
-            )
-            for f in frame_batch.frames
-        ),
-        intrinsics=frame_batch.intrinsics,
-        image_size=(W * 4, H * 4),
-        clip_counts=frame_batch.clip_counts,
-        gravity_vectors=None,
+    big = make_scene(
+        frame_indices=FRAME_INDICES,
+        size=(W * 4, H * 4),
+        class_ids=CLASS_IDS,
+        clip_counts=scene.frame_batch.clip_counts,
+        points_by_class=POINTS_BY_CLASS,
+        seed=1,
     )
 
     small_path = tmp_path / ("small" + SCENE_FILE_SUFFIX)
     big_path = tmp_path / ("big" + SCENE_FILE_SUFFIX)
     _save(small_path, scene, classes_config)
-    _save(big_path, (big, mapping, fci), classes_config)
+    _save(big_path, big, classes_config)
 
     # Only the image-size attrs differ, a couple of bytes of JSON.
     assert abs(big_path.stat().st_size - small_path.stat().st_size) < 200
@@ -347,28 +306,9 @@ def test_load_rejects_schemas_outside_the_supported_range(tmp_path, scene, class
 
 def test_a_failed_save_leaves_no_partial_file(tmp_path, scene, classes_config):
     """A half-written scene that still loads would be worse than none at all."""
-    frame_batch, mapping, _fci = scene
     path = tmp_path / ("s" + SCENE_FILE_SUFFIX)
 
-    class Broken:
-        """Passes the early sections, then fails inside _save_fci."""
-
-        frame_order = (0, 2, 4)
-        class_ids = (1,)
-        xyz_by_class = {1: np.zeros((2, 3), dtype=np.float32)}
-
-        def __getattr__(self, name):
-            raise OSError(28, "No space left on device")
-
-    with pytest.raises(OSError):
-        save_scene_file(
-            path,
-            manifest={"name": "x"},
-            classes_config=classes_config,
-            mapping_result=mapping,
-            frame_batch=frame_batch,
-            final_cloud_index=Broken(),
-        )
+    _save_out_of_space(path, scene, classes_config)
 
     assert not path.exists()
     assert not (path.parent / (path.name + ".tmp")).exists()
@@ -460,26 +400,9 @@ def test_a_successful_load_closes_the_archive_too(
 def test_a_failed_save_closes_the_archive_before_removing_the_file(
     tmp_path, scene, classes_config, opened_stores
 ):
-    frame_batch, mapping, _fci = scene
     path = tmp_path / ("s" + SCENE_FILE_SUFFIX)
 
-    class Broken:
-        frame_order = (0, 2, 4)
-        class_ids = (1,)
-        xyz_by_class = {1: np.zeros((2, 3), dtype=np.float32)}
-
-        def __getattr__(self, name):
-            raise OSError(28, "No space left on device")
-
-    with pytest.raises(OSError):
-        save_scene_file(
-            path,
-            manifest={"name": "x"},
-            classes_config=classes_config,
-            mapping_result=mapping,
-            frame_batch=frame_batch,
-            final_cloud_index=Broken(),
-        )
+    _save_out_of_space(path, scene, classes_config)
 
     assert len(opened_stores) == 1
     assert _is_closed(opened_stores[0])
@@ -512,26 +435,9 @@ def test_a_failed_write_stops_being_reported_in_progress(tmp_path, scene, classe
     """Otherwise one crashed write pins the path for the life of the process."""
     from deepreefmap_gui.io.scene_file import tmp_write_in_progress
 
-    frame_batch, mapping, _fci = scene
     path = tmp_path / ("s" + SCENE_FILE_SUFFIX)
 
-    class Broken:
-        frame_order = (0, 2, 4)
-        class_ids = (1,)
-        xyz_by_class = {1: np.zeros((2, 3), dtype=np.float32)}
-
-        def __getattr__(self, name):
-            raise OSError(28, "No space left on device")
-
-    with pytest.raises(OSError):
-        save_scene_file(
-            path,
-            manifest={"name": "x"},
-            classes_config=classes_config,
-            mapping_result=mapping,
-            frame_batch=frame_batch,
-            final_cloud_index=Broken(),
-        )
+    _save_out_of_space(path, scene, classes_config)
 
     assert not tmp_write_in_progress(path.parent / (path.name + ".tmp"))
 

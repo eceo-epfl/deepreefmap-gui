@@ -19,9 +19,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pytest
-from deepreefmap.config.classes import ClassConfig, SemanticClass
-from deepreefmap.pipeline.artifacts import FrameBatch, PreparedFrame
-from deepreefmap.pointcloud.final_cloud_index import FinalCloudIndex
+from _factories import make_classes_config, make_scene
+from deepreefmap.config.classes import ClassConfig
 
 from deepreefmap_gui.io.scene_file import (
     SCENE_FILE_SUFFIX,
@@ -39,10 +38,7 @@ MANIFEST = {"name": "reef north", "mode": "semantic", "mapping_backend": "loger_
 
 @pytest.fixture
 def classes_config() -> ClassConfig:
-    return ClassConfig(
-        classes=[SemanticClass(id=CLASS_ID, name="reef", color=(10, 20, 30), roles=frozenset())],
-        path=None,
-    )
+    return make_classes_config((CLASS_ID,))
 
 
 @pytest.fixture
@@ -79,47 +75,20 @@ def run_dir(tmp_path) -> Path:
 
 def _write_scene(run_dir: Path, classes_config: ClassConfig, *, schema: int | None = None) -> Path:
     """A scene file over the fixture run, optionally stamped as an older schema."""
-    n_points = 12
-    rng = np.random.default_rng(1)
-    fci = FinalCloudIndex(
-        frame_order=FRAME_INDICES,
+    scene = make_scene(
+        frame_indices=FRAME_INDICES,
+        size=(W, H),
         class_ids=(CLASS_ID,),
-        xyz_by_class={CLASS_ID: rng.random((n_points, 3)).astype(np.float32)},
-        rgb_by_class={CLASS_ID: rng.integers(0, 255, (n_points, 3), dtype=np.uint8)},
-        semrgb_by_class={CLASS_ID: rng.integers(0, 255, (n_points, 3), dtype=np.uint8)},
-        conf_by_class={CLASS_ID: rng.random(n_points).astype(np.float32)},
-        prefix_end_by_class={CLASS_ID: np.array([4, 8, 12], dtype=np.int64)},
+        points_by_class={CLASS_ID: 12},
     )
-    frames = tuple(
-        PreparedFrame(
-            frame_index=i,
-            image_rgb=np.zeros((H, W, 3), np.uint8),
-            labels=np.zeros((H, W), np.uint8),
-            keep_mask=np.zeros((H, W), np.uint8),
-            image_path=None,
-            labels_path=None,
-            mask_path=None,
-        )
-        for i in FRAME_INDICES
-    )
-    fb = FrameBatch(
-        frames=frames,
-        intrinsics=np.eye(3),
-        image_size=(W, H),
-        clip_counts=(len(FRAME_INDICES),),
-    )
-
-    class _Mapping:
-        scale_type = "metric"
-
     out = run_dir / ("scene" + SCENE_FILE_SUFFIX)
     save_scene_file(
         out,
         manifest=MANIFEST,
         classes_config=classes_config,
-        mapping_result=_Mapping(),
-        frame_batch=fb,
-        final_cloud_index=fci,
+        mapping_result=scene.mapping,
+        frame_batch=scene.frame_batch,
+        final_cloud_index=scene.cloud_index,
         run_dir=run_dir,
     )
     if schema is not None:

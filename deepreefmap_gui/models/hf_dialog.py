@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import (
     QDialog,
-    QDialogButtonBox,
     QLabel,
     QLineEdit,
     QVBoxLayout,
     QWidget,
 )
+
+from deepreefmap_gui.core.widgets import ok_cancel_row
 
 
 class HfLoginDialog(QDialog):
@@ -32,12 +33,7 @@ class HfLoginDialog(QDialog):
         self._token_edit.setPlaceholderText("hf_...")
         layout.addWidget(self._token_edit)
 
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        layout.addWidget(ok_cancel_row(self))
 
         self.resize(420, 140)
 

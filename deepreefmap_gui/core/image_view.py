@@ -35,7 +35,7 @@ class ClickableLabel(QLabel):
 
     clicked = Signal()
 
-    def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt override)
+    def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit()
         super().mousePressEvent(event)
@@ -148,7 +148,7 @@ class ZoomableImageView(QGraphicsView):
         hbar.setValue(hbar.value() + drift.x())
         vbar.setValue(vbar.value() + drift.y())
 
-    def wheelEvent(self, event) -> None:  # noqa: N802 (Qt override)
+    def wheelEvent(self, event) -> None:
         if self._item.pixmap().isNull():
             super().wheelEvent(event)
             return

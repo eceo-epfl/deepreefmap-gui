@@ -16,7 +16,7 @@ from deepreefmap_gui.survey.preset import PRESET_KEYS
 
 
 def per_run_widgets(window):
-    """What _on_edit_run_settings hides: the output root, which This machine owns."""
+    """What _on_edit_run_settings hides: the output root, which Setup owns."""
     return [window._output_group]
 
 
@@ -103,7 +103,7 @@ def test_an_organisation_setting_changes_for_this_batch_only(
     assert window._survey_preset["fps"] == 3
     assert not machine_preset_path.exists()
     label = window._survey_preset_label.text()
-    assert "Changed for this batch only" in label
+    assert "Changed for this session only" in label
     assert "go back to standard next launch" in label
 
 

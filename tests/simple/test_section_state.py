@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from deepreefmap_gui.simple.progress import (
+from deepreefmap_gui.simple.section_state import (
     ATTENTION,
     BLOCKED,
     FIX_HERE,
@@ -14,9 +14,11 @@ from deepreefmap_gui.simple.progress import (
     TODO,
     SectionState,
     browse_state,
+    headline,
     machine_state,
-    plan_state,
+    most_urgent,
     run_gate,
+    transects_state,
 )
 
 
@@ -34,15 +36,15 @@ def gate(**overrides):
 
 
 def test_plan_needs_one_saved_transect():
-    assert plan_state(0, False).state == TODO
-    assert plan_state(2, False).state == OK
-    assert plan_state(2, False).count == "2 transects"
-    assert plan_state(1, False).count == "1 transect"
+    assert transects_state(0, False).state == TODO
+    assert transects_state(2, False).state == OK
+    assert transects_state(2, False).count == "2 transects"
+    assert transects_state(1, False).count == "1 transect"
 
 
 def test_half_entered_transect_is_flagged():
     """Nothing else in the UI mentions a draft again, so the step has to."""
-    state = plan_state(1, True)
+    state = transects_state(1, True)
     assert state.state == ATTENTION
     assert "endpoints" in state.reason
 
@@ -167,7 +169,7 @@ def test_an_unmet_requirement_blocks_the_machine_and_counts_itself():
 
 def test_a_memory_advisory_alone_warns_rather_than_blocking():
     """The batch still runs on a machine that may run low, so nothing is blocked."""
-    state = machine_state(unmet=0, advisory="This batch may exhaust memory on this machine.")
+    state = machine_state(unmet=0, advisory="This session may exhaust memory on this machine.")
     assert state.state == ATTENTION
     assert "exhaust memory" in state.reason
 
@@ -200,7 +202,7 @@ def test_a_machine_with_nothing_to_report_is_ok():
 
 
 def test_the_machine_never_sends_the_user_anywhere_else():
-    """This machine is where its own blockers are fixed, so it names no destination."""
+    """Setup is where its own blockers are fixed, so it names no destination."""
     for state in (machine_state(unmet=2), machine_state(unmet=0, advisory="low memory")):
         assert state.fix == FIX_HERE
 
@@ -214,6 +216,48 @@ def test_badge_vocabulary_matches_the_verdicts():
     """core/icons.py spells the states out rather than importing upwards, so
     the two lists have to be checked against each other."""
     from deepreefmap_gui.core.icons import STEP_STATES
-    from deepreefmap_gui.simple.progress import SECTION_STATES
+    from deepreefmap_gui.simple.section_state import SECTION_STATES
 
     assert set(STEP_STATES) == set(SECTION_STATES)
+
+
+def test_only_a_verdict_worth_acting_on_reaches_the_header():
+    quiet = {
+        "transects": transects_state(2, False),
+        "process": gate(),
+        "browse": browse_state(19, 0),
+    }
+    assert most_urgent(quiet) is None
+
+
+def test_a_blocker_outranks_a_warning():
+    states = {
+        "transects": transects_state(0, True),
+        "process": gate(has_preset=False),
+        "browse": browse_state(19, 17),
+    }
+    name, verdict = most_urgent(states)
+    assert name == "process"
+    assert verdict.state == BLOCKED
+
+
+def test_two_equal_verdicts_are_settled_by_the_order_they_are_given_in():
+    """The caller passes them in header order, so the leftmost wins."""
+    states = {
+        "transects": transects_state(1, True),
+        "browse": browse_state(19, 17),
+    }
+    assert most_urgent(states)[0] == "transects"
+
+
+def test_a_headline_drops_the_advice_and_keeps_the_fault():
+    """A one-line surface has room for the fault, not the advice after it."""
+    reason = browse_state(19, 17).reason
+    assert headline(reason) == "17 runs belong to no transect"
+    assert "Assign them" in reason
+
+
+def test_a_one_sentence_reason_survives_whole():
+    assert headline("Add a transect, or import a CSV or GPX file.") == (
+        "Add a transect, or import a CSV or GPX file"
+    )

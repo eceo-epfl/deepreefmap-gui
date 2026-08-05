@@ -180,14 +180,6 @@ class SlippyMapWidget(QWidget):
         lon = sum(p[1] for p in points) / len(points)
         self.set_view(lat, lon, zoom)
 
-    def transect_count(self) -> int:
-        """How many overlay transects the map is holding.
-
-        Zero means "in view" has nothing to say: a caller filtering by the
-        viewport has to stand aside rather than hide everything.
-        """
-        return len(self._transects)
-
     def visible_transect_ids(self) -> list[str]:
         """Ids of the overlay transects whose line crosses the viewport."""
         viewport = QRectF(0, 0, self.width(), self.height())
@@ -198,6 +190,19 @@ class SlippyMapWidget(QWidget):
                 self._px_of(*transect.start), self._px_of(*transect.end), viewport
             )
         ]
+
+    def visible_ids(self) -> frozenset[str] | None:
+        """The transects the viewport is showing, or None when it cannot say.
+
+        None is not "none of them": it means the map has no answer yet, because
+        it holds no overlays or has not been laid out. A caller filtering by the
+        viewport has to stand aside on None rather than hide everything.
+        """
+        if not self._transects:
+            return None
+        if self.width() <= 0 or self.height() <= 0:
+            return None
+        return frozenset(self.visible_transect_ids())
 
     def is_offline(self) -> bool:
         return self._cache.offline
@@ -406,7 +411,7 @@ class SlippyMapWidget(QWidget):
         if hit.tooltip:
             QToolTip.showText(self.mapToGlobal(pos.toPoint()), hit.tooltip, self)
 
-    def leaveEvent(self, event) -> None:  # noqa: N802 (Qt override)
+    def leaveEvent(self, event) -> None:
         super().leaveEvent(event)
         self._hovered_id = None
         self._cursor_latlon = None

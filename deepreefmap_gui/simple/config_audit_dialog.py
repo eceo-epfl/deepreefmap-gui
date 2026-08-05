@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from deepreefmap_gui.core.theme import TEXT_MUTED
-from deepreefmap_gui.core.widgets import EmptyState
+from deepreefmap_gui.core.widgets import EmptyState, configure_table
 from deepreefmap_gui.survey.config_audit import STANDARD, ConfigAuditRow, audit_summary
 from deepreefmap_gui.survey.preset import OrgPreset
 
@@ -65,11 +65,7 @@ class ConfigAuditDialog(QDialog):
 
     def _build_table(self, rows: list[ConfigAuditRow]) -> QTableWidget:
         table = QTableWidget(len(rows), 3)
-        table.setHorizontalHeaderLabels(["Run", "Settings", "Difference"])
-        table.verticalHeader().setVisible(False)
-        table.setShowGrid(False)
-        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        configure_table(table, ["Run", "Settings", "Difference"])
         header = table.horizontalHeader()
         header.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         header.setSectionResizeMode(_COL_NOTE, QHeaderView.ResizeMode.Stretch)

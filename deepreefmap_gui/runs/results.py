@@ -1,3 +1,21 @@
+"""What a finished run produced: the ortho preview, the transect crop, and every export.
+
+The crop is the one control here that changes a result rather than showing one. Moving the length
+or width slider re-cuts the ortho from the run's uncropped grid and filters the 3D cloud through
+the same `TransectCropParams`, so the preview, the cloud and the cover figures stay three views of
+one crop rather than three answers.
+
+Exports are the app's only writes outside a run directory, which makes them the place a user's
+filesystem gets to say no. Every image goes through `_write_image` because `cv2.imwrite` reports
+failure by returning False, and does so for any path outside the Windows code page: an accented
+username otherwise gets "Saved to ..." and no file.
+
+The QC video render is the one background job in this module. It reports through
+`_sig_qc_render_progress` / `_sig_qc_render_done`, connected per export rather than in the
+window's `__init__` because the slots close over a QProgressDialog that only exists for that
+render, and disconnected by `closeEvent` so an in-flight render cannot drive a destroyed widget.
+"""
+
 from __future__ import annotations
 
 import json

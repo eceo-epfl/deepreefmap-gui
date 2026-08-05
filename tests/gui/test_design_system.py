@@ -21,6 +21,11 @@ _COLOUR_EXEMPT = {"core/theme.py"}
 
 _HEX = re.compile(r"#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})\b")
 
+# A brace wrapping a bare identifier is an f-string placeholder that never got
+# interpolated. Real QSS braces open a block, so they are followed by
+# declarations containing a colon, never by a lone name.
+_UNFORMATTED = re.compile(r"\{[A-Za-z_][A-Za-z_0-9]*\}")
+
 
 def _sources() -> list[Path]:
     return sorted(p for p in PACKAGE.rglob("*.py") if "__pycache__" not in p.parts)
@@ -81,6 +86,24 @@ def test_no_raw_hex_colour_in_a_stylesheet() -> None:
         for lineno, text in _stylesheet_arguments(path):
             offenders.extend(
                 f"{_rel(path)}:{lineno} {match.group(0)}" for match in _HEX.finditer(text)
+            )
+    assert offenders == []
+
+
+def test_no_stylesheet_passes_an_uninterpolated_placeholder() -> None:
+    """Scenario: a stylesheet is built from theme tokens across two lines.
+
+    Expected behaviour: every fragment carries its own `f`. Implicit
+    concatenation only makes the first fragment an f-string, so a token in the
+    second reaches Qt as the literal text `{TOKEN}`, and Qt drops that whole
+    declaration without raising. Four rules had been dead this way, two of them
+    for tokens the module never even imported.
+    """
+    offenders = []
+    for path in _sources():
+        for lineno, text in _stylesheet_arguments(path):
+            offenders.extend(
+                f"{_rel(path)}:{lineno} {match.group(0)}" for match in _UNFORMATTED.finditer(text)
             )
     assert offenders == []
 
@@ -302,3 +325,20 @@ def composite(front: str, back: str, alpha: float) -> str:
     return "#%02x%02x%02x" % tuple(
         round(f[i] * alpha + b[i] * (1 - alpha)) for i in range(3)
     )
+
+
+def test_every_status_the_interface_shows_has_a_colour_of_its_own() -> None:
+    """The map covers the vocabulary exactly, so no status reaches the screen on
+    a call site's neutral fallback."""
+    from deepreefmap_gui.core.widgets import STATUS_COLORS
+    from deepreefmap_gui.survey.statuses import DISPLAY_STATUSES
+
+    assert set(STATUS_COLORS) == set(DISPLAY_STATUSES)
+
+
+def test_a_run_that_stopped_short_reads_the_same_either_way() -> None:
+    """Whether the store recorded the abandonment is not a distinction a diver
+    acts on."""
+    from deepreefmap_gui.core.widgets import STATUS_COLORS
+
+    assert STATUS_COLORS["incomplete"] == STATUS_COLORS["interrupted"]

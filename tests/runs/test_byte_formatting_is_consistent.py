@@ -19,10 +19,10 @@ FOUR_GIB = 4 * 1024**3
 def test_the_data_panel_and_the_system_panel_agree():
     """These two sit on screen together while the user decides whether a run
     fits. Rendered by different functions they differed by 7%."""
-    from deepreefmap_gui.runs import data_manager, run_cards
+    from deepreefmap_gui.runs import browse, run_cards
 
     assert run_cards.format_bytes is format_bytes
-    assert data_manager.format_bytes is format_bytes
+    assert browse.format_bytes is format_bytes
 
 
 def test_run_cards_no_longer_defines_its_own():

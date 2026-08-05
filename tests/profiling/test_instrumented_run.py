@@ -22,13 +22,6 @@ from deepreefmap_gui.profiling.instrumentation import (
 
 
 @pytest.fixture
-def timings(tmp_path, monkeypatch):
-    path = tmp_path / "run_timings.json"
-    monkeypatch.setenv("DEEPREEFMAP_RUN_TIMINGS", str(path))
-    return path
-
-
-@pytest.fixture
 def out_dir(tmp_path):
     d = tmp_path / "run"
     d.mkdir()

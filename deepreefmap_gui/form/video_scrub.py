@@ -10,7 +10,6 @@ from PySide6.QtCore import QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QImage, QMouseEvent, QPainter, QPaintEvent, QPen, QPixmap
 from PySide6.QtWidgets import (
     QDialog,
-    QDialogButtonBox,
     QHBoxLayout,
     QLabel,
     QSizePolicy,
@@ -26,6 +25,7 @@ from deepreefmap_gui.core.theme import (
     PRIMARY_DARK,
     SLIDER_HANDLE,
 )
+from deepreefmap_gui.core.widgets import ok_cancel_row
 
 # 10 ms ticks: fine enough to trim by eye, coarse enough for int slider ranges.
 _TICKS_PER_S = 100
@@ -197,12 +197,7 @@ class VideoScrubDialog(QDialog):
         self._range_slider.begin_changed.connect(self._on_begin_changed)
         self._range_slider.end_changed.connect(self._on_end_changed)
 
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        layout.addWidget(ok_cancel_row(self))
 
         self.resize(720, 480)
         self._update_readouts()

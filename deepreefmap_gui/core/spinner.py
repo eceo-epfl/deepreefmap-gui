@@ -45,7 +45,7 @@ class SpinnerStopButton(QAbstractButton):
         self._angle = (self._angle + _STEP_DEG) % 360.0
         self.update()
 
-    def showEvent(self, event) -> None:  # noqa: N802 (Qt override)
+    def showEvent(self, event) -> None:
         super().showEvent(event)
         if not self._timer.isActive():
             self._timer.start()
@@ -59,12 +59,12 @@ class SpinnerStopButton(QAbstractButton):
         self.update()
         super().enterEvent(event)
 
-    def leaveEvent(self, event) -> None:  # noqa: N802 (Qt override)
+    def leaveEvent(self, event) -> None:
         self._hovered = False
         self.update()
         super().leaveEvent(event)
 
-    def paintEvent(self, event) -> None:  # noqa: N802 (Qt override)
+    def paintEvent(self, event) -> None:
         del event
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)

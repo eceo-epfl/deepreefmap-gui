@@ -29,31 +29,27 @@ if TYPE_CHECKING:
         QSpinBox,
         QSplitter,
         QStackedWidget,
-        QTableWidget,
         QToolButton,
         QTreeWidget,
         QWidget,
     )
 
     from deepreefmap_gui.core.spinner import SpinnerStopButton
-    from deepreefmap_gui.core.widgets import NotReadyStrip
     from deepreefmap_gui.io.lazy_frames import FrameAccessor
-    from deepreefmap_gui.map.widget import SlippyMapWidget
-    from deepreefmap_gui.models.library_ui import PackProgressDialog
+    from deepreefmap_gui.map.slippy_map import SlippyMapWidget
+    from deepreefmap_gui.models.packs_ui import PackProgressDialog
     from deepreefmap_gui.profiling.eta import RunEtaEstimator
     from deepreefmap_gui.runs.progress import ProgressModel
-    from deepreefmap_gui.runs.run_detail import RunDetailPanel
     from deepreefmap_gui.runs.run_table import RunTable
     from deepreefmap_gui.runs.sunburst import SunburstWidget
     from deepreefmap_gui.runs.timing_popup import HoverColumn, TimingPopup
-    from deepreefmap_gui.simple.charts import GroupedBarChart
-    from deepreefmap_gui.simple.plan import NotesEdit
+    from deepreefmap_gui.survey.health import SurveyDbHealth
     from deepreefmap_gui.survey.models import SurveyBatch
     from deepreefmap_gui.survey.preset import ActivePreset
     from deepreefmap_gui.survey.store import SurveyStore
     from deepreefmap_gui.system.log_view import LogView
     from deepreefmap_gui.viewer.pick_tooltip import PickCard
-    from deepreefmap_gui.viewer.widget import QtPointCloudViewer
+    from deepreefmap_gui.viewer.point_cloud import QtPointCloudViewer
 
     # QWidget, not QMainWindow: DeepReefMapWindow lists QMainWindow first among
     # its bases, so a QMainWindow base here breaks C3 linearisation.
@@ -65,6 +61,11 @@ if TYPE_CHECKING:
         _settings: QSettings
         _playback_timer: QTimer
         _pipeline_thread: threading.Thread | None
+        # Set by the survey runner, read by the run controls and by closeEvent.
+        # Both readers go through hasattr/getattr because it only exists while a
+        # batch is in flight; declared so the three sites agree on its type.
+        _pause_event: threading.Event
+        _central_vsplitter: QSplitter
         _active_progress_model: ProgressModel | None
         _status_tick_timer: QTimer
         _status_base_text: str
@@ -74,22 +75,19 @@ if TYPE_CHECKING:
         _active_run_manifest: dict | None
         _results_output_dir: Path | None
         _app_mode: str
-        _form_preferred_width: int
         _survey_store_obj: SurveyStore | None
-        _transect_form_id: uuid.UUID | None
-        _pick_stage: str | None
-        _transect_editing: bool
-        _plan_map_fitted: bool
         _survey_rows: list
-        _survey_table_index: list[int | None]
-        _survey_transects: list
-        _survey_batch: SurveyBatch | None
         _survey_preset: dict | None
         _active_preset: ActivePreset | None
         _survey_cancel_event: threading.Event | None
         _survey_worker_running: bool
+        # Single-file, but declared anyway: each is assigned an empty literal in
+        # its mixin, which mypy cannot infer an element type for on its own.
+        _survey_transects: list
+        _survey_batch: SurveyBatch | None
         _analysis_covers: list
         _analysis_all_covers: list
+        _analysis_provenance_label: QLabel
         _downloading: set[str]
         _download_cancel_requested: set[str]
         _download_errors: dict[str, str]
@@ -98,7 +96,6 @@ if TYPE_CHECKING:
         _model_rows: dict[str, QWidget]
         _last_model_states: list
         _pack_progress_dialog: PackProgressDialog | None
-        _pack_cancel_event: threading.Event
         _run_warnings: list[str]
 
         # --- composite widgets / models ----------------------------------
@@ -122,7 +119,6 @@ if TYPE_CHECKING:
         _legend_sort_ascending: bool
         _legend_sort_connected: bool
         _legend_order_cache: list[int] | None
-        _legend_solo_buttons: dict[int, QToolButton]
         _legend_toggles: dict[int, QCheckBox]
         _scene_accessor: FrameAccessor | None
         _run_log_file_handler: logging.FileHandler | None
@@ -137,11 +133,16 @@ if TYPE_CHECKING:
         _update_show_all: QCheckBox
 
         # --- buttons -----------------------------------------------------
-        _desktop_entry_btn: QPushButton
+        _setup_shortcut_btn: QPushButton
+        _setup_survey_btn: QPushButton
         _discover_btn: QPushButton
-        _export_models_btn: QPushButton
+        # Built by the run form, read by the Models tab. Its readers keep their
+        # hasattr guards: _refresh_model_status runs from a daemon thread and can
+        # reach the Models tab before the form has built these.
+        _seg_status_btn: QPushButton
+        _map_status_btn: QPushButton
+        _models_group: QGroupBox
         _hf_auth_btn: QPushButton
-        _import_pack_btn: QPushButton
         _pause_btn: QPushButton
         _spinner_stop: SpinnerStopButton
         _out_root_widget: QWidget
@@ -176,8 +177,9 @@ if TYPE_CHECKING:
         _ortho_rgb_preview: QLabel
         _ortho_seg_preview: QLabel
         _run_meta_banner: QLabel
-        _memory_notice: QLabel
-        _recorded_runs_caption: QLabel
+        _capacity_caption: QLabel
+        _capacity_detail: QLabel
+        _capacity_advice: QLabel
         _status_label: QLabel
         _update_status_label: QLabel
         _update_version_label: QLabel
@@ -189,80 +191,37 @@ if TYPE_CHECKING:
 
         # --- data section --------------------------------------------------
         _data_panel: QWidget
-        _data_host_simple: QWidget
         _data_tree: QTreeWidget
         _data_run_table: RunTable
         _data_map: SlippyMapWidget
-        _data_rail_split: QSplitter
-        _run_detail: RunDetailPanel
-        _data_run_stack: QStackedWidget
-        _data_group_header: QLabel
-        _data_disk_label: QLabel
-        _data_open_btn: QPushButton
-        _data_show_btn: QPushButton
         _data_refresh_timer: QTimer
-        _data_facet_buttons: dict[str, QToolButton]
         _data_entries: list
-        _data_groups: dict
-        _data_facet: str
-        _data_selected_key: tuple | None
-        _data_rebuilt_root: Path | None
         _data_store_ok: bool
         _run_size_cache: dict[str, int]
         # (output root, measured bytes per footage minute); None until measured.
         _footage_rate_cache: tuple[Path, float | None] | None
-        _data_sizes_scan_running: bool
 
         # --- survey mode -------------------------------------------------
-        _plan_map: SlippyMapWidget
-        _simple_header: QWidget
         _view_bar: QWidget
-        _view_title: QLabel
-        _view_info_btn: QToolButton
         _view_info_open: bool
-        _view_detail: RunDetailPanel
-        _survey_batch_name: QLineEdit
         _survey_preset_label: QLabel
-        _survey_pass_table: QTableWidget
         _survey_start_btn: QPushButton
-        _survey_settings_btn: QPushButton
-        _survey_restore_btn: QPushButton
-        _survey_audit_btn: QPushButton
-        _survey_import_btn: QPushButton
-        _survey_not_ready: NotReadyStrip
-        _setup_memory_label: QLabel
-        # This machine: the panels it borrows from their homes, the slots it
+        _survey_results_btn: QPushButton
+        # Setup: the panels it borrows from their homes, the slots it
         # lends them to, and the two advisories its header button reports.
         _models_page: QWidget
         _system_page: QWidget
-        _out_root_home: QWidget
+        _updates_page: QWidget
         _machine_models_host: QWidget
         _machine_system_host: QWidget
+        _machine_updates_host: QWidget
         _machine_out_root_host: QWidget
-        _machine_stack: QStackedWidget
-        _machine_view_buttons: dict[str, QToolButton]
         _machine_nav_button: QToolButton
         _memory_advisory: str
         _update_available: str
         _sys_timer: QTimer
         _hf_auth_user: str | None
         _analysis_transect_combo: QComboBox
-        _analysis_level_combo: QComboBox
-        _analysis_chart: GroupedBarChart
-        _analysis_stats_table: QTableWidget
-        _analysis_repro_label: QLabel
-        _analysis_estimate_label: QLabel
-        _transect_list: QTreeWidget
-        _tr_name_input: QLineEdit
-        _tr_start_coord: QLineEdit
-        _tr_end_coord: QLineEdit
-        _tr_geometry: QLabel
-        _pick_both_btn: QToolButton
-        _transect_edit_btn: QPushButton
-        _plan_view_timer: QTimer
-        _tr_length: QDoubleSpinBox
-        _tr_depth: QDoubleSpinBox
-        _tr_description: NotesEdit
 
         # --- combos / line edits -----------------------------------------
         _map_combo: QComboBox
@@ -279,14 +238,11 @@ if TYPE_CHECKING:
         _results_page: QWidget
         _models_grid: QGridLayout
         _simple_stack: QStackedWidget
-        _wizard_back_buttons: dict[str, QPushButton]
-        _wizard_next_buttons: dict[str, QPushButton]
         _work_hsplitter: QSplitter
         _progress_bar: QProgressBar
         _total_progress_bar: QProgressBar
         _bottom_progress_bar: QProgressBar
-        _bottom_bar: QWidget
-        _log_toggle_btn: QPushButton
+        _log_toggle_btn: QToolButton
         _top_bar: QWidget
         _progress_stack: HoverColumn
         _eta_total_label: QLabel
@@ -310,17 +266,19 @@ if TYPE_CHECKING:
         _sig_survey_progress = Signal(int, int, str)
         _sig_survey_done = Signal(int, int, str)
         _sig_run_sizes_done = Signal(object)
+        _sig_clip_links_done = Signal(object)
         _sig_videos_probed = Signal(object)
+        _sig_shortcut_done = Signal(object)
 
         # --- cross-mixin methods -----------------------------------------
-        def _add_run_warning(self, message: str) -> None: ...
-        def _add_video_path(
-            self, path: str, probed: tuple[float, float] | None = None
-        ) -> bool: ...
-        def _add_video_paths(self, paths: list[str]) -> None: ...
-        def _on_videos_probed(self, probed: list) -> None: ...
-        def _on_survey_import_csv(self) -> None: ...
-        def _apply_progress(
+        # Each is tagged with the mixin that defines it. The list is flat, and
+        # tests/core/test_window_protocol_sync.py checks these declarations against
+        # the mixins, so it is annotated in place rather than regrouped. Mixin to
+        # file is tabled in the package docstring, deepreefmap_gui/__init__.py.
+        def _add_run_warning(self, message: str) -> None: ...  # RunLoadingMixin
+        def _add_video_paths(self, paths: list[str]) -> None: ...  # SimpleBatchMixin
+        def _on_videos_probed(self, probed: list) -> None: ...  # SimpleBatchMixin
+        def _apply_progress(  # ProgressBarsMixin
             self,
             phase_key: str,
             label: str,
@@ -328,155 +286,139 @@ if TYPE_CHECKING:
             total: int = 0,
             flush: bool = False,
         ) -> None: ...
-        def _auto_load_run(self, run_dir: Path) -> None: ...
-        def _begin_progress(self, model: ProgressModel) -> None: ...
-        def _progress_sinks(self) -> list: ...
-        def _build_legend(self) -> None: ...
-        def _build_model_status_button(
+        def _auto_load_run(self, run_dir: Path) -> None: ...  # RunLoadingMixin
+        def _begin_progress(self, model: ProgressModel) -> None: ...  # ProgressBarsMixin
+        def _progress_sinks(self) -> list: ...  # ProgressBarsMixin
+        def _build_legend(self) -> None: ...  # ViewerControlsMixin
+        def _build_model_status_button(  # ModelManagementMixin
             self, combo: QComboBox
         ) -> QPushButton: ...
-        def _build_system_panel(self, layout: object) -> None: ...
-        def _on_sidebar_tab_changed(self, index: int) -> None: ...
-        def _refresh_recorded_runs(self) -> None: ...
-        def _refresh_system_gauges(self) -> None: ...
-        def _update_memory_profile_warning(self) -> None: ...
-        def _cancel_load(self) -> None: ...
-        def _check_for_update(self) -> None: ...
-        def _clear_run_warnings(self) -> None: ...
-        def _collect_loger_options(self, mapping_name: str) -> dict | None: ...
-        def _collect_run_settings(self) -> dict: ...
-        def _update_gated_warning(self) -> None: ...
-        def _gpu_only_mapper(self) -> str: ...
-        def _gpu_available(self) -> bool: ...
-        def _refresh_desktop_entry_button(self) -> None: ...
-        def _refresh_model_status(self) -> None: ...
-        def _build_data_panel(self) -> QWidget: ...
-        def _build_browse_page(self) -> QWidget: ...
-        def _refresh_section_state(self) -> None: ...
-        def _refresh_browse_state(self) -> None: ...
-        def _update_data_actions(self) -> None: ...
-        def _set_scope_transect(self, transect_id: uuid.UUID | None) -> None: ...
-        def _on_survey_pass_activated(self, row_index: int, column: int) -> None: ...
-        def _on_analysis_transect_changed(self) -> None: ...
-        def _refresh_data_manager(self) -> None: ...
-        def _focus_data_on_transect(self, transect_id: uuid.UUID) -> None: ...
-        def _request_data_refresh(self) -> None: ...
-        def _apply_run_sizes(self, sizes: dict) -> None: ...
-        def _hide_run_meta_banner(self) -> None: ...
-        def _refresh_run_warnings_view(self) -> None: ...
-        def _required_model_names(self) -> set[str]: ...
-        def _reset_progress_bars(self) -> None: ...
-        def _reset_form_defaults(self) -> None: ...
-        def _snapshot_form_settings(self) -> dict[str, Any]: ...
-        def _restore_form_settings(self, snapshot: dict[str, Any]) -> None: ...
-        def _adopt_form_as_preset(self) -> None: ...
-        def _reload_active_preset(self) -> None: ...
-        def _restore_standard_settings(self) -> None: ...
-        def _survey_deviations(self) -> dict: ...
-        def _idle_status_text(self) -> str: ...
-        def _on_edit_run_settings(self) -> None: ...
-        def _set_progress_widgets_visible(self, visible: bool) -> None: ...
-        def _build_bottom_bar(self) -> QWidget: ...
-        def _render_status(self) -> None: ...
-        def _render_eta(self) -> None: ...
-        def _end_run_controls(self) -> None: ...
-        def _begin_run_controls(self) -> None: ...
-        def _run_in_flight(self) -> bool: ...
-        def _new_run_estimator(self) -> RunEtaEstimator: ...
-        def _reveal_legend_overlay(self) -> None: ...
-        def _set_app_mode(self, mode: str) -> None: ...
-        def _build_plan_page(self) -> QWidget: ...
-        def _build_simple_run_page(self) -> QWidget: ...
-        def _build_analysis_page(self) -> QWidget: ...
-        def _build_simple_shell(self) -> QWidget: ...
-        def _build_readiness_view(self) -> QWidget: ...
-        def _queue_video_path(self, path: str | None) -> None: ...
-        def _build_machine_page(self) -> QWidget: ...
-        def _build_machine_nav_button(self) -> QToolButton: ...
-        def _host_machine_panels(self) -> None: ...
-        def _set_machine_view(self, view: str) -> None: ...
-        def _sync_system_gauges_running(self) -> None: ...
-        def _refresh_machine_button(self) -> None: ...
-        def _refresh_readiness_view(self) -> None: ...
-        def _current_setup_checks(self) -> list: ...
-        def _initial_simple_section(self) -> str: ...
-        def _reveal_memory_detail(self) -> None: ...
-        def _simple_peak_frames(self, fps: int) -> int | None: ...
-        def _survey_missing_models(self) -> list[str]: ...
-        def _download_model(self, model_name: str) -> None: ...
-        def _set_simple_section(self, name: str) -> None: ...
-        def _current_section(self) -> str: ...
+        def _build_system_panel(self, layout: object) -> None: ...  # SystemPanelMixin
+        def _refresh_recorded_runs(self) -> None: ...  # SystemPanelMixin
+        def _refresh_system_gauges(self) -> None: ...  # SystemPanelMixin
+        def _update_memory_profile_warning(self) -> None: ...  # FormPanelMixin
+        def _check_for_update(self) -> None: ...  # VersionCheckMixin
+        def _clear_run_warnings(self) -> None: ...  # RunLoadingMixin
+        def _collect_run_settings(self) -> dict: ...  # FormPanelMixin
+        def _update_gated_warning(self) -> None: ...  # FormPanelMixin
+        def _gpu_only_mapper(self) -> str: ...  # FormPanelMixin
+        def _refresh_model_status(self) -> None: ...  # ModelManagementMixin
+        def _build_data_panel(self) -> QWidget: ...  # BrowseMixin
+        def _refresh_section_state(self) -> None: ...  # InterfaceShellMixin
+        def _refresh_browse_state(self) -> None: ...  # InterfaceShellMixin
+        def _focus_browse_on_session(self, batch_id: uuid.UUID) -> None: ...  # BrowseMixin
+        def _set_scope_transect(self, transect_id: uuid.UUID | None) -> None: ...  # BrowseMixin
+        def _refresh_data_manager(self) -> None: ...  # BrowseMixin
+        def _request_data_refresh(self) -> None: ...  # BrowseMixin
+        def _apply_run_sizes(self, sizes: dict) -> None: ...  # BrowseMixin
+        def _hide_run_meta_banner(self) -> None: ...  # PastRunsMixin
+        def _refresh_run_warnings_view(self) -> None: ...  # ViewerControlsMixin
+        def _required_model_names(self) -> set[str]: ...  # ModelManagementMixin
+        def _reset_progress_bars(self) -> None: ...  # ProgressBarsMixin
+        def _snapshot_form_settings(self) -> dict[str, Any]: ...  # InterfaceShellMixin
+        def _restore_form_settings(self, snapshot: dict[str, Any]) -> None: ...  # InterfaceShellMixin
+        def _adopt_form_as_preset(self) -> None: ...  # InterfaceShellMixin
+        def _reload_active_preset(self) -> None: ...  # InterfaceShellMixin
+        def _restore_standard_settings(self) -> None: ...  # InterfaceShellMixin
+        def _survey_deviations(self) -> dict: ...  # InterfaceShellMixin
+        def _on_edit_run_settings(self) -> None: ...  # SimpleBatchMixin
+        def _build_bottom_bar(self) -> QWidget: ...  # FormPanelMixin
+        def _render_status(self) -> None: ...  # ProgressBarsMixin
+        def _end_run_controls(self) -> None: ...  # RunLoadingMixin
+        def _begin_run_controls(self) -> None: ...  # RunLoadingMixin
+        def _run_in_flight(self) -> bool: ...  # RunLoadingMixin
+        def _reveal_legend_overlay(self) -> None: ...  # ViewerControlsMixin
+        def _set_app_mode(self, mode: str) -> None: ...  # ViewerControlsMixin
+        def _build_plan_page(self) -> QWidget: ...  # SimplePlanMixin
+        def _build_simple_run_page(self) -> QWidget: ...  # SimpleBatchMixin
+        def _build_analysis_page(self) -> QWidget: ...  # SimpleAnalysisMixin
+        def _build_simple_shell(self) -> QWidget: ...  # InterfaceShellMixin
+        def _build_readiness_view(self) -> QWidget: ...  # SimpleSetupMixin
+        def _build_out_root_block(self) -> QWidget: ...  # SimpleSetupMixin
+        def _build_machine_page(self) -> QWidget: ...  # SimpleMachineMixin
+        def _build_machine_nav_button(self) -> QToolButton: ...  # SimpleMachineMixin
+        def _host_machine_panels(self) -> None: ...  # SimpleMachineMixin
+        def _set_machine_view(self, view: str) -> None: ...  # SimpleMachineMixin
+        def _sync_system_gauges_running(self) -> None: ...  # SimpleMachineMixin
+        def _refresh_machine_button(self) -> None: ...  # SimpleMachineMixin
+        def _refresh_readiness_view(self) -> None: ...  # SimpleSetupMixin
+        def _current_setup_checks(self) -> list: ...  # SimpleSetupMixin
+        def _initial_simple_section(self) -> str: ...  # SimpleSetupMixin
+        def _reveal_memory_detail(self) -> None: ...  # InterfaceShellMixin
+        def _simple_peak_frames(self, fps: int) -> int | None: ...  # SimpleBatchMixin
+        def _survey_missing_models(self) -> list[str]: ...  # SimpleBatchMixin
+        def _download_model(self, model_name: str) -> None: ...  # ModelManagementMixin
+        def _set_simple_section(self, name: str) -> None: ...  # InterfaceShellMixin
+        def _current_section(self) -> str: ...  # InterfaceShellMixin
 
-        def _enter_view_mode(self, run_dir: Path) -> None: ...
-        def _go_to_step(self, name: str) -> None: ...
-        def _set_wizard_navigation_enabled(self, enabled: bool) -> None: ...
-        def _wrap_wizard_page(self, name: str, page: QWidget) -> QWidget: ...
-        def _update_work_area(self) -> None: ...
-        def _survey_store(self) -> SurveyStore: ...
-        def _survey_data_changed(self) -> None: ...
-        def _refresh_transect_list(self, select_id: uuid.UUID | None = None) -> None: ...
-        def _refresh_survey_analysis(self) -> None: ...
-        def _refresh_survey_batch_tab(self) -> None: ...
-        def _refresh_survey_transect_combos(self) -> None: ...
-        def _refresh_survey_pass_statuses(self) -> None: ...
-        def _recompute_survey_start(self) -> None: ...
-        def _survey_preset_summary(self) -> str: ...
-        def _on_survey_progress(self, index: int, total: int, name: str) -> None: ...
-        def _on_survey_done(self, ok: int, total: int, last_error: str) -> None: ...
-        def _set_log_panel_visible(self, visible: bool) -> None: ...
-        def _set_ortho_sources(
+        def _enter_view_mode(self, run_dir: Path) -> None: ...  # InterfaceShellMixin
+        def _go_to_section(self, name: str) -> None: ...  # InterfaceShellMixin
+        def _set_navigation_enabled(self, enabled: bool) -> None: ...  # InterfaceShellMixin
+        def _update_work_area(self) -> None: ...  # InterfaceShellMixin
+        def _survey_store(self) -> SurveyStore: ...  # InterfaceShellMixin
+        def _try_survey_store(self) -> SurveyStore | None: ...  # InterfaceShellMixin
+        def _survey_db_health(self) -> SurveyDbHealth: ...  # InterfaceShellMixin
+        def check_survey_database(self) -> None: ...  # InterfaceShellMixin
+        def _browse_output_root(self) -> None: ...  # FormPanelMixin
+        def _refresh_transect_list(self, select_id: uuid.UUID | None = None) -> None: ...  # SimplePlanMixin
+        def _select_transect_row(self, id_str: str) -> None: ...  # SimplePlanMixin
+        def _on_transect_selected(self) -> None: ...  # SimplePlanMixin
+        def _refresh_survey_analysis(self) -> None: ...  # SimpleAnalysisMixin
+        def _refresh_survey_batch_tab(self) -> None: ...  # SimpleBatchMixin
+        def _refresh_survey_transect_combos(self) -> None: ...  # SimpleBatchMixin
+        def _refresh_survey_pass_statuses(self) -> None: ...  # SimpleBatchMixin
+        def _recompute_survey_start(self) -> None: ...  # SimpleBatchMixin
+        def _survey_preset_summary(self) -> str: ...  # SimpleBatchMixin
+        def _on_survey_progress(self, index: int, total: int, name: str) -> None: ...  # SimpleBatchMixin
+        def _on_survey_done(self, ok: int, total: int, last_error: str) -> None: ...  # SimpleBatchMixin
+        def _set_ortho_sources(  # ResultsMixin
             self,
             cloud: SemanticPointCloud | None,
             base_grid: OrthoGrid | None,
             classes_config: ClassConfig | None,
         ) -> None: ...
-        def _set_semantic_only_controls_visible(self, visible: bool) -> None: ...
-        def _show_results(self, output_dir: str) -> None: ...
-        def _show_run_meta_banner(
+        def _set_semantic_only_controls_visible(self, visible: bool) -> None: ...  # ViewerControlsMixin
+        def _show_results(self, output_dir: str) -> None: ...  # ResultsMixin
+        def _show_run_meta_banner(  # PastRunsMixin
             self, manifest: dict, run_dir: Path, *, include_disk_size: bool
         ) -> None: ...
-        def _show_viewer_controls(self) -> None: ...
-        def _set_overlay_controls_visible(self, visible: bool) -> None: ...
+        def _show_viewer_controls(self) -> None: ...  # ViewerControlsMixin
+        def _set_overlay_controls_visible(self, visible: bool) -> None: ...  # ViewerControlsMixin
 
         # event handlers invoked across mixins
-        def _on_discover_clicked(self) -> None: ...
-        def _on_export_cover_csv(self) -> None: ...
-        def _on_export_current_frame(self) -> None: ...
-        def _on_export_ortho_npz(self) -> None: ...
-        def _on_export_ortho_png(self) -> None: ...
-        def _on_export_qc_video(self) -> None: ...
-        def _on_export_zip(self) -> None: ...
-        def _on_follow_camera_changed(self) -> None: ...
-        def _on_hf_auth_button(self) -> None: ...
-        def _on_new_reconstruction(self) -> None: ...
-        def _open_model_library(self) -> None: ...
-        def _on_export_models(self) -> None: ...
-        def _on_import_model_pack(self) -> None: ...
-        def _on_pack_progress(
+        def _on_discover_clicked(self) -> None: ...  # ModelManagementMixin
+        def _on_export_cover_csv(self) -> None: ...  # ResultsMixin
+        def _on_export_current_frame(self) -> None: ...  # ResultsMixin
+        def _on_export_ortho_npz(self) -> None: ...  # ResultsMixin
+        def _on_export_ortho_png(self) -> None: ...  # ResultsMixin
+        def _on_export_qc_video(self) -> None: ...  # ResultsMixin
+        def _on_export_zip(self) -> None: ...  # ResultsMixin
+        def _on_hf_auth_button(self) -> None: ...  # ModelManagementMixin
+        def _open_model_library(self) -> None: ...  # ModelLibraryMixin
+        def _on_export_models(self) -> None: ...  # ModelLibraryMixin
+        def _on_import_model_pack(self) -> None: ...  # ModelLibraryMixin
+        def _on_pack_progress(  # ModelLibraryMixin
             self, phase: str, label: str, current: int, total: int
         ) -> None: ...
-        def _on_pack_done(self, ok: bool, message: str) -> None: ...
-        def _on_pause_toggled(self, paused: bool) -> None: ...
-        def _on_play_fps_changed(self) -> None: ...
-        def _on_play_toggled(self, playing: bool) -> None: ...
-        def _on_required_models_changed(self, _value: object = "") -> None: ...
-        def _on_results_crop_slider_changed(self, value: int) -> None: ...
-        def _on_results_crop_width_changed(self, value: float) -> None: ...
-        def _on_results_transect_length_changed(self, value: float) -> None: ...
-        def _on_results_transect_slider_changed(self, value: int) -> None: ...
-        def _on_stop_clicked(self) -> None: ...
-        def _on_sunburst_selection(self, class_ids: list) -> None: ...
-        def _on_toggle_desktop_entry(self) -> None: ...
-        def _on_toggle_show_all_versions(self, _checked: bool) -> None: ...
-        def _on_update(self) -> None: ...
-        def _on_viewer_control_changed(self) -> None: ...
-        def _on_view_from_camera(self) -> None: ...
+        def _on_pack_done(self, ok: bool, message: str) -> None: ...  # ModelLibraryMixin
+        def _on_pause_toggled(self, paused: bool) -> None: ...  # RunLoadingMixin
+        def _on_required_models_changed(self, _value: object = "") -> None: ...  # ModelManagementMixin
+        def _on_results_crop_slider_changed(self, value: int) -> None: ...  # ResultsMixin
+        def _on_results_crop_width_changed(self, value: float) -> None: ...  # ResultsMixin
+        def _on_results_transect_length_changed(self, value: float) -> None: ...  # ResultsMixin
+        def _on_results_transect_slider_changed(self, value: int) -> None: ...  # ResultsMixin
+        def _on_stop_clicked(self) -> None: ...  # RunLoadingMixin
+        def _on_sunburst_selection(self, class_ids: list) -> None: ...  # ViewerControlsMixin
+        def _on_toggle_shortcut(self) -> None: ...  # SimpleSetupMixin
+        def _on_toggle_show_all_versions(self, _checked: bool) -> None: ...  # VersionCheckMixin
+        def _on_update(self) -> None: ...  # VersionCheckMixin
+        def _on_viewer_control_changed(self) -> None: ...  # ViewerControlsMixin
 
         @staticmethod
-        def _format_cover_html(cover: dict) -> str: ...
+        def _format_cover_html(cover: dict) -> str: ...  # ResultsMixin
 
         @staticmethod
-        def _sanitize_run_name(name: str) -> str: ...
+        def _sanitize_run_name(name: str) -> str: ...  # FormPanelMixin
 
 
 else:

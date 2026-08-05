@@ -1,7 +1,7 @@
-"""What each simple-mode step has and still needs.
+"""What each destination has and still needs.
 
-Pure and Qt-free on purpose: the step badge and the Process button read their
-verdict from the same function, so the header can never claim a step is fine
+Pure and Qt-free: the header alert and the Start processing button read their
+verdict from the same function, so the header cannot call a destination fine
 while the button that acts on it is disabled.
 """
 
@@ -9,13 +9,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-# Badge vocabulary. Position is not a state here: the checked pill in the
-# header already says which step you are on, so the badge is free to carry
-# meaning only.
+# Verdict vocabulary. Position is not a state here: the checked pill in the
+# header already says where you are, so a verdict carries meaning only.
 TODO = "todo"  # nothing done yet, and nothing wrong
-OK = "ok"  # the step's precondition is satisfied
-ATTENTION = "attention"  # something went wrong, but you can still move
-BLOCKED = "blocked"  # the step's action is disabled until you act
+OK = "ok"  # there is something here, and nothing wrong with it
+ATTENTION = "attention"  # something went wrong, but you can still work
+BLOCKED = "blocked"  # the destination's action is disabled until you act
 
 SECTION_STATES = (TODO, OK, ATTENTION, BLOCKED)
 
@@ -23,15 +22,20 @@ SECTION_STATES = (TODO, OK, ATTENTION, BLOCKED)
 # the user can get there, so the verdict carries the destination rather than
 # spelling out directions the page cannot follow for them.
 FIX_HERE = ""  # fixed on the page that shows it, so no destination
-FIX_MACHINE = "machine"  # this computer is not ready, and This machine holds the actions
+FIX_MACHINE = "machine"  # this computer is not ready, and Setup holds the actions
 FIX_SETTINGS = "settings"  # the run settings are at fault, and the dialog holds them
 
 FIX_DESTINATIONS = (FIX_HERE, FIX_MACHINE, FIX_SETTINGS)
 
 
+# How loudly a verdict asks to be heard. Only the two states worth acting on
+# rank; the others have nothing to interrupt with.
+_URGENCY = {BLOCKED: 2, ATTENTION: 1}
+
+
 @dataclass(frozen=True)
 class SectionState:
-    """A step's verdict: how it paints, what it counts, why, and where to go."""
+    """A destination's verdict: how it paints, what it counts, why, where to go."""
 
     state: str
     count: str
@@ -49,12 +53,38 @@ def _plural(count: int, singular: str, plural: str = "") -> str:
     return f"{count} {singular if count == 1 else (plural or singular + 's')}"
 
 
-def _passes(count: int) -> str:
+def passes_phrase(count: int) -> str:
+    """"3 passes". Shared so the gate's reason and the button that obeys it
+    count the same thing in the same words."""
     return _plural(count, "pass", "passes")
 
 
-def plan_state(transect_count: int, has_draft: bool) -> SectionState:
-    """Plan is satisfied by one saved transect.
+def headline(reason: str) -> str:
+    """A reason's first sentence: what is wrong, without the advice that follows
+    it. The full text stays reachable as the tooltip."""
+    head, _, _ = reason.strip().partition(". ")
+    return head.rstrip(".")
+
+
+def most_urgent(states: dict[str, SectionState]) -> tuple[str, SectionState] | None:
+    """The one destination worth interrupting for, or None if none is.
+
+    Ties go to whichever was given first, which the caller orders as the header
+    shows them.
+    """
+    ranked = [
+        (rank, index, name, state)
+        for index, (name, state) in enumerate(states.items())
+        if (rank := _URGENCY.get(state.state)) is not None
+    ]
+    if not ranked:
+        return None
+    _, _, name, state = max(ranked, key=lambda row: (row[0], -row[1]))
+    return name, state
+
+
+def transects_state(transect_count: int, has_draft: bool) -> SectionState:
+    """Transects is satisfied by one saved transect.
 
     A draft is a transect the user started typing and never completed, which is
     worth flagging because nothing else in the UI will mention it again.
@@ -99,7 +129,7 @@ def run_gate(
     missing_models: list[str],
     gpu_only_mapper: str = "",
 ) -> SectionState:
-    """Run's verdict, and by construction the Process button's.
+    """Process's verdict, and by construction the Start processing button's.
 
     Order matters: the blockers come first and in the order the user can act on
     them, since only the first one is shown. The graphics card outranks the
@@ -109,12 +139,12 @@ def run_gate(
     if pass_count == 0:
         return SectionState(TODO, "no videos yet", "Add the videos you want processed.")
 
-    counts = _passes(pass_count)
+    counts = passes_phrase(pass_count)
     if not has_preset:
         return SectionState(
             BLOCKED,
             counts,
-            "The run settings could not be loaded, so this batch cannot run.",
+            "The run settings could not be loaded, so nothing here can be processed.",
             fix=FIX_SETTINGS,
         )
     if gpu_only_mapper:
@@ -137,7 +167,7 @@ def run_gate(
         return SectionState(
             ATTENTION,
             f"{counts} · {failed} failed",
-            f"{_passes(failed)} failed. The log holds the error; the batch can be run again.",
+            f"{passes_phrase(failed)} failed. The log holds the error; processing can be started again.",
         )
     # Not a blocker, and deliberately below the ones that are. A pass with no
     # transect processes perfectly well; it just cannot be compared against
@@ -147,7 +177,7 @@ def run_gate(
         return SectionState(
             OK,
             f"{counts} · {unassigned} without a transect",
-            f"{_passes(unassigned)} will run without a transect, so they will not be "
+            f"{passes_phrase(unassigned)} will run without a transect, so they will not be "
             "compared against repeat passes.",
         )
     if remaining:
@@ -163,9 +193,9 @@ def machine_state(
 ) -> SectionState:
     """What the computer itself has to say, for the header button that opens it.
 
-    Deliberately the same vocabulary as the steps, and computed from the same
-    checks the Run gate blocks on, so the header cannot report a healthy machine
-    while the Process button refuses to start for want of a model.
+    Deliberately the same vocabulary as the destinations, and computed from the
+    same checks the Process gate blocks on, so the header cannot report a healthy
+    machine while the Start processing button refuses to run for want of a model.
 
     Two things are reported, and they are different in kind. An unmet
     requirement stops work and is the state; an available update is a chore that

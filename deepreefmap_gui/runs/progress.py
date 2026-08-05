@@ -1,3 +1,28 @@
+"""The two progress bars, and the phase weights that make them mean something.
+
+A stage bar shows the step running now, a total bar shows the run. The total is weighted, not a
+count of steps, because the steps are nothing like equal: the PCA inside the ortho build can be
+most of the wall time on a large reef, while four viewer phases together are seconds. The weights
+in `_RECON_PHASES` and `_LOAD_PHASES` are measured shares, which is why the same phase key carries
+different weights in each: the scene-file write is a rounding error in a multi-minute run and a
+real fraction of a seconds-long load.
+
+Three rules the numbers exist to keep:
+
+- **Forward only.** `ProgressModel` promotes every phase it skipped past and never lowers a
+  percent, so a bar cannot rewind when a stage reports out of order.
+- **One continuous fill per stage the user recognises.** Mapping and cloud building are each
+  several sub-phases; `_subphase_spans` gives each a slice of the stage bar sized by the same
+  weights, so an indeterminate tail step holds at its slice start rather than leaving the stage
+  pinned at 100% while it is still working.
+- **100% means finished.** A phase weighted below the bar's rounding shows the run as complete
+  while the last write is still running, which is why `scene_save` carries more than its cost.
+
+The `_*_STAGE_TO_PHASE` tables are the seam with the library: the orchestrator and the run loader
+emit their own stage strings, and mapping them here (rather than renaming stages there) keeps a
+library change from silently freezing a bar. `profiling/eta.py` reads the same phases for the ETA.
+"""
+
 from __future__ import annotations
 
 import time

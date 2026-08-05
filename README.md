@@ -11,9 +11,9 @@ Download the build for your platform from the [releases page](https://github.com
 | macOS (Apple Silicon) | `deepreefmap-gui-macos-arm64-<version>.dmg` | |
 | Linux | `deepreefmap-gui-linux-x64-<version>` | `-cu130` for RTX 50-series, `-rocm` for AMD |
 
-macOS builds are unsigned, so the first launch needs System Settings > Privacy & Security > "Open Anyway"; Linux builds need `chmod +x`. The first launch provisions its own Python environment (several GB). Updates and rollbacks are under This machine.
+macOS builds are unsigned, so the first launch needs System Settings > Privacy & Security > "Open Anyway"; Linux builds need `chmod +x`. The first launch provisions its own Python environment (several GB). Updates and rollbacks are under Setup.
 
-The app is survey-first: plan the transects, then run them as a batch. This machine covers whether the laptop can process a dive, the models installed on it, and what it is doing while it runs. Models are downloaded there, or imported from a USB pack for machines that stay offline; the `coralscapes-*` models need a free Hugging Face account.
+Three destinations, none a prerequisite for another. **Transects** are the lines you survey, with the cover and repeatability their repeat passes agree on. **Process** queues a session's videos as passes and runs them. **Browse** is everything produced so far, grouped by session, transect, clip or run. **Setup** covers whether the laptop can process a dive, the models installed on it, and what it is doing while it runs. Models are downloaded there, or imported from a USB pack for machines that stay offline; the `coralscapes-*` models need a free Hugging Face account.
 
 ## Settings
 

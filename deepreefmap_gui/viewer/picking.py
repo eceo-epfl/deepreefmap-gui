@@ -32,12 +32,14 @@ if TYPE_CHECKING:
         _pick_ring_sources: list[Any]
         _pick_tick_sources: list[tuple[Any, float, float, float, float]]
         _picked_xyz: tuple[float, float, float] | None
-        _picked_color: tuple[int, int, int]
         _picked_leader_target: tuple[float, float] | None
         _pick_camera_obs_id: int | None
         _pick_mode_enabled: bool
         _pick_press_pos: tuple[int, int] | None
         _status_callback: Callable[..., None] | None
+
+        # Implemented on QtPointCloudViewer; returns False if the render raised.
+        def _safe_render(self) -> bool: ...
 
         # --- signals (defined as class attrs on QtPointCloudViewer) -------
         point_picked = Signal(object)
@@ -329,7 +331,6 @@ class ViewerPickingMixin(_ViewerPickingHost):
         self.clear_picked_marker()
         r, g, b = color
         self._picked_xyz = (float(xyz[0]), float(xyz[1]), float(xyz[2]))
-        self._picked_color = (int(r), int(g), int(b))
         self._picked_leader_target = leader_target_display
         if anchor_display is not None:
             self._add_pick_2d_overlay(
@@ -383,10 +384,7 @@ class ViewerPickingMixin(_ViewerPickingHost):
                 src.Modified()
             except Exception:
                 continue
-        try:
-            self._plotter.render()
-        except Exception:
-            pass
+        self._safe_render()
 
     def _install_pick_camera_observer(self) -> None:
         """Re-emit canvas_resized on camera moves so a pick's leader line tracks its point."""
@@ -556,7 +554,4 @@ class ViewerPickingMixin(_ViewerPickingHost):
         self._pick_line_sources = []
         self._pick_ring_sources = []
         self._pick_tick_sources = []
-        try:
-            self._plotter.render()
-        except Exception:
-            pass
+        self._safe_render()

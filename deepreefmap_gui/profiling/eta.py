@@ -129,12 +129,6 @@ def stage_for_phase(phase_key: str) -> str | None:
     return _PHASE_TO_STAGE.get(phase_key)
 
 
-def stage_label_for_phase(phase_key: str) -> str | None:
-    """Engineer label of the coarse stage a fine phase belongs to (matches the popup)."""
-    stage = _PHASE_TO_STAGE.get(phase_key)
-    return _STAGE_BY_KEY[stage].label if stage else None
-
-
 def stage_plain_label_for_phase(phase_key: str) -> str | None:
     """Plain phrase for the coarse stage a fine phase belongs to (the status line)."""
     stage = _PHASE_TO_STAGE.get(phase_key)

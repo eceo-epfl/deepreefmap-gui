@@ -1,14 +1,13 @@
-"""This machine: one destination for everything about the computer you are on.
+"""Setup: one destination for everything about the computer you are on.
 
-Readiness, models and system used to be three separate places, two of which a
-diver could not reach at all. They are three views of one subject, so they get
-one destination and a segmented control inside it rather than three entries in
-the header competing with the work.
+Readiness, models, performance and updates are four views of one subject, so they
+get one destination and a segmented control inside it rather than four header
+entries competing with the work.
 
 The header button reports the machine before it is opened, in two slots and no
 more: what is stopping work, and whether an update is waiting. Its verdict comes
-from machine_state() in progress.py, which is the same Qt-free vocabulary the
-step badges use and is computed from the same checks the Run gate blocks on, so
+from machine_state() in section_state.py, which is the same Qt-free vocabulary
+the destinations use and is computed from the same checks the Run gate blocks on, so
 the header cannot claim the machine is fine while Process refuses to start.
 """
 
@@ -34,45 +33,45 @@ from PySide6.QtWidgets import (
 from deepreefmap_gui.core.icons import (
     ICON_SM,
     blocked_icon,
+    cog_icon,
     download_icon,
-    machine_icon,
     warning_icon,
 )
 from deepreefmap_gui.core.theme import (
-    BORDER,
-    BORDER_STRONG,
-    BUTTON,
-    CONTROL_HEIGHT,
     GUTTER,
-    PRIMARY,
-    RADIUS_SM,
+    READING_WIDTH,
     SPACE_SM,
     SPACE_XS,
-    SURFACE_HI,
     TEXT_MUTED,
     UPDATE,
-    WINDOW_TEXT,
 )
-from deepreefmap_gui.core.widgets import SectionHeader, section_card, segmented_qss
+from deepreefmap_gui.core.widgets import (
+    SectionHeader,
+    section_card,
+    segmented_qss,
+    utility_button_qss,
+)
 from deepreefmap_gui.core.window_protocol import MixinBase
-from deepreefmap_gui.simple.progress import ATTENTION, BLOCKED, SectionState, machine_state
+from deepreefmap_gui.simple.section_state import ATTENTION, BLOCKED, SectionState, machine_state
 
 logger = logging.getLogger(__name__)
 
 # Left to right in the order they matter: what stops a run, what a run needs
-# installed, and what the machine is doing while it runs.
-MACHINE_VIEWS = ("readiness", "models", "system")
+# installed, what the machine does while it runs, and the software itself.
+MACHINE_VIEWS = ("readiness", "models", "performance", "updates")
 
 _VIEW_LABELS = {
     "readiness": "Readiness",
     "models": "Models",
-    "system": "System",
+    "performance": "Performance",
+    "updates": "Updates",
 }
 
 _VIEW_TIPS = {
     "readiness": "Whether this computer can process a dive, and how to fix it if not.",
     "models": "The models installed here, and how to add or remove them.",
-    "system": "Live usage, what past runs cost, where results are saved, and updates.",
+    "performance": "Live usage of this machine, and what past runs cost it.",
+    "updates": "The version installed here, and any newer one available.",
 }
 
 # The header button's badge size, and the gap between two of them.
@@ -80,24 +79,8 @@ _BADGE_PX = ICON_SM
 _BADGE_GAP = SPACE_XS
 
 
-def _machine_button_qss(right_padding: int) -> str:
-    """A utility control, so it is bordered and quiet rather than filled.
-
-    Distinct on purpose from the workspace pills beside it: those say where you
-    are working, this one is somewhere you visit and leave.
-    """
-    return (
-        f"QToolButton {{ border: 1px solid {BORDER}; border-radius: {RADIUS_SM}px;"
-        f" background: {BUTTON}; color: {WINDOW_TEXT};"
-        f" padding: {SPACE_XS}px {right_padding}px {SPACE_XS}px {SPACE_SM}px;"
-        f" min-height: {CONTROL_HEIGHT}px; }}"
-        f" QToolButton:hover {{ background: {SURFACE_HI}; border-color: {BORDER_STRONG}; }}"
-        f" QToolButton:focus {{ border-color: {PRIMARY}; }}"
-    )
-
-
 class MachineButton(QToolButton):
-    """Header entry to This machine, carrying its verdict before it is opened.
+    """Header entry to Setup, carrying its verdict before it is opened.
 
     Two badge slots at most. The first is the highest-severity thing standing in
     the way, the second is an available update, and neither appears when there
@@ -114,8 +97,8 @@ class MachineButton(QToolButton):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._badges: list[QIcon] = []
-        self.setText("This machine")
-        self.setIcon(machine_icon(_BADGE_PX))
+        self.setText("Setup")
+        self.setIcon(cog_icon(_BADGE_PX))
         self.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.set_verdict(SectionState("ok", "Ready"), "")
@@ -133,18 +116,18 @@ class MachineButton(QToolButton):
         # The badges are painted into reserved padding rather than over the
         # label, so the text does not shift as they come and go.
         reserved = SPACE_SM + len(badges) * (_BADGE_PX + _BADGE_GAP)
-        self.setStyleSheet(_machine_button_qss(reserved))
+        self.setStyleSheet(utility_button_qss(reserved))
         self.setToolTip(verdict.reason)
         # One phrase per glyph, so the name a screen reader announces and the
         # badges a sighted user sees are the same two facts in the same order.
-        name = f"This machine: {verdict.count}"
+        name = f"Setup: {verdict.count}"
         if update_version:
             name += f", version {update_version} available"
         self.setAccessibleName(name)
         self.setAccessibleDescription(verdict.reason)
         self.update()
 
-    def paintEvent(self, event) -> None:  # noqa: N802 (Qt override)
+    def paintEvent(self, event) -> None:
         super().paintEvent(event)
         if not self._badges:
             return
@@ -160,15 +143,15 @@ class MachineButton(QToolButton):
 
 
 class SimpleMachineMixin(MixinBase):
-    """DeepReefMapWindow methods for the This machine destination and its button."""
+    """DeepReefMapWindow methods for the Setup destination and its button."""
 
     _machine_view: str = "readiness"
 
     def _build_machine_page(self) -> QWidget:
-        """One page, three views, and a segmented control to pick between them.
+        """One page, four views, and a segmented control to pick between them.
 
         A segmented control rather than tabs or another header entry: these are
-        three ways of looking at one computer, not three places to go, and the
+        four ways of looking at one computer, not four places to go, and the
         component is the one Browse already uses for the same job.
         """
         page = QWidget()
@@ -178,8 +161,14 @@ class SimpleMachineMixin(MixinBase):
 
         header = QHBoxLayout()
         header.setSpacing(GUTTER)
-        header.addWidget(SectionHeader("This machine"))
+        header.addWidget(SectionHeader("Setup"))
         header.addStretch(1)
+        # The segments share a seam, so they get a row of their own at zero
+        # spacing. Added straight to the header, they inherit the gap it puts
+        # between the title and the control, and the joined edges the stylesheet
+        # draws are pulled apart into loose pills.
+        switch = QHBoxLayout()
+        switch.setSpacing(0)
         self._machine_view_buttons: dict[str, QToolButton] = {}
         group = QButtonGroup(page)
         group.setExclusive(True)
@@ -194,15 +183,17 @@ class SimpleMachineMixin(MixinBase):
             )
             button.clicked.connect(partial(self._set_machine_view, view))
             group.addButton(button)
-            header.addWidget(button)
+            switch.addWidget(button)
             self._machine_view_buttons[view] = button
+        header.addLayout(switch)
         outer.addLayout(header)
 
         self._machine_stack = QStackedWidget()
         views = {
             "readiness": self._build_readiness_view(),
             "models": self._build_machine_host("_machine_models_host"),
-            "system": self._build_machine_system_view(),
+            "performance": self._build_machine_host("_machine_system_host"),
+            "updates": self._build_machine_updates_view(),
         }
         for view in MACHINE_VIEWS:
             self._machine_stack.addWidget(views[view])
@@ -229,33 +220,38 @@ class SimpleMachineMixin(MixinBase):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         return scroll
 
-    def _build_machine_system_view(self) -> QWidget:
-        """The system panel, with the folder every run is written to above it.
+    def _build_machine_updates_view(self) -> QWidget:
+        """The updater, on a card the width of what it has to say.
 
-        The output root belongs to the machine rather than to a run: it is the
-        one setting that decides where a whole survey lands, and it used to
-        decide that from inside a form nobody ever saw.
+        A view of its own rather than a footnote under the gauges: everything
+        else on this destination describes the computer, and this one changes the
+        software running on it.
         """
         page = QWidget()
-        layout = QVBoxLayout(page)
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        row = QHBoxLayout()
+        column = QWidget()
+        column.setMaximumWidth(READING_WIDTH)
+        layout = QVBoxLayout(column)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(GUTTER)
+        row.addWidget(column, 1)
+        row.addStretch(0)
+        outer.addLayout(row)
+        outer.addStretch(1)
 
-        card, card_layout = section_card("Where results are saved")
-        caption = QLabel(
-            "Every run, and the survey database that tracks them, is written under "
-            "this folder."
-        )
+        card, card_layout = section_card()
+        caption = QLabel("The version installed here, and any newer one available.")
         caption.setWordWrap(True)
         caption.setStyleSheet(f"color: {TEXT_MUTED};")
         card_layout.addWidget(caption)
-        self._machine_out_root_host = QWidget()
-        host_layout = QVBoxLayout(self._machine_out_root_host)
+        self._machine_updates_host = QWidget()
+        host_layout = QVBoxLayout(self._machine_updates_host)
         host_layout.setContentsMargins(0, 0, 0, 0)
-        card_layout.addWidget(self._machine_out_root_host)
+        card_layout.addWidget(self._machine_updates_host)
         layout.addWidget(card)
-
-        layout.addWidget(self._build_machine_host("_machine_system_host"), 1)
         return page
 
     def _build_machine_nav_button(self) -> MachineButton:
@@ -281,6 +277,7 @@ class SimpleMachineMixin(MixinBase):
         for widget_attr, host_attr in (
             ("_models_page", "_machine_models_host"),
             ("_system_page", "_machine_system_host"),
+            ("_updates_page", "_machine_updates_host"),
             ("_out_root_widget", "_machine_out_root_host"),
         ):
             widget = getattr(self, widget_attr)
@@ -305,7 +302,7 @@ class SimpleMachineMixin(MixinBase):
         timer = getattr(self, "_sys_timer", None)
         if timer is None:
             return
-        if self._current_section() == "machine" and self._machine_view == "system":
+        if self._current_section() == "machine" and self._machine_view == "performance":
             self._refresh_system_gauges()
             self._refresh_recorded_runs()
             timer.start()
@@ -316,7 +313,9 @@ class SimpleMachineMixin(MixinBase):
         """This computer's verdict, from the checks the Run gate blocks on."""
         checks = self._current_setup_checks()
         return machine_state(
-            unmet=sum(1 for check in checks if not check.ok),
+            # Advisory rows are not requirements: the memory row reports a risk
+            # the queued session carries, and it is named in the sentence below.
+            unmet=sum(1 for check in checks if not check.ok and not check.advisory),
             advisory=getattr(self, "_memory_advisory", ""),
             update_version=getattr(self, "_update_available", ""),
         )

@@ -225,3 +225,89 @@ def format_run_metadata_compact(
             )
     sep = '&nbsp;<span style="color:#4a5f74">·</span>&nbsp;'
     return f"{header}&nbsp;&nbsp;{sep.join(facts)}"
+
+
+def provenance_rows(manifest: dict) -> list[tuple[str, str]]:
+    """What produced a run's numbers, as detail-pane rows.
+
+    A cover figure is only usable if what made it can be named: the models, the
+    class taxonomy those models' outputs were grouped under, and whether the
+    settings deviated from the organisation standard. All three are already
+    recorded in every manifest by ``survey_manifest_block``; until now none of
+    them was shown anywhere, so a figure and its method lived in different files.
+
+    Omitted rather than filled with a placeholder when a manifest predates the
+    provenance block: "not recorded" and "nothing changed" are different claims,
+    and only one of them is true of an old run.
+    """
+    survey = manifest.get("survey")
+    provenance = survey.get("provenance") if isinstance(survey, dict) else None
+    if not isinstance(provenance, dict):
+        return []
+
+    rows: list[tuple[str, str]] = []
+    models = " + ".join(
+        str(manifest[key])
+        for key in ("segmentation_model", "mapping_backend")
+        if manifest.get(key) and manifest.get(key) != "__skip__"
+    )
+    if models:
+        rows.append(("Models", models))
+
+    taxonomy = provenance.get("taxonomy_version")
+    taxonomy_hash = provenance.get("taxonomy_hash")
+    if taxonomy:
+        # The hash is what actually pins the grouping; the version is what a
+        # person can say out loud. Both, because a version can be edited in
+        # place and the hash is what would catch it.
+        label = str(taxonomy)
+        if taxonomy_hash:
+            label += f" · #{str(taxonomy_hash)[:8]}"
+        rows.append(("Taxonomy", label))
+
+    config = provenance.get("config")
+    if isinstance(config, dict):
+        rows.append(("Settings", _settings_line(config)))
+
+    versions = [
+        v for v in (manifest.get("deepreefmap_version"), provenance.get("gui_version")) if v
+    ]
+    if versions:
+        rows.append(("Version", " · ".join(str(v) for v in versions)))
+    return rows
+
+
+def _settings_line(config: dict) -> str:
+    """The preset a run used, and how far it strayed from it."""
+    from deepreefmap_gui.survey.preset import describe_keys
+
+    name = str(config.get("preset_name") or "Unnamed")
+    deviations = config.get("deviations")
+    if isinstance(deviations, dict) and deviations:
+        return f"{name}, changed: {describe_keys(list(deviations))}"
+    return f"{name}, as standard"
+
+
+def summarise_run_provenance(run_dir_name: str, out_root: str) -> str:
+    """"coralscapes-vit-b-dpt + loger_star, taxonomy v1" for one run, or "".
+
+    Short enough to sit on one line beside a cover figure, and specific enough
+    that two runs made differently do not read as the same measurement. Empty
+    when the manifest is unreadable or predates the provenance block.
+    """
+    import json
+
+    path = Path(out_root).expanduser() / run_dir_name / "run_manifest.json"
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(manifest, dict):
+        return ""
+    rows = dict(provenance_rows(manifest))
+    parts = [rows[key] for key in ("Models", "Taxonomy") if rows.get(key)]
+    if not parts:
+        return ""
+    # The taxonomy hash pins the grouping but is noise in a sentence; the
+    # version is the part a person can compare at a glance.
+    return f"{parts[0]}, taxonomy {parts[-1].split(' · ')[0]}" if len(parts) > 1 else parts[0]

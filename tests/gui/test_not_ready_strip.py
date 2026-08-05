@@ -14,7 +14,7 @@ import pytest
 from _factories import make_transect
 from _qt_wait import wait_until
 
-from deepreefmap_gui.simple.progress import BLOCKED, OK
+from deepreefmap_gui.simple.section_state import BLOCKED, OK
 
 
 @pytest.fixture
@@ -73,7 +73,7 @@ def test_the_strip_goes_to_this_machine(queued_window, monkeypatch):
     monkeypatch.setattr(window, "_gpu_only_mapper", lambda: "loger")
     window._recompute_survey_start()
 
-    assert strip_action(window) == "Open This machine"
+    assert strip_action(window) == "Open Setup"
     window._survey_not_ready._action.click()
     assert window._current_section() == "machine"
 
@@ -84,7 +84,7 @@ def test_missing_models_send_the_diver_to_this_machine(queued_window, monkeypatc
     window._recompute_survey_start()
 
     assert "coralscapes-vit-b-dpt" in strip_reason(window)
-    assert strip_action(window) == "Open This machine"
+    assert strip_action(window) == "Open Setup"
 
 
 def test_a_broken_preset_sends_the_diver_to_the_settings(queued_window, monkeypatch):

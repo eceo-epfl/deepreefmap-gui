@@ -1,6 +1,6 @@
 [project]
 name = "deepreefmap-gui"
-version = "0.2.0"
+version = "0.3.0"
 description = "Desktop application for semantic 3D mapping of coral reefs with deepreefmap"
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
@@ -100,7 +100,7 @@ build-backend = "setuptools.build_meta"
 include = ["deepreefmap_gui*"]
 
 [tool.setuptools.package-data]
-"deepreefmap_gui.resources" = ["*.png", "fonts/*.ttf", "fonts/*.txt", "configs/*.yaml"]
+"deepreefmap_gui.resources" = ["*.png", "*.icns", "fonts/*.ttf", "fonts/*.txt", "configs/*.yaml"]
 
 [tool.uv]
 conflicts = [
@@ -183,17 +183,21 @@ extend-select = [
   "FURB", "G", "ISC", "LOG", "PERF", "PIE", "Q", "RET", "SIM",
   "T20",     # stray print()
   "PLW", "PLC0207", "PLR1714", "PLR1730", "PLR5501",
+  "N",       # naming: Qt overrides are allowlisted below, not noqa'd per site
+  "S310",    # urlopen without a scheme check
+  "RUF100",  # unused noqa. Last, and only now: it can only see enabled rules,
+             # so turning it on before N and S310 would have deleted the
+             # comments documenting exactly those.
 ]
 # PLW1514 (open without an explicit encoding) is selected by the PLW above but
-# only fires under --preview, which currently reports 305 unrelated errors. The
-# tree is already clean under it, so it starts green the day it graduates rather
-# than arriving as a backlog. Check with:
+# only fires under --preview. The tree is clean under it, so it starts green the
+# day it graduates rather than arriving as a backlog. Check with:
 #   uv run ruff check --preview --select PLW1514 deepreefmap_gui tests
-# RUF100 (unused noqa) is deliberately NOT here yet. It only knows about enabled
-# rules, so turning it on before N and S would delete the `# noqa: N802 (Qt
-# override)` and `# noqa: S310` comments this codebase already carries. Real
-# documentation, removed for being unenforced. It belongs with the exception
-# sweep, alongside N, S110, S112 and S310.
+# Still deferred: S110 and S112 (try/except/pass and /continue). Each is a
+# judgement about whether a swallowed exception is deliberate, so they are being
+# handled per site rather than by a sweep, and the rule goes on when the count
+# reaches zero. S101 stays off for good: it is `assert`, which is what a test is
+# made of.
 extend-ignore = [
   # Suppressing an exception is sometimes right and sometimes a hidden bug; that
   # call needs a human, so it is being made per-site rather than by autofix.
@@ -203,6 +207,36 @@ extend-ignore = [
   # try/except inside a loop is how per-item failures are isolated here, which
   # is a correctness choice, not an oversight.
   "PERF203",
+]
+
+[tool.ruff.lint.pep8-naming]
+# Qt's method names are Qt's to spell, so an override cannot be renamed into
+# snake_case without silently ceasing to override anything. Declared once here
+# rather than carried as a `# noqa: N802` comment on each of the ~27 sites: the
+# vocabulary is closed, and a comment per site documents nothing the rule does
+# not already say.
+extend-ignore-names = [
+  "acceptProposedAction",
+  "cvtColor",
+  "eventFilter",
+  "hasUrls",
+  "leaveEvent",
+  "mimeData",
+  "mouseMoveEvent",
+  "mousePressEvent",
+  "mouseReleaseEvent",
+  "paintEvent",
+  "setBegin",
+  "setEnd",
+  "setText",
+  "showEvent",
+  "wheelEvent",
+  # N818 wants an Error suffix. These three are cancellations, not faults: they
+  # unwind a copy the user stopped, and are caught by name where they are
+  # raised. Renaming them would say something untrue about what they mean.
+  "PackCancelled",
+  "DownloadCancelled",
+  "InsufficientDiskSpace",
 ]
 
 # INP001 is deliberately absent: tests/ has no __init__.py by design (see the

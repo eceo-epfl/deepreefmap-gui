@@ -4,6 +4,9 @@ One widget, shown twice: in Browse beside the run table, and in View mode beside
 the cloud. A failure reason belongs here rather than in the status bar, which the
 next event overwrites: the run that broke is still selected long after the
 message that explained it has gone.
+
+``DetailCard``, the card this and the clip pane are both built on, is defined
+here as well, so the two open the same way rather than by coincidence.
 """
 
 from __future__ import annotations
@@ -29,12 +32,16 @@ from deepreefmap_gui.core.theme import (
     SPACE_SM,
     TEXT_MUTED,
     WARN_TEXT,
-    WEIGHT_SEMIBOLD,
 )
-from deepreefmap_gui.core.widgets import STATUS_COLORS, KeyValueList, section_card
+from deepreefmap_gui.core.widgets import (
+    STATUS_COLORS,
+    KeyValueList,
+    StatusChip,
+    section_card,
+)
 from deepreefmap_gui.profiling.eta import format_duration
 from deepreefmap_gui.profiling.system_probe import format_bytes
-from deepreefmap_gui.runs.run_cards import points_label
+from deepreefmap_gui.runs.run_cards import points_label, provenance_rows
 from deepreefmap_gui.survey import catalogue
 from deepreefmap_gui.survey.catalogue import RunEntry
 
@@ -79,17 +86,19 @@ def _load_ortho(run_dir: Path) -> QPixmap | None:
     return QPixmap.fromImage(image) if not image.isNull() else None
 
 
-class RunDetailPanel(QWidget):
-    """A titled card describing the selected run."""
+class DetailCard(QWidget):
+    """The card the Browse detail panes are built on: a name, a verdict, facts.
 
-    open_requested = Signal()
+    Browse shows one of these beside the table and which one depends on the
+    grouping, so they open the same way whichever thing is selected. Each pane
+    adds its own middle to ``self.body`` and closes with an actions row.
+    """
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._open_action_allowed = False
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-        card, layout = section_card()
+        card, self.body = section_card()
 
         self.title = QLabel("")
         self.title.setWordWrap(True)
@@ -97,14 +106,60 @@ class RunDetailPanel(QWidget):
         title_font.setWeight(QFont.Weight.DemiBold)
         title_font.setPointSize(FONT_LG_PT)
         self.title.setFont(title_font)
-        layout.addWidget(self.title)
+        self.body.addWidget(self.title)
 
-        self.status = QLabel("")
-        self.status.setWordWrap(True)
-        layout.addWidget(self.status)
+        # In a row of its own so the chip is only as wide as its word; stretched
+        # to the pane it would read as a banner.
+        self.status = StatusChip()
+        status_row = QHBoxLayout()
+        status_row.setContentsMargins(0, 0, 0, 0)
+        status_row.addWidget(self.status)
+        status_row.addStretch(1)
+        self.body.addLayout(status_row)
 
         self.facts = KeyValueList()
-        layout.addWidget(self.facts)
+        self.body.addWidget(self.facts)
+
+        outer.addWidget(card)
+
+    def set_status(self, text: str, colour: str) -> None:
+        """The outcome under the name, as the chip the tables paint it as."""
+        self.status.set_status(text, colour)
+
+    def add_actions(self, primary: QPushButton, secondary: QPushButton | None = None) -> None:
+        """Close the card with what it is for, and a quiet action pushed right.
+
+        Added at the point the pane calls this, so it lands under whatever the
+        pane put between the facts and here. The quiet action is optional: not
+        every pane has a second thing worth offering, and an invented one is
+        worse than a row with a single button in it.
+        """
+        actions = QHBoxLayout()
+        actions.setSpacing(SPACE_SM)
+        primary.setProperty("cta", "true")
+        actions.addWidget(primary)
+        actions.addStretch(1)
+        if secondary is not None:
+            secondary.setProperty("quiet", "true")
+            actions.addWidget(secondary)
+        self.body.addLayout(actions)
+
+    def clear(self) -> None:
+        """Empty the shared header. Panes extend this with their own content."""
+        self.title.setText("")
+        self.status.setText("")
+        self.facts.clear()
+
+
+class RunDetailPanel(DetailCard):
+    """A titled card describing the selected run."""
+
+    open_requested = Signal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._open_action_allowed = False
+        layout = self.body
 
         # What the run actually produced, which no amount of metadata conveys.
         # Below the facts rather than above them: the facts identify the run, the
@@ -137,29 +192,20 @@ class RunDetailPanel(QWidget):
         # Opening the run is what this pane is for; copying its command line is
         # for taking away, so it sits beside as a quiet action rather than
         # holding the only full-width button in the pane, which is what it did.
-        actions = QHBoxLayout()
-        actions.setSpacing(SPACE_SM)
         self.open_btn = QPushButton("Open run")
-        self.open_btn.setProperty("cta", "true")
         self.open_btn.setToolTip("Load this run into the 3D viewer")
         self.open_btn.clicked.connect(self.open_requested)
         self.open_btn.setVisible(False)
-        actions.addWidget(self.open_btn)
-        actions.addStretch(1)
 
         self.copy_command_btn = QPushButton("Copy command")
-        self.copy_command_btn.setProperty("quiet", "true")
         self.copy_command_btn.setIcon(copy_icon(ICON_SM))
         self.copy_command_btn.setToolTip(
             "Copy the command that reproduces this run in a terminal"
         )
         self.copy_command_btn.clicked.connect(self._copy_command)
         self.copy_command_btn.setVisible(False)
-        actions.addWidget(self.copy_command_btn)
-        layout.addLayout(actions)
+        self.add_actions(self.open_btn, self.copy_command_btn)
         self._entry: RunEntry | None = None
-
-        outer.addWidget(card)
 
     def set_open_action_visible(self, visible: bool) -> None:
         """Hide the opener where opening means nothing: View mode is already in it."""
@@ -189,10 +235,7 @@ class RunDetailPanel(QWidget):
         status = catalogue.entry_status(entry)
         colour = STATUS_COLORS.get(status, TEXT_MUTED)
         self.title.setText(entry.display_name)
-        self.status.setText(
-            f'<span style="color:{colour}; font-weight:{WEIGHT_SEMIBOLD};">'
-            f"{status.capitalize()}</span>"
-        )
+        self.set_status(status.capitalize(), colour)
         rows = [
             ("Folder", entry.dir_name),
             ("Transect", entry.transect_name or "Not assigned yet"),
@@ -206,6 +249,7 @@ class RunDetailPanel(QWidget):
             rows.append(("Points", points_label(entry.points)))
         if entry.size_bytes is not None:
             rows.append(("On disk", format_bytes(entry.size_bytes)))
+        rows.extend(provenance_rows(entry.manifest))
         self.facts.set_rows(rows)
         error = entry.db_run.error if entry.db_run is not None else ""
         if entry.incomplete:
@@ -268,9 +312,7 @@ class RunDetailPanel(QWidget):
         self._rescale_ortho()
 
     def clear(self) -> None:
-        self.title.setText("")
-        self.status.setText("")
-        self.facts.clear()
+        super().clear()
         self.error.setVisible(False)
         self._entry = None
         self.copy_command_btn.setVisible(False)

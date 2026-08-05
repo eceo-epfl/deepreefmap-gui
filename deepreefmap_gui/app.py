@@ -1,3 +1,40 @@
+"""The window, and the process it runs in.
+
+`DeepReefMapWindow` builds no feature of its own. It fuses the 17 mixins listed in its bases
+(the feature-to-file table is in `deepreefmap_gui/__init__.py`), owns the frame they fill in
+(splitters, the run banner, the central layout, the shortcuts), and shuts everything down in
+`closeEvent`. Read `__init__` in order, not in parts: the form widgets are built first because
+the toolbar, the settings dialog and Setup are all wired to them, and `_activate_interface`
+is last because it populates every page and re-divides the splitter.
+
+## Signals
+
+Every `_sig_*` is declared here rather than in the mixin that emits it, because `Signal` has to be
+a class attribute of a QObject subclass and `DeepReefMapWindow` is the only one in the fusion:
+`MixinBase` is `object` at runtime, and PySide6 refuses a second QObject base. The protocol in
+`core/window_protocol.py` restates them so mypy can see them from a mixin, and
+`tests/core/test_window_protocol_sync.py` compares the two lists.
+
+They exist because a worker thread cannot touch a widget. The pattern is the same everywhere: a
+daemon thread does the slow thing (a download in `models/cache_ui.py`, a reconstruction or a run
+load in `runs/loading.py`, a batch in `simple/batch.py`, a disk walk in `runs/browse.py`, a
+release check in `update/version.py`) and emits; the connection made in `__init__` below delivers
+it as a queued call on the GUI thread, where the `_on_*`/`_apply_*` slot in the owning mixin runs.
+`QTimer.singleShot` from a worker thread would silently do nothing, so it is never the answer.
+
+Two signals are deliberately not connected here. `_sig_qc_render_progress` and
+`_sig_qc_render_done` are connected per export in `runs/results.py`, because their slots close
+over a QProgressDialog that only exists for that render; `closeEvent` disconnects them before
+releasing handles so a render still in flight cannot drive a widget Qt is about to destroy.
+
+## launch()
+
+Order matters more than the code suggests. The Wayland/OpenGL environment variables and the
+`QSurfaceFormat` have to be set before the QApplication exists (VTK 9 needs a 3.2 core profile,
+and macOS exposes nothing above 2.1 any other way), fonts and theme before the window, and the
+SIGINT heartbeat after it, so Ctrl-C reaches the interpreter while `exec()` blocks in C++.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -5,8 +42,9 @@ import os
 import signal
 import sys
 import threading
+import traceback
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from deepreefmap.config.classes import ClassConfig
 from PySide6.QtCore import Qt, QTimer, Signal
@@ -22,10 +60,11 @@ from PySide6.QtWidgets import (
 )
 
 from deepreefmap_gui.core.theme import BANNER_BG, BANNER_BORDER, BANNER_TEXT
+from deepreefmap_gui.core.widgets import confirm
 from deepreefmap_gui.form.panel import FormPanelMixin
-from deepreefmap_gui.models.library_ui import ModelLibraryMixin
-from deepreefmap_gui.models.management import ModelManagementMixin
-from deepreefmap_gui.runs.data_manager import DataManagerMixin
+from deepreefmap_gui.models.cache_ui import ModelManagementMixin
+from deepreefmap_gui.models.packs_ui import ModelLibraryMixin
+from deepreefmap_gui.runs.browse import BrowseMixin
 from deepreefmap_gui.runs.loading import RunLoadingMixin
 from deepreefmap_gui.runs.past_runs import PastRunsMixin
 from deepreefmap_gui.runs.progress import ProgressBarsMixin
@@ -37,7 +76,7 @@ from deepreefmap_gui.simple.machine import SimpleMachineMixin
 from deepreefmap_gui.simple.mode import InterfaceShellMixin
 from deepreefmap_gui.simple.plan import SimplePlanMixin
 from deepreefmap_gui.simple.setup import SimpleSetupMixin
-from deepreefmap_gui.system.panel import SystemPanelMixin
+from deepreefmap_gui.system.system_tab import SystemPanelMixin
 from deepreefmap_gui.update.version import VersionCheckMixin
 from deepreefmap_gui.viewer.controls import ViewerControlsMixin
 
@@ -46,7 +85,7 @@ logger = logging.getLogger(__name__)
 
 class DeepReefMapWindow(
     QMainWindow,
-    DataManagerMixin,
+    BrowseMixin,
     FormPanelMixin,
     InterfaceShellMixin,
     ModelLibraryMixin,
@@ -81,7 +120,9 @@ class DeepReefMapWindow(
     _sig_survey_progress = Signal(int, int, str)
     _sig_survey_done = Signal(int, int, str)
     _sig_run_sizes_done = Signal(object)
+    _sig_clip_links_done = Signal(object)
     _sig_videos_probed = Signal(object)
+    _sig_shortcut_done = Signal(object)
 
     def __init__(self, classes_config: ClassConfig, classes_path: Path | None) -> None:
         super().__init__()
@@ -92,6 +133,7 @@ class DeepReefMapWindow(
         self._playback_timer.timeout.connect(self._on_playback_tick)
 
         self._sig_update_check_done.connect(self._apply_update_check)
+        self._sig_shortcut_done.connect(self._on_shortcut_done)
         self._sig_model_status_done.connect(self._apply_model_status)
         # The lambda is load-bearing, not noise: _status_label is built later, by
         # _build_form_widgets(). Binding self._status_label.setText here would
@@ -108,6 +150,7 @@ class DeepReefMapWindow(
         self._sig_survey_progress.connect(self._on_survey_progress)
         self._sig_survey_done.connect(self._on_survey_done)
         self._sig_run_sizes_done.connect(self._apply_run_sizes)
+        self._sig_clip_links_done.connect(self._apply_clip_link_states)
         self._sig_videos_probed.connect(self._on_videos_probed)
 
         self.setWindowTitle("DeepReefMap")
@@ -129,7 +172,7 @@ class DeepReefMapWindow(
         # width.
         self.setMinimumSize(720, 480)
 
-        from deepreefmap_gui.viewer.widget import QtPointCloudViewer
+        from deepreefmap_gui.viewer.point_cloud import QtPointCloudViewer
 
         self._viewer = QtPointCloudViewer(
             class_colors=classes_config.id_to_color,
@@ -148,7 +191,7 @@ class DeepReefMapWindow(
         self._build_pick_mode_overlay()
 
         # Build the form widgets first: they are what the toolbar, the settings
-        # dialog and This machine are all wired to, and none of them can be laid
+        # dialog and Setup are all wired to, and none of them can be laid
         # out before the widgets they reference exist.
         self._build_form_widgets()
         self._capture_form_defaults()
@@ -233,7 +276,7 @@ class DeepReefMapWindow(
             ("Show or hide the log", "Ctrl+L", self._log_toggle_btn.click),
             ("Go to Browse", "Ctrl+B", self._activate_browse),
             ("Run settings", "Ctrl+,", self._activate_settings),
-            ("This machine", "F1", self._activate_machine),
+            ("Setup", "F1", self._activate_machine),
             ("Quit", QKeySequence.StandardKey.Quit, self.close),
         )
         for name, key, slot in bindings:
@@ -251,7 +294,7 @@ class DeepReefMapWindow(
     def _activate_machine(self) -> None:
         self._set_simple_section("machine")
 
-    def eventFilter(self, obj, event):  # noqa: N802 (Qt override)
+    def eventFilter(self, obj, event):
         # QObject owns eventFilter earlier in the MRO than the mixins, so the
         # drop handling lives here on the concrete window and delegates in.
         if self._data_drop_event_filter(obj, event):
@@ -326,15 +369,12 @@ class DeepReefMapWindow(
         # RunLoadingMixin._run_in_flight: the survey batch worker is what holds
         # _pipeline_thread, so this asks whether a batch is still processing.
         if self._run_in_flight():
-            answer = QMessageBox.question(
+            if not confirm(
                 self,
                 "Quit DeepReefMap",
                 "A reconstruction is still running. Quitting stops it and the "
                 "run will be incomplete.\n\nQuit anyway?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if answer != QMessageBox.StandardButton.Yes:
+            ):
                 event.ignore()
                 return
             # Signalled, not joined. The worker threads are daemons, and a join
@@ -383,6 +423,42 @@ def prefer_portal_file_dialogs() -> None:
     os.environ["QT_QPA_PLATFORMTHEME"] = "xdgdesktopportal"
 
 
+def _install_crash_dialog() -> None:
+    """Route uncaught exceptions to a dialog as well as the log.
+
+    Without this an exception that escapes a slot prints to stderr and no
+    further. From a desktop launcher that is the session journal; in the
+    packaged Windows build bootstrap points stderr at os.devnull, so the app
+    misbehaves in complete silence. A field laptop has to be able to report what
+    went wrong without someone starting it from a terminal.
+    """
+
+    def show(exc_type: type[BaseException], exc: BaseException, tb: Any) -> None:
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc, tb)
+            return
+        logger.critical("Unhandled exception", exc_info=(exc_type, exc, tb))
+        if QApplication.instance() is None:
+            return
+        try:
+            box = QMessageBox(QMessageBox.Icon.Critical, "DeepReefMap", str(exc) or exc_type.__name__)
+            box.setInformativeText(
+                "The app hit a problem it did not expect. It may keep working; if "
+                "it does not, restart it and send the details below."
+            )
+            box.setDetailedText("".join(traceback.format_exception(exc_type, exc, tb)))
+            box.exec()
+        except Exception:
+            logger.exception("Could not show the crash dialog")
+
+    sys.excepthook = show
+    # A worker thread dying otherwise leaves no trace at all: threading prints
+    # to stderr, which in the packaged build goes nowhere.
+    threading.excepthook = lambda args: show(
+        args.exc_type, args.exc_value or args.exc_type(), args.exc_traceback
+    )
+
+
 def launch(classes_path: Path | None = None, view_run_dir: Path | None = None) -> None:
     from deepreefmap.config.classes import load_classes
 
@@ -418,9 +494,11 @@ def launch(classes_path: Path | None = None, view_run_dir: Path | None = None) -
     from importlib import resources
     icon_path = resources.files("deepreefmap_gui.resources").joinpath("icon.png")
     qt_app.setWindowIcon(QIcon(str(icon_path)))
+    _install_crash_dialog()
     classes_config = load_classes(classes_path)
     window = DeepReefMapWindow(classes_config, classes_path)
     window.show()
+    window.check_survey_database()
     if view_run_dir is not None:
         QTimer.singleShot(100, lambda: window._auto_load_run(view_run_dir))
 

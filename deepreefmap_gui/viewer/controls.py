@@ -40,6 +40,15 @@ logger = logging.getLogger(__name__)
 # Shared label column in the overlay, so the sliders line up under each other.
 _OVERLAY_LABEL_W = 90
 
+# Coarse stage names for the status line. Module level because _on_viewer_status
+# runs on every progress callback, and this was being rebuilt each time.
+_STAGE_LABELS = {
+    "startup": "Startup",
+    "preprocess": "Preprocessing",
+    "mapping": "Mapping",
+    "outputs": "Building outputs",
+}
+
 
 class ViewerControlsMixin(MixinBase):
     """DeepReefMapWindow methods for app mode, playback, legend, and viewer status routing."""
@@ -56,7 +65,7 @@ class ViewerControlsMixin(MixinBase):
         # Guarded on the shell existing, because the first _set_app_mode("SETUP")
         # happens inside _build_form_widgets, before there is anything to show.
         if mode == "RUNNING" and hasattr(self, "_simple_stack"):
-            self._set_simple_section("run")
+            self._set_simple_section("process")
         self._update_work_area()
 
     def _refresh_run_warnings_view(self) -> None:
@@ -192,7 +201,7 @@ class ViewerControlsMixin(MixinBase):
         cc = self._classes_config
         counts = self._viewer.class_point_counts()
         class_ids = sorted(cc.id_to_name.keys())
-        self._legend_toggles, self._legend_solo_buttons = self._viewer.legend_overlay.rebuild(
+        self._legend_toggles = self._viewer.legend_overlay.rebuild(
             class_ids,
             cc.id_to_name,
             cc.id_to_color,
@@ -611,7 +620,7 @@ class ViewerControlsMixin(MixinBase):
 
         ctrl_sep = QFrame(overlay)
         ctrl_sep.setFrameShape(QFrame.Shape.HLine)
-        ctrl_sep.setStyleSheet("color: {OVERLAY_BORDER}; margin: 2px 0;")
+        ctrl_sep.setStyleSheet(f"color: {OVERLAY_BORDER}; margin: 2px 0;")
         layout.addWidget(ctrl_sep)
 
         controls_container = QWidget(overlay)
@@ -682,9 +691,7 @@ class ViewerControlsMixin(MixinBase):
         )
 
         self._ov_pt_slider = ov_pt_slider
-        self._ov_pt_readout = ov_pt_readout
         self._ov_conf_slider = ov_conf_slider
-        self._ov_conf_readout = ov_conf_readout
         self._ov_conf_container = ov_conf_container
 
     def _build_overlay_toggles(self, overlay: QWidget, ctrl_layout: QVBoxLayout) -> None:
@@ -915,13 +922,8 @@ class ViewerControlsMixin(MixinBase):
             )
         except Exception:
             logger.exception("Failed to draw picked-point marker")
+
     def _on_viewer_status(self, event: str, **kwargs: object) -> None:
-        _STAGE_LABELS = {
-            "startup": "Startup",
-            "preprocess": "Preprocessing",
-            "mapping": "Mapping",
-            "outputs": "Building outputs",
-        }
         if event == "start_run":
             self._clear_run_warnings()
             self._apply_progress("startup", "Starting reconstruction", 0, 0)

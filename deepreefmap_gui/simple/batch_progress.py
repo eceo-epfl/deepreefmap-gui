@@ -1,4 +1,4 @@
-"""Batch progress on the Run step: which pass is running, and how long is left.
+"""Session progress on Process: which pass is running, and how long is left.
 
 Fed the same per-run signals as the viewer's ProgressPanel, but it reports the
 whole batch rather than the pass in flight: the bar spans every queued pass, and
@@ -11,7 +11,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QLabel, QProgressBar, QVBoxLayout, QWidget
 
 from deepreefmap_gui.core.theme import PRIMARY, TEXT_SECONDARY
-from deepreefmap_gui.core.widgets import section_card
+from deepreefmap_gui.core.widgets import secondary_label, section_card
 from deepreefmap_gui.profiling.eta import format_remaining
 
 # Below this the pass has not run long enough for its own fill to say anything
@@ -40,8 +40,7 @@ class BatchProgressCard(QWidget):
         self._bar.setTextVisible(True)
         layout.addWidget(self._bar)
 
-        self._eta = QLabel()
-        self._eta.setStyleSheet(f"color: {TEXT_SECONDARY};")
+        self._eta = secondary_label()
         layout.addWidget(self._eta)
 
         self._detail = QLabel()

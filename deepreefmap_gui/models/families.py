@@ -10,7 +10,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from deepreefmap_gui.models.manager import ModelInfo
+from deepreefmap_gui.models.cache import ModelInfo
 
 
 @dataclass(frozen=True)

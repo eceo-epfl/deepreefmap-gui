@@ -1,3 +1,19 @@
+"""The modal that installs an update and shows what it is doing while it does it.
+
+An update replaces the running binary and rebuilds a multi-GB environment, over a connection that
+may be a phone hotspot. Nothing about that is safe to hide behind a spinner, so the install log
+streams into the dialog as it happens: if it stalls, the last line says where.
+
+The work runs on a daemon thread and reports back through three signals, because
+`packaging/binary_swap.py` is Qt-free and takes plain callbacks. Progress is emitted as a
+percentage rather than bytes, since a multi-GB download overflows the progress bar's 32-bit range.
+
+The dialog cannot finish the job. A swapped binary is only live on the next process, so success
+leaves a Relaunch button that spawns the new binary and quits this one. `DEEPREEFMAP_MOCK_PYAPP`
+drives a scripted run instead, which is how the UI path is exercised without downloading anything
+or replacing a binary.
+"""
+
 from __future__ import annotations
 
 import logging

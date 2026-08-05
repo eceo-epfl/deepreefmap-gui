@@ -1,4 +1,4 @@
-"""Browse: every run in the output root, by run, transect, or video."""
+"""Browse: every run in the output root, by run, session, transect, or video."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import threading
 import uuid
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, Qt, QTimer, QUrl
+from PySide6.QtCore import QEvent, QModelIndex, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -24,7 +24,6 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
-    QScrollArea,
     QSplitter,
     QStackedWidget,
     QToolButton,
@@ -34,94 +33,113 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from deepreefmap_gui.core.icons import broken_link_icon, link_icon, warning_icon
 from deepreefmap_gui.core.theme import (
     GUTTER,
+    PRIMARY,
     SPACE_SM,
     SPACE_XS,
-    TEXT_SECONDARY,
 )
 from deepreefmap_gui.core.widgets import (
+    SCOPE_FILTERS,
+    STATUS_COLORS,
     EmptyState,
     FilterChips,
+    clip_outcome_color,
+    confirm,
+    secondary_label,
     section_card,
     segmented_qss,
 )
 from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.map.overlays import transect_overlays
-from deepreefmap_gui.map.widget import SlippyMapWidget
+from deepreefmap_gui.map.slippy_map import SlippyMapWidget
 from deepreefmap_gui.profiling.eta import format_duration
 from deepreefmap_gui.profiling.system_probe import format_bytes
 from deepreefmap_gui.runs.run_cards import points_label, related_run_counts
 from deepreefmap_gui.runs.run_detail import RunDetailPanel
 from deepreefmap_gui.runs.run_table import COL_NAME, RunTable
+from deepreefmap_gui.runs.session_detail import SessionDetailPanel
+from deepreefmap_gui.runs.transect_detail import TransectDetailPanel
 from deepreefmap_gui.runs.video_detail import VideoDetailPanel
-from deepreefmap_gui.survey import catalogue
+from deepreefmap_gui.survey import catalogue, statuses
 from deepreefmap_gui.survey.catalogue import (
-    VIDEO_FAILED,
-    VIDEO_PENDING,
-    VIDEO_PROCESSED,
-    VIDEO_UNPROCESSED,
     FacetGroup,
     RunEntry,
     VideoLibraryEntry,
 )
 from deepreefmap_gui.survey.models.transect_pass import PASS_DIRECTIONS
+from deepreefmap_gui.survey.models.video_asset import VideoAsset
 
 logger = logging.getLogger(__name__)
 
-# How the archive is arranged. The first two group runs; By video groups the
-# footage instead, and lists clips nothing has been cut from yet, which no
-# run-shaped view can show. Keys are persisted and test-pinned; only the labels
-# say what each view does.
+# How the archive is arranged, in widening order: one run, one day, one line,
+# one clip. By video groups the footage rather than the runs, and lists clips
+# nothing has been cut from yet, which no run-shaped view can show. Keys are
+# persisted and test-pinned; only the labels say what each view does.
+#
+# By session is the container that spans transects. Every run already records
+# the session it was queued in, on its pass and in its manifest, but until this
+# facet existed there was nowhere for a day's work to appear as a day's work,
+# and "run" was left doing double duty for both the queue and its output.
 _FACETS = (
     ("runs", "All runs"),
+    ("sessions", "By session"),
     ("transects", "By transect"),
     ("videos", "By video"),
 )
 
 # Facets whose left rail groups runs into a tree. "runs" has no grouping, so its
 # rail is hidden.
-_GROUPED_FACETS = ("transects", "videos")
+_GROUPED_FACETS = ("sessions", "transects", "videos")
 
-_RAIL_TITLES = {"transects": "Transects", "videos": "Clips"}
+_RAIL_TITLES = {"sessions": "Sessions", "transects": "Transects", "videos": "Clips"}
 
 # Outcome filters over the listed runs. Counts come from the scan, so a chip
 # reading "Failed 3" answers the question without being clicked.
+# Built from the status table, so no bucket exists without a filter reaching it.
+# Each carries the colour its outcome is painted in everywhere else.
+_OUTCOME_TITLES = {
+    statuses.OUTCOME_SUCCEEDED: "Completed",
+    statuses.OUTCOME_FAILED: "Failed",
+    statuses.OUTCOME_UNFINISHED: "Unfinished",
+}
 _STATUS_FILTERS = (
-    ("all", "All"),
-    (catalogue.RUN_SUCCEEDED, "Completed"),
-    (catalogue.RUN_FAILED, "Failed"),
-    (catalogue.RUN_UNFINISHED, "Unfinished"),
-)
-
-# Map scope over the transect facet: the viewport is a filter, the same way it
-# is in the Plan list. Only offered where there is a map to move.
-_SCOPE_FILTERS = (
-    ("in_view", "In view"),
-    ("all", "All transects"),
+    ("all", "All", PRIMARY),
+    *(
+        (outcome, _OUTCOME_TITLES[outcome], STATUS_COLORS[outcome_status])
+        for outcome, outcome_status in (
+            (statuses.OUTCOME_SUCCEEDED, "succeeded"),
+            (statuses.OUTCOME_FAILED, "failed"),
+            (statuses.OUTCOME_UNFINISHED, "interrupted"),
+        )
+    ),
 )
 
 _SCOPE_TOOLTIP = (
     "In view lists only the runs assigned to a transect the map is showing, "
     "and follows the map as it is panned and zoomed. Runs with no transect are "
-    "not on the map, so they appear under All transects."
+    "not on the map, so they appear under All transects. Either chip releases a "
+    "transect picked in the list."
 )
 
 # Clip outcomes, offered only under the By video grouping. Chip order is the
 # order work moves through: nothing done, part done, broken, finished.
 _CLIP_FILTERS = (
-    ("all", "All"),
-    (VIDEO_UNPROCESSED, "Not processed"),
-    (VIDEO_PENDING, "Part processed"),
-    (VIDEO_FAILED, "Failed"),
-    (VIDEO_PROCESSED, "Processed"),
+    ("all", "All", PRIMARY),
+    *(
+        (spec.key, spec.label, clip_outcome_color(spec.key))
+        for spec in statuses.CLIP_OUTCOMES
+    ),
 )
 
 # Right-pane pages inside the runs stack.
 _RUN_LIST_PAGE, _EMPTY_PAGE = 0, 1
 
-# Detail pane pages: nothing selected, a run, a transect, a clip.
-_DETAIL_EMPTY, _DETAIL_RUN, _DETAIL_TRANSECT, _DETAIL_VIDEO = 0, 1, 2, 3
+# Detail pane pages: nothing selected, a run, a transect, a clip, a session.
+# Session is appended last so the existing page indices other code and tests
+# rely on stay put.
+_DETAIL_EMPTY, _DETAIL_RUN, _DETAIL_TRANSECT, _DETAIL_VIDEO, _DETAIL_SESSION = range(5)
 
 # What a dropped file has to be to queue as a pass.
 _VIDEO_SUFFIXES = {".mp4", ".mov", ".avi", ".mkv"}
@@ -150,13 +168,25 @@ _RAIL_MAP_MIN_HEIGHT = 140
 # ortho strip, which is not a 50/50 amount of content.
 _DETAIL_SHARE = 0.30
 
-# Grouping by transect puts a chart and a stats table in the pane instead, and
-# those do need close to half.
-_DETAIL_SHARE_ANALYSIS = 0.45
-
 # Narrow enough that the proportion still holds on a laptop screen, where
 # the rail and the table have already taken their share.
 _DETAIL_MIN_WIDTH = 260
+
+
+def _key_transect_id(key: tuple | None) -> uuid.UUID | None:
+    """The transect a facet key names, when it names one by id.
+
+    A run carrying a transect name but no id is filed under a key holding that
+    name (``catalogue.transects_facet``), so the second element is not always
+    parseable. Such a group still lists its runs; it just has nothing the rest
+    of the survey can be pointed at.
+    """
+    if key is None or len(key) != 2 or key[0] != "transect":
+        return None
+    try:
+        return uuid.UUID(str(key[1]))
+    except ValueError:
+        return None
 
 
 def _entries_in_view(entries: list[RunEntry], visible: frozenset[str]) -> list[RunEntry]:
@@ -167,7 +197,7 @@ def _entries_in_view(entries: list[RunEntry], visible: frozenset[str]) -> list[R
     return [e for e in entries if e.transect_id is not None and str(e.transect_id) in visible]
 
 
-class DataManagerMixin(MixinBase):
+class BrowseMixin(MixinBase):
     """DeepReefMapWindow methods for Browse: the run archive and its detail pane."""
 
     _data_facet: str = "runs"
@@ -183,9 +213,17 @@ class DataManagerMixin(MixinBase):
 
     def _build_data_panel(self) -> QWidget:
         self._data_entries: list[RunEntry] = []
-        self._data_groups: dict[tuple, list[RunEntry]] = {}
+        # Keyed by facet key, holding the group itself rather than only its
+        # entries: the session pane describes the group (its name, what it
+        # covered), so a second dict of groups beside this one would be one
+        # more pair of things to keep in step.
+        self._data_groups: dict[tuple, FacetGroup] = {}
         self._run_size_cache: dict[str, int] = {}
         self._data_sizes_scan_running = False
+        # Keyed by path, not by clip id, so an answer survives the library being
+        # rebuilt on every refresh.
+        self._clip_link_cache: dict[str, str] = {}
+        self._clip_link_scan_running = False
 
         panel = QWidget()
         layout = QVBoxLayout(panel)
@@ -230,9 +268,10 @@ class DataManagerMixin(MixinBase):
         self._data_status_chips = FilterChips(_STATUS_FILTERS)
         self._data_status_chips.changed.connect(self._on_data_status_filter_changed)
         top_row.addWidget(self._data_status_chips)
-        # Last on the row, because it is the one control here that comes and
-        # goes: it only means something while a map is deciding what is listed.
-        self._data_scope_chips = FilterChips(_SCOPE_FILTERS)
+        # Last on the row, because it only means something where there is a map
+        # to move: it comes and goes with the transect grouping, and stays put
+        # for the whole of it.
+        self._data_scope_chips = FilterChips(SCOPE_FILTERS)
         self._data_scope_chips.setToolTip(_SCOPE_TOOLTIP)
         self._data_scope_chips.changed.connect(self._on_data_scope_filter_changed)
         self._data_scope_chips.setVisible(False)
@@ -253,18 +292,22 @@ class DataManagerMixin(MixinBase):
         # Disk sits with the group header rather than on the filter row: the
         # filters already fill that row, and squeezing a growing byte count in
         # beside them clipped it on a narrow window.
-        self._data_disk_label = QLabel("")
-        self._data_disk_label.setStyleSheet(f"color: {TEXT_SECONDARY};")
+        self._data_disk_label = secondary_label("")
 
         self._data_split = QSplitter(Qt.Orientation.Horizontal)
         self._data_split.setHandleWidth(GUTTER)
 
         # "All runs" has no grouping, so the whole rail goes rather than leaving
-        # a dead column where the tree used to be.
+        # a dead column.
         self._data_rail, rail_layout = section_card("Group")
         self._data_tree = QTreeWidget()
         self._data_tree.setHeaderHidden(True)
         self._data_tree.itemSelectionChanged.connect(self._on_data_tree_selection)
+        # Clicks as well as selection changes: clicking the row that is already
+        # selected changes no selection and emits nothing, so a run picked in
+        # the table since could not be got out of the detail pane by pointing at
+        # the transect again.
+        self._data_tree.itemClicked.connect(lambda *_: self._on_data_tree_selection())
         self._data_tree_stack = QStackedWidget()
         self._data_tree_stack.addWidget(self._data_tree)
         self._data_tree_stack.addWidget(EmptyState("Nothing to group yet"))
@@ -296,8 +339,7 @@ class DataManagerMixin(MixinBase):
 
         runs_card, runs_layout = section_card()
         header_row = QHBoxLayout()
-        self._data_group_header = QLabel("")
-        self._data_group_header.setStyleSheet(f"color: {TEXT_SECONDARY};")
+        self._data_group_header = secondary_label("")
         self._data_group_header.setWordWrap(True)
         header_row.addWidget(self._data_group_header, 1)
         header_row.addWidget(self._data_disk_label)
@@ -375,13 +417,18 @@ class DataManagerMixin(MixinBase):
         self._video_detail.queue_requested.connect(self._on_data_queue_clip)
         self._video_detail.show_in_folder_requested.connect(self._on_data_show_clip_folder)
         self._video_detail.pass_activated.connect(self._on_data_clip_pass_activated)
+        self._video_detail.relocate_requested.connect(self._on_data_relocate_clip)
+        self._video_detail.preview_requested.connect(self._on_data_preview_clip)
 
-        analysis_scroll = QScrollArea()
-        analysis_scroll.setWidgetResizable(True)
-        analysis_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        analysis_scroll.setWidget(self._build_analysis_page())
-        self._data_detail_stack.addWidget(analysis_scroll)
+        # A summary and a way through, not a second chart. The transect's cover
+        # and repeatability are built once, on the Transects page.
+        self._transect_detail = TransectDetailPanel()
+        self._transect_detail.open_transect_requested.connect(self._on_data_open_transect)
+        self._data_detail_stack.addWidget(self._transect_detail)
         self._data_detail_stack.addWidget(self._video_detail)
+        self._session_detail = SessionDetailPanel()
+        self._session_detail.audit_requested.connect(self._on_data_session_audit)
+        self._data_detail_stack.addWidget(self._session_detail)
         self._data_detail_stack.setMinimumWidth(_DETAIL_MIN_WIDTH)
         self._data_split.addWidget(self._data_detail_stack)
 
@@ -418,12 +465,15 @@ class DataManagerMixin(MixinBase):
             return
         root = self._data_out_root()
         entries = catalogue.scan_out_root(root)
-        store = None
-        if root.is_dir():
+        # _try_survey_store records why it could not open in _survey_health,
+        # which is what the readiness row and the header alert read. The except
+        # below stays for what can go wrong after a successful open.
+        store = self._try_survey_store() if root.is_dir() else None
+        if store is not None:
             try:
-                store = self._survey_store()
                 if self._data_rebuilt_root != root:
                     store.rebuild_from_scan(root)
+                    self._repair_video_identity(store)
                     self._data_rebuilt_root = root
                     # A different root is a different survey, so the map earns a
                     # fresh fit rather than keeping the last one's viewport.
@@ -441,6 +491,7 @@ class DataManagerMixin(MixinBase):
         self._data_entries = entries
         self._data_store_ok = store is not None
         self._video_entries = self._load_video_entries(store)
+        self._start_clip_link_scan()
         live = {e.dir_name for e in entries}
         for name in [n for n in self._run_size_cache if n not in live]:
             del self._run_size_cache[name]
@@ -451,7 +502,7 @@ class DataManagerMixin(MixinBase):
         self._start_data_size_scan()
         # Guarded: this runs during form construction, before the simple shell
         # that owns the header exists.
-        if hasattr(self, "_section_counts"):
+        if hasattr(self, "_section_alert"):
             self._refresh_browse_state()
 
     def _on_data_watch_refresh(self) -> None:
@@ -510,10 +561,7 @@ class DataManagerMixin(MixinBase):
         self._data_map.setVisible(shown)
         if not shown or not getattr(self, "_data_store_ok", False):
             return
-        key = self._data_selected_key
-        selected = (
-            uuid.UUID(key[1]) if key is not None and key[0] == "transect" else None
-        )
+        selected = _key_transect_id(self._data_selected_key)
         try:
             overlays = transect_overlays(self._survey_store(), selected)
         except Exception:
@@ -592,7 +640,7 @@ class DataManagerMixin(MixinBase):
             # sharing it with a pane that has nothing to say.
             detail = 0
         else:
-            share = _DETAIL_SHARE_ANALYSIS if self._data_facet == "transects" else _DETAIL_SHARE
+            share = _DETAIL_SHARE
             detail = max(_DETAIL_MIN_WIDTH, int((total - rail) * share))
         # Every pane gets a size. Handing setSizes fewer entries than the
         # splitter has children leaves the rest at zero, which collapsed the
@@ -676,7 +724,7 @@ class DataManagerMixin(MixinBase):
             self._data_clip_chips.set_current("all")
             return
         clips = getattr(self, "_video_entries", [])
-        counts = {key: 0 for key, _ in _CLIP_FILTERS}
+        counts = {option[0]: 0 for option in _CLIP_FILTERS}
         counts["all"] = len(clips)
         for clip in clips:
             counts[clip.outcome] = counts.get(clip.outcome, 0) + 1
@@ -707,7 +755,115 @@ class DataManagerMixin(MixinBase):
         """A pass is a run's worth of work, so show what it produced."""
         self._data_facet_buttons["runs"].click()
 
+    def _focus_browse_on_session(self, batch_id: uuid.UUID) -> None:
+        """Group by session and select this one, so Browse opens on that day."""
+        self._data_facet_buttons["sessions"].click()
+        key = catalogue.session_group_key(batch_id)
+        tree = self._data_tree
+        for index in range(tree.topLevelItemCount()):
+            item = tree.topLevelItem(index)
+            if item is not None and item.data(0, _GROUP_KEY_ROLE) == key:
+                # The table's selection outranks the group in the detail pane, so
+                # it is released or the session's own summary never shows.
+                self._data_run_table.clearSelection()
+                self._data_run_table.setCurrentCell(-1, -1)
+                tree.setCurrentItem(item)
+                return
+
+    def _on_data_open_transect(self) -> None:
+        """Go to the transect this grouping is filtering by.
+
+        The tree selection already set the scope, so Transects opens on the same
+        line rather than on whatever was last picked there.
+        """
+        transect_id = _key_transect_id(self._data_selected_key)
+        self._go_to_section("transects")
+        if transect_id is not None:
+            self._select_transect_row(str(transect_id))
+            self._on_transect_selected()
+
+    def _on_data_preview_clip(self) -> None:
+        """Scrub the footage without queueing it.
+
+        The trim dialog already decodes and seeks, so it is opened read-only
+        rather than a second player being built to do the same thing.
+        """
+        from deepreefmap_gui.form.video_scrub import VideoScrubDialog
+
+        clip = self._video_detail.entry
+        if clip is None:
+            return
+        duration = clip.video.duration_s or 0.0
+        dialog = VideoScrubDialog(clip.video.path, duration, 0.0, duration, self)
+        dialog.setWindowTitle(f"Preview {clip.video.file_name}")
+        dialog.exec()
+
+    def _on_data_relocate_clip(self) -> None:
+        """Point a clip at the file's new home, once it is shown to be the same one.
+
+        Verified against the checksum rather than the name: a GoPro names every
+        card's first clip GX010001.MP4, so a filename match is close to no
+        evidence at all, and repointing a clip at different footage would leave
+        every run made from it describing a video it did not come from.
+
+        A clip with no checksum cannot be verified, so the user is asked to
+        confirm rather than being refused: some libraries predate hashing, and
+        refusing outright would leave those clips permanently broken.
+        """
+        clip = self._video_detail.entry
+        if clip is None:
+            return
+        path_str, _ = QFileDialog.getOpenFileName(
+            self,
+            f"Locate {clip.video.file_name}",
+            str(Path(clip.video.path).parent),
+            "Video files (*.mp4 *.mov *.avi *.mkv);;All files (*)",
+        )
+        if not path_str:
+            return
+        chosen = Path(path_str)
+        described = VideoAsset.from_path(chosen)
+        if clip.video.hash and described.hash and described.hash != clip.video.hash:
+            QMessageBox.warning(
+                self,
+                "Different footage",
+                f"{chosen.name} is not the same recording as {clip.video.file_name}. "
+                "The clip has been left pointing where it was.",
+            )
+            return
+        if not clip.video.hash and not confirm(
+            self,
+            "Relocate clip",
+            f"{clip.video.file_name} has no checksum, so this cannot be checked to "
+            f"be the same footage. Point it at {chosen.name} anyway?",
+        ):
+            return
+        self._apply_clip_relocation(clip, chosen, described)
+
+    def _apply_clip_relocation(self, clip, chosen: Path, described: VideoAsset) -> None:
+        video = clip.video
+        video.path = str(chosen)
+        video.file_name = chosen.name
+        # Fill in what the original never learned, including the checksum a clip
+        # relocated from an unhashable state has just become able to have.
+        for name in ("hash", "size_bytes", "mtime"):
+            value = getattr(described, name)
+            if value is not None:
+                setattr(video, name, value)
+        try:
+            self._survey_store().update_video(video)
+        except Exception:
+            logger.exception("Could not relocate %s", video.id)
+            self._status_label.setText("The clip could not be relocated.")
+            return
+        # The cache is keyed by the old path, which now describes nothing.
+        self._clip_link_cache.pop(str(chosen), None)
+        self._status_label.setText(f"{video.file_name} now points at {chosen}.")
+        self._refresh_data_manager()
+
     def _data_facet_groups(self) -> list[FacetGroup]:
+        if self._data_facet == "sessions":
+            return catalogue.sessions_facet(self._data_entries, self._known_sessions())
         if self._data_facet == "transects":
             transects = []
             if getattr(self, "_data_store_ok", False):
@@ -716,16 +872,93 @@ class DataManagerMixin(MixinBase):
                 except Exception:
                     logger.exception("Could not list transects")
             return catalogue.transects_facet(self._data_entries, transects)
-        # Filtered here rather than after the fact: an outcome chip narrows which
-        # clips the rail lists, which is the whole point of having it beside a
-        # rail that lists clips.
-        return catalogue.videos_facet(self._data_entries, self._visible_clips())
+        if self._data_facet == "videos":
+            # Filtered here rather than after the fact: an outcome chip narrows
+            # which clips the rail lists, which is the whole point of having it
+            # beside a rail that lists clips.
+            return catalogue.videos_facet(self._data_entries, self._visible_clips())
+        return []
+
+    def _repair_video_identity(self, store) -> None:
+        """Give each clip one row and each row its hash, once per output root.
+
+        Inline rather than on a worker thread, beside the rebuild_from_scan that
+        already reads every manifest here: it runs once per root, only touches
+        rows that have no hash, and imohash samples a file rather than reading
+        it through, so the cost is a stat and a few seeks per unidentified clip.
+        A thread would buy little and would put a second writer on a database the
+        window is reading, which SurveyStore's thread-local connections make
+        exactly the kind of thing worth not having.
+
+        Reported rather than silent: rows disappearing from the clip list is a
+        surprising thing to find without being told why.
+        """
+        from deepreefmap_gui.survey.video_repair import repair_video_identity
+
+        try:
+            report = repair_video_identity(store)
+        except Exception:
+            logger.exception("Could not repair the video library for %s", store.path)
+            return
+        if report.summary():
+            self._status_label.setText(report.summary())
+
+    def _selected_session_group(self) -> FacetGroup | None:
+        """The session the tree has selected, or None if that is not what is.
+
+        Keyed on the group rather than the facet, because a pass selected under
+        a session is a leaf and belongs to the run pane, not to this one.
+        """
+        key = self._data_selected_key
+        if key is None or key[0] not in ("session", "unfiled_session"):
+            return None
+        return self._data_groups.get(key)
+
+    def _on_data_session_audit(self) -> None:
+        """What the selected session's runs actually ran under.
+
+        Scoped to the session rather than reusing Process's whole-root audit:
+        the question a session raises is about that day, and a list of every run
+        the machine has ever done does not answer it.
+        """
+        from deepreefmap_gui.simple.config_audit_dialog import ConfigAuditDialog
+        from deepreefmap_gui.survey.config_audit import audit_row
+
+        group = self._selected_session_group()
+        if group is None:
+            return
+        if self._active_preset is None:
+            self._status_label.setText("The settings could not be read.")
+            return
+        org = self._active_preset.org
+        rows = [
+            audit_row(entry.dir_name, entry.manifest, org)
+            for entry in sorted(group.all_entries(), key=lambda e: e.sort_key)
+            if entry.manifest
+        ]
+        ConfigAuditDialog(self, rows, org).exec()
+
+    def _known_sessions(self) -> list:
+        """Sessions the store knows, so an emptied one still has a group.
+
+        Guarded the same way the transect list is: Browse opens against whatever
+        output root is set, and a root with no readable database is a normal
+        thing to point at, not a reason to fail.
+        """
+        if not getattr(self, "_data_store_ok", False):
+            return []
+        try:
+            return self._survey_store().list_batches()
+        except Exception:
+            logger.exception("Could not list sessions")
+            return []
 
     def _add_tree_group(self, group: FacetGroup, parent: QTreeWidgetItem | None) -> None:
         count = len(group.all_entries())
         item = QTreeWidgetItem([f"{group.title}  ({count})"])
         item.setData(0, _GROUP_KEY_ROLE, group.key)
-        self._data_groups[group.key] = group.all_entries()
+        self._data_groups[group.key] = group
+        self._paint_clip_link(item, group)
         if parent is None:
             self._data_tree.addTopLevelItem(item)
         else:
@@ -733,6 +966,35 @@ class DataManagerMixin(MixinBase):
         for child in group.children:
             self._add_tree_group(child, item)
         item.setExpanded(True)
+
+    def _paint_clip_link(self, item: QTreeWidgetItem, group: FacetGroup) -> None:
+        """Mark a clip node with whether its file is still there, and why it matters.
+
+        Only on the clip nodes of the By video rail: a transect or a session is
+        not a file, and a time window inside a clip inherits the clip's state
+        rather than having one of its own. Nothing is painted while the state is
+        unknown, so the icon appearing always means it has been checked.
+        """
+        clip = self._clip_for_key(group.key)
+        if clip is None:
+            return
+        if clip.link_state == catalogue.LINK_LINKED:
+            item.setIcon(0, link_icon())
+            item.setToolTip(0, clip.video.path)
+        elif clip.link_state == catalogue.LINK_MISSING:
+            item.setIcon(0, broken_link_icon())
+            item.setToolTip(
+                0,
+                f"{clip.video.path}\nNot found. The runs already made from it are "
+                "unaffected; Relocate… points the clip at the file's new home.",
+            )
+        elif not clip.video.hash:
+            item.setIcon(0, warning_icon())
+            item.setToolTip(
+                0,
+                f"{clip.video.path}\nNo checksum, so this clip cannot be recognised "
+                "if it is added again from somewhere else.",
+            )
 
     def _restore_tree_selection(self) -> None:
         if self._data_selected_key is None:
@@ -750,6 +1012,11 @@ class DataManagerMixin(MixinBase):
         """Point the browser at one transect."""
         if not hasattr(self, "_data_tree"):
             return
+        # The run table is cleared first so its own restore has nothing to hold
+        # on to: it re-selects whatever run was current across a rebuild, and a
+        # surviving run of this transect would outrank the transect in the
+        # detail pane.
+        self._clear_run_table_selection()
         # Facet and key first, then the button: the toggle short-circuits when
         # the facet already matches, so the key survives.
         self._data_facet = "transects"
@@ -757,20 +1024,54 @@ class DataManagerMixin(MixinBase):
         self._data_facet_buttons["transects"].setChecked(True)
         self._rebuild_data_tree()
 
-    def _set_scope_transect(self, transect_id: uuid.UUID | None) -> None:
+    def _clear_run_table_selection(self) -> None:
+        table = getattr(self, "_data_run_table", None)
+        if table is not None:
+            table.clearSelection()
+            table.setCurrentCell(-1, -1)
+
+    def _unfocus_data_transect(self) -> None:
+        """Back to the whole transect facet, with nothing picked out of it."""
+        if not hasattr(self, "_data_tree"):
+            return
+        self._data_selected_key = None
+        self._data_tree.blockSignals(True)
+        try:
+            self._data_tree.clearSelection()
+            # An empty index rather than setCurrentItem: the current row keeps
+            # its focus rectangle otherwise, which reads as a selection that no
+            # longer filters anything.
+            self._data_tree.setCurrentIndex(QModelIndex())
+        finally:
+            self._data_tree.blockSignals(False)
+        self._rebuild_data_tree()
+
+    def _set_scope_transect(
+        self, transect_id: uuid.UUID | None, focus: bool = True
+    ) -> None:
         """One transect in focus across every widget that has an opinion.
 
         The Browse page carries a browser tree and an analysis combo that both
         pick a transect; left independent they would reproduce on one page the
         duplication being removed from another.
+
+        ``None`` is the way back out: it releases the tree as well as the combo,
+        so the map scope has something to apply to again.
+
+        ``focus=False`` names the transect without moving the tree onto it, for
+        a caller whose own selection is already inside that transect and would
+        be thrown away by pulling the tree up a level.
         """
         if getattr(self, "_scope_syncing", False):
             return
         self._scope_syncing = True
         try:
             self._scope_transect_id = transect_id
-            if transect_id is not None:
-                self._focus_data_on_transect(transect_id)
+            if focus:
+                if transect_id is not None:
+                    self._focus_data_on_transect(transect_id)
+                elif self._data_facet == "transects":
+                    self._unfocus_data_transect()
             combo = getattr(self, "_analysis_transect_combo", None)
             if combo is not None:
                 wanted = str(transect_id) if transect_id is not None else None
@@ -816,7 +1117,15 @@ class DataManagerMixin(MixinBase):
             return
         key = self._data_selected_key
         if self._data_facet == "transects" and key is not None and key[0] == "transect":
+            group = self._data_groups.get(key)
+            if group is not None:
+                self._transect_detail.show_group(group)
             self._set_data_detail_page(_DETAIL_TRANSECT)
+            return
+        session = self._selected_session_group()
+        if session is not None:
+            self._session_detail.show_group(session)
+            self._set_data_detail_page(_DETAIL_SESSION)
             return
         clip = self._clip_for_key(key)
         if clip is not None:
@@ -824,11 +1133,11 @@ class DataManagerMixin(MixinBase):
             self._video_detail.set_queue_enabled(not self._run_in_flight())
             self._set_data_detail_page(_DETAIL_VIDEO)
             return
-        # A group of one is that run. Selecting a leaf of the tree -- a single
-        # pass under a transect -- used to light the row up and leave the pane
-        # saying nothing was selected, which is not what a visible selection
-        # means. Below the transect case, which owns its own page.
-        grouped = self._data_groups.get(key) if key is not None else None
+        # A group of one is that run: a leaf of the tree is a single pass, and a
+        # lit row with nothing in the pane is not what a selection means. Below
+        # the transect case, which owns its own page.
+        group = self._data_groups.get(key) if key is not None else None
+        grouped = group.all_entries() if group is not None else None
         if grouped and len(grouped) == 1:
             self._run_detail.show_entry(grouped[0])
             self._set_data_detail_page(_DETAIL_RUN)
@@ -838,10 +1147,8 @@ class DataManagerMixin(MixinBase):
     def _set_data_detail_page(self, page: int) -> None:
         """Switch the detail pane, and re-divide when it comes or goes.
 
-        An empty pane takes no width. It used to hold its 260px minimum while
-        showing "Nothing selected", which is a third of the window spent saying
-        nothing -- and it was taken from the run table, whose names then elided
-        and whose columns needed a horizontal scrollbar.
+        An empty pane takes no width: holding its 260px minimum to say "Nothing
+        selected" costs the run table a third of the window, eliding its names.
         """
         was_empty = self._data_detail_stack.currentIndex() == _DETAIL_EMPTY
         self._data_detail_stack.setCurrentIndex(page)
@@ -863,42 +1170,55 @@ class DataManagerMixin(MixinBase):
 
     def _on_data_tree_selection(self) -> None:
         items = self._data_tree.selectedItems()
-        key = items[0].data(0, _GROUP_KEY_ROLE) if items else None
+        item = items[0] if items else None
+        key = item.data(0, _GROUP_KEY_ROLE) if item is not None else None
+        parent = item.parent() if item is not None else None
+        parent_key = parent.data(0, _GROUP_KEY_ROLE) if parent is not None else None
         self._data_selected_key = key
         self._refresh_data_map()
         self._rebuild_data_run_list()
-        # Picking a transect here drives the comparison below it on the same page.
-        if key is not None and len(key) == 2 and key[0] == "transect":
-            self._set_scope_transect(uuid.UUID(key[1]))
+        # Picking a transect here drives the comparison below it on the same
+        # page. A pass row belongs to a transect too, so it points the
+        # comparison at that one -- without pulling the selection up off the
+        # pass the click actually landed on.
+        transect_id = _key_transect_id(key)
+        if transect_id is not None:
+            self._set_scope_transect(transect_id)
+            return
+        parent_id = _key_transect_id(parent_key)
+        if parent_id is not None:
+            self._set_scope_transect(parent_id, focus=False)
 
     def _data_grouped_entries(self) -> list[RunEntry]:
         """The runs the current grouping selection covers, before filtering."""
         if self._data_facet == "runs" or self._data_selected_key is None:
             return self._data_entries
-        return self._data_groups.get(self._data_selected_key, [])
+        group = self._data_groups.get(self._data_selected_key)
+        return group.all_entries() if group is not None else []
+
+    def _data_scope_offered(self) -> bool:
+        """Whether the map scope is a choice worth showing.
+
+        Anywhere in the transect facet, including while a transect is picked out
+        of it -- All transects is how that pick is undone, and hiding the row
+        exactly when something is selected left no way back to In view at all.
+        The other facets have no map, so there is nothing to scope by.
+        """
+        return self._data_facet == "transects"
 
     def _data_scope_applies(self) -> bool:
-        """Whether the map is currently in a position to decide what is listed.
+        """Whether the map is currently deciding what is listed.
 
-        Only at the top of the transect facet. A group picked in the tree is an
-        explicit choice of what to look at, and panning off it afterwards should
-        not empty the list underneath; the other facets have no map at all.
+        Only at the top of the facet. A group picked in the tree is an explicit
+        choice of what to look at, and panning off it afterwards should not
+        empty the list underneath.
         """
-        return self._data_facet == "transects" and self._data_selected_key is None
+        return self._data_scope_offered() and self._data_selected_key is None
 
     def _data_visible_transect_ids(self) -> frozenset[str] | None:
-        """Transects the Browse map is showing, or None when it cannot say.
-
-        None is not "none of them": it means the viewport has no answer yet (no
-        overlays, or a map that has not been laid out), so the in-view scope has
-        to stand aside rather than filter every run away.
-        """
+        """Transects the Browse map is showing, or None when it cannot say."""
         map_widget = getattr(self, "_data_map", None)
-        if map_widget is None or not map_widget.transect_count():
-            return None
-        if map_widget.width() <= 0 or map_widget.height() <= 0:
-            return None
-        return frozenset(map_widget.visible_transect_ids())
+        return None if map_widget is None else map_widget.visible_ids()
 
     def _data_scoped_entries(self) -> list[RunEntry]:
         """The grouping, narrowed to the transects the map is showing."""
@@ -940,8 +1260,17 @@ class DataManagerMixin(MixinBase):
         self._rebuild_data_run_list()
 
     def _on_data_scope_filter_changed(self, key: str) -> None:
+        """Pick a scope, and let go of any transect that was pinned under it.
+
+        Scoping by the viewport inside a single transect says nothing, so a chip
+        pressed while one is picked releases it first. That is also the way out
+        of a pick: the rail has no All node to click, so All transects is it.
+        """
         self._data_scope_filter = key
-        self._rebuild_data_run_list()
+        if self._data_scope_offered() and self._data_selected_key is not None:
+            self._set_scope_transect(None)
+        else:
+            self._rebuild_data_run_list()
 
     def _apply_data_view_change(self) -> None:
         """Pan, zoom and resize re-decide which runs the map is showing.
@@ -950,13 +1279,13 @@ class DataManagerMixin(MixinBase):
         table is rebuilt from scratch, and doing that on every pixel of a drag
         would drop the selection under the cursor.
         """
-        if not hasattr(self, "_data_run_table") or not self._data_scope_applies():
+        if not hasattr(self, "_data_run_table") or not self._data_scope_offered():
             return
         visible = self._data_visible_transect_ids()
         if visible == self._data_visible_ids:
             return
         self._data_visible_ids = visible
-        if self._data_scope_filter == "in_view":
+        if self._data_scope_applies() and self._data_scope_filter == "in_view":
             self._rebuild_data_run_list()
         else:
             # Nothing listed changes, but the chip still has to say how many
@@ -964,12 +1293,17 @@ class DataManagerMixin(MixinBase):
             self._refresh_data_scope_chips()
 
     def _refresh_data_scope_chips(self) -> None:
-        """Show the map scope where it bites, with a count on each side of it."""
-        applies = self._data_scope_applies()
-        self._data_scope_chips.setVisible(applies)
-        if not applies:
+        """Show the map scope wherever it is a choice, with a count on each side.
+
+        Counted over the whole facet rather than over the current pick, because
+        while a transect is picked the chips are what releases it: the numbers
+        say what pressing one would list, not what is listed now.
+        """
+        offered = self._data_scope_offered()
+        self._data_scope_chips.setVisible(offered)
+        if not offered:
             return
-        entries = self._data_grouped_entries()
+        entries = self._data_entries
         visible = self._data_visible_ids
         in_view = len(entries) if visible is None else len(_entries_in_view(entries, visible))
         self._data_scope_chips.set_counts({"in_view": in_view, "all": len(entries)})
@@ -977,7 +1311,7 @@ class DataManagerMixin(MixinBase):
     def _refresh_data_status_counts(self) -> None:
         """Count over the grouping, not the whole root: the chips filter what is listed."""
         entries = self._data_scoped_entries()
-        counts = {key: 0 for key, _ in _STATUS_FILTERS}
+        counts = {option[0]: 0 for option in _STATUS_FILTERS}
         counts["all"] = len(entries)
         for entry in entries:
             outcome = catalogue.entry_outcome(entry)
@@ -1053,7 +1387,7 @@ class DataManagerMixin(MixinBase):
         # Browse stays reachable while a batch runs, so opening an old run here
         # would take the viewer away from the run currently streaming into it.
         if self._run_in_flight():
-            self._status_label.setText("Wait for the batch to finish before opening a run.")
+            self._status_label.setText("Wait for processing to finish before opening a run.")
             return
         # Banner first, straight from the manifest, so the click lands
         # instantly even when the load itself takes a while.
@@ -1069,7 +1403,7 @@ class DataManagerMixin(MixinBase):
     def _on_data_open_folder_clicked(self) -> None:
         """Open a run directory picked from disk, wherever it sits."""
         if self._run_in_flight():
-            self._status_label.setText("Wait for the batch to finish before opening a run.")
+            self._status_label.setText("Wait for processing to finish before opening a run.")
             return
         path = QFileDialog.getExistingDirectory(
             self, "Open run folder", self._out_root_input.text()
@@ -1210,8 +1544,7 @@ class DataManagerMixin(MixinBase):
                 self, "Delete run", "Wait for the current run to finish."
             )
             return
-        answer = QMessageBox.question(self, "Delete run", self._delete_prompt(entries))
-        if answer != QMessageBox.StandardButton.Yes:
+        if not confirm(self, "Delete run", self._delete_prompt(entries)):
             return
         store = self._survey_store() if getattr(self, "_data_store_ok", False) else None
         deleted = 0
@@ -1251,7 +1584,8 @@ class DataManagerMixin(MixinBase):
             keys = {catalogue.group_key(e) for e in selected}
             return [e for e in self._data_entries if catalogue.group_key(e) in keys]
         if self._data_selected_key is not None:
-            return self._data_groups.get(self._data_selected_key, [])
+            group = self._data_groups.get(self._data_selected_key)
+        return group.all_entries() if group is not None else []
         return []
 
     def _ask_assign_target(self, transects: list) -> tuple[uuid.UUID, str] | None:
@@ -1286,7 +1620,7 @@ class DataManagerMixin(MixinBase):
         transects = store.list_transects()
         if not transects:
             QMessageBox.information(
-                self, "Assign to transect", "Create a transect in the Plan section first."
+                self, "Assign to transect", "Create a transect under Transects first."
             )
             return
         target = self._ask_assign_target(transects)
@@ -1337,6 +1671,43 @@ class DataManagerMixin(MixinBase):
             self._sig_run_sizes_done.emit(sizes)
 
         threading.Thread(target=worker, daemon=True, name="run-size-scan").start()
+
+    # --- Clip link state ---
+
+    def _start_clip_link_scan(self) -> None:
+        """Ask, off the paint path, whether each clip's file is still there.
+
+        A stat is cheap until the drive is asleep or the mount is gone, and both
+        are ordinary in the field, so this never runs on the GUI thread. Until it
+        answers, a clip's state is "unknown" and the rail shows no link icon at
+        all rather than a hopeful one.
+        """
+        if self._clip_link_scan_running:
+            return
+        paths = {clip.video.path for clip in getattr(self, "_video_entries", [])}
+        todo = [p for p in paths if p not in self._clip_link_cache]
+        if not todo:
+            self._apply_clip_link_states({})
+            return
+        self._clip_link_scan_running = True
+        entries = list(self._video_entries)
+
+        def worker() -> None:
+            states = catalogue.resolve_link_states(entries)
+            # Widgets are off limits here; the Signal hands over to the GUI thread.
+            self._sig_clip_links_done.emit(states)
+
+        threading.Thread(target=worker, daemon=True, name="clip-link-scan").start()
+
+    def _apply_clip_link_states(self, states: dict) -> None:
+        self._clip_link_scan_running = False
+        self._clip_link_cache.update(states)
+        for clip in getattr(self, "_video_entries", []):
+            clip.link_state = self._clip_link_cache.get(
+                clip.video.path, catalogue.LINK_UNKNOWN
+            )
+        if self._data_facet == "videos":
+            self._rebuild_data_tree()
 
     def _apply_run_sizes(self, sizes: dict) -> None:
         self._data_sizes_scan_running = False

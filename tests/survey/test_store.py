@@ -51,9 +51,14 @@ def test_upsert_video_dedups_by_hash(store):
     assert stored.duration_s == 61.5
 
 
-def test_upsert_video_without_hash_always_inserts(store):
+def test_upsert_video_without_hash_falls_back_to_the_path(store):
+    """Hashing needs the file to be readable, and in the field it often is not,
+    so the path is what holds a clip on an unplugged drive to one row."""
     store.upsert_video(make_video(content_hash=None))
     store.upsert_video(make_video(content_hash=None))
+    assert len(store.list_videos()) == 1
+
+    store.upsert_video(make_video(content_hash=None, path="/data/elsewhere.MP4"))
     assert len(store.list_videos()) == 2
 
 

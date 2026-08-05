@@ -1,3 +1,23 @@
+"""The design tokens, and the one place the palette and the global stylesheet are set.
+
+Every colour, radius, spacing step and font size in the app comes from a name here. That is the
+whole point: a literal `#4a4` or a bare `padding: 5px` at a call site has drifted off the ramp and
+will not move when the ramp does. `apply_theme` then forces Fusion plus a dark palette so the app
+looks the same whatever the host OS is doing, which matters because the stylesheets below are
+hardcoded dark and a light platform palette shows through everything they do not cover.
+
+Two things about the values are easy to get wrong:
+
+- **The surface ramp is spaced by lightness, not by contrast ratio.** Any two dark greys sit near
+  1:1 under WCAG, so a ratio says nothing about whether a card reads as a card. An earlier ramp
+  put 13 points of lightness between the shell and a panel, and panels read as text floating on
+  the window. `tests/core/test_theme.py` asserts the spacing and the 4.5:1 the accents do owe.
+- **Styling a combo or spin box hands arrow drawing to the stylesheet engine**, which then draws
+  nothing. Qt stylesheets accept only a URL, so the chevrons are painted into the cache directory
+  and referenced from there. Painting needs a live QApplication, which is why the arrow rules are
+  appended by `apply_theme` rather than living in the module-level QSS.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -114,6 +134,11 @@ GUTTER = SPACE_MD  # gap between two panes, cards, or rows of controls
 # all sit on this floor: below it they are fiddly with a trackpad, which is how
 # this app is driven in the field.
 CONTROL_HEIGHT = 28
+
+# A readable measure for a page of prose and short rows. Stretched to fill a
+# 1500px window such a page is a card with a hole in it, and the eye has to track
+# across the whole window to get from a sentence to the button that acts on it.
+READING_WIDTH = 900
 
 # Type scale, in points rather than pixels so it follows the user's font-size
 # preference the way the base font does. The strings are for QSS; the numbers for
@@ -267,6 +292,23 @@ QPushButton:checked, QToolButton:checked {{
     border-color: {PRIMARY};
     color: {LINK};
     font-weight: 600;
+}}
+
+/* Label tone. The colour a label carries is a role, not a per-site decision:
+   before these existed the same `color: TEXT_MUTED` string was repeated at 34
+   call sites, each one a place a token could drift. Set with
+   `label.setProperty("tone", "muted")`, or via the factories in core/widgets.py. */
+QLabel[tone="muted"] {{
+    color: {TEXT_MUTED};
+}}
+QLabel[tone="secondary"] {{
+    color: {TEXT_SECONDARY};
+}}
+QLabel[tone="dim"] {{
+    color: {TEXT_DIM};
+}}
+QLabel[tone="warn"] {{
+    color: {WARN_TEXT};
 }}
 
 /* One filled action per screen: the step's forward move. */
@@ -441,11 +483,9 @@ QSplitter::handle:hover {{
     background-color: {BORDER};
 }}
 /* Keyboard focus has to be visible on every focusable thing, not just the text
-   inputs. Fusion draws no focus rect of its own once a widget is QSS-styled, so
-   a blanket `outline: none` (which this used to carry) left a keyboard user with
-   nothing at all to follow through a dialog. Each control below states the
-   focused border itself, because a per-widget stylesheet elsewhere replaces
-   these rules rather than merging with them. */
+   inputs: Fusion draws no focus rect of its own once a widget is QSS-styled.
+   Each control below states its focused border itself, because a per-widget
+   stylesheet elsewhere replaces these rules rather than merging with them. */
 QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus, QSpinBox:focus,
 QDoubleSpinBox:focus, QComboBox:focus, QAbstractSpinBox:focus {{
     border: 1px solid {PRIMARY};

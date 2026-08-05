@@ -25,8 +25,8 @@ on its own is still importable and still verifiable.
 Import reverses the flattening: where the pack records which blob a snapshot entry
 came from, the file lands in blobs/ with the snapshot entry symlinked to it, exactly
 as a downloaded cache looks. Where symlinks are unavailable (Windows/exFAT) the blob
-is copied into the snapshot instead -- the same fallback ``manager._materialise_files``
-uses. ``manager._verify_repo`` accepts either form, so ``is_model_cached`` round-trips.
+is copied into the snapshot instead -- the same fallback ``cache._materialise_files``
+uses. ``cache._verify_repo`` accepts either form, so ``is_model_cached`` round-trips.
 
 Packs written before this layout (schema 1, a single ``models.tar``) still import; see
 the legacy section at the end of this module.
@@ -49,10 +49,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from deepreefmap_gui.models import manager
+from deepreefmap_gui.models import cache
 
 if TYPE_CHECKING:
-    from deepreefmap_gui.models.manager import ModelInfo
+    from deepreefmap_gui.models.cache import ModelInfo
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +72,7 @@ CACHE_PREFIX = "cache"
 _CHUNK = 1 << 20
 # Headroom over the pack's declared size so an import can't fill the disk to zero
 # (which would leave a later run unable to write outputs). Mirrors the spirit of
-# manager._MIN_FREE_BYTES without demanding its full 10 GB for a small pack.
+# cache._MIN_FREE_BYTES without demanding its full 10 GB for a small pack.
 _IMPORT_MARGIN_BYTES = 512 * 1024**2
 # Slack over the pack's own size when exporting. A destination stick needs no room
 # for anything else, only enough not to trip on filesystem overhead.
@@ -198,7 +198,7 @@ def _blob_name(entry: Path) -> str | None:
 
 def repo_content_digest(repo_id: str) -> str:
     """Content digest of a repo's cached snapshot, independent of symlink-vs-copy."""
-    snap = manager.snapshot_dir(repo_id)
+    snap = cache.snapshot_dir(repo_id)
     if snap is None:
         return ""
     return _fold_repo_digest(
@@ -222,15 +222,15 @@ def enumerate_export_repos(models: list[ModelInfo]) -> dict[str, RepoExport]:
         for repo_id in info.hf_repos:
             if repo_id in out:
                 continue
-            repo_dir = manager.hf_cache_dir(repo_id)
-            snap = manager.snapshot_dir(repo_id)
+            repo_dir = cache.hf_cache_dir(repo_id)
+            snap = cache.snapshot_dir(repo_id)
             if not repo_dir.is_dir() or snap is None:
                 continue
             size = sum(p.resolve().stat().st_size for _rel, p in _snapshot_files(snap))
             out[repo_id] = RepoExport(
                 repo_id=repo_id,
                 repo_dir=repo_dir,
-                commit=manager.repo_commit(repo_id),
+                commit=cache.repo_commit(repo_id),
                 content_sha256="",
                 size_bytes=size,
             )
@@ -307,7 +307,7 @@ def _check_export_space(pack_dir: Path, repo_exports: dict[str, RepoExport]) -> 
             needed -= _dir_size(existing)
     free = shutil.disk_usage(pack_dir).free
     if free < needed + _EXPORT_MARGIN_BYTES:
-        raise manager.InsufficientDiskSpace(
+        raise cache.InsufficientDiskSpace(
             f"Only {free / 1024**3:.1f} GB free on {pack_dir}; "
             f"this pack needs about {(needed + _EXPORT_MARGIN_BYTES) / 1024**3:.1f} GB."
         )
@@ -322,7 +322,7 @@ def _write_repo_folder(
     renamed only after the read-back check passes, so a folder sitting in a pack
     under its real name is always a complete, verified repo.
     """
-    snap = manager.snapshot_dir(rexp.repo_id)
+    snap = cache.snapshot_dir(rexp.repo_id)
     if snap is None or rexp.commit is None:
         raise PackError(f"{rexp.repo_id} has no cached snapshot to export.")
 
@@ -454,7 +454,7 @@ def export_model_pack(
     and each is verified and renamed into place before the next starts, so an
     interrupted export leaves the repos it finished usable.
     """
-    not_cached = [m.name for m in models if not manager.is_model_cached(m)]
+    not_cached = [m.name for m in models if not cache.is_model_cached(m)]
     if not_cached:
         raise PackError(
             "These models are not fully downloaded and cannot be exported: "
@@ -752,17 +752,17 @@ def import_model_pack(
         else sum(int(p.get("size_bytes", 0)) for p in repos.values())
     )
 
-    dest_root = manager.hf_cache_root()
+    dest_root = cache.hf_cache_root()
     dest_root.mkdir(parents=True, exist_ok=True)
     free = shutil.disk_usage(dest_root).free
     if free < total + _IMPORT_MARGIN_BYTES:
         need_gb = (total + _IMPORT_MARGIN_BYTES) / 1024**3
-        raise manager.InsufficientDiskSpace(
+        raise cache.InsufficientDiskSpace(
             f"Only {free / 1024**3:.1f} GB free under {dest_root}; "
             f"need about {need_gb:.1f} GB to import this pack."
         )
 
-    from deepreefmap_gui.models.manager import all_known_models
+    from deepreefmap_gui.models.cache import all_known_models
 
     catalogue = {m.name: m for m in all_known_models()}
     manifest_names = [m["name"] for m in manifest.get("models", [])]
@@ -771,7 +771,7 @@ def import_model_pack(
     before = {
         n
         for n in manifest_names
-        if n in catalogue and manager.is_model_cached(catalogue[n])
+        if n in catalogue and cache.is_model_cached(catalogue[n])
     }
 
     if legacy:
@@ -837,8 +837,8 @@ def import_model_pack(
         info = catalogue.get(name)
         if info is None:
             continue
-        manager.materialise_model(info)
-        if manager.is_model_cached(info):
+        cache.materialise_model(info)
+        if cache.is_model_cached(info):
             (already_present if name in before else imported).append(name)
 
     logger.info(
@@ -902,7 +902,7 @@ def _repo_content_sha256_v1(repo_id: str) -> str:
     """Schema-1 content hash: one sha256 over path + resolved bytes, in relpath
     order. Superseded by repo_content_digest, which folds per-file digests instead
     and so can be computed while the bytes are already moving."""
-    snap = manager.snapshot_dir(repo_id)
+    snap = cache.snapshot_dir(repo_id)
     if snap is None:
         return ""
     h = hashlib.sha256()

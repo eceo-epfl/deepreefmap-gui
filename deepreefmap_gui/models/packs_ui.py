@@ -29,11 +29,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from deepreefmap_gui.core.theme import TEXT_MUTED, TEXT_SECONDARY
+from deepreefmap_gui.core.theme import TEXT_SECONDARY
+from deepreefmap_gui.core.widgets import muted_label, ok_cancel_row, secondary_label
 from deepreefmap_gui.core.window_protocol import MixinBase
 
 if TYPE_CHECKING:
-    from deepreefmap_gui.models.library import ProgressCallback
+    from deepreefmap_gui.models.packs import ProgressCallback
 
 logger = logging.getLogger(__name__)
 
@@ -93,8 +94,7 @@ class PackProgressDialog(QDialog):
         self._bar.setTextVisible(True)
         layout.addWidget(self._bar)
 
-        self._detail = QLabel("")
-        self._detail.setStyleSheet(f"color: {TEXT_MUTED};")
+        self._detail = muted_label("")
         layout.addWidget(self._detail)
 
         row = QHBoxLayout()
@@ -146,7 +146,7 @@ def _throttled(
 
     The callback is the one place the worker touches on every chunk, so a set cancel
     event is raised from here as PackCancelled, unwinding the copy at the next MB."""
-    from deepreefmap_gui.models.library import PackCancelled
+    from deepreefmap_gui.models.packs import PackCancelled
 
     last: tuple[str, str, int] = ("", "", -1)
 
@@ -227,8 +227,7 @@ class ModelSelectDialog(QDialog):
                 cb.setToolTip(choice.note)
             cb.toggled.connect(self._on_model_toggled)
             self._checks[choice.name] = cb
-            size = QLabel(choice.note or _size_hint(choice.size_mb))
-            size.setStyleSheet(f"color: {TEXT_SECONDARY};")
+            size = secondary_label(choice.note or _size_hint(choice.size_mb))
             size.setAlignment(
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
             )
@@ -236,15 +235,10 @@ class ModelSelectDialog(QDialog):
             grid.addWidget(size, row, 1)
         layout.addLayout(grid)
 
-        self._total_label = QLabel()
-        self._total_label.setStyleSheet(f"color: {TEXT_MUTED};")
+        self._total_label = muted_label()
         layout.addWidget(self._total_label)
 
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
+        buttons = ok_cancel_row(self)
         layout.addWidget(buttons)
         self._ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
 
@@ -291,7 +285,7 @@ class ModelLibraryMixin(MixinBase):
     """DeepReefMapWindow methods for opening the cache and packing/unpacking models."""
 
     def _open_model_library(self) -> None:
-        from deepreefmap_gui.models.manager import hf_cache_root
+        from deepreefmap_gui.models.cache import hf_cache_root
 
         root = hf_cache_root()
         root.mkdir(parents=True, exist_ok=True)
@@ -336,16 +330,16 @@ class ModelLibraryMixin(MixinBase):
         cancel = self._start_pack_progress("Exporting models", passes=2)
 
         def _worker() -> None:
-            from deepreefmap_gui.models import library
+            from deepreefmap_gui.models import packs
 
             try:
-                pack = library.export_model_pack(
+                pack = packs.export_model_pack(
                     models,
                     dest,
                     progress_cb=_throttled(self._sig_pack_progress.emit, cancel),
                 )
                 self._sig_pack_done.emit(True, f"Exported model pack to {pack}")
-            except library.PackCancelled:
+            except packs.PackCancelled:
                 self._sig_pack_done.emit(False, "Export cancelled.")
             except Exception as exc:
                 logger.exception("Model pack export failed")
@@ -354,7 +348,7 @@ class ModelLibraryMixin(MixinBase):
         threading.Thread(target=_worker, daemon=True).start()
 
     def _on_import_model_pack(self) -> None:
-        from deepreefmap_gui.models import library
+        from deepreefmap_gui.models import packs
 
         if self._downloading:
             self._status_label.setText("Wait for downloads to finish before importing.")
@@ -366,9 +360,9 @@ class ModelLibraryMixin(MixinBase):
         pack_dir = Path(chosen)
         # Accept the pack folder itself, a parent that contains it, or a single repo
         # folder someone copied off a pack on its own.
-        if not library.is_model_pack(pack_dir):
-            candidate = pack_dir / library.PACK_DIR_NAME
-            if library.is_model_pack(candidate):
+        if not packs.is_model_pack(pack_dir):
+            candidate = pack_dir / packs.PACK_DIR_NAME
+            if packs.is_model_pack(candidate):
                 pack_dir = candidate
             else:
                 self._status_label.setText(
@@ -387,7 +381,7 @@ class ModelLibraryMixin(MixinBase):
 
         def _worker() -> None:
             try:
-                result = library.import_model_pack(
+                result = packs.import_model_pack(
                     pack_dir,
                     progress_cb=_throttled(self._sig_pack_progress.emit, cancel),
                     model_names=wanted or None,
@@ -399,7 +393,7 @@ class ModelLibraryMixin(MixinBase):
                     parts.append(f"{len(result.already_present)} already present")
                 detail = f" ({', '.join(parts)})" if parts else ""
                 self._sig_pack_done.emit(True, f"Imported model pack{detail}")
-            except library.PackCancelled:
+            except packs.PackCancelled:
                 self._sig_pack_done.emit(False, "Import cancelled.")
             except Exception as exc:
                 logger.exception("Model pack import failed")
@@ -411,14 +405,14 @@ class ModelLibraryMixin(MixinBase):
         """Ask which of a pack's models to take. None means the user cancelled;
         an empty list means take everything (a schema-1 pack is one archive and
         cannot be split, and a pack that lists no models is imported whole)."""
-        from deepreefmap_gui.models import library
+        from deepreefmap_gui.models import packs
 
         try:
-            offered = library.list_pack_models(pack_dir)
-        except library.PackError as exc:
+            offered = packs.list_pack_models(pack_dir)
+        except packs.PackError as exc:
             self._status_label.setText(f"Could not read the pack: {str(exc)[:160]}")
             return None
-        if not offered or library.pack_schema_version(pack_dir) < 2:
+        if not offered or packs.pack_schema_version(pack_dir) < 2:
             return []
 
         dlg = ModelSelectDialog(

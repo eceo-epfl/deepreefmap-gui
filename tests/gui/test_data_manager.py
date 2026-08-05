@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 import pytest
-from _factories import seed_survey_run, write_run
+from _factories import make_batch, make_transect, seed_survey_run, write_run
 from _qt_wait import wait_until
 from PySide6.QtCore import QEvent, Qt, QUrl
 from PySide6.QtGui import QImage
@@ -109,6 +109,42 @@ def test_transects_facet_groups_and_buckets_unassigned(out_root, make_window):
     assert any(t.startswith("T1") for t in titles)
 
 
+def write_session_runs(root: Path, name: str, dirs: list[str]) -> None:
+    """Several runs queued together, as one session's worth of passes."""
+    store = SurveyStore(root / "survey.db")
+    batch = make_batch(store, name)
+    for index, dir_name in enumerate(dirs):
+        seed_survey_run(
+            store, root, dir_name, transect=make_transect(f"T{index}"), batch=batch
+        )
+    store.close()
+
+
+def test_sessions_facet_groups_a_day_and_describes_it(out_root, make_window):
+    write_session_runs(out_root, "2026-07-01", ["north", "south"])
+    window = make_window()
+    window._data_facet_buttons["sessions"].click()
+
+    assert window._data_tree.topLevelItemCount() == 1
+    assert window._data_tree.topLevelItem(0).text(0).startswith("2026-07-01")
+
+    window._data_tree.setCurrentItem(window._data_tree.topLevelItem(0))
+    assert window._data_detail_stack.currentWidget() is window._session_detail
+    assert window._session_detail.title.text() == "2026-07-01"
+    assert len(window._session_detail.entries) == 2
+    assert window._session_detail.pass_list.count() == 2
+
+
+def test_selecting_a_pass_under_a_session_shows_that_run(out_root, make_window):
+    """A leaf is one pass, so the run pane owns it rather than the session pane."""
+    write_session_runs(out_root, "2026-07-01", ["north", "south"])
+    window = make_window()
+    window._data_facet_buttons["sessions"].click()
+    leaf = window._data_tree.topLevelItem(0).child(0)
+    window._data_tree.setCurrentItem(leaf)
+    assert window._data_detail_stack.currentWidget() is window._run_detail
+
+
 def test_videos_facet_splits_time_windows(out_root, make_window):
     write_run(out_root, "first", begin_s=0.0, end_s=60.0)
     write_run(out_root, "second", begin_s=60.0, end_s=120.0)
@@ -140,12 +176,11 @@ def test_open_routes_through_auto_load(out_root, make_window, monkeypatch):
     assert window._run_meta_banner.isVisibleTo(window)
 
 
-def test_browse_is_the_workspace_holding_the_run_browser(make_window):
-    """One widget, one name: the workspace called Browse is the run browser."""
+def test_browse_is_the_destination_holding_the_run_browser(make_window):
+    """One widget, one name: the destination called Browse is the run browser."""
     window = make_window()
-    assert list(window._workspace_buttons) == ["survey", "browse"]
-    assert window._workspace_buttons["browse"].text() == "Browse"
-    assert list(window._simple_nav_buttons) == ["plan", "run"]
+    assert list(window._simple_nav_buttons) == ["transects", "process", "browse"]
+    assert window._simple_nav_buttons["browse"].text() == "Browse"
 
     window._set_simple_section("browse")
     assert window._simple_stack.currentWidget().isAncestorOf(window._data_panel)
@@ -156,7 +191,7 @@ def test_rename_updates_manifest_and_card(out_root, make_window, monkeypatch):
     window = make_window()
     select_run(window, 0)
     monkeypatch.setattr(
-        "deepreefmap_gui.runs.data_manager.QInputDialog.getText",
+        "deepreefmap_gui.runs.browse.QInputDialog.getText",
         staticmethod(lambda *a, **k: ("reef north", True)),
     )
     window._on_data_rename_clicked()
@@ -172,7 +207,7 @@ def test_delete_removes_run_after_confirmation(out_root, make_window, monkeypatc
     window = make_window()
     select_run(window, 0)
     monkeypatch.setattr(
-        "deepreefmap_gui.runs.data_manager.QMessageBox.question",
+        "deepreefmap_gui.runs.browse.QMessageBox.question",
         staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes),
     )
     window._on_data_delete_clicked()
@@ -187,7 +222,7 @@ def test_delete_refuses_open_run(out_root, make_window, monkeypatch):
     select_run(window, 0)
     warnings = []
     monkeypatch.setattr(
-        "deepreefmap_gui.runs.data_manager.QMessageBox.information",
+        "deepreefmap_gui.runs.browse.QMessageBox.information",
         staticmethod(lambda *a, **k: warnings.append(a)),
     )
     window._on_data_delete_clicked()
@@ -257,7 +292,7 @@ def test_open_run_folder_routes_through_auto_load(tmp_path, make_window, monkeyp
     external = write_run(tmp_path / "external", "run_x")
     window = make_window()
     monkeypatch.setattr(
-        "deepreefmap_gui.runs.data_manager.QFileDialog.getExistingDirectory",
+        "deepreefmap_gui.runs.browse.QFileDialog.getExistingDirectory",
         staticmethod(lambda *a, **k: str(external)),
     )
     loaded = []
@@ -271,13 +306,13 @@ def test_open_run_folder_refused_while_running(make_window, monkeypatch):
     monkeypatch.setattr(window, "_run_in_flight", lambda: True)
     steps = []
     monkeypatch.setattr(
-        "deepreefmap_gui.runs.data_manager.QFileDialog.getExistingDirectory",
+        "deepreefmap_gui.runs.browse.QFileDialog.getExistingDirectory",
         staticmethod(lambda *a, **k: steps.append("dialog") or ""),
     )
     monkeypatch.setattr(window, "_auto_load_run", lambda p: steps.append("load"))
     window._on_data_open_folder_clicked()
     assert steps == []
-    assert "Wait for the batch" in window._status_label.text()
+    assert "Wait for processing" in window._status_label.text()
 
 
 # --- T1.2 show in folder ---
@@ -288,7 +323,7 @@ def test_show_in_folder_opens_the_run_dir(out_root, make_window, monkeypatch):
     window = make_window()
     opened = []
     monkeypatch.setattr(
-        "deepreefmap_gui.runs.data_manager.QDesktopServices.openUrl",
+        "deepreefmap_gui.runs.browse.QDesktopServices.openUrl",
         staticmethod(lambda url: opened.append(url.toLocalFile())),
     )
     select_run(window, 0)
@@ -357,7 +392,7 @@ def test_incomplete_run_is_listed_distinctly_and_deletable(out_root, make_window
 
     select_run(window, row)
     monkeypatch.setattr(
-        "deepreefmap_gui.runs.data_manager.QMessageBox.question",
+        "deepreefmap_gui.runs.browse.QMessageBox.question",
         staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes),
     )
     window._on_data_delete_clicked()
@@ -383,7 +418,7 @@ def test_multi_select_delete_removes_every_selected_run(out_root, make_window, m
     window = make_window()
     window._data_run_table.selectAll()
     monkeypatch.setattr(
-        "deepreefmap_gui.runs.data_manager.QMessageBox.question",
+        "deepreefmap_gui.runs.browse.QMessageBox.question",
         staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes),
     )
     window._on_data_delete_clicked()
@@ -398,7 +433,7 @@ def test_multi_select_delete_refused_when_one_is_open(out_root, make_window, mon
     window._data_run_table.selectAll()
     warnings = []
     monkeypatch.setattr(
-        "deepreefmap_gui.runs.data_manager.QMessageBox.information",
+        "deepreefmap_gui.runs.browse.QMessageBox.information",
         staticmethod(lambda *a, **k: warnings.append(a)),
     )
     window._on_data_delete_clicked()
@@ -481,6 +516,26 @@ def test_filtered_empty_state_says_why(out_root, make_window):
     assert "No runs match" in window._data_empty_state._message.text()
 
 
+def tree_row(window, title):
+    for index in range(window._data_tree.topLevelItemCount()):
+        item = window._data_tree.topLevelItem(index)
+        if item.text(0).startswith(title):
+            return item
+    raise AssertionError(f"no {title} row in the rail")
+
+
+def pick_tree_transect(window, title="T1"):
+    """Click the transect's row in the rail, the way the user reaches it.
+
+    Both signals, because Qt only emits the selection one when the selection
+    actually moves and a click on the already-selected row still has to land.
+    The row is not returned: picking one rebuilds the tree that holds it.
+    """
+    item = tree_row(window, title)
+    window._data_tree.setCurrentItem(item)
+    window._data_tree.itemClicked.emit(item, 0)
+
+
 def test_detail_pane_follows_the_selection(out_root, make_window):
     """Nothing transect-shaped appears until a transect is what is selected."""
     write_survey_run(out_root, "assigned")
@@ -491,13 +546,54 @@ def test_detail_pane_follows_the_selection(out_root, make_window):
     assert "assigned" in window._run_detail.title.text()
 
     window._data_facet_buttons["transects"].click()
-    window._data_run_table.setCurrentCell(-1, -1)
-    for i in range(window._data_tree.topLevelItemCount()):
-        item = window._data_tree.topLevelItem(i)
-        if item.text(0).startswith("T1"):
-            window._data_tree.setCurrentItem(item)
-    window._update_data_actions()
+    pick_tree_transect(window)
     assert window._data_detail_stack.currentIndex() == 2
+
+
+def test_the_rail_and_the_map_reach_the_same_card(out_root, make_window):
+    """Scenario: a run of the transect is selected, then the transect is picked.
+
+    Expected behaviour: the transect card either way. The run table re-selected
+    its run across the rebuild and a run outranks a transect in the pane, so
+    picking in the rail used to leave the run card up while the identical click
+    on the map showed the transect one.
+    """
+    transect = write_survey_run(out_root, "assigned")
+    window = make_window()
+    window._data_facet_buttons["transects"].click()
+
+    window._on_data_map_transect_clicked(str(transect.id))
+    assert window._data_detail_stack.currentIndex() == 2
+
+    select_run(window, 0)
+    assert window._data_detail_stack.currentIndex() == 1
+    pick_tree_transect(window)
+    assert window._data_detail_stack.currentIndex() == 2
+
+
+def test_picking_a_pass_keeps_the_pass_and_names_its_transect(out_root, make_window):
+    """A leaf row is a run, not the transect above it, but it still points the
+    comparison at that transect."""
+    transect = write_survey_run(out_root, "assigned")
+    window = make_window()
+    window._data_facet_buttons["transects"].click()
+    pick_tree_transect(window)
+    group = tree_row(window, "T1")
+    assert group.childCount() == 1
+
+    window._data_tree.setCurrentItem(group.child(0))
+    assert window._data_selected_key[0] == "pass"
+    assert window._scope_transect_id == transect.id
+
+
+def test_a_transect_known_only_by_name_does_not_raise(out_root, make_window):
+    """A run naming a transect the store has never heard of is filed under that
+    name, so its key holds no id to point anything at."""
+    write_run(out_root, "named", survey={"transect": {"name": "Ghost reef"}})
+    window = make_window()
+    window._data_facet_buttons["transects"].click()
+    pick_tree_transect(window, "Ghost reef")
+    assert listed_runs(window) == ["named"]
 
 
 def test_unfinished_run_detail_carries_its_reason(out_root, make_window):
@@ -646,7 +742,12 @@ def test_the_map_scope_appears_only_where_it_decides_anything(out_root, make_win
 
 
 def test_a_transect_picked_in_the_tree_outranks_the_map(out_root, make_window):
-    """Panning away from a chosen transect must not empty the list underneath."""
+    """Panning away from a chosen transect must not empty the list underneath.
+
+    The chips stay on screen through the pick, because pressing one is how the
+    pick is undone: hiding them exactly when something was selected left no way
+    back to In view at all.
+    """
     two_sites(out_root)
     window = browse_by_transect(make_window)
     window._on_data_map_transect_clicked(str(window._data_map._transects[0].id))
@@ -655,7 +756,28 @@ def test_a_transect_picked_in_the_tree_outranks_the_map(out_root, make_window):
 
     look_at(window, 0.0, 0.0)
     assert listed_runs(window) == picked
-    assert not window._data_scope_chips.isVisibleTo(window._data_panel)
+    assert window._data_scope_chips.isVisibleTo(window._data_panel)
+
+
+def test_all_transects_releases_a_picked_transect(out_root, make_window):
+    """Scenario: a transect is picked, then All transects is pressed.
+
+    Expected behaviour: the pick is released and the map scope is live again.
+    The rail has no All node to click, so the chip is the only way out; without
+    it In view was unreachable for the rest of the session.
+    """
+    two_sites(out_root)
+    window = browse_by_transect(make_window)
+    window._on_data_map_transect_clicked(str(window._data_map._transects[0].id))
+    assert window._data_selected_key is not None
+
+    window._data_scope_chips.set_current("all")
+    assert window._data_selected_key is None
+    assert sorted(listed_runs(window)) == ["azores", "fiji"]
+
+    look_at(window, -17.5, 177.1)
+    window._data_scope_chips.set_current("in_view")
+    assert listed_runs(window) == ["fiji"]
 
 
 def test_empty_state_blames_the_map_when_the_map_is_the_reason(out_root, make_window):
@@ -741,15 +863,21 @@ def test_an_empty_detail_pane_gives_its_width_back_to_the_table(out_root, make_w
     assert not window._data_detail_stack.isHidden()
 
 
-def test_grouping_by_transect_widens_the_detail_pane(out_root, make_window):
-    """A chart and a stats table need more room than a metadata card."""
+def test_every_grouping_gives_the_detail_pane_the_same_share(out_root, make_window):
+    """Scenario: the transect pane used to hold a chart and a stats table, so it
+    claimed close to half the page while every other pane took a third.
+
+    Expected behaviour: one share. The chart moved to Transects, which is the
+    one place a transect is drawn, and what is left here is a summary the size
+    of every other summary.
+    """
     write_survey_run(out_root, "assigned")
     window = make_window()
     window._data_split.resize(1200, 600)
 
     window._data_facet_buttons["transects"].click()
     select_transect(window, "T1")
-    assert detail_share(window) > 0.35
+    assert detail_share(window) == pytest.approx(0.30, abs=0.02)
 
     window._data_facet_buttons["runs"].click()
     select_run(window, 0)
@@ -818,3 +946,29 @@ def test_clicking_the_ortho_opens_it_full_size(out_root, make_window, monkeypatc
     # Opens fitted, with the full-resolution ortho behind it to zoom into.
     assert opened[0].view.pixmap().width() == 800
     assert opened[0].view.is_fitted()
+
+
+def test_an_outcome_is_the_same_chip_wherever_it_is_read(out_root, make_window):
+    """One shape and one colour per outcome: the chip you press to filter is the
+    chip the pane then shows."""
+    from deepreefmap_gui.core.widgets import (
+        PILL_TINT_ALPHA,
+        STATUS_COLORS,
+        StatusChip,
+        tinted,
+    )
+
+    write_run(out_root, "finished-run")
+    window = make_window()
+    select_run(window, 0)
+
+    chip = window._run_detail.status
+    assert isinstance(chip, StatusChip)
+    assert chip.text() == "Succeeded"
+    succeeded = STATUS_COLORS["succeeded"]
+    assert succeeded in chip.styleSheet()
+    assert tinted(succeeded, PILL_TINT_ALPHA) in chip.styleSheet()
+
+    # The filter that finds a failed run is drawn in a failed run's colour.
+    filter_chip = window._data_status_chips._buttons["failed"]
+    assert STATUS_COLORS["failed"] in filter_chip.styleSheet()

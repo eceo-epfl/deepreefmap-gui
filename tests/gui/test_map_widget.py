@@ -5,8 +5,8 @@ from PySide6.QtTest import QTest
 
 from deepreefmap_gui.map.layers import OSM_LAYER
 from deepreefmap_gui.map.overlays import OverlayTransect
+from deepreefmap_gui.map.slippy_map import SlippyMapWidget
 from deepreefmap_gui.map.tile_cache import TileCache
-from deepreefmap_gui.map.widget import SlippyMapWidget
 
 
 @pytest.fixture

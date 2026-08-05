@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
 )
 
-from deepreefmap_gui.core.widgets import StatusPillDelegate
+from deepreefmap_gui.core.widgets import StatusPillDelegate, configure_table
 from deepreefmap_gui.profiling.eta import format_duration
 from deepreefmap_gui.profiling.system_probe import format_bytes
 from deepreefmap_gui.runs.run_cards import format_run_metadata, points_label
@@ -140,15 +140,10 @@ class RunTable(QTableWidget):
 
     def __init__(self, parent=None) -> None:
         super().__init__(0, len(_HEADERS), parent)
-        self.setHorizontalHeaderLabels(list(_HEADERS))
-        self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        configure_table(self, _HEADERS)
         # Delete and Assign act on a whole selection, so several runs can be
         # picked at once.
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.setAlternatingRowColors(True)
-        self.setShowGrid(False)
-        self.verticalHeader().setVisible(False)
         self.setWordWrap(False)
         self.setSortingEnabled(True)
         self.setItemDelegateForColumn(COL_STATUS, StatusPillDelegate(self))

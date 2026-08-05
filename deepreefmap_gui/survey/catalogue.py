@@ -20,25 +20,42 @@ from pathlib import Path
 
 from deepreefmap_gui.io.atomic import atomic_write_json
 from deepreefmap_gui.survey.models.run_record import RunRecord
+from deepreefmap_gui.survey.models.survey_batch import SurveyBatch
 from deepreefmap_gui.survey.models.transect import Transect
 from deepreefmap_gui.survey.models.transect_pass import TransectPass
 from deepreefmap_gui.survey.models.video_asset import VideoAsset
+from deepreefmap_gui.survey.statuses import (
+    CLIP_FAILED,
+    CLIP_PENDING,
+    CLIP_PROCESSED,
+    CLIP_UNPROCESSED,
+    OUTCOME_FAILED,
+    OUTCOME_SUCCEEDED,
+    OUTCOME_UNFINISHED,
+    status_outcome,
+)
 from deepreefmap_gui.survey.store import SurveyStore
 
 logger = logging.getLogger(__name__)
 
 UNASSIGNED_TITLE = "Not assigned yet"
 
-# Outcome buckets, coarser than the raw run status: the browser offers one
-# filter per outcome a diver acts on, not one per state the store records.
-RUN_SUCCEEDED, RUN_FAILED, RUN_UNFINISHED = "succeeded", "failed", "unfinished"
+# Runs from before sessions were recorded, or copied in from elsewhere without
+# a manifest that names one. Not an error: they process and compare like any
+# other, they just cannot be read as a day's work.
+UNFILED_SESSION_TITLE = "No session recorded"
 
-# The same idea for a clip: what is left to do with this footage.
+# Re-exported from statuses.py under the names the browser uses for them.
+RUN_SUCCEEDED, RUN_FAILED, RUN_UNFINISHED = (
+    OUTCOME_SUCCEEDED,
+    OUTCOME_FAILED,
+    OUTCOME_UNFINISHED,
+)
 VIDEO_UNPROCESSED, VIDEO_PENDING, VIDEO_FAILED, VIDEO_PROCESSED = (
-    "unprocessed",
-    "pending",
-    "failed",
-    "processed",
+    CLIP_UNPROCESSED,
+    CLIP_PENDING,
+    CLIP_FAILED,
+    CLIP_PROCESSED,
 )
 
 
@@ -49,10 +66,7 @@ def entry_status(entry: RunEntry) -> str:
 
 def entry_outcome(entry: RunEntry) -> str:
     """Which filter bucket a run falls into."""
-    status = entry_status(entry)
-    if status == "succeeded":
-        return RUN_SUCCEEDED
-    return RUN_FAILED if status == "failed" else RUN_UNFINISHED
+    return status_outcome(entry_status(entry))
 
 
 @dataclass(slots=True)
@@ -75,6 +89,8 @@ class RunEntry:
     manifest_transect_id: uuid.UUID | None
     manifest_transect_name: str | None
     manifest_direction: str | None
+    manifest_batch_id: uuid.UUID | None = None
+    manifest_batch_name: str | None = None
     db_run: RunRecord | None = None
     db_pass: TransectPass | None = None
     db_transect_name: str | None = None
@@ -97,6 +113,18 @@ class RunEntry:
         if self.db_pass is not None:
             return self.db_pass.transect_id
         return self.manifest_transect_id
+
+    @property
+    def session_id(self) -> uuid.UUID | None:
+        """The session this run was queued in, database first then manifest.
+
+        The manifest is the fallback rather than the source: a run folder copied
+        off another machine carries its session in the manifest and has no row
+        here until rebuild_from_scan writes one.
+        """
+        if self.db_pass is not None and self.db_pass.batch_id is not None:
+            return self.db_pass.batch_id
+        return self.manifest_batch_id
 
     @property
     def transect_name(self) -> str | None:
@@ -210,6 +238,8 @@ def _entry_from_manifest(run_dir: Path, manifest: dict, mtime: float) -> RunEntr
         manifest_transect_id=_as_uuid(transect_block.get("id")),
         manifest_transect_name=transect_block.get("name"),
         manifest_direction=pass_block.get("direction"),
+        manifest_batch_id=_as_uuid(survey.get("batch_id")),
+        manifest_batch_name=survey.get("batch_name"),
     )
 
 
@@ -363,12 +393,87 @@ def transects_facet(
     return groups
 
 
+def session_group_key(batch_id: uuid.UUID | None) -> tuple:
+    """The facet key a run is filed under by session.
+
+    Same two-sided-join contract as video_group_key: a run reaches this from its
+    pass or from its manifest, and a session reaches it from the store, so both
+    have to arrive at the same key or one session would appear twice.
+    """
+    return ("unfiled_session",) if batch_id is None else ("session", str(batch_id))
+
+
+def sessions_facet(
+    entries: list[RunEntry], batches: Iterable[SurveyBatch] = ()
+) -> list[FacetGroup]:
+    """Session groups over pass groups, newest session first.
+
+    The session is the only container that spans transects: everything else here
+    groups by one line, one clip or one pass, so a day's work had no way to be
+    read as a day's work. It is recorded on every run already, in the manifest
+    and on the pass, and this is what finally shows it.
+
+    ``batches`` may list known sessions so one whose runs have all been deleted
+    still appears, the same courtesy transects_facet extends to a transect with
+    no runs.
+    """
+    known = {b.id: b for b in batches}
+    by_session: dict[tuple, FacetGroup] = {}
+    unfiled = FacetGroup(key=session_group_key(None), title=UNFILED_SESSION_TITLE)
+    for batch in known.values():
+        by_session[session_group_key(batch.id)] = FacetGroup(
+            key=session_group_key(batch.id), title=batch.name
+        )
+    for entry in entries:
+        batch_id = entry.session_id
+        if batch_id is None:
+            unfiled.entries.append(entry)
+            continue
+        key = session_group_key(batch_id)
+        group = by_session.get(key)
+        if group is None:
+            named = known.get(batch_id)
+            title = named.name if named is not None else entry.manifest_batch_name
+            group = by_session[key] = FacetGroup(key=key, title=title or str(batch_id))
+        _child_for(group, group_key(entry), _pass_title(entry)).entries.append(entry)
+    # Newest first: a session is a day's work, and the one you want is almost
+    # always the one you just did. Sessions with no runs sort by name alone,
+    # which puts a freshly created one at the top under the date default.
+    groups = sorted(by_session.values(), key=_session_sort_key, reverse=True)
+    if unfiled.entries:
+        groups.insert(0, unfiled)
+    return groups
+
+
+def _session_sort_key(group: FacetGroup) -> tuple:
+    entries = group.all_entries()
+    return (max(e.sort_key for e in entries) if entries else 0.0, group.title)
+
+
+def session_summary(group: FacetGroup) -> str:
+    """"6 runs · 3 transects", the two counts that say what a session covered."""
+    entries = group.all_entries()
+    transects = {e.transect_name for e in entries if e.transect_name}
+    parts = [_plural(len(entries), "run")]
+    if transects:
+        parts.append(_plural(len(transects), "transect"))
+    return " · ".join(parts)
+
+
+def _plural(count: int, noun: str) -> str:
+    return f"{count} {noun}{'' if count == 1 else 's'}"
+
+
 def video_group_key(video_hash: str | None, fallback: str) -> tuple:
     """The facet key a clip is filed under, from either side of the join.
 
     A run knows its video by hash; the library knows the clip itself. Both have
     to arrive at the same key or an imported clip and the runs cut from it would
     appear as two separate groups.
+
+    The fallback is the video's *file name* on both sides. It is a weak identity
+    (every card's first clip is GX010001.MP4), which is why hashing is repaired
+    rather than the fallback relied on.
     """
     return ("video", video_hash or fallback)
 
@@ -387,7 +492,7 @@ def videos_facet(
     by_video: dict[tuple, FacetGroup] = {}
     for entry in entries:
         video_hash = entry.video_hashes[0] if entry.video_hashes else None
-        key = video_group_key(video_hash, entry.dir_name)
+        key = video_group_key(video_hash, entry.video_name or entry.dir_name)
         group = by_video.get(key)
         if group is None:
             title = entry.video_name or "Unknown video"
@@ -406,6 +511,12 @@ def videos_facet(
     return sorted(by_video.values(), key=lambda g: g.title)
 
 
+# Whether the file a clip names is still where the survey last saw it. Checked
+# off the paint path, so "unknown" is the honest answer until it has been: an
+# entry that assumed "linked" would show a link on a clip that is not there.
+LINK_LINKED, LINK_MISSING, LINK_UNKNOWN = "linked", "missing", "unknown"
+
+
 @dataclass(slots=True)
 class VideoLibraryEntry:
     """One imported clip, with how much of the survey hangs off it.
@@ -421,10 +532,20 @@ class VideoLibraryEntry:
     # pane can show what became of the footage without re-querying per row.
     passes: list[TransectPass] = field(default_factory=list)
     runs: list[RunRecord] = field(default_factory=list)
+    # Whether the file is still there. Filled in by a background pass rather
+    # than at construction, because this is built while the rail is being drawn
+    # and a stat per clip on a sleeping external drive is not a paint-time cost.
+    link_state: str = LINK_UNKNOWN
 
     @property
     def orphan(self) -> bool:
         return self.pass_count == 0
+
+    @property
+    def last_run_at(self) -> str | None:
+        """When this clip was last processed, whatever the outcome."""
+        return max((run.created_at for run in self.runs), default=None)
+
 
     @property
     def outcome(self) -> str:
@@ -441,6 +562,31 @@ class VideoLibraryEntry:
         if len(succeeded) >= self.pass_count:
             return VIDEO_PROCESSED
         return VIDEO_PENDING
+
+
+def resolve_link_states(entries: Iterable[VideoLibraryEntry]) -> dict[str, str]:
+    """Stat each clip once and say whether it is still there.
+
+    Keyed by path rather than by clip id so the answer survives the library
+    being rebuilt, which happens on every refresh. Blocking, and meant for a
+    worker thread: a missing network mount can take seconds to admit it.
+    """
+    states: dict[str, str] = {}
+    for entry in entries:
+        path = entry.video.path
+        if path in states:
+            continue
+        if not path:
+            states[path] = LINK_UNKNOWN
+            continue
+        try:
+            states[path] = LINK_LINKED if Path(path).is_file() else LINK_MISSING
+        except OSError:
+            # A path that cannot even be asked about is not the same as one that
+            # answered no, and offering to relocate a clip on a mount that is
+            # merely slow would be wrong.
+            states[path] = LINK_UNKNOWN
+    return states
 
 
 def video_library(

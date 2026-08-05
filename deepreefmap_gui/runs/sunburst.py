@@ -1,3 +1,21 @@
+"""Benthic cover as two rings: the fine classes outside, the groups they belong to inside.
+
+Cover is a long tail. A flat list of forty classes reads as forty numbers, where the question
+being asked is almost always coarse first (how much of this is coral) and fine second (which
+coral). Nesting the two rings answers both from one figure without a second chart, and the grouped
+inner ring is the reason the widget cannot just take a dict of percentages: the grouping comes
+from `cover.py`, which is also what colours it.
+
+Painting only, and one signal out. `selection_clicked` carries the class ids under the slice (the
+group's members for an inner slice), which the viewer controls turn into the legend's filter, so
+clicking a wedge and ticking the same classes in the legend are one action. `set_selection` paints
+that state back, dimming what is not selected.
+
+`render_pixmap` is the export path: the same paint routine over an offscreen pixmap at any size,
+so a chart bound for a report is drawn at print resolution instead of screenshotted at whatever
+size the panel happened to be.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

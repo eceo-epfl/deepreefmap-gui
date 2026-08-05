@@ -413,7 +413,7 @@ def clipboard(monkeypatch):
         def clipboard():
             return _Clipboard()
 
-    monkeypatch.setattr("deepreefmap_gui.runs.data_manager.QGuiApplication", _App)
+    monkeypatch.setattr("deepreefmap_gui.runs.browse.QGuiApplication", _App)
     return captured
 
 

@@ -28,8 +28,10 @@ push, and `--interactive` drives it locally.
 
 - No `__init__.py` anywhere. `--import-mode=importlib` (see `pyproject.toml`)
   means subfolders need none and test basenames need not be globally unique.
-- Shared survey builders live in `tests/_factories.py`, on the path via the
-  `pythonpath` ini option. Reach for those before writing another `make_transect`.
+- Builders more than one directory needs live in `tests/_factories.py`, on the
+  path via the `pythonpath` ini option: survey rows, HF cache repos, scenes.
+  Reach for those before writing another `make_transect`. A builder one file
+  uses stays in that file; a fixture one directory uses goes in its `conftest.py`.
 - `Scenario:` / `Expected behaviour:` docstrings when the intent isn't obvious
   from the code; nothing when it is.
 - Assert against production constants (`theme.BLOCK`, `STAGE_SPANS`), not copies

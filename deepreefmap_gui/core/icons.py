@@ -1,23 +1,22 @@
 """QPainter-rendered icons for consistent, DPI-aware toolbar buttons.
 
-Three sizes and one stroke weight. Every icon used to carry its own default
-size and its own pen width -- six weights between 1.2 and 2.2 at the same
-nominal size -- so a tick sat visibly bolder than the copy sheets it replaced in
-the same button.
+Three sizes and one stroke weight, so two glyphs in the same button are drawn
+at the same weight.
 """
 
 from __future__ import annotations
 
+import functools
+from typing import Callable
+
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap, QTransform
 
 from deepreefmap_gui.core.theme import (
-    BORDER_STRONG,
     ERROR,
     SUCCESS,
     TEXT_MUTED,
     WARNING,
-    WINDOW,
 )
 
 # Inline with text, on a toolbar button, and on the transport controls.
@@ -40,11 +39,56 @@ def _px(size: int = ICON_LG, bg: QColor | None = None) -> tuple[QPixmap, QPainte
     return pm, p
 
 
-def crosshair_icon(size: int = ICON_MD, color: QColor | None = None) -> QIcon:
-    c = color or QColor(230, 230, 230)
-    pm, p = _px(size)
-    pen = QPen(c, _stroke(size))
-    p.setPen(pen)
+# Ink for a glyph with no role colour of its own: near-white, so it reads on the
+# dark surfaces without the hard contrast of pure white. Not a theme token
+# because it is the icon layer's own default, not a text colour.
+DEFAULT_INK = "#e6e6e6"
+
+
+def _drawn(
+    *,
+    size: int = ICON_MD,
+    ink: str = DEFAULT_INK,
+    pen: bool = True,
+    cap: bool = False,
+    join: bool = False,
+) -> Callable[[Callable[..., None]], Callable[..., QIcon]]:
+    """Wrap a glyph's drawing steps in the pixmap and pen setup they all share.
+
+    Every icon opened with the same five lines and closed with the same two; the
+    only thing that differed was the default size, the ink, and which pen styles
+    the glyph needed. Those are the arguments here, so what is left in each
+    function body is the drawing itself.
+
+    The wrapped function receives ``(painter, size, colour)``.
+    """
+
+    def decorate(draw: Callable[..., None]) -> Callable[..., QIcon]:
+        @functools.wraps(draw)
+        def build(size_: int = size, color: QColor | None = None) -> QIcon:
+            c = color or QColor(ink)
+            pm, p = _px(size_)
+            if pen:
+                q = QPen(c, _stroke(size_))
+                if cap:
+                    q.setCapStyle(Qt.PenCapStyle.RoundCap)
+                if join:
+                    q.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+                p.setPen(q)
+            else:
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(c)
+            draw(p, size_, c)
+            p.end()
+            return QIcon(pm)
+
+        return build
+
+    return decorate
+
+
+@_drawn(size=ICON_MD)
+def crosshair_icon(p: QPainter, size: int, c: QColor) -> None:
     cx, cy = size / 2, size / 2
     r = size * 0.32
     gap = size * 0.08
@@ -53,16 +97,10 @@ def crosshair_icon(size: int = ICON_MD, color: QColor | None = None) -> QIcon:
     p.drawLine(QPointF(cx, cy + gap), QPointF(cx, cy + r + gap))
     p.drawLine(QPointF(cx - r - gap, cy), QPointF(cx - gap, cy))
     p.drawLine(QPointF(cx + gap, cy), QPointF(cx + r + gap, cy))
-    p.end()
-    return QIcon(pm)
 
 
-def refresh_icon(size: int = ICON_MD, color: QColor | None = None) -> QIcon:
-    c = color or QColor(230, 230, 230)
-    pm, p = _px(size)
-    pen = QPen(c, _stroke(size))
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    p.setPen(pen)
+@_drawn(size=ICON_MD, cap=True)
+def refresh_icon(p: QPainter, size: int, c: QColor) -> None:
     cx, cy = size / 2, size / 2
     r = size * 0.3
     p.drawArc(QRectF(cx - r, cy - r, 2 * r, 2 * r), 60 * 16, 270 * 16)
@@ -70,15 +108,10 @@ def refresh_icon(size: int = ICON_MD, color: QColor | None = None) -> QIcon:
     a = size * 0.12
     p.drawLine(QPointF(ax - a, ay - a * 0.3), QPointF(ax, ay))
     p.drawLine(QPointF(ax, ay), QPointF(ax - a * 0.3, ay + a))
-    p.end()
-    return QIcon(pm)
 
 
-def play_icon(size: int = ICON_MD, color: QColor | None = None) -> QIcon:
-    c = color or QColor(230, 230, 230)
-    pm, p = _px(size)
-    p.setPen(Qt.PenStyle.NoPen)
-    p.setBrush(c)
+@_drawn(size=ICON_MD, pen=False)
+def play_icon(p: QPainter, size: int, c: QColor) -> None:
     m = size * 0.3
     tri = [
         QPointF(m, m),
@@ -88,76 +121,37 @@ def play_icon(size: int = ICON_MD, color: QColor | None = None) -> QIcon:
     from PySide6.QtGui import QPolygonF
 
     p.drawPolygon(QPolygonF(tri))
-    p.end()
-    return QIcon(pm)
 
 
-def pause_icon(size: int = ICON_MD, color: QColor | None = None) -> QIcon:
-    c = color or QColor(230, 230, 230)
-    pm, p = _px(size)
-    p.setPen(Qt.PenStyle.NoPen)
-    p.setBrush(c)
+@_drawn(size=ICON_MD, pen=False)
+def pause_icon(p: QPainter, size: int, c: QColor) -> None:
     bar_w = size * 0.16
     gap = size * 0.14
     top, bot = size * 0.28, size * 0.72
     cx = size / 2
     p.drawRoundedRect(QRectF(cx - gap / 2 - bar_w, top, bar_w, bot - top), 1.5, 1.5)
     p.drawRoundedRect(QRectF(cx + gap / 2, top, bar_w, bot - top), 1.5, 1.5)
-    p.end()
-    return QIcon(pm)
 
 
-def plus_icon(size: int = ICON_MD, color: QColor | None = None) -> QIcon:
-    c = color or QColor(230, 230, 230)
-    pm, p = _px(size)
-    pen = QPen(c, _stroke(size))
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    p.setPen(pen)
-    cx, cy = size / 2, size / 2
-    arm = size * 0.28
-    p.drawLine(QPointF(cx - arm, cy), QPointF(cx + arm, cy))
-    p.drawLine(QPointF(cx, cy - arm), QPointF(cx, cy + arm))
-    p.end()
-    return QIcon(pm)
-
-
-def arrow_right_icon(size: int = ICON_MD, color: QColor | None = None) -> QIcon:
-    c = color or QColor(230, 230, 230)
-    pm, p = _px(size)
-    pen = QPen(c, _stroke(size))
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-    p.setPen(pen)
+@_drawn(size=ICON_MD, cap=True, join=True)
+def arrow_right_icon(p: QPainter, size: int, c: QColor) -> None:
     cx, cy = size / 2, size / 2
     arm = size * 0.28
     head = size * 0.16
     p.drawLine(QPointF(cx - arm, cy), QPointF(cx + arm, cy))
     p.drawLine(QPointF(cx + arm - head, cy - head), QPointF(cx + arm, cy))
     p.drawLine(QPointF(cx + arm - head, cy + head), QPointF(cx + arm, cy))
-    p.end()
-    return QIcon(pm)
 
 
-def check_icon(size: int = ICON_SM, color: QColor | None = None) -> QIcon:
-    c = color or QColor(SUCCESS)
-    pm, p = _px(size)
-    pen = QPen(c, _stroke(size))
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-    p.setPen(pen)
+@_drawn(size=ICON_SM, ink=SUCCESS, cap=True, join=True)
+def check_icon(p: QPainter, size: int, c: QColor) -> None:
     m = size * 0.22
     p.drawLine(QPointF(m, size * 0.52), QPointF(size * 0.42, size - m))
     p.drawLine(QPointF(size * 0.42, size - m), QPointF(size - m, m))
-    p.end()
-    return QIcon(pm)
 
 
-def download_icon(size: int = ICON_SM, color: QColor | None = None) -> QIcon:
-    c = color or QColor(WARNING)
-    pm, p = _px(size)
-    pen = QPen(c, _stroke(size))
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    p.setPen(pen)
+@_drawn(size=ICON_SM, ink=WARNING, cap=True)
+def download_icon(p: QPainter, size: int, c: QColor) -> None:
     cx = size / 2
     top = size * 0.15
     bot = size * 0.62
@@ -167,17 +161,11 @@ def download_icon(size: int = ICON_SM, color: QColor | None = None) -> QIcon:
     p.drawLine(QPointF(cx + a, bot - a), QPointF(cx, bot))
     base_y = size * 0.82
     p.drawLine(QPointF(size * 0.22, base_y), QPointF(size * 0.78, base_y))
-    p.end()
-    return QIcon(pm)
 
 
-def warning_icon(size: int = ICON_SM, color: QColor | None = None) -> QIcon:
+@_drawn(size=ICON_SM, ink=WARNING, join=True)
+def warning_icon(p: QPainter, size: int, c: QColor) -> None:
     """Triangle and exclamation: something needs looking at, nothing is stopped."""
-    c = color or QColor(WARNING)
-    pm, p = _px(size)
-    pen = QPen(c, _stroke(size))
-    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-    p.setPen(pen)
     cx = size / 2
     top = size * 0.16
     bot = size * 0.82
@@ -192,127 +180,167 @@ def warning_icon(size: int = ICON_SM, color: QColor | None = None) -> QIcon:
     )
     p.drawLine(QPointF(cx, size * 0.40), QPointF(cx, size * 0.60))
     p.drawPoint(QPointF(cx, size * 0.71))
-    p.end()
-    return QIcon(pm)
 
 
-def blocked_icon(size: int = ICON_SM, color: QColor | None = None) -> QIcon:
-    """Ringed cross: distinct in silhouette from the warning triangle, so the
-    two are told apart without relying on their colours."""
-    c = color or QColor(ERROR)
-    pm, p = _px(size)
-    pen = QPen(c, _stroke(size))
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    p.setPen(pen)
+@_drawn(size=ICON_SM, ink=ERROR, pen=False)
+def blocked_icon(p: QPainter, size: int, c: QColor) -> None:
+    """The warning triangle, filled, with the exclamation cut out of it.
+
+    Same silhouette as warning_icon so both read as road signs; the weight and
+    the colour carry the severity between them.
+    """
     cx = size / 2
-    r = size * 0.38
-    p.drawEllipse(QPointF(cx, cx), r, r)
-    arm = size * 0.17
-    p.drawLine(QPointF(cx - arm, cx - arm), QPointF(cx + arm, cx + arm))
-    p.drawLine(QPointF(cx + arm, cx - arm), QPointF(cx - arm, cx + arm))
-    p.end()
-    return QIcon(pm)
-
-
-def machine_icon(size: int = ICON_SM, color: QColor | None = None) -> QIcon:
-    """A laptop, for the destination that describes the computer you are on."""
-    c = color or QColor(TEXT_MUTED)
-    pm, p = _px(size)
-    pen = QPen(c, _stroke(size))
-    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    p.setPen(pen)
-    p.drawRoundedRect(
-        QRectF(size * 0.18, size * 0.22, size * 0.64, size * 0.44), 1.5, 1.5
+    top, bottom, half = size * 0.12, size * 0.86, size * 0.44
+    body = QPainterPath()
+    body.moveTo(QPointF(cx, top))
+    body.lineTo(QPointF(cx + half, bottom))
+    body.lineTo(QPointF(cx - half, bottom))
+    body.closeSubpath()
+    mark = QPainterPath()
+    bar = size * 0.10
+    mark.addRoundedRect(
+        QRectF(cx - bar / 2, size * 0.38, bar, size * 0.22), bar / 2, bar / 2
     )
-    p.drawLine(QPointF(size * 0.08, size * 0.78), QPointF(size * 0.92, size * 0.78))
-    p.end()
-    return QIcon(pm)
+    mark.addEllipse(QPointF(cx, size * 0.71), bar * 0.6, bar * 0.6)
+    p.drawPath(body.subtracted(mark))
 
 
-def copy_icon(size: int = ICON_SM, color: QColor | None = None) -> QIcon:
+@_drawn(size=ICON_SM, ink=TEXT_MUTED, pen=False)
+def cog_icon(p: QPainter, size: int, c: QColor) -> None:
+    """The settings gear: a toothed disc with a hole through it.
+
+    One filled path: a gear is recognised by its outline, so teeth drawn as
+    separate strokes read as a sun instead.
+    """
+    cx = size / 2
+    body = QPainterPath()
+    body.addEllipse(QPointF(cx, cx), size * 0.30, size * 0.30)
+    tooth_w = size * 0.16
+    tooth_h = size * 0.86
+    for step in range(4):
+        tooth = QPainterPath()
+        tooth.addRoundedRect(
+            QRectF(cx - tooth_w / 2, cx - tooth_h / 2, tooth_w, tooth_h), 1.2, 1.2
+        )
+        spin = QTransform().translate(cx, cx).rotate(step * 45).translate(-cx, -cx)
+        body = body.united(spin.map(tooth))
+    hole = QPainterPath()
+    hole.addEllipse(QPointF(cx, cx), size * 0.13, size * 0.13)
+    p.drawPath(body.subtracted(hole))
+
+
+@_drawn(size=ICON_SM, ink=TEXT_MUTED, cap=True, join=True)
+def log_icon(p: QPainter, size: int, c: QColor) -> None:
+    """A sheet of written lines: the run's output as it is printed."""
+    p.drawRoundedRect(QRectF(size * 0.20, size * 0.14, size * 0.60, size * 0.72), 1.5, 1.5)
+    left = size * 0.32
+    for row, width in enumerate((0.36, 0.30, 0.36)):
+        y = size * (0.34 + 0.18 * row)
+        p.drawLine(QPointF(left, y), QPointF(left + size * width, y))
+
+
+@_drawn(size=ICON_SM, join=True)
+def copy_icon(p: QPainter, size: int, c: QColor) -> None:
     """Two offset sheets, the usual shorthand for copy-to-clipboard."""
-    c = color or QColor(230, 230, 230)
-    pm, p = _px(size)
-    pen = QPen(c, _stroke(size))
-    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-    p.setPen(pen)
     w = size * 0.42
     h = size * 0.52
     p.drawRoundedRect(QRectF(size * 0.20, size * 0.16, w, h), 1.5, 1.5)
     p.drawRoundedRect(QRectF(size * 0.38, size * 0.32, w, h), 1.5, 1.5)
-    p.end()
-    return QIcon(pm)
 
 
-# What a step has to say about itself. Deliberately not about position: the
-# checked pill in the header already shows which step you are on, which frees
-# the badge to carry meaning instead of repeating the selection.
+def _chain_links(p: QPainter, size: int, gap: float) -> None:
+    """Two rounded links reaching for each other across ``gap``."""
+    w = size * 0.34
+    h = size * 0.30
+    y = (size - h) / 2
+    p.drawRoundedRect(QRectF(size / 2 - gap / 2 - w, y, w, h), h / 2, h / 2)
+    p.drawRoundedRect(QRectF(size / 2 + gap / 2, y, w, h), h / 2, h / 2)
+
+
+@_drawn(size=ICON_SM, ink=TEXT_MUTED, cap=True, join=True)
+def link_icon(p: QPainter, size: int, c: QColor) -> None:
+    """Two links joined: the file this clip names is where it was left."""
+    _chain_links(p, size, size * 0.10)
+    p.drawLine(QPointF(size * 0.42, size / 2), QPointF(size * 0.58, size / 2))
+
+
+@_drawn(size=ICON_SM, ink=WARNING, cap=True, join=True)
+def broken_link_icon(p: QPainter, size: int, c: QColor) -> None:
+    """The same two links, pulled apart. A warning rather than an error: the
+    footage is somewhere, and everything already made from it still stands."""
+    _chain_links(p, size, size * 0.34)
+
+
+@_drawn(size=ICON_SM, cap=True, join=True)
+def transects_icon(p: QPainter, size: int, c: QColor) -> None:
+    """A tape between two marked ends: the transect as the map draws it."""
+    a = QPointF(size * 0.22, size * 0.74)
+    b = QPointF(size * 0.78, size * 0.26)
+    p.drawLine(a, b)
+    r = size * 0.13
+    p.drawEllipse(a, r, r)
+    p.drawEllipse(b, r, r)
+
+
+@_drawn(size=ICON_SM, cap=True, join=True)
+def process_icon(p: QPainter, size: int, c: QColor) -> None:
+    """A queue of passes with a play head: rows waiting, worked top to bottom."""
+    left = size * 0.18
+    for row, width in enumerate((0.50, 0.38, 0.26)):
+        y = size * (0.28 + 0.22 * row)
+        p.drawLine(QPointF(left, y), QPointF(left + size * width, y))
+    tip = size * 0.86
+    back = size * 0.62
+    p.drawPolyline(
+        [
+            QPointF(back, size * 0.60),
+            QPointF(tip, size * 0.76),
+            QPointF(back, size * 0.92),
+        ]
+    )
+
+
+@_drawn(size=ICON_SM, join=True)
+def browse_icon(p: QPainter, size: int, c: QColor) -> None:
+    """Stacked bins: the archive everything processed so far files itself into."""
+    m = size * 0.16
+    p.drawRect(QRectF(m, m, size - 2 * m, size * 0.26))
+    p.drawRect(QRectF(m, size * 0.50, size - 2 * m, size * 0.34))
+
+
+# Glyphs for the header's alert box. Only the two states worth acting on get
+# one: a badge that is always lit is a badge nobody reads.
 #
-# The vocabulary is owned by simple/progress.py, which must stay Qt-free and so
-# cannot be imported from core. Spelled out here rather than imported upwards;
-# tests/gui/test_simple_progress.py asserts the two never drift apart.
+# The vocabulary belongs to simple/section_state.py, which is Qt-free and so
+# cannot be imported from core. tests/simple/test_section_state.py holds the two
+# lists together.
 STEP_STATES = ("todo", "ok", "attention", "blocked")
 
-_STEP_RING = {
-    "todo": BORDER_STRONG,
-    "ok": SUCCESS,
-    "attention": WARNING,
-    "blocked": ERROR,
-}
-_STEP_INK = {
-    "todo": TEXT_MUTED,
-    "ok": SUCCESS,
-    "attention": WARNING,
-    "blocked": ERROR,
-}
+_STATE_GLYPHS = {"attention": warning_icon, "blocked": blocked_icon}
 
 
-def step_badge_icon(number: int, state: str, size: int = ICON_MD) -> QIcon:
-    """Numbered disc for the wizard stepper.
-
-    A satisfied step carries a tick and a blocked one an exclamation, so the
-    header says what still needs doing without the labels being read.
-    """
-    if state not in STEP_STATES:
-        raise ValueError(f"Unknown step state: {state!r}")
+def status_dot_icon(colour: str, size: int = ICON_SM) -> QIcon:
+    """A filled dot in an outcome's colour, for a row whose status is one word
+    inside a longer line and has no room for a chip."""
     pm, p = _px(size)
-    cx, cy = size / 2, size / 2
-    r = size * 0.42
-
-    # Filled with the shell colour rather than left transparent: the badge sits
-    # on the accent pill when its step is selected, and a dim ring and numeral
-    # drawn straight onto that blue are barely legible.
-    p.setPen(QPen(QColor(_STEP_RING[state]), 1.2 if state == "todo" else 1.4))
-    p.setBrush(QColor(WINDOW))
-    p.drawEllipse(QPointF(cx, cy), r, r)
-    ink = QColor(_STEP_INK[state])
-
-    if state == "ok":
-        pen = QPen(ink, _stroke(size))
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        p.setPen(pen)
-        p.drawLine(QPointF(size * 0.30, cy), QPointF(size * 0.44, size * 0.66))
-        p.drawLine(QPointF(size * 0.44, size * 0.66), QPointF(size * 0.71, size * 0.34))
-    else:
-        f = QFont()
-        f.setPixelSize(max(8, int(size * 0.52)))
-        f.setBold(True)
-        p.setFont(f)
-        p.setPen(ink)
-        glyph = "!" if state == "blocked" else str(number)
-        p.drawText(QRectF(0, 0, size, size), Qt.AlignmentFlag.AlignCenter, glyph)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(colour))
+    r = size * 0.22
+    p.drawEllipse(QPointF(size / 2, size / 2), r, r)
     p.end()
     return QIcon(pm)
 
 
-def lock_icon(size: int = ICON_SM, color: QColor | None = None) -> QIcon:
-    c = color or QColor(WARNING)
-    pm, p = _px(size)
-    pen = QPen(c, _stroke(size))
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    p.setPen(pen)
+def section_state_icon(state: str, size: int = ICON_SM) -> QIcon | None:
+    """The glyph for a destination's verdict, or None when there is nothing to say."""
+    if state not in STEP_STATES:
+        raise ValueError(f"Unknown section state: {state!r}")
+    draw = _STATE_GLYPHS.get(state)
+    return draw(size) if draw is not None else None
+
+
+@_drawn(size=ICON_SM, ink=WARNING, cap=True)
+def lock_icon(p: QPainter, size: int, c: QColor) -> None:
     cx = size / 2
     bw = size * 0.44
     bh = size * 0.34
@@ -320,5 +348,3 @@ def lock_icon(size: int = ICON_SM, color: QColor | None = None) -> QIcon:
     p.drawRect(QRectF(cx - bw / 2, by, bw, bh))
     ar = size * 0.22
     p.drawArc(QRectF(cx - ar, by - ar * 1.6, ar * 2, ar * 2), 0, 180 * 16)
-    p.end()
-    return QIcon(pm)

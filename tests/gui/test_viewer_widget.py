@@ -14,7 +14,7 @@ import pytest
 
 
 def test_viewer_widget_creates(qapp) -> None:
-    from deepreefmap_gui.viewer.widget import QtPointCloudViewer
+    from deepreefmap_gui.viewer.point_cloud import QtPointCloudViewer
 
     viewer = QtPointCloudViewer(class_colors={1: (255, 0, 0)}, class_names={1: "test"})
     assert viewer.n_frames == 0
@@ -27,7 +27,7 @@ def _random_cloud(n=100):
 
 
 def test_viewer_show_point_cloud(qapp) -> None:
-    from deepreefmap_gui.viewer.widget import QtPointCloudViewer
+    from deepreefmap_gui.viewer.point_cloud import QtPointCloudViewer
 
     viewer = QtPointCloudViewer()
     viewer.show_point_cloud(*_random_cloud())
@@ -44,7 +44,7 @@ def test_viewer_empty_cloud_leaves_the_previous_one_alone(qapp) -> None:
     Asserted because the two are one line apart: reordering them would silently
     wipe the displayed cloud whenever an empty update arrived.
     """
-    from deepreefmap_gui.viewer.widget import QtPointCloudViewer
+    from deepreefmap_gui.viewer.point_cloud import QtPointCloudViewer
 
     viewer = QtPointCloudViewer()
     viewer.show_point_cloud(*_random_cloud())
@@ -73,7 +73,7 @@ def _fake_geometry_scene():
 
 
 def test_geometry_scene_enables_timeline(qapp) -> None:
-    from deepreefmap_gui.viewer.widget import QtPointCloudViewer
+    from deepreefmap_gui.viewer.point_cloud import QtPointCloudViewer
 
     viewer = QtPointCloudViewer()
     fb, mr, xyz, rgb = _fake_geometry_scene()
@@ -86,8 +86,92 @@ def test_geometry_scene_enables_timeline(qapp) -> None:
     viewer.apply_geometry_state(timeline_t=0, point_size=3.0, frustums_visible=True)
 
 
+def _semantic_cloud_scene():
+    """A small semantic scene: real FrameBatch, mapping result and point cloud.
+
+    The real artifact types rather than stand-ins, because this path builds a
+    LiveFrameCloudCache, which reads fields a hand-rolled namespace keeps missing.
+    """
+    from deepreefmap.pipeline.artifacts import (
+        FrameBatch,
+        MappingSequenceResult,
+        PreparedFrame,
+        SemanticPointCloud,
+    )
+
+    rng = np.random.default_rng(0)
+    h = w = 4
+    n = 40
+    frames = (
+        PreparedFrame(
+            frame_index=0,
+            image_rgb=np.zeros((h, w, 3), dtype=np.uint8),
+            labels=rng.choice([1, 5], size=(h, w)).astype(np.uint8),
+            keep_mask=np.ones((h, w), dtype=np.uint8),
+            image_path=None,
+            labels_path=None,
+            mask_path=None,
+        ),
+    )
+    intrinsics = np.array([[10.0, 0, w / 2], [0, 10.0, h / 2], [0, 0, 1]])
+    fb = FrameBatch(
+        frames=frames,
+        intrinsics=intrinsics,
+        image_size=(w, h),
+        clip_counts=(1,),
+        gravity_vectors=None,
+    )
+    mr = MappingSequenceResult(
+        frame_indices=np.array([0], dtype=np.int32),
+        depth_maps=np.ones((1, h, w), dtype=np.float32),
+        poses_w_c=np.eye(4)[None].astype(np.float64),
+        intrinsics=intrinsics,
+        world_points=rng.random((1, h, w, 3)).astype(np.float32),
+        local_points=None,
+        confidence=rng.random((1, h, w)).astype(np.float32),
+        scale_type="metric",
+        gravity_vectors=None,
+    )
+    cloud = SemanticPointCloud(
+        xyz=rng.random((n, 3)).astype(np.float32),
+        rgb=rng.integers(0, 255, (n, 3), dtype=np.uint8),
+        labels=rng.choice([1, 5], size=n).astype(np.int32),
+        frame_indices=np.zeros(n, dtype=np.int32),
+        confidence=rng.random(n).astype(np.float32),
+        distance_to_camera=None,
+    )
+    return fb, mr, cloud
+
+
+def test_both_scene_loaders_install_the_same_scene(qapp) -> None:
+    """Scenario: one loader builds the cloud index, the other is handed one.
+
+    Expected behaviour: everything after the index is identical. The two used to
+    hold 54 duplicated lines of actor, frustum and camera setup, so a fix to one
+    silently left the other behind.
+    """
+    from deepreefmap_gui.viewer.point_cloud import QtPointCloudViewer
+
+    colors = {1: (255, 0, 0), 5: (0, 255, 0)}
+    fb, mr, cloud = _semantic_cloud_scene()
+
+    built = QtPointCloudViewer(class_colors=colors)
+    built.load_scene_data(fb, mr, cloud, None)
+
+    handed = QtPointCloudViewer(class_colors=colors)
+    handed.load_scene_data_indexed(fb, mr, built._final_index, None)
+
+    assert built.has_scene_data and handed.has_scene_data
+    # Non-empty first: the equality below would hold vacuously on two empty scenes.
+    assert sorted(built._class_actors) == [1, 5]
+    assert sorted(built._class_actors) == sorted(handed._class_actors)
+    assert built._max_label_id == handed._max_label_id
+    assert built.n_frames == handed.n_frames
+    assert built._final_index is handed._final_index
+
+
 def test_geometry_scene_clears_back_to_empty(qapp) -> None:
-    from deepreefmap_gui.viewer.widget import QtPointCloudViewer
+    from deepreefmap_gui.viewer.point_cloud import QtPointCloudViewer
 
     viewer = QtPointCloudViewer()
     fb, mr, xyz, rgb = _fake_geometry_scene()
@@ -161,7 +245,7 @@ def test_a_clear_during_the_class_upload_does_not_break_the_iteration(qapp) -> N
     _update_class_clouds pumps the event loop once per class, so any slot that
     resets the viewer runs between two iterations of that loop.
     """
-    from deepreefmap_gui.viewer.widget import QtPointCloudViewer
+    from deepreefmap_gui.viewer.point_cloud import QtPointCloudViewer
 
     viewer = QtPointCloudViewer(class_colors=dict.fromkeys(CLASS_IDS, (255, 0, 0)))
     enabled = _semantic_scene(viewer)
@@ -188,7 +272,7 @@ def test_a_clear_during_the_first_paint_is_deferred_until_the_paint_ends(qapp) -
     Running the clear at that moment would pull the actors and the index out from
     under the rest of the paint, so it is held until the paint has finished.
     """
-    from deepreefmap_gui.viewer.widget import QtPointCloudViewer
+    from deepreefmap_gui.viewer.point_cloud import QtPointCloudViewer
 
     viewer = QtPointCloudViewer(class_colors=dict.fromkeys(CLASS_IDS, (255, 0, 0)))
     enabled = _semantic_scene(viewer)
@@ -329,14 +413,14 @@ def test_compute_transect_view_falls_back_for_degenerate_data() -> None:
 
 
 def test_select_pick_pixel_all_background_returns_none() -> None:
-    from deepreefmap_gui.viewer.widget import QtPointCloudViewer
+    from deepreefmap_gui.viewer.point_cloud import QtPointCloudViewer
 
     z = np.ones((5, 5), dtype=np.float32)  # far plane everywhere == nothing drawn
     assert QtPointCloudViewer._select_pick_pixel(z, (2, 2)) is None
 
 
 def test_select_pick_pixel_snaps_to_only_foreground_pixel() -> None:
-    from deepreefmap_gui.viewer.widget import QtPointCloudViewer
+    from deepreefmap_gui.viewer.point_cloud import QtPointCloudViewer
 
     z = np.ones((5, 5), dtype=np.float32)
     z[1, 3] = 0.4  # one covered pixel at (col=3, row=1), cursor a few px away
@@ -344,14 +428,14 @@ def test_select_pick_pixel_snaps_to_only_foreground_pixel() -> None:
 
 
 def test_select_pick_pixel_prefers_pixel_under_cursor() -> None:
-    from deepreefmap_gui.viewer.widget import QtPointCloudViewer
+    from deepreefmap_gui.viewer.point_cloud import QtPointCloudViewer
 
     z = np.full((5, 5), 0.5, dtype=np.float32)  # everything covered
     assert QtPointCloudViewer._select_pick_pixel(z, (2, 2)) == (2, 2)
 
 
 def test_select_pick_pixel_breaks_distance_ties_by_depth() -> None:
-    from deepreefmap_gui.viewer.widget import QtPointCloudViewer
+    from deepreefmap_gui.viewer.point_cloud import QtPointCloudViewer
 
     # Two covered pixels equidistant from the cursor; the front-most (smaller
     # depth) wins so picks land on the visible surface, not one behind it.

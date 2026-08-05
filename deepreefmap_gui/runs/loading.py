@@ -1,3 +1,11 @@
+"""Opening a run that was already processed, and the controls that stop one.
+
+Loading is the read-only path: a cached run directory or a scene file goes out
+to a worker thread and comes back as a cloud on screen. The stop and pause
+controls sit here too, though they act on a run in flight, because they are the
+same two buttons: with no pipeline running, stop cancels a load instead.
+"""
+
 from __future__ import annotations
 
 import logging

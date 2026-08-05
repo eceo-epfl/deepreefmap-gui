@@ -1,4 +1,4 @@
-"""Plan tab: create, edit, and import the transects a survey runs over."""
+"""Transects: create, edit and import the lines a survey runs over."""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSplitter,
     QStackedWidget,
@@ -39,14 +40,19 @@ from deepreefmap_gui.core.theme import (
     PRIMARY,
     RADIUS,
     TEXT_DIM,
-    TEXT_MUTED,
-    TEXT_SECONDARY,
 )
-from deepreefmap_gui.core.widgets import EmptyState, section_card
+from deepreefmap_gui.core.widgets import (
+    SCOPE_FILTERS,
+    EmptyState,
+    FilterChips,
+    muted_label,
+    secondary_label,
+    section_card,
+)
 from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.map.overlays import OverlayTransect
-from deepreefmap_gui.map.widget import SlippyMapWidget
-from deepreefmap_gui.simple.progress import plan_state
+from deepreefmap_gui.map.slippy_map import SlippyMapWidget
+from deepreefmap_gui.simple.section_state import transects_state
 from deepreefmap_gui.survey.models import (
     Transect,
     compass_point,
@@ -72,6 +78,15 @@ DRAFT_ID = "draft"
 # How much of the map a transect fills when it is picked from the list. Short of
 # the whole viewport so the reef either side of it stays on screen.
 FOCUS_FILL = 0.6
+
+# Wide enough for the cover chart and its six-column table.
+PLAN_ANALYSIS_MIN_WIDTH = 460
+
+_PLAN_SCOPE_TOOLTIP = (
+    "In view lists only the transects the map is showing, and follows the map "
+    "as it is panned and zoomed. The transect being edited stays listed either "
+    "way, so the form and the list cannot disagree."
+)
 
 
 def transect_length_text(length_m: float | None, geodesic_m: float) -> str:
@@ -149,12 +164,11 @@ def next_transect_name(existing: Iterable[str], stem: str = "Transect") -> str:
 
 def _field_label(text: str, top: bool = False) -> QLabel:
     """Muted, right-aligned caption, so the column of inputs reads as one edge."""
-    label = QLabel(text)
+    label = muted_label(text)
     align = Qt.AlignmentFlag.AlignRight | (
         Qt.AlignmentFlag.AlignTop if top else Qt.AlignmentFlag.AlignVCenter
     )
     label.setAlignment(align)
-    label.setStyleSheet(f"color: {TEXT_MUTED};")
     return label
 
 
@@ -233,14 +247,13 @@ class SimplePlanMixin(MixinBase):
     _plan_map_fitted: bool = False
     _plan_list_rebuilding: bool = False
     _plan_visible_ids: tuple[str, ...] = ()
+    # All by default: the map arrives fitted to the whole survey, so In view
+    # would start as a filter that filters nothing and only begins to mean
+    # something once the map has been moved.
+    _plan_scope_filter: str = "all"
 
     def _build_plan_page(self) -> QWidget:
-        """Plan step: the map beside the transect editor.
-
-        The run browser used to sit underneath here, which put the same
-        transects on the page twice and buried the archive inside a planning
-        step. It lives in Browse now.
-        """
+        """The map beside the transect editor. The archive is Browse's."""
         page = QSplitter(Qt.Orientation.Vertical)
         page.setHandleWidth(GUTTER)
         top = QSplitter(Qt.Orientation.Horizontal)
@@ -263,6 +276,17 @@ class SimplePlanMixin(MixinBase):
         map_layout.addWidget(_framed(self._plan_map), 1)
 
         transects_group, group_layout = section_card("Transects")
+        # The map as a filter over the list, rather than as a second copy of it.
+        self._plan_scope_chips = FilterChips(SCOPE_FILTERS)
+        self._plan_scope_chips.setToolTip(_PLAN_SCOPE_TOOLTIP)
+        self._plan_scope_chips.set_current(self._plan_scope_filter)
+        self._plan_scope_chips.changed.connect(self._on_plan_scope_changed)
+        self._plan_scope_chips.setVisible(False)
+        scope_row = QHBoxLayout()
+        scope_row.setContentsMargins(0, 0, 0, 0)
+        scope_row.addWidget(self._plan_scope_chips)
+        scope_row.addStretch(1)
+        group_layout.addLayout(scope_row)
         self._transect_list = QTreeWidget()
         self._transect_list.setColumnCount(len(PLAN_COLUMNS))
         self._transect_list.setHeaderLabels(list(PLAN_COLUMNS))
@@ -304,9 +328,8 @@ class SimplePlanMixin(MixinBase):
         new_btn = QPushButton("New")
         new_btn.setProperty("cta", "true")
         new_btn.clicked.connect(self._on_transect_new)
-        # A saved transect's endpoints are fixed until this is pressed: reading a
-        # line off the map used to be enough to put its ends under the pointer,
-        # where a stray drag moved the survey position with nothing to undo it.
+        # A saved transect's endpoints are fixed until this is pressed, so a
+        # stray drag cannot move a survey position with nothing to undo it.
         self._transect_edit_btn = QPushButton("Edit")
         self._transect_edit_btn.setCheckable(True)
         self._transect_edit_btn.setToolTip(
@@ -386,8 +409,7 @@ class SimplePlanMixin(MixinBase):
 
         # Length and heading are read off the two endpoints, so they are stated
         # rather than entered: a transect drawn the wrong way round shows it here.
-        self._tr_geometry = QLabel("")
-        self._tr_geometry.setStyleSheet(f"color: {TEXT_SECONDARY};")
+        self._tr_geometry = secondary_label("")
         self._tr_geometry.setWordWrap(True)
         self._tr_geometry.setToolTip(
             "Straight-line distance and compass heading from the start point to the end point."
@@ -425,16 +447,33 @@ class SimplePlanMixin(MixinBase):
         self._tr_depth.editingFinished.connect(self._maybe_autosave)
         self._tr_description.editing_finished.connect(self._maybe_autosave)
 
-        # Map and form on top, table full width beneath: the five columns of the
-        # table need the whole window, and the form belongs next to the map it
-        # draws on.
+        # Map and form on top, the list and what it found beneath: the form
+        # belongs beside the map it draws on, and both lower panes are tables
+        # that need width.
         top.addWidget(map_pane)
         top.addWidget(details)
         top.setStretchFactor(0, 1)
         top.setStretchFactor(1, 0)
         details.setMinimumWidth(360)
+
+        # What a transect found, beside the list it is picked from: a tape's
+        # position, its passes and the cover they agree on are facts about one
+        # line. Not in the column above, where the chart and its six-column
+        # table would leave the map a sliver of the window.
+        bottom = QSplitter(Qt.Orientation.Horizontal)
+        bottom.setHandleWidth(GUTTER)
+        bottom.addWidget(transects_group)
+        analysis_scroll = QScrollArea()
+        analysis_scroll.setWidgetResizable(True)
+        analysis_scroll.setWidget(self._build_analysis_page())
+        analysis_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        analysis_scroll.setMinimumWidth(PLAN_ANALYSIS_MIN_WIDTH)
+        bottom.addWidget(analysis_scroll)
+        bottom.setStretchFactor(0, 4)
+        bottom.setStretchFactor(1, 6)
+
         page.addWidget(top)
-        page.addWidget(transects_group)
+        page.addWidget(bottom)
         # Proportional rather than a pixel pair: 620 + 320 is taller than the
         # body of a 900px window, so the table was handed whatever was left and
         # clipped its last row. Both halves are working surfaces, so the map
@@ -450,68 +489,119 @@ class SimplePlanMixin(MixinBase):
     # --- List handling ---
 
     def _refresh_transect_list(self, select_id: uuid.UUID | None = None) -> None:
-        store = self._survey_store()
+        store = self._try_survey_store()
+        if store is None:
+            self._transect_list.clear()
+            self._refresh_plan_map()
+            return
         saved = store.list_transects()
         counts = store.transect_usage_counts()
         self._plan_list_rebuilding = True
+        # Signals blocked for the whole rebuild: with the rows flat, the first
+        # one inserted after a clear becomes current on its own, and letting
+        # that reach the form would load a transect nobody picked over the one
+        # being typed.
+        self._transect_list.blockSignals(True)
         try:
-            # Overlays first: which rows belong in the "In view" section is read
-            # back off the map, so it has to be holding the current set already.
+            # Overlays first: which rows survive the In view scope is read back
+            # off the map, so it has to be holding the current set already.
             self._refresh_plan_map()
-            visible = set(self._plan_map.visible_transect_ids())
-            self._plan_visible_ids = tuple(sorted(visible))
+            visible = self._plan_map.visible_ids()
+            self._plan_visible_ids = () if visible is None else tuple(sorted(visible))
             self._transect_list.clear()
-            # Duplicating the on-screen transects into a section of their own is
-            # what makes a long list usable while panning: the map is the filter.
-            # Only when it is filtering something, though -- when the map holds
-            # every transect the two sections are the same list twice, which
-            # doubled the rows and pushed the last one under the card's edge.
-            in_view = [t for t in saved if str(t.id) in visible] if len(saved) > 1 else []
-            if len(in_view) == len(saved):
-                in_view = []
-            if in_view:
-                self._add_transect_group("In view", in_view, counts)
-            all_group = self._add_transect_group("All transects", saved, counts, always=True)
+            # Chips before rows: dropping below two transects releases the
+            # scope, and the rows have to be built under the scope that leaves.
+            self._refresh_plan_scope_chips(saved, visible)
+            self._add_transect_rows(self._scoped_transects(saved, visible, select_id), counts)
             draft = self._draft_columns()
             if draft is not None:
-                self._add_draft_row(all_group, draft)
+                self._add_draft_row(draft)
             self._transect_stack.setCurrentIndex(0 if saved or draft else 1)
         finally:
+            self._transect_list.blockSignals(False)
             self._plan_list_rebuilding = False
         self._select_transect_row(str(select_id) if select_id is not None else DRAFT_ID)
         # Cached for the Plan badge, which must not query the store itself: this
         # runs on every keystroke while a transect is being typed.
-        self._plan_state = plan_state(len(saved), draft is not None)
+        self._plan_state = transects_state(len(saved), draft is not None)
         self._refresh_section_state()
 
-    def _add_transect_group(
+    def _scoped_transects(
         self,
-        title: str,
+        saved: list[Transect],
+        visible: frozenset[str] | None,
+        select_id: uuid.UUID | None,
+    ) -> list[Transect]:
+        """The transects the active scope leaves.
+
+        ``visible`` is None when the map has no answer yet, and standing aside
+        is the only safe reading of that: filtering on it would empty the list
+        on a page that has not been laid out. The transect about to be selected
+        survives the scope whatever the map says, so picking one and panning off
+        it does not delete the row the form is editing.
+        """
+        if self._plan_scope_filter != "in_view" or visible is None:
+            return saved
+        kept = str(select_id) if select_id is not None else None
+        return [t for t in saved if str(t.id) in visible or str(t.id) == kept]
+
+    def _refresh_plan_scope_chips(
+        self, saved: list[Transect], visible: frozenset[str] | None
+    ) -> None:
+        """Offer the scope only where it filters something.
+
+        Below two transects there is nothing to narrow, and a chip pair over a
+        one-row list is a control that cannot change what is on screen. Going
+        that way releases the scope with it: a filter still applying from a
+        control nobody can see is a row missing for no stated reason.
+        """
+        chips = getattr(self, "_plan_scope_chips", None)
+        if chips is None:
+            return
+        offered = len(saved) > 1
+        chips.setVisible(offered)
+        if not offered and self._plan_scope_filter != "all":
+            self._plan_scope_filter = "all"
+            # Signals blocked: the handler rebuilds the list this is being
+            # called from the middle of.
+            chips.blockSignals(True)
+            try:
+                chips.set_current("all")
+            finally:
+                chips.blockSignals(False)
+        in_view = (
+            len(saved) if visible is None else len([t for t in saved if str(t.id) in visible])
+        )
+        chips.set_counts({"in_view": in_view, "all": len(saved)})
+
+    def _on_plan_scope_changed(self, key: str) -> None:
+        self._plan_scope_filter = key
+        self._refresh_transect_list(select_id=self._transect_form_id)
+
+    def _add_transect_rows(
+        self,
         transects: list[Transect],
         counts: dict[uuid.UUID, tuple[int, int]],
-        always: bool = False,
-    ) -> QTreeWidgetItem:
-        """A titled, non-selectable section holding one row per transect."""
-        if not transects and not always:
-            return QTreeWidgetItem()
-        group = QTreeWidgetItem(self._transect_list, [f"{title}  ({len(transects)})"])
-        group.setFirstColumnSpanned(True)
-        group.setFlags(Qt.ItemFlag.ItemIsEnabled)
-        group.setExpanded(True)
+    ) -> None:
+        """One row per transect, flat.
+
+        No section heading over them: the scope chips above the list already
+        name what it is showing and carry the count, and a heading repeating
+        both cost a row on a card that is short of them.
+        """
         for transect in transects:
             passes, runs = counts.get(transect.id, (0, 0))
-            item = QTreeWidgetItem(group, transect_row_columns(transect, passes, runs))
+            item = QTreeWidgetItem(self._transect_list, transect_row_columns(transect, passes, runs))
             item.setData(0, Qt.ItemDataRole.UserRole, str(transect.id))
             tooltip = transect_tooltip(transect, passes, runs)
             for column in range(len(PLAN_COLUMNS)):
                 item.setToolTip(column, tooltip)
                 if 0 < column < PLAN_SPACER_COLUMN:
                     item.setTextAlignment(column, Qt.AlignmentFlag.AlignRight)
-        return group
 
-    def _add_draft_row(self, parent: QTreeWidgetItem, columns: list[str]) -> QTreeWidgetItem:
-        """The transect being composed, italic, at the foot of the full list."""
-        item = QTreeWidgetItem(parent, columns)
+    def _add_draft_row(self, columns: list[str]) -> QTreeWidgetItem:
+        """The transect being composed, italic, at the foot of the list."""
+        item = QTreeWidgetItem(self._transect_list, columns)
         item.setData(0, Qt.ItemDataRole.UserRole, DRAFT_ID)
         font = item.font(0)
         font.setItalic(True)
@@ -543,7 +633,7 @@ class SimplePlanMixin(MixinBase):
         return [label, length, depth, "—", "—", ""]
 
     def _select_transect_row(self, id_str: str) -> None:
-        """Select the row for ``id_str``, preferring the "In view" copy of it."""
+        """Select the row for ``id_str``, if the active scope is showing it."""
         for item in self._transect_rows():
             if str(item.data(0, Qt.ItemDataRole.UserRole)) == id_str:
                 self._transect_list.blockSignals(True)
@@ -554,14 +644,12 @@ class SimplePlanMixin(MixinBase):
                 return
 
     def _transect_rows(self) -> list[QTreeWidgetItem]:
-        """Every transect row, in display order, without the group headers."""
-        rows: list[QTreeWidgetItem] = []
-        for index in range(self._transect_list.topLevelItemCount()):
-            group = self._transect_list.topLevelItem(index)
-            if group is None:
-                continue
-            rows.extend(group.child(row) for row in range(group.childCount()))
-        return rows
+        """Every transect row, in display order."""
+        return [
+            item
+            for index in range(self._transect_list.topLevelItemCount())
+            if (item := self._transect_list.topLevelItem(index)) is not None
+        ]
 
     def _on_plan_view_changed(self) -> None:
         """Coalesce the stream of view changes a drag produces.
@@ -575,11 +663,21 @@ class SimplePlanMixin(MixinBase):
         self._plan_view_timer.start()
 
     def _apply_plan_view_change(self) -> None:
-        """Pan and zoom re-decide which transects the "In view" section holds."""
-        visible = tuple(sorted(self._plan_map.visible_transect_ids()))
+        """Pan and zoom re-decide what the In view scope leaves.
+
+        Under All transects nothing listed changes, so the list is left alone
+        and only the counts catch up: rebuilding it on every pan would drop the
+        selection for no visible gain.
+        """
+        seen = self._plan_map.visible_ids()
+        visible = () if seen is None else tuple(sorted(seen))
         if visible == self._plan_visible_ids:
             return
-        self._refresh_transect_list(select_id=self._transect_form_id)
+        self._plan_visible_ids = visible
+        if self._plan_scope_filter == "in_view":
+            self._refresh_transect_list(select_id=self._transect_form_id)
+        else:
+            self._refresh_plan_scope_chips(self._survey_store().list_transects(), seen)
 
     def _on_draft_changed(self) -> None:
         if self._transect_form_id is None:
@@ -801,13 +899,14 @@ class SimplePlanMixin(MixinBase):
 
     def _refresh_plan_map(self, fit: bool = False) -> None:
         selected = self._transect_form_id
-        counts = self._survey_store().transect_usage_counts()
+        store = self._try_survey_store()
+        counts = store.transect_usage_counts() if store is not None else {}
         try:
             typed = self._form_coordinates()
         except ValueError:
             typed = None
         overlays = []
-        for transect in self._survey_store().list_transects():
+        for transect in (store.list_transects() if store is not None else []):
             passes, runs = counts.get(transect.id, (0, 0))
             # The selected transect follows the fields as they are typed, so a
             # pasted coordinate lands on the map before it is committed.

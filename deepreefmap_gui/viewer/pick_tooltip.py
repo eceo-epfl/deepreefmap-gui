@@ -147,7 +147,7 @@ class PickCard(QFrame):
         self._name_label.setText(name)
         self._swatch.setStyleSheet(
             f"background-color: rgb({int(r)},{int(g)},{int(b)}); "
-            "border: 1px solid {OVERLAY_BORDER_STRONG};"
+            f"border: 1px solid {OVERLAY_BORDER_STRONG};"
         )
         xyz = payload.get("xyz", (0.0, 0.0, 0.0))
         self._xyz = (float(xyz[0]), float(xyz[1]), float(xyz[2]))

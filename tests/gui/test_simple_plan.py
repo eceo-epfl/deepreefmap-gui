@@ -13,31 +13,25 @@ def type_coord(window, which, text):
     window._on_coords_edited()
 
 
-def row_texts(window, group_title=None):
-    """Every transect row as a tuple of columns, optionally within one group."""
+def row_texts(window):
+    """Every transect row as a tuple of columns. The list is flat: the scope
+    chips above it name what it is showing, so there are no section headings."""
     tree = window._transect_list
-    rows = []
-    for index in range(tree.topLevelItemCount()):
-        group = tree.topLevelItem(index)
-        if group_title is not None and not group.text(0).startswith(group_title):
-            continue
-        for child_index in range(group.childCount()):
-            child = group.child(child_index)
-            # The last column is a spacer that absorbs the leftover width.
-            rows.append(tuple(child.text(c) for c in range(tree.columnCount() - 1)))
-    return rows
+    return [
+        # The last column is a spacer that absorbs the leftover width.
+        tuple(tree.topLevelItem(i).text(c) for c in range(tree.columnCount() - 1))
+        for i in range(tree.topLevelItemCount())
+    ]
 
 
-def group_titles(window):
-    tree = window._transect_list
-    return [tree.topLevelItem(i).text(0) for i in range(tree.topLevelItemCount())]
+def row_names(window):
+    return [row[0] for row in row_texts(window)]
 
 
 def select_row(window, index):
-    """Click the row at ``index`` of the full list, as the user would."""
+    """Click the row at ``index``, as the user would."""
     tree = window._transect_list
-    group = tree.topLevelItem(tree.topLevelItemCount() - 1)
-    tree.setCurrentItem(group.child(index))
+    tree.setCurrentItem(tree.topLevelItem(index))
 
 
 def test_transect_autosaves_once_complete(window):
@@ -54,7 +48,7 @@ def test_transect_autosaves_once_complete(window):
     w._tr_length.setValue(50.0)
     w._maybe_autosave()
     assert w._survey_store().list_transects()[0].length_m == 50.0
-    rows = row_texts(w, "All transects")
+    rows = row_texts(w)
     assert len(rows) == 1
     # A typed tape length is the cable actually laid, so it stands in the row in
     # place of the straight-line distance between the GPS endpoints.
@@ -68,12 +62,12 @@ def test_draft_row_tracks_typing_before_save(window):
     w._refresh_transect_list()
     assert row_texts(w) == []
     w._tr_name_input.setText("Nor")
-    assert [r[0] for r in row_texts(w)] == ["Nor"]
+    assert row_names(w) == ["Nor"]
     item = w._transect_list.currentItem()
     assert item.data(0, Qt.ItemDataRole.UserRole) == "draft"
     assert item.text(0) == "Nor"
     w._tr_name_input.setText("North reef")
-    assert [r[0] for r in row_texts(w)] == ["North reef"]
+    assert row_names(w) == ["North reef"]
     assert w._survey_store().list_transects() == []
 
 
@@ -346,43 +340,91 @@ def test_columns_count_the_passes_and_runs_on_each_transect(window):
     store.add_pass(pass_)
     store.add_run(RunRecord(pass_id=pass_.id, run_dir_name="run_001", status="succeeded"))
     w._refresh_transect_list()
-    assert row_texts(w, "All transects")[0][3:] == ("1", "1")
+    assert row_texts(w)[0][3:] == ("1", "1")
 
 
-def test_in_view_section_holds_what_the_map_shows(window):
+def two_transects(w):
+    w._plan_map.resize(400, 300)
+    w._survey_store().add_transect(make_transect("Near"))
+    w._survey_store().add_transect(
+        make_transect("Far", start_lat=10.0, start_lon=20.0, end_lat=10.001, end_lon=20.001)
+    )
+    w._refresh_transect_list()
+
+
+def test_in_view_narrows_the_list_to_what_the_map_shows(window):
     """Scenario: two transects far apart, the map on one of them.
 
-    Expected behaviour: the visible one is duplicated into a section at the top,
-    and stays in the full list below.
+    Expected behaviour: In view leaves the one on screen, All transects brings
+    the other back. One list either way -- the two used to be separate sections
+    and every on-screen transect appeared in both.
     """
     w = window
-    w._plan_map.resize(400, 300)
-    w._survey_store().add_transect(make_transect("Near"))
-    w._survey_store().add_transect(
-        make_transect("Far", start_lat=10.0, start_lon=20.0, end_lat=10.001, end_lon=20.001)
-    )
-    w._refresh_transect_list()
+    two_transects(w)
     w._plan_map.set_view(-17.5, 177.1, 16)
     w._apply_plan_view_change()
-    assert group_titles(w) == ["In view  (1)", "All transects  (2)"]
-    assert [r[0] for r in row_texts(w, "In view")] == ["Near"]
-    assert sorted(r[0] for r in row_texts(w, "All transects")) == ["Far", "Near"]
+    w._plan_scope_chips.set_current("in_view")
+    assert row_names(w) == ["Near"]
+
+    w._plan_scope_chips.set_current("all")
+    assert sorted(row_names(w)) == ["Far", "Near"]
 
 
-def test_panning_away_empties_the_in_view_section(window):
+def test_the_list_shows_everything_at_rest(window):
+    """The map arrives fitted to the whole survey, so nothing is filtered yet."""
+    w = window
+    two_transects(w)
+    assert sorted(row_names(w)) == ["Far", "Near"]
+
+
+def test_panning_away_empties_the_in_view_list(window):
+    w = window
+    two_transects(w)
+    w._plan_map.set_view(-17.5, 177.1, 16)
+    w._apply_plan_view_change()
+    w._plan_scope_chips.set_current("in_view")
+    assert row_names(w) == ["Near"]
+
+    w._plan_map.set_view(40.0, -70.0, 16)
+    w._apply_plan_view_change()
+    assert row_names(w) == []
+
+
+def test_the_transect_being_edited_survives_the_scope(window):
+    """Panning off the transect in the form must not delete the row it edits."""
+    w = window
+    two_transects(w)
+    near = next(t for t in w._survey_store().list_transects() if t.name == "Near")
+    w._plan_scope_chips.set_current("in_view")
+    w._refresh_transect_list(select_id=near.id)
+    w._plan_map.set_view(40.0, -70.0, 16)
+    w._refresh_transect_list(select_id=near.id)
+    assert row_names(w) == ["Near"]
+
+
+def test_the_scope_counts_follow_the_map_while_showing_all(window):
+    """Switching to In view has to be an informed choice, so the count moves."""
+    w = window
+    two_transects(w)
+    w._plan_map.set_view(-17.5, 177.1, 16)
+    w._apply_plan_view_change()
+    assert w._plan_scope_chips._buttons["in_view"].text().endswith("1")
+    assert w._plan_scope_chips._buttons["all"].text().endswith("2")
+
+
+def test_the_scope_is_offered_only_where_it_filters_something(window):
     w = window
     w._plan_map.resize(400, 300)
     w._survey_store().add_transect(make_transect("Near"))
+    w._refresh_transect_list()
+    chips = w._plan_scope_chips
+    assert not chips.isVisibleTo(chips.parentWidget())
+
     w._survey_store().add_transect(
         make_transect("Far", start_lat=10.0, start_lon=20.0, end_lat=10.001, end_lon=20.001)
     )
     w._refresh_transect_list()
-    w._plan_map.set_view(-17.5, 177.1, 16)
-    w._apply_plan_view_change()
-    assert group_titles(w)[0].startswith("In view")
-    w._plan_map.set_view(40.0, -70.0, 16)
-    w._apply_plan_view_change()
-    assert group_titles(w) == ["All transects  (2)"]
+    assert chips.isVisibleTo(chips.parentWidget())
 
 
 def test_selecting_a_transect_moves_the_map_to_it(window):
@@ -479,3 +521,59 @@ def test_unset_length_and_depth_read_as_nothing_recorded(window):
     assert w._tr_depth.text() == "—"
     w._tr_depth.setValue(8.5)
     assert w._tr_depth.text() == "8.5 m"
+
+
+def test_deleting_down_to_one_transect_releases_the_scope(window):
+    """A filter still applying from a control nobody can see is a row missing
+    for no stated reason."""
+    w = window
+    two_transects(w)
+    w._plan_map.set_view(-17.5, 177.1, 16)
+    w._apply_plan_view_change()
+    w._plan_scope_chips.set_current("in_view")
+    assert row_names(w) == ["Near"]
+
+    far = next(t for t in w._survey_store().list_transects() if t.name == "Far")
+    w._survey_store().delete_transect(far.id)
+    w._refresh_transect_list()
+    assert w._plan_scope_filter == "all"
+    assert row_names(w) == ["Near"]
+
+
+def test_a_transect_is_read_whole_on_one_page(window):
+    """Scenario: a transect's map, its form and what its passes found used to be
+    built twice, on two pages in two destinations, so nothing showed the line
+    whole and the two drawings could disagree.
+
+    Expected behaviour: Transects owns all of it, and Browse's By transect
+    grouping is a filter over the archive with a way through to here.
+    """
+    assert window._plan_map is not None
+    assert window._tr_name_input is not None
+    assert window._analysis_chart is not None
+    assert window._analysis_stats_table is not None
+    # The chart is built once, so the widget Browse used to host is this one.
+    assert window._analysis_chart.window() is window
+
+
+def test_browse_routes_a_transect_through_to_transects(out_root, window):
+    """The grouping's detail pane offers the transect rather than redrawing it."""
+    from _factories import make_transect, seed_survey_run
+
+    transect = make_transect("Reef North")
+    seed_survey_run(window._survey_store(), out_root, "run_a", transect=transect)
+    window._refresh_data_manager()
+    window._data_facet_buttons["transects"].click()
+
+    tree = window._data_tree
+    for index in range(tree.topLevelItemCount()):
+        item = tree.topLevelItem(index)
+        if item.text(0).startswith("Reef North"):
+            tree.setCurrentItem(item)
+            break
+    else:
+        raise AssertionError("Reef North is not listed")
+
+    assert window._data_detail_stack.currentWidget() is window._transect_detail
+    window._transect_detail.open_btn.click()
+    assert window._simple_stack.currentIndex() == 0

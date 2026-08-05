@@ -29,6 +29,44 @@ def test_probe_gpu_reports_cuda_vram(monkeypatch) -> None:
     assert gpu.has_distinct_vram
 
 
+def test_a_card_that_cannot_report_its_vram_is_still_a_card(monkeypatch) -> None:
+    """ROCm builds do not all implement mem_get_info. Readiness asks this probe
+    whether a card exists, so a missing byte count must not read as no GPU."""
+    torch = _fake_torch(cuda=True, name="Radeon RX 7900")
+
+    def unsupported(dev=0):
+        raise RuntimeError("mem_get_info is not supported on this device")
+
+    torch.cuda.mem_get_info = unsupported
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    gpu = sp._probe_gpu()
+    assert gpu.kind == sp.GPU_CUDA
+    assert gpu.name == "Radeon RX 7900"
+    assert (gpu.total_vram_bytes, gpu.free_vram_bytes) == (None, None)
+    assert not gpu.has_distinct_vram
+    assert sp.gpu_present()
+
+
+def test_a_card_that_cannot_name_itself_is_still_a_card(monkeypatch) -> None:
+    torch = _fake_torch(cuda=True)
+
+    def unnamed(dev=0):
+        raise RuntimeError("no device name")
+
+    torch.cuda.get_device_name = unnamed
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    assert sp._probe_gpu().kind == sp.GPU_CUDA
+
+
+def test_gpu_present_follows_the_probe(monkeypatch) -> None:
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch())
+    assert not sp.gpu_present()
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(mps=True))
+    assert sp.gpu_present()
+
+
 def test_probe_gpu_treats_mps_as_unified(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(mps=True))
     gpu = sp._probe_gpu()

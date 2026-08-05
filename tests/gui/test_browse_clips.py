@@ -1,7 +1,7 @@
 """Browse grouped By video: what footage exists, and what became of it.
 
-The clip library used to be a workspace of its own. It is now this grouping's
-rail and detail pane, so these tests reach it through Browse.
+The clip library is this grouping's rail and detail pane, so these tests reach
+it through Browse.
 """
 
 from pathlib import Path
@@ -154,8 +154,108 @@ def test_show_in_folder_opens_the_parent(window, monkeypatch):
 
     opened = []
     monkeypatch.setattr(
-        "deepreefmap_gui.runs.data_manager.QDesktopServices.openUrl",
+        "deepreefmap_gui.runs.browse.QDesktopServices.openUrl",
         staticmethod(lambda url: opened.append(url.toLocalFile())),
     )
     window._on_data_show_clip_folder()
     assert opened == [str(Path("/data"))]
+
+
+def _seed_at(store, name: str, path: Path) -> VideoAsset:
+    """A clip pointing at a real file, so its link state can be resolved."""
+    return store.upsert_video(
+        VideoAsset(file_name=name, path=str(path), hash=name * 4, duration_s=60.0)
+    )
+
+
+def resolve_links(window) -> None:
+    """Run the link scan to completion. It is threaded in the app; here the
+    states are computed directly so the test does not race a worker."""
+    from deepreefmap_gui.survey.catalogue import resolve_link_states
+
+    window._apply_clip_link_states(resolve_link_states(window._video_entries))
+
+
+def test_link_state_says_whether_the_footage_is_still_there(window, tmp_path):
+    """Scenario: footage lives on a card that gets pulled between dives.
+
+    Expected behaviour: the clip stays, and says it cannot be found rather than
+    disappearing or claiming to be fine.
+    """
+    store = window._survey_store()
+    present = tmp_path / "here.mp4"
+    present.write_bytes(b"x" * 32)
+    _seed_at(store, "here.mp4", present)
+    _seed_at(store, "gone.mp4", tmp_path / "gone.mp4")
+
+    show_clips(window)
+    resolve_links(window)
+    states = {c.video.file_name: c.link_state for c in window._video_entries}
+    assert states == {"here.mp4": "linked", "gone.mp4": "missing"}
+
+
+def test_a_missing_clip_offers_to_be_relocated(window, tmp_path):
+    store = window._survey_store()
+    _seed_at(store, "gone.mp4", tmp_path / "gone.mp4")
+    show_clips(window)
+    resolve_links(window)
+
+    select_clip(window, "gone.mp4")
+    assert window._video_detail.relocate_btn.isVisibleTo(window._video_detail)
+    # Nothing to decode, so previewing is not on offer.
+    assert not window._video_detail.preview_btn.isEnabled()
+
+
+def test_relocating_refuses_footage_that_is_not_the_same_recording(
+    window, tmp_path, monkeypatch
+):
+    """A GoPro names every card's first clip GX010001.MP4, so the name proves
+    nothing and the checksum has to be what decides."""
+    from PySide6.QtWidgets import QMessageBox
+
+    store = window._survey_store()
+    original = _seed_at(store, "gone.mp4", tmp_path / "gone.mp4")
+    other = tmp_path / "different.mp4"
+    other.write_bytes(b"different footage" * 64)
+
+    monkeypatch.setattr(
+        "deepreefmap_gui.runs.browse.QFileDialog.getOpenFileName",
+        staticmethod(lambda *a, **k: (str(other), "")),
+    )
+    warned = []
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: warned.append(a)))
+
+    show_clips(window)
+    resolve_links(window)
+    select_clip(window, "gone.mp4")
+    window._on_data_relocate_clip()
+
+    assert warned, "the mismatch has to be reported, not silently ignored"
+    assert store.get_video(original.id).path == str(tmp_path / "gone.mp4")
+
+
+def test_relocating_repoints_the_clip_when_the_checksum_agrees(
+    window, tmp_path, monkeypatch
+):
+    from deepreefmap_gui.survey.models.video_asset import VideoAsset as Asset
+
+    store = window._survey_store()
+    moved = tmp_path / "new_home" / "GX010001.MP4"
+    moved.parent.mkdir()
+    moved.write_bytes(b"the same footage" * 64)
+    # Recorded under its real checksum, at a path it has since left.
+    real_hash = Asset.from_path(moved).hash
+    original = store.upsert_video(
+        VideoAsset(file_name="GX010001.MP4", path=str(tmp_path / "gone.mp4"), hash=real_hash)
+    )
+
+    monkeypatch.setattr(
+        "deepreefmap_gui.runs.browse.QFileDialog.getOpenFileName",
+        staticmethod(lambda *a, **k: (str(moved), "")),
+    )
+    show_clips(window)
+    resolve_links(window)
+    select_clip(window, "GX010001.MP4")
+    window._on_data_relocate_clip()
+
+    assert store.get_video(original.id).path == str(moved)

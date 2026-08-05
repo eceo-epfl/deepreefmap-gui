@@ -17,16 +17,11 @@ import json
 
 import numpy as np
 import pytest
-from deepreefmap.config.classes import ClassConfig, SemanticClass
-from deepreefmap.pipeline.artifacts import (
-    FrameBatch,
-    MappingSequenceResult,
-    PreparedFrame,
-    SemanticPointCloud,
-)
+from _factories import make_classes_config, make_scene
+from deepreefmap.pipeline.artifacts import SemanticPointCloud
 
 from deepreefmap_gui.io.scene_file import find_scene_file, load_scene_file
-from deepreefmap_gui.runs.loaded_run import write_scene_file_from_run_data
+from deepreefmap_gui.runs.loaded_run import scene_file_pending, write_scene_file
 from deepreefmap_gui.runs.progress import (
     _LOAD_PHASES,
     _LOAD_STAGE_TO_PHASE,
@@ -36,6 +31,7 @@ from deepreefmap_gui.runs.progress import (
 )
 
 H, W, N_FRAMES = 4, 6, 3
+CLASS_ID = 1
 
 # The merged manifest instrumented_reconstruction hands the writer: the run name
 # and survey block are folded in by then, and the scene embeds this, not the file
@@ -46,54 +42,38 @@ MANIFEST = {"mode": "semantic", "name": "reef north", "survey": {"pass": {"direc
 @pytest.fixture
 def run_data(tmp_path):
     """A finished run's set_data payload, plus the manifest it wrote."""
-    rng = np.random.default_rng(0)
-    frames = tuple(
-        PreparedFrame(
-            frame_index=i,
-            image_rgb=rng.integers(0, 255, (H, W, 3), dtype=np.uint8),
-            labels=np.full((H, W), 1, dtype=np.uint8),
-            keep_mask=np.ones((H, W), dtype=np.uint8),
-            image_path=None,
-            labels_path=None,
-            mask_path=None,
-        )
-        for i in range(N_FRAMES)
-    )
-    intrinsics = np.array([[100.0, 0, W / 2], [0, 100.0, H / 2], [0, 0, 1]])
-    frame_batch = FrameBatch(
-        frames=frames,
-        intrinsics=intrinsics,
-        image_size=(W, H),
-        clip_counts=(N_FRAMES,),
-    )
-    mapping_result = MappingSequenceResult(
-        frame_indices=np.arange(N_FRAMES, dtype=np.int32),
-        depth_maps=np.ones((N_FRAMES, H, W), dtype=np.float32),
-        poses_w_c=np.repeat(np.eye(4, dtype=np.float32)[None], N_FRAMES, axis=0),
-        intrinsics=intrinsics,
-        scale_type="metric",
-    )
+    scene = make_scene(frame_indices=tuple(range(N_FRAMES)), size=(W, H), class_ids=(CLASS_ID,))
+    rng = np.random.default_rng(1)
     n_points = 20
     cloud = SemanticPointCloud(
         xyz=rng.random((n_points, 3)).astype(np.float32),
         rgb=rng.integers(0, 255, (n_points, 3), dtype=np.uint8),
-        labels=np.full(n_points, 1, dtype=np.int32),
+        labels=np.full(n_points, CLASS_ID, dtype=np.int32),
         frame_indices=rng.integers(0, N_FRAMES, n_points).astype(np.int32),
-    )
-    classes_config = ClassConfig(
-        classes=[SemanticClass(id=1, name="reef", color=(10, 20, 30), roles=frozenset())],
-        path=None,
     )
     (tmp_path / "run_manifest.json").write_text(json.dumps({"mode": "semantic"}))
     return tmp_path, {
-        "frame_batch": frame_batch,
-        "mapping_result": mapping_result,
+        "frame_batch": scene.frame_batch,
+        "mapping_result": scene.mapping,
         "reference_cloud": cloud,
-        "classes_config": classes_config,
+        "classes_config": make_classes_config((CLASS_ID,)),
     }
 
 
 # --- writing it ---------------------------------------------------------
+
+
+def _write(run_dir, data, manifest, **kwargs):
+    """Write a scene from a set_data payload, the way the loader does."""
+    return write_scene_file(
+        run_dir,
+        manifest=manifest,
+        classes_config=data["classes_config"],
+        mapping_result=data["mapping_result"],
+        frame_batch=data["frame_batch"],
+        reference_cloud=data["reference_cloud"],
+        **kwargs,
+    )
 
 
 def test_a_finished_run_writes_a_scene_file_the_loader_accepts(run_data):
@@ -101,7 +81,7 @@ def test_a_finished_run_writes_a_scene_file_the_loader_accepts(run_data):
     here is that the run's first open takes the fast path."""
     run_dir, data = run_data
 
-    out = write_scene_file_from_run_data(run_dir, data, MANIFEST)
+    out = _write(run_dir, data, MANIFEST)
 
     assert out is not None and out.exists()
     assert find_scene_file(run_dir) == out
@@ -112,13 +92,28 @@ def test_a_finished_run_writes_a_scene_file_the_loader_accepts(run_data):
     assert len(scene.frame_indices) == N_FRAMES
 
 
-def test_a_geometry_only_run_writes_nothing(run_data):
-    """No reference cloud, so there is no semantic scene to cache."""
-    run_dir, data = run_data
-    data["reference_cloud"] = SemanticPointCloud.empty()
+def test_a_geometry_only_run_is_never_owed_a_scene_file(run_data):
+    """No reference cloud, so there is no semantic scene to cache.
 
-    assert write_scene_file_from_run_data(run_dir, data, MANIFEST) is None
-    assert find_scene_file(run_dir) is None
+    Asserted on the gate rather than the writer: `scene_file_pending` is what
+    the loader checks before starting a write at all.
+    """
+    from types import SimpleNamespace
+
+    _run_dir, data = run_data
+    geometry_only = SimpleNamespace(
+        from_scene_file=False,
+        mode="semantic",
+        reference_cloud=SemanticPointCloud.empty(),
+    )
+    semantic = SimpleNamespace(
+        from_scene_file=False,
+        mode="semantic",
+        reference_cloud=data["reference_cloud"],
+    )
+
+    assert not scene_file_pending(geometry_only)
+    assert scene_file_pending(semantic)
 
 
 def test_the_write_reports_progress_the_bar_can_follow(run_data):
@@ -127,7 +122,7 @@ def test_the_write_reports_progress_the_bar_can_follow(run_data):
     run_dir, data = run_data
     seen: list[tuple[str, int, int]] = []
 
-    write_scene_file_from_run_data(run_dir, data, MANIFEST, progress_cb=lambda s, c, t: seen.append((s, c, t)))
+    _write(run_dir, data, MANIFEST, progress_cb=lambda s, c, t: seen.append((s, c, t)))
 
     stages = [s for s, _c, _t in seen]
     assert stages[0] == "scene_index"
@@ -146,7 +141,7 @@ def test_every_stage_the_writer_emits_drives_the_scene_save_phase(run_data):
     run_dir, data = run_data
     seen: set[str] = set()
 
-    write_scene_file_from_run_data(run_dir, data, MANIFEST, progress_cb=lambda s, _c, _t: seen.add(s))
+    _write(run_dir, data, MANIFEST, progress_cb=lambda s, _c, _t: seen.add(s))
 
     assert seen == set(_SCENE_SAVE_STAGES)
     for stage in seen:

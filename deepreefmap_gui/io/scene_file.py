@@ -216,7 +216,10 @@ def save_scene_file(
     progress_cb: ProgressCB | None = None,
 ) -> None:
     import zarr
-    from numcodecs import JSON as JSONCodec
+
+    # numcodecs spells the class JSON; aliased so it does not read as the json
+    # module two lines below, and PascalCase because it is a class.
+    from numcodecs import JSON as JSONCodec  # noqa: N811
 
     def _emit(stage: str, cur: int, tot: int) -> None:
         if progress_cb is not None:
@@ -283,7 +286,9 @@ def save_scene_file(
 
 
 def _save_classes(root, classes_config: "ClassConfig") -> None:
-    from numcodecs import JSON as JSONCodec
+    # numcodecs spells the class JSON; aliased so it does not read as the json
+    # module two lines below, and PascalCase because it is a class.
+    from numcodecs import JSON as JSONCodec  # noqa: N811
 
     g = root.require_group("classes")
     ids = np.array([c.id for c in classes_config.classes], dtype=np.int32)

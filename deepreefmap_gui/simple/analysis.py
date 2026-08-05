@@ -1,4 +1,4 @@
-"""Analysis tab: compare repeated passes of a transect."""
+"""Compare repeated passes of one transect. Shown wherever a transect is."""
 
 from __future__ import annotations
 
@@ -21,9 +21,15 @@ from PySide6.QtWidgets import (
 )
 
 from deepreefmap_gui.core.theme import GUTTER, TEXT_MUTED
-from deepreefmap_gui.core.widgets import EmptyState, section_card
+from deepreefmap_gui.core.widgets import (
+    EmptyState,
+    configure_table,
+    muted_label,
+    section_card,
+)
 from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.cover import COVER_LEVELS
+from deepreefmap_gui.runs.run_cards import summarise_run_provenance
 from deepreefmap_gui.simple.charts import GroupedBarChart, pass_color
 from deepreefmap_gui.survey.analysis import (
     PooledCover,
@@ -44,13 +50,13 @@ _CHART_MIN_FRACTION = 0.005
 
 
 class SimpleAnalysisMixin(MixinBase):
-    """DeepReefMapWindow methods for the survey analysis tab."""
+    """DeepReefMapWindow methods for a transect's cover and repeatability."""
 
     def _build_analysis_page(self) -> QWidget:
-        """Transect detail: where it is, what grows on it, and how repeatable that is.
+        """What grows on a transect, and how far its repeat passes disagree.
 
-        Shown in Browse's detail pane when a transect is what you have selected,
-        so it stacks vertically in a column rather than spreading across a page.
+        Built once and shown on the Transects page, beside the list the transect
+        is picked from. Browse groups runs; it does not draw a transect again.
         """
         self._analysis_covers = []
         self._analysis_all_covers = []
@@ -93,6 +99,12 @@ class SimpleAnalysisMixin(MixinBase):
         self._analysis_estimate_label.setWordWrap(True)
         self._analysis_estimate_label.setStyleSheet(f"color: {TEXT_MUTED};")
         chart_layout.addWidget(self._analysis_estimate_label)
+        # Beside the estimate, not under the table: what produced a number is
+        # part of reading it.
+        self._analysis_provenance_label = muted_label("")
+        self._analysis_provenance_label.setWordWrap(True)
+        self._analysis_provenance_label.setVisible(False)
+        chart_layout.addWidget(self._analysis_provenance_label)
         self._analysis_chart = GroupedBarChart()
         self._analysis_chart.setMinimumHeight(160)
         chart_layout.addWidget(self._analysis_chart, 1)
@@ -103,12 +115,10 @@ class SimpleAnalysisMixin(MixinBase):
         # "Cover" is the count-weighted transect estimate. "Mean of passes" is
         # the unweighted average of per-pass fractions, kept only as a spread
         # reference so it is never read as the cover figure.
-        self._analysis_stats_table.setHorizontalHeaderLabels(
-            ["Class", "Cover", "Mean of passes", "Std", "CV", "Range"]
+        configure_table(
+            self._analysis_stats_table,
+            ["Class", "Cover", "Mean of passes", "Std", "CV", "Range"],
         )
-        self._analysis_stats_table.verticalHeader().setVisible(False)
-        self._analysis_stats_table.setShowGrid(False)
-        self._analysis_stats_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._analysis_stats_stack = QStackedWidget()
         self._analysis_stats_stack.addWidget(self._analysis_stats_table)
         self._analysis_stats_stack.addWidget(
@@ -167,19 +177,21 @@ class SimpleAnalysisMixin(MixinBase):
         self._set_scope_transect(self._analysis_transect_id())
 
     def _refresh_survey_analysis(self) -> None:
-        store = self._survey_store()
+        store = self._try_survey_store()
         combo = self._analysis_transect_combo
         selected = combo.currentData()
         combo.blockSignals(True)
         combo.clear()
-        for transect in store.list_transects():
+        for transect in (store.list_transects() if store is not None else []):
             combo.addItem(transect.name, str(transect.id))
             if selected is not None and str(transect.id) == selected:
                 combo.setCurrentIndex(combo.count() - 1)
         combo.blockSignals(False)
 
         transect_id = self._analysis_transect_id()
-        if transect_id is None:
+        # Without a store the combo above is empty, so transect_id is already
+        # None; naming the store here says so rather than leaving it implied.
+        if store is None or transect_id is None:
             self._analysis_covers = []
             self._analysis_all_covers = []
             self._analysis_chart.set_data([], [])
@@ -224,6 +236,8 @@ class SimpleAnalysisMixin(MixinBase):
         """State the estimator and how many passes back the number, up front."""
         if not pooled.counts:
             self._analysis_estimate_label.setText("")
+            self._analysis_provenance_label.setText("")
+            self._analysis_provenance_label.setVisible(False)
             return
         passes = (
             f"{pooled.contributing_passes} of {pooled.expected_passes} "
@@ -233,6 +247,37 @@ class SimpleAnalysisMixin(MixinBase):
             f"Transect cover estimate: count-weighted pool of {passes}. "
             "Bars below show each pass, not the estimate."
         )
+        self._update_analysis_provenance()
+
+    def _update_analysis_provenance(self) -> None:
+        """Name what produced the number, beside the number.
+
+        A cover figure is only usable if the models and the class taxonomy
+        behind it can be named, and both are recorded in every run's manifest.
+        Read from the contributing runs rather than from the current settings:
+        the question is what made this estimate, not what the next run would use.
+
+        Runs that disagree are said to disagree. A pooled figure built from two
+        different taxonomies is not one measurement, and quietly showing the
+        first run's version would hide exactly that.
+        """
+        label = self._analysis_provenance_label
+        entries = {
+            summarise_run_provenance(cover.run_dir_name, self._out_root_input.text())
+            for cover in self._analysis_covers
+        }
+        entries.discard("")
+        label.setVisible(bool(entries))
+        if not entries:
+            label.setText("")
+        elif len(entries) == 1:
+            label.setText(f"Produced by {next(iter(entries))}.")
+        else:
+            label.setText(
+                "Passes were not all produced the same way: "
+                + "; ".join(sorted(entries))
+                + ". Pooling them assumes they are comparable."
+            )
 
     def _refresh_analysis_empty_states(self) -> None:
         """Show each pane's placeholder while it has nothing to say."""

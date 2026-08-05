@@ -14,12 +14,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from deepreefmap_gui.viewer import widget as widget_mod
+from deepreefmap_gui.viewer import point_cloud as widget_mod
 
 
 @pytest.fixture
 def viewer(qapp):
-    from deepreefmap_gui.viewer.widget import QtPointCloudViewer
+    from deepreefmap_gui.viewer.point_cloud import QtPointCloudViewer
 
     view = QtPointCloudViewer(class_colors={1: (255, 0, 0)}, class_names={1: "coral"})
     yield view

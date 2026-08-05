@@ -1,4 +1,4 @@
-"""This machine: its header button, its three views, and the panels it borrows.
+"""Setup: its header button, its four views, and the panels it borrows.
 
 The header button and the Run step read one verdict module, so most of what is
 checked here is the two of them agreeing. A header reporting a ready machine
@@ -8,27 +8,18 @@ module exists to prevent.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
-from _factories import make_transect
+from _factories import make_profile, make_transect
 from _qt_wait import wait_until
 
-from deepreefmap_gui.profiling.system_probe import GPU_CUDA, GPU_NONE
-from deepreefmap_gui.simple import setup as S
+from deepreefmap_gui.simple import setup as setup_mod
 from deepreefmap_gui.simple.machine import MACHINE_VIEWS
-from deepreefmap_gui.simple.progress import ATTENTION, BLOCKED, FIX_MACHINE, OK
+from deepreefmap_gui.simple.section_state import ATTENTION, BLOCKED, FIX_MACHINE, OK
 
 _GB = 1024**3
 
 
-def _profile(*, gpu_name: str | None = "GPU", free: int = 50 * _GB):
-    """A stand-in for probe_system's result, exposing only what readiness reads."""
-    if gpu_name:
-        gpu = SimpleNamespace(kind=GPU_CUDA, name=gpu_name)
-    else:
-        gpu = SimpleNamespace(kind=GPU_NONE, name="CPU only")
-    return SimpleNamespace(gpu=gpu, disk_free_bytes=free)
+_profile = make_profile
 
 
 @pytest.fixture
@@ -40,7 +31,7 @@ def ready_machine(window, monkeypatch):
     of RAM would each otherwise decide it. Grading no frames is what leaves the
     memory advisory off, since the grade reads the real machine's RAM.
     """
-    monkeypatch.setattr(S, "probe_system", lambda *_a, **_k: _profile())
+    monkeypatch.setattr(setup_mod, "probe_system", lambda *_a, **_k: _profile())
     monkeypatch.setattr(window, "_survey_missing_models", list)
     monkeypatch.setattr(window, "_memory_grade_frames", lambda _fps: None)
     window._update_memory_profile_warning()
@@ -79,8 +70,8 @@ def queued_machine(ready_machine, tmp_path, monkeypatch):
 def test_the_header_and_the_run_gate_agree_about_a_missing_model(queued_machine, monkeypatch):
     """Scenario: a model these settings need never made it onto the disk.
 
-    Expected behaviour: the Run step blocks and names This machine as the place
-    to fix it, and the header button that opens This machine reports a blocked
+    Expected behaviour: the Run step blocks and names Setup as the place
+    to fix it, and the header button that opens Setup reports a blocked
     machine. Both verdicts come from one module for exactly this reason.
     """
     window = queued_machine
@@ -99,7 +90,7 @@ def test_the_header_and_the_run_gate_agree_about_a_missing_graphics_card(
 ):
     """The same agreement for the other blocker that is fixed on this machine."""
     window = queued_machine
-    monkeypatch.setattr(S, "probe_system", lambda *_a, **_k: _profile(gpu_name=None))
+    monkeypatch.setattr(setup_mod, "probe_system", lambda *_a, **_k: _profile(gpu_name=None))
     monkeypatch.setattr(window, "_gpu_available", lambda: False)
     window._recompute_survey_start()
 
@@ -183,7 +174,7 @@ def test_the_header_button_paints_one_slot_per_thing_it_has_to_report(
 
 def test_a_memory_advisory_reaches_the_header_without_blocking(ready_machine):
     window = ready_machine
-    window._memory_advisory = "This batch may exhaust memory on this machine."
+    window._memory_advisory = "This session may exhaust memory on this machine."
     window._refresh_machine_button()
 
     assert window._machine_verdict().state == ATTENTION
@@ -191,12 +182,12 @@ def test_a_memory_advisory_reaches_the_header_without_blocking(ready_machine):
 
 
 def test_the_header_button_opens_this_machine(window):
-    window._set_simple_section("plan")
+    window._set_simple_section("transects")
     window._machine_nav_button.click()
     assert window._current_section() == "machine"
 
 
-# --- three views of one computer ---------------------------------------------
+# --- the views of one computer ---------------------------------------------
 
 
 @pytest.mark.parametrize("view", MACHINE_VIEWS)
@@ -230,6 +221,7 @@ def test_an_unknown_view_is_rejected(window):
     [
         ("_models_page", "_machine_models_host"),
         ("_system_page", "_machine_system_host"),
+        ("_updates_page", "_machine_updates_host"),
         ("_out_root_widget", "_machine_out_root_host"),
     ],
 )
@@ -253,14 +245,35 @@ def test_each_panel_is_lent_to_the_machine_page_rather_than_rebuilt(
     assert widget.parentWidget() is host
 
 
+def _on_view(window, widget, view):
+    """Whether a widget is somewhere inside the given view of the machine page."""
+    page = window._machine_stack.widget(MACHINE_VIEWS.index(view))
+    while widget is not None:
+        if widget is page:
+            return True
+        widget = widget.parentWidget()
+    return False
+
+
+@pytest.mark.parametrize(
+    "widget_attr, view",
+    [("_out_root_widget", "readiness"), ("_updates_page", "updates")],
+)
+def test_a_lent_panel_lands_on_the_view_that_claims_it(window, widget_attr, view):
+    """The output root is set where the disk-space row that measures it is read,
+    and the updater is the one view that changes the software rather than
+    describing the computer."""
+    assert _on_view(window, getattr(window, widget_attr), view)
+
+
 # --- the gauge poll follows the gauges ---------------------------------------
 
 
-def test_the_gauges_poll_only_while_the_system_view_is_on_screen(window):
+def test_the_gauges_poll_only_while_the_performance_view_is_on_screen(window):
     """A 1 Hz tick against widgets nobody is looking at is a battery cost."""
     window._set_simple_section("machine")
 
-    window._set_machine_view("system")
+    window._set_machine_view("performance")
     assert window._sys_timer.isActive()
 
     window._set_machine_view("readiness")
@@ -275,12 +288,12 @@ def test_leaving_this_machine_stops_the_gauge_poll(window):
     that can notice the gauges have gone; when nothing asked, the poll leaked.
     """
     window._set_simple_section("machine")
-    window._set_machine_view("system")
+    window._set_machine_view("performance")
     assert window._sys_timer.isActive()
 
-    window._set_simple_section("plan")
+    window._set_simple_section("transects")
 
-    assert window._machine_view == "system"
+    assert window._machine_view == "performance"
     assert not window._sys_timer.isActive()
 
     window._set_simple_section("machine")

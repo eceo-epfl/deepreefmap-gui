@@ -12,21 +12,14 @@ live load is driving.
 from __future__ import annotations
 
 import pytest
-
-
-class _FakeAccessor:
-    def __init__(self):
-        self.closed = False
-
-    def close(self):
-        self.closed = True
+from _factories import FakeAccessor
 
 
 class _FakeResult:
     """Enough of a GuiLoadedRun for _apply_loaded_run's early exits."""
 
     def __init__(self):
-        self.scene_accessor = _FakeAccessor()
+        self.scene_accessor = FakeAccessor()
 
 
 @pytest.fixture

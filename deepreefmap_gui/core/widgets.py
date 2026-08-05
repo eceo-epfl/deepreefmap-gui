@@ -1,24 +1,33 @@
-"""Small shared building blocks: section cards, empty states, status pills."""
+"""Small shared building blocks: section cards, empty states, tables, dialogs."""
 
 from __future__ import annotations
 
-from PySide6.QtCore import QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPainter
+from collections.abc import Sequence
+
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QButtonGroup,
+    QDialog,
+    QDialogButtonBox,
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
+    QProgressBar,
     QPushButton,
     QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
+    QTableWidget,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from deepreefmap_gui.core.theme import (
+    BAR_HEIGHT,
     BORDER,
     BORDER_STRONG,
     BUTTON,
@@ -26,6 +35,7 @@ from deepreefmap_gui.core.theme import (
     CONTROL_HEIGHT,
     ERROR,
     FONT_SM,
+    GROOVE,
     ON_ACCENT,
     PRIMARY,
     RADIUS,
@@ -38,28 +48,45 @@ from deepreefmap_gui.core.theme import (
     SURFACE_HI,
     TEXT_DIM,
     TEXT_MUTED,
-    TEXT_SECONDARY,
     WARN_BG,
     WARN_BORDER,
     WARN_TEXT,
     WARNING,
     WEIGHT_SEMIBOLD,
     WINDOW_TEXT,
+    bar_qss,
 )
+from deepreefmap_gui.survey import statuses
 
 
 def section_title_font(label: QLabel) -> None:
-    """The one weight a section title is set in.
-
-    It was previously spelled three ways -- QFont.Weight.DemiBold here,
-    `font-weight: 600` on the setup page, `font-weight: bold` on the run detail
-    pane -- so three panels sitting next to each other titled themselves
-    differently.
-    """
+    """The one weight a section title is set in."""
     font = label.font()
     font.setWeight(QFont.Weight.DemiBold)
     label.setFont(font)
     label.setStyleSheet(f"color: {TEXT_MUTED};")
+
+
+def tone_label(text: str = "", tone: str = "muted", parent: QWidget | None = None) -> QLabel:
+    """A label carrying one of the app's text roles rather than a colour.
+
+    The tone is a QSS property (see the ``QLabel[tone=...]`` rules in theme.py),
+    so the colour lives with the palette. Prefer this to
+    ``setStyleSheet(f"color: {...}")``, which opts the label out of the theme.
+    """
+    label = QLabel(text, parent)
+    label.setProperty("tone", tone)
+    return label
+
+
+def muted_label(text: str = "", parent: QWidget | None = None) -> QLabel:
+    """A caption or field label beside the thing it describes."""
+    return tone_label(text, "muted", parent)
+
+
+def secondary_label(text: str = "", parent: QWidget | None = None) -> QLabel:
+    """A readout: a shade brighter than a caption, dimmer than body text."""
+    return tone_label(text, "secondary", parent)
 
 
 class SectionHeader(QLabel):
@@ -94,16 +121,33 @@ def section_card(title: str = "", *, spacing: int = SPACE_SM) -> tuple[QWidget, 
     return card, outer
 
 
+def lent_panel_home(parent: QWidget) -> tuple[QWidget, QWidget, QVBoxLayout]:
+    """A permanent holder for a panel that lives somewhere else, and the panel.
+
+    Two widgets rather than one because the page is lent to a destination and
+    handed back; the home is the empty holder it returns to. Parented and hidden,
+    because a parentless widget made visible maps itself as a top-level window.
+    """
+    # No layout-level AlignTop: it shrinks the layout to its size hint and wraps
+    # word-wrapped labels narrow. Panels that need top alignment end with a
+    # stretch of their own.
+    home = QWidget(parent)
+    home.setVisible(False)
+    home_layout = QVBoxLayout(home)
+    home_layout.setContentsMargins(0, 0, 0, 0)
+    page = QWidget()
+    page_layout = QVBoxLayout(page)
+    page_layout.setContentsMargins(0, 0, 0, 0)
+    home_layout.addWidget(page)
+    return home, page, page_layout
+
+
 def segmented_qss(*, first: bool, last: bool) -> str:
     """One button of a joined segmented control, filled when it is the live one.
 
     The segments share a seam: only the outermost corners round, and every
     segment after the first drops its left border so the row reads as one
     control rather than as several loose pills.
-
-    Both callers used to carry their own copy of this, and the copies had
-    diverged -- one knew only *first* vs *not-first*, so in a three-way control
-    the middle segment rounded its right edge in the middle of the group.
     """
     corners = []
     if first:
@@ -155,14 +199,102 @@ class KeyValueList(QWidget):
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop
             )
             self._grid.addWidget(name, row, 0)
-            shown = QLabel(value)
-            shown.setStyleSheet(f"color: {TEXT_SECONDARY};")
+            shown = secondary_label(value)
             shown.setWordWrap(True)
             shown.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
             self._grid.addWidget(shown, row, 1)
 
     def clear(self) -> None:
         self.set_rows([])
+
+
+# The map viewport as a filter. Shared so the Plan list and the Browse run list
+# offer the same two words for the same idea.
+SCOPE_FILTERS = (
+    ("in_view", "In view"),
+    ("all", "All transects"),
+)
+
+
+def utility_button_qss(right_padding: int = SPACE_SM) -> str:
+    """A header utility control: bordered and quiet rather than filled.
+
+    Distinct on purpose from the workspace pills beside it. Those say where you
+    are working; a utility is somewhere you visit and leave, or a panel you
+    toggle. ``right_padding`` reserves room for anything painted after the
+    label, so the text does not shift as it comes and goes.
+    """
+    return (
+        f"QToolButton {{ border: 1px solid {BORDER}; border-radius: {RADIUS_SM}px;"
+        f" background: {BUTTON}; color: {WINDOW_TEXT};"
+        f" padding: {SPACE_XS}px {right_padding}px {SPACE_XS}px {SPACE_SM}px;"
+        f" min-height: {CONTROL_HEIGHT}px; }}"
+        f" QToolButton:hover {{ background: {SURFACE_HI}; border-color: {BORDER_STRONG}; }}"
+        f" QToolButton:focus {{ border-color: {PRIMARY}; }}"
+        f" QToolButton:checked {{ background: {PRIMARY}; color: {ON_ACCENT};"
+        f" font-weight: {WEIGHT_SEMIBOLD}; border-color: transparent; }}"
+    )
+
+
+# How strongly a chip tints its own background, out of 255. Low because the text
+# on it is the same colour as the fill; test_design_system.py holds the floor.
+PILL_TINT_ALPHA = 36
+PILL_PROGRESS_ALPHA = 96
+# The selected filter chip's outline.
+PILL_BORDER_ALPHA = 110
+
+
+def tinted(colour: str, alpha: int) -> str:
+    """``colour`` as an rgba() string, so a stylesheet keeps the theme token it
+    came from instead of carrying a second, transparent hex."""
+    c = QColor(colour)
+    return f"rgba({c.red()}, {c.green()}, {c.blue()}, {alpha})"
+
+
+# Shorter than CONTROL_HEIGHT: a chip is a label you may be able to press, not a
+# control in a form, and at the full height a row of them reads as buttons.
+CHIP_HEIGHT = CONTROL_HEIGHT - 2 * SPACE_XS
+
+
+def chip_qss(colour: str, *, interactive: bool) -> str:
+    """One chip: an outcome, or the filter that selects it.
+
+    A pill tinted from its own ink, never filled solid: a solid fill is what a
+    pressed button looks like, and both sit on the same screens.
+    """
+    shape = (
+        f" border-radius: {CHIP_HEIGHT // 2}px; padding: 0px {SPACE_MD}px;"
+        f" min-height: {CHIP_HEIGHT}px;"
+    )
+    lit = (
+        f" background: {tinted(colour, PILL_TINT_ALPHA)}; color: {colour};"
+        f" font-weight: {WEIGHT_SEMIBOLD};"
+    )
+    if not interactive:
+        return f"QLabel {{ border: 1px solid transparent;{shape}{lit} }}"
+    # Only the chip in force carries its outcome's colour.
+    return (
+        f"QToolButton {{ border: 1px solid {BORDER};{shape}"
+        f" background: transparent; color: {TEXT_MUTED}; }}"
+        f" QToolButton:hover {{ color: {WINDOW_TEXT}; border-color: {BORDER_STRONG}; }}"
+        f" QToolButton:focus {{ border-color: {PRIMARY}; color: {WINDOW_TEXT}; }}"
+        f" QToolButton:checked {{ border-color: {tinted(colour, PILL_BORDER_ALPHA)};{lit} }}"
+    )
+
+
+class StatusChip(QLabel):
+    """An outcome, in the shape and colour the tables paint it."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.set_status("", TEXT_MUTED)
+
+    def set_status(self, text: str, colour: str = TEXT_MUTED) -> None:
+        self.setText(text)
+        self.setStyleSheet(chip_qss(colour, interactive=False))
+        self.setVisible(bool(text))
 
 
 class FilterChips(QWidget):
@@ -177,34 +309,26 @@ class FilterChips(QWidget):
     changed = Signal(str)
 
     def __init__(
-        self, options: tuple[tuple[str, str], ...], parent: QWidget | None = None
+        self,
+        options: Sequence[tuple[str, ...]],
+        parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(SPACE_XS)
-        self._labels = dict(options)
+        self._labels = {key: title for key, title, *_ in options}
         self._buttons: dict[str, QToolButton] = {}
         group = QButtonGroup(self)
         group.setExclusive(True)
-        for key, title in options:
+        for key, title, *rest in options:
             button = QToolButton()
             button.setText(title)
             button.setCheckable(True)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
-            # min-height rather than more padding: the chip sits on the same
-            # click-target floor as every other control without its text
-            # drifting off the row's baseline.
-            button.setStyleSheet(
-                f"QToolButton {{ border: 1px solid {BORDER};"
-                f" border-radius: {RADIUS_SM}px; padding: {SPACE_XS}px {SPACE_MD}px;"
-                f" min-height: {CONTROL_HEIGHT - 2 * SPACE_XS}px;"
-                f" background: transparent; color: {TEXT_MUTED}; }}"
-                f" QToolButton:hover {{ color: {WINDOW_TEXT}; border-color: {BORDER_STRONG}; }}"
-                f" QToolButton:focus {{ border-color: {PRIMARY}; color: {WINDOW_TEXT}; }}"
-                f" QToolButton:checked {{ background: {PRIMARY}; color: {ON_ACCENT};"
-                f" font-weight: {WEIGHT_SEMIBOLD}; border-color: transparent; }}"
-            )
+            # A filter selecting an outcome takes that outcome's colour once it
+            # is in force. Filters that select anything else take the accent.
+            button.setStyleSheet(chip_qss(rest[0] if rest else PRIMARY, interactive=True))
             button.toggled.connect(
                 lambda checked, k=key: self.changed.emit(k) if checked else None
             )
@@ -320,33 +444,131 @@ class NotReadyStrip(QWidget):
         self.setVisible(False)
 
 
-# Run statuses come from SurveyStore; anything unrecognised stays neutral.
-# Public because the run detail pane colours its status line from the same map:
-# one status must not read green in the list and grey beside it.
-STATUS_COLORS = {
-    "succeeded": SUCCESS,
-    "running": WARNING,
-    "failed": ERROR,
-    "cancelled": TEXT_DIM,
-    # Abandoned by a crash or quit, not a clean stop: amber flags it as work to
-    # redo rather than the neutral grey a deliberate cancel gets.
-    "interrupted": WARNING,
-    "queued": TEXT_MUTED,
-    # Held back by the user, not by anything that went wrong.
-    "held": TEXT_DIM,
+class HeaderAlert(QWidget):
+    """The one destination that wants attention, named in the header.
+
+    Hidden whenever nothing is wrong. ``NotReadyStrip`` is the page-level
+    equivalent: it names what stops one page working, this says which page.
+    """
+
+    clicked = Signal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("headerAlert")
+        # A bare QWidget takes its background from the palette and ignores the
+        # stylesheet's, which leaves the box invisible.
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(SPACE_SM, SPACE_XS, SPACE_SM, SPACE_XS)
+        row.setSpacing(SPACE_SM)
+
+        self._glyph = QLabel()
+        row.addWidget(self._glyph)
+        self._text = QLabel("")
+        row.addWidget(self._text)
+
+        # One tint for both states it can carry; severity is the glyph's job.
+        self.setStyleSheet(
+            f"QWidget#headerAlert {{ background-color: {WARN_BG};"
+            f" border: 1px solid {WARN_BORDER}; border-radius: {RADIUS_SM}px; }}"
+            f" QLabel {{ color: {WARN_TEXT}; background: transparent; }}"
+        )
+        self.setVisible(False)
+
+    def show_alert(self, text: str, tooltip: str = "", pixmap: QPixmap | None = None) -> None:
+        self._text.setText(text)
+        self.setToolTip(tooltip or text)
+        self._glyph.setVisible(pixmap is not None)
+        self._glyph.setPixmap(pixmap if pixmap is not None else QPixmap())
+        self.setVisible(bool(text))
+
+    def clear(self) -> None:
+        self._text.setText("")
+        self.setVisible(False)
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
+
+
+def ok_cancel_row(dialog: QDialog) -> QDialogButtonBox:
+    """The Ok/Cancel pair at the foot of a dialog, wired to accept and reject.
+
+    Three dialogs carried a character-for-character copy of this. The box is
+    returned rather than added to a layout, because the caller places it and one
+    caller keeps the Ok button to gate it on a selection.
+    """
+    buttons = QDialogButtonBox(
+        QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+    )
+    buttons.accepted.connect(dialog.accept)
+    buttons.rejected.connect(dialog.reject)
+    return buttons
+
+
+def confirm(parent: QWidget | None, title: str, text: str) -> bool:
+    """Ask a yes/no question, with No as the button Enter picks.
+
+    Every prompt in the app guards something the answer cannot take back: a
+    delete, a trim written over every other pass of a transect, a batch started
+    on a disk that will not hold it. Most sites spelled that default out by
+    hand; the delete prompt took Qt's, which puts the focus ring on Yes.
+    """
+    answer = QMessageBox.question(
+        parent,
+        title,
+        text,
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        QMessageBox.StandardButton.No,
+    )
+    return answer == QMessageBox.StandardButton.Yes
+
+
+def configure_table(
+    table: QTableWidget, headers: Sequence[str], *, alternating: bool = True
+) -> None:
+    """The defaults every table in the app reads under: whole rows, no edit
+    triggers, the theme's alternate fill.
+
+    ``alternating`` is for the one table whose cells are widgets: they paint
+    their own background, so the stripe would stop halfway across the row.
+    """
+    table.setHorizontalHeaderLabels(list(headers))
+    table.verticalHeader().setVisible(False)
+    table.setShowGrid(False)
+    table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+    table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+    table.setAlternatingRowColors(alternating)
+
+
+# The palette for survey/statuses.py's colour roles. That table is Qt-free; this
+# is the one place it meets the theme.
+TONE_COLORS = {
+    statuses.TONE_GOOD: SUCCESS,
+    statuses.TONE_BAD: ERROR,
+    statuses.TONE_BUSY: WARNING,
+    statuses.TONE_IDLE: TEXT_MUTED,
+    statuses.TONE_QUIET: TEXT_DIM,
 }
+
+# Every status the interface can show. Public: the tables, the detail panes and
+# the filter chips all read it, so one status has one colour.
+STATUS_COLORS = {
+    status: TONE_COLORS[statuses.status_tone(status)] for status in statuses.DISPLAY_STATUSES
+}
+
+
+def clip_outcome_color(outcome: str) -> str:
+    """The colour for a clip's own state, from the roles the runs use."""
+    return TONE_COLORS[statuses.clip_spec(outcome).tone]
 
 
 # Percent complete of the pass a status cell describes, 0-100. Absent on every
 # row but the one being processed, which is what makes the pill a progress bar.
 PASS_PERCENT_ROLE = Qt.ItemDataRole.UserRole + 1
-
-# How strongly a status pill tints its own background, out of 255. Kept low
-# because the pill text is the same colour as the fill; test_theme.py asserts
-# every STATUS_COLORS entry still clears 4.5:1 against the pill it paints.
-PILL_TINT_ALPHA = 36
-PILL_PROGRESS_ALPHA = 96
-
 
 class StatusPillDelegate(QStyledItemDelegate):
     """Paints a run status as a tinted pill, readable across the table.
@@ -416,3 +638,56 @@ class StatusPillDelegate(QStyledItemDelegate):
             metrics.elidedText(text, Qt.TextElideMode.ElideRight, int(pill.width()) - pad_x),
         )
         painter.restore()
+
+
+class MeterBar(QProgressBar):
+    """A thin utilisation bar that can also say it has nothing to report.
+
+    Qt draws a range of (0, 0) as a busy animation, so an unknown figure reads
+    as activity. Unavailable is painted instead as hazard hatching: static, and
+    obviously not a level.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setRange(0, 100)
+        self.setTextVisible(False)
+        self.setFixedHeight(BAR_HEIGHT)
+        self._unavailable = False
+
+    def set_level(self, percent: float, colour: str) -> None:
+        self._unavailable = False
+        self.setRange(0, 100)
+        self.setValue(int(round(max(0.0, min(100.0, percent)))))
+        self.setStyleSheet(bar_qss(colour))
+        self.update()
+
+    def set_unavailable(self) -> None:
+        self._unavailable = True
+        self.setRange(0, 100)
+        self.setValue(0)
+        self.setStyleSheet(bar_qss(GROOVE))
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        if not self._unavailable:
+            super().paintEvent(event)
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        track = QRectF(self.rect())
+        radius = track.height() / 2.0
+        path = QPainterPath()
+        path.addRoundedRect(track, radius, radius)
+        painter.fillPath(path, QColor(GROOVE))
+        painter.setClipPath(path)
+        pen = QPen(QColor(ERROR))
+        pen.setWidthF(2.0)
+        painter.setPen(pen)
+        # Diagonals at a fixed pitch, offset so each starts off the left edge.
+        pitch = 7.0
+        x = -track.height()
+        while x < track.width() + track.height():
+            painter.drawLine(QPointF(x, track.bottom()), QPointF(x + track.height(), track.top()))
+            x += pitch
+        painter.end()

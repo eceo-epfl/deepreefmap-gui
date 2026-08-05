@@ -1,4 +1,4 @@
-"""System panel: live RAM/VRAM/CPU/disk gauges and a no-video machine benchmark.
+"""Performance panel: live RAM/VRAM/CPU/disk gauges and what past runs cost.
 
 Reads system_probe, the same source the pre-flight check uses, so the numbers the
 user sees match the ones the guard decides on.
@@ -23,11 +23,11 @@ from deepreefmap_gui.core.theme import (
     BLOCK,
     FONT_LG,
     FONT_SM,
-    PRIMARY,
     TEXT_MUTED,
     UPDATE,
     bar_qss,
 )
+from deepreefmap_gui.core.widgets import MeterBar, muted_label
 from deepreefmap_gui.core.window_protocol import MixinBase
 
 
@@ -68,17 +68,13 @@ class SystemPanelMixin(MixinBase):
 
         grid = QGridLayout()
         grid.setColumnStretch(1, 1)
-        self._sys_gauges: dict[str, tuple[QProgressBar, QLabel]] = {}
+        self._sys_gauges: dict[str, tuple[MeterBar, QLabel]] = {}
         for row, (key, name) in enumerate(
             (("ram", "RAM"), ("swap", "Swap"), ("vram", "VRAM"), ("cpu", "CPU"), ("disk", "Disk"))
         ):
-            gauge_name = QLabel(name)
-            gauge_name.setStyleSheet(f"color: {TEXT_MUTED};")
+            gauge_name = muted_label(name)
             grid.addWidget(gauge_name, row, 0)
-            bar = QProgressBar()
-            bar.setRange(0, 100)
-            bar.setTextVisible(False)
-            bar.setFixedHeight(BAR_HEIGHT)
+            bar = MeterBar()
             grid.addWidget(bar, row, 1)
             value = QLabel("n/a")
             value.setMinimumWidth(150)
@@ -113,8 +109,7 @@ class SystemPanelMixin(MixinBase):
         self._recorded_runs_filter_row = QWidget()
         filter_layout = QHBoxLayout(self._recorded_runs_filter_row)
         filter_layout.setContentsMargins(0, 3, 0, 0)
-        filter_label = QLabel("Model combination")
-        filter_label.setStyleSheet(f"color: {TEXT_MUTED};")
+        filter_label = muted_label("Model combination")
         filter_layout.addWidget(filter_label)
         self._recorded_runs_filter_combo = QComboBox()
         self._recorded_runs_filter_combo.setSizeAdjustPolicy(
@@ -132,15 +127,7 @@ class SystemPanelMixin(MixinBase):
         self._recorded_run_groups: list[dict] = []
         self._refresh_recorded_runs()
 
-        # The updates section (version, install, desktop entry) is appended to
-        # this same layout by _build_form_widgets; give it a labelled break. No
-        # trailing stretch here, the updates block ends with one.
-        divider = QFrame()
-        divider.setFrameShape(QFrame.Shape.HLine)
-        divider.setFrameShadow(QFrame.Shadow.Sunken)
-        layout.addWidget(divider)
-        updates_header = QLabel("<b>Updates</b>")
-        layout.addWidget(updates_header)
+        layout.addStretch()
 
         # 1 Hz gauge tick, run only while the gauges are on screen so an idle
         # background poll never costs anything.
@@ -244,18 +231,15 @@ class SystemPanelMixin(MixinBase):
         """Add a `name | bar | value` meter row, or a muted note when there is no data."""
         from deepreefmap_gui.profiling.system_probe import format_bytes
 
-        label = QLabel(name)
-        label.setStyleSheet(f"color: {TEXT_MUTED};")
+        label = muted_label(name)
         grid.addWidget(label, row, 0)
         if not recorded or not used or not total:
-            note = QLabel("not recorded" if not recorded else "n/a")
-            note.setStyleSheet(f"color: {TEXT_MUTED};")
+            note = muted_label("not recorded" if not recorded else "n/a")
             grid.addWidget(note, row, 1, 1, 2)
             return
         pct = 100.0 * used / total
         grid.addWidget(_meter_bar(pct), row, 1)
-        value = QLabel(f"{pct:.0f}% · {format_bytes(used)} / {format_bytes(total)}")
-        value.setStyleSheet(f"color: {TEXT_MUTED};")
+        value = muted_label(f"{pct:.0f}% · {format_bytes(used)} / {format_bytes(total)}")
         value.setMinimumWidth(140)
         grid.addWidget(value, row, 2)
 
@@ -265,19 +249,16 @@ class SystemPanelMixin(MixinBase):
         """Add a `Time | median wall-clock · s/frame` row (no bar, time has no ceiling)."""
         from deepreefmap_gui.profiling.eta import format_duration
 
-        label = QLabel("Time")
-        label.setStyleSheet(f"color: {TEXT_MUTED};")
+        label = muted_label("Time")
         grid.addWidget(label, row, 0)
         if not run_seconds:
-            note = QLabel("not recorded")
-            note.setStyleSheet(f"color: {TEXT_MUTED};")
+            note = muted_label("not recorded")
             grid.addWidget(note, row, 1, 1, 2)
             return
         text = format_duration(run_seconds)
         if seconds_per_frame:
             text += f" · {seconds_per_frame:.2f} s/frame"
-        value = QLabel(text)
-        value.setStyleSheet(f"color: {TEXT_MUTED};")
+        value = muted_label(text)
         grid.addWidget(value, row, 1, 1, 2)
 
     def _clear_layout(self, layout: QVBoxLayout) -> None:
@@ -350,30 +331,7 @@ class SystemPanelMixin(MixinBase):
     def _set_gauge(self, key: str, percent: float | None, text: str) -> None:
         bar, value = self._sys_gauges[key]
         if percent is None:
-            bar.setRange(0, 0)  # indeterminate when the figure does not apply
-            bar.setStyleSheet(bar_qss(PRIMARY))
+            bar.set_unavailable()
         else:
-            bar.setRange(0, 100)
-            bar.setValue(int(round(max(0.0, min(100.0, percent)))))
-            _style_meter(bar, percent)
+            bar.set_level(percent, _util_color(percent))
         value.setText(text)
-
-
-def build_system_home(parent: QWidget) -> tuple[QWidget, QWidget, QVBoxLayout]:
-    """The system panel's home, the page inside it, and that page's layout.
-
-    Two widgets rather than one because the page is lent to This machine and
-    handed back; the home is the empty holder it returns to.
-    """
-    # No layout-level AlignTop: it shrinks the layout to its size hint and wraps
-    # word-wrapped labels narrow. The updates block the form panel appends ends
-    # with a stretch that top-aligns instead.
-    home = QWidget(parent)
-    home.setVisible(False)
-    home_layout = QVBoxLayout(home)
-    home_layout.setContentsMargins(0, 0, 0, 0)
-    page = QWidget()
-    page_layout = QVBoxLayout(page)
-    page_layout.setContentsMargins(0, 0, 0, 0)
-    home_layout.addWidget(page)
-    return home, page, page_layout

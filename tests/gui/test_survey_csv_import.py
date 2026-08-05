@@ -120,7 +120,10 @@ def test_an_unknown_transect_lands_unassigned_and_says_so(import_window, tmp_pat
     assert window._survey_rows[0].transect_id is None
     assert "not yet planned" in window._status_label.text()
     # Named, not refused: the row queues without a transect and the import says
-    # which name it did not recognise.
+    # which name it did not recognise. The pass is written either way, or the
+    # row would sit in the table looking queued with nothing behind it to run.
+    assert window._survey_rows[0].pass_id is not None
+    assert len(window._survey_remaining_rows()) == 1
     assert window._survey_start_btn.isEnabled()
 
 

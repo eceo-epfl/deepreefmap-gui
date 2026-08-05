@@ -127,7 +127,7 @@ def _settle_popup(viewer):
 
 
 def _viewer_with_frames(qapp, colors=None):
-    from deepreefmap_gui.viewer.widget import QtPointCloudViewer
+    from deepreefmap_gui.viewer.point_cloud import QtPointCloudViewer
 
     colors = colors or dict.fromkeys(("rgb", "seg", "depth"), (40, 40, 40))
     viewer = QtPointCloudViewer()
@@ -344,7 +344,7 @@ def test_clearing_the_scene_empties_the_panel(qapp) -> None:
 def test_a_run_starts_with_only_the_frame_offered(qapp) -> None:
     """During preprocessing there are no depth maps yet, and labels only once
     segmentation has run: neither layer is offered before it exists."""
-    from deepreefmap_gui.viewer.widget import QtPointCloudViewer
+    from deepreefmap_gui.viewer.point_cloud import QtPointCloudViewer
 
     viewer = QtPointCloudViewer()
     viewer._on_start_run("run", "/tmp/run")

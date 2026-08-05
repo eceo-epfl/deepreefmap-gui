@@ -8,6 +8,7 @@ from pathlib import Path
 from PySide6.QtGui import QColor
 
 from deepreefmap_gui.core.theme import UPDATE
+from deepreefmap_gui.core.widgets import confirm
 from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.packaging.releases import (
     current_version,
@@ -29,7 +30,7 @@ class VersionCheckMixin(MixinBase):
     """DeepReefMapWindow methods for checking GitHub releases and installing updates."""
 
     # The newest release worth offering, or "" when this is already it. Read by
-    # the This machine button, which paints its own slot for it.
+    # the Setup button, which paints its own slot for it.
     _update_available: str = ""
 
     def _check_for_update(self) -> None:
@@ -41,7 +42,7 @@ class VersionCheckMixin(MixinBase):
     def _set_updates_tab_alert(self, latest: str | None) -> None:
         """Say a release is waiting, wherever the running interface can show it.
 
-        The This machine button carries a slot for it, so a release waiting is
+        The Setup button carries a slot for it, so a release waiting is
         visible without opening anything. Passing None clears it.
         """
         self._update_available = latest or ""
@@ -102,7 +103,10 @@ class VersionCheckMixin(MixinBase):
         if not has_items:
             self._update_status_label.setText("Up to date.")
         elif include_older:
-            self._update_status_label.setText("Pick a version to install or roll back to:")
+            self._update_status_label.setText(
+                "Pick a version to install or roll back to. Rolling back may make "
+                "surveys created by this version unreadable until you upgrade again:"
+            )
         else:
             self._update_status_label.setText(
                 f"Latest: <b>{release_version(selectable[0])}</b>. Pick a version to install:"
@@ -112,32 +116,47 @@ class VersionCheckMixin(MixinBase):
         if self._available_releases:
             self._populate_update_versions()
 
-    def _refresh_desktop_entry_button(self) -> None:
-        from deepreefmap_gui.packaging.desktop_entry import desktop_entry_installed
+    def _confirm_downgrade(self, target: str) -> bool:
+        """Warn before rolling back, and take a backup that makes it reversible.
 
-        if desktop_entry_installed():
-            self._desktop_entry_btn.setText("Remove from applications menu")
-        else:
-            self._desktop_entry_btn.setText("Add to applications menu")
+        Going back is not symmetric with going forward. Migrations only run one
+        way, so an older build refuses a survey database a newer one has already
+        migrated. The backup written here is what its recovery dialog offers to
+        restore, and it is taken before anything is swapped -- a warning that
+        only warns would leave the user to find out afterwards.
+        """
+        current_v = parse_version(self._current_version_str)
+        target_v = parse_version(target)
+        if current_v is None or target_v is None or target_v >= current_v:
+            return True
 
-    def _on_toggle_desktop_entry(self) -> None:
-        from deepreefmap_gui.packaging.desktop_entry import (
-            desktop_entry_installed,
-            install_desktop_entry,
-            remove_desktop_entry,
+        from deepreefmap_gui.survey.backup import write_backup
+        from deepreefmap_gui.survey.health import inspect_survey_db
+        from deepreefmap_gui.survey.store import SURVEY_DB_NAME
+
+        db_path = Path(self._out_root_input.text()).expanduser() / SURVEY_DB_NAME
+        health = inspect_survey_db(db_path)
+        saved = (
+            write_backup(db_path, health.db_version)
+            if health.db_version is not None
+            else None
         )
-
-        try:
-            if desktop_entry_installed():
-                remove_desktop_entry()
-            else:
-                pyapp_bin = pyapp_binary_path()
-                if pyapp_bin is None:
-                    return
-                install_desktop_entry(pyapp_bin)
-        except OSError:
-            logger.exception("Desktop entry update failed")
-        self._refresh_desktop_entry_button()
+        where = (
+            f"A copy of this survey has been saved as {saved.name}, which "
+            f"version {target} can restore."
+            if saved is not None
+            else "No survey database was found in the current output folder to copy."
+        )
+        return confirm(
+            self,
+            "Roll back to an older version",
+            f"Version {target} is older than the version running now "
+            f"({self._current_version_str}).\n\n"
+            f"Surveys created or opened by this version may use a database "
+            f"format {target} cannot read. If that happens it will offer to "
+            f"restore a backup or rebuild from your run folders.\n\n"
+            f"{where}\n\nRoll back to {target}?",
+        )
 
     def _on_update(self) -> None:
         from deepreefmap_gui.update.dialog import UpdateProgressDialog
@@ -154,6 +173,8 @@ class VersionCheckMixin(MixinBase):
             logger.warning("Selected release has no metadata")
             return
         version = release_version(release)
+        if not self._confirm_downgrade(version):
+            return
         self._update_btn.setEnabled(False)
         try:
             dialog = UpdateProgressDialog(

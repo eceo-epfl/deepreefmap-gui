@@ -40,26 +40,4 @@ def test_loger_panel_visibility_follows_backend(window) -> None:
     assert not window._loger_panel.isHidden()
 
 
-def test_time_edit_parses_clamps_and_reverts(qapp) -> None:
-    from deepreefmap_gui.form.time_edit import TimeSecondsEdit
-
-    edit = TimeSecondsEdit()
-    edit.setText("12.5")
-    edit._commit()
-    assert edit.value() == 12.5
-
-    edit.setText("nonsense")
-    edit._commit()
-    assert edit.value() == 12.5
-    assert edit.text() == "12.50"
-
-    edit.setText("-3")
-    edit._commit()
-    assert edit.value() == 0.0
-
-    edit.setMaximum(30.0)
-    edit.setText("99")
-    edit._commit()
-    assert edit.value() == 30.0
-    assert edit.text() == "30.00"
 

@@ -27,19 +27,19 @@ def test_bootstrap_self_heals_then_reexecs_when_env_broken(monkeypatch, tmp_path
         binary_swap, "self_restore", lambda b: bool(restored.append(b)) or True
     )
 
-    class _Reexec(Exception):
+    class _ReexecError(Exception):
         pass
 
     execs: list[tuple] = []
 
     def fake_execv(path, args):
         execs.append((path, args))
-        raise _Reexec
+        raise _ReexecError
 
     monkeypatch.setattr(bootstrap.os, "execv", fake_execv)
 
     try:
-        with pytest.raises(_Reexec):
+        with pytest.raises(_ReexecError):
             bootstrap.main()
         assert restored, "self_restore should have been invoked"
         assert execs, "binary should be re-exec'd after restore"

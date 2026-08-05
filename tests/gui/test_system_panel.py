@@ -4,7 +4,7 @@ Colour assertions go through core.theme rather than hex literals, so a palette
 change moves the theme test and these together instead of failing here for a
 reason that has nothing to do with the panel.
 
-Where the panel is shown, and when its 1 Hz poll runs, belongs to This machine
+Where the panel is shown, and when its 1 Hz poll runs, belongs to Setup
 and is covered in tests/gui/test_machine_page.py.
 """
 
@@ -87,55 +87,67 @@ def _queue_pass(window, *, seconds: float, fps: int) -> None:
     window._fps_spin.setValue(fps)
 
 
-def test_a_memory_risk_shows_the_inline_notice(window, monkeypatch) -> None:
+def test_a_memory_risk_shows_the_capacity_readout(window, monkeypatch) -> None:
     import deepreefmap_gui.profiling.system_probe as probe
 
     monkeypatch.setattr(probe, "probe_system", lambda *a, **k: _low_ram_profile(probe))
     _queue_pass(window, seconds=378.0, fps=5)
     window._update_memory_profile_warning()
 
-    assert not window._memory_notice.isHidden()
+    assert not window._capacity_advice.isHidden()
     # A whole sentence in a narrow column, so it wraps rather than clipping.
-    assert window._memory_notice.wordWrap()
-    # The same grade in plain words, for the readiness view and the header button.
-    assert "exhaust memory" in window._memory_advisory
+    assert window._capacity_advice.wordWrap()
+    # The pass is named in the units it was set up in.
+    assert "at 5 FPS" in window._capacity_caption.text()
+    # What the machine can do is stated whether or not the pass fits.
+    assert "can process about" in window._capacity_detail.text()
+    assert window._memory_advisory
 
 
-def test_no_memory_notice_until_a_pass_is_queued(window) -> None:
-    window._survey_rows = []  # no frame count is knowable yet
-    window._update_memory_profile_warning()
-
-    assert window._memory_notice.isHidden()
-    assert window._memory_advisory == ""
-
-
-def test_the_memory_notice_colour_tracks_warn_against_block(window, monkeypatch) -> None:
-    """Amber and red have to stay distinguishable: one says the pass may spill
-    into swap, the other says it is expected to run out and stop."""
+def test_the_readout_names_a_setting_that_would_fit(window, monkeypatch) -> None:
+    """A field worker needs a change to make, not only a number to read."""
     import deepreefmap_gui.profiling.system_probe as probe
 
-    _queue_pass(window, seconds=378.0, fps=5)
+    monkeypatch.setattr(probe, "probe_system", lambda *a, **k: _low_ram_profile(probe))
+    _queue_pass(window, seconds=1419.0, fps=5)
+    window._update_memory_profile_warning()
 
-    def profile(avail_gb, swap_gb):
+    advice = window._capacity_advice.text()
+    assert "FPS to" in advice or "trim" in advice
+
+
+def test_capacity_is_unavailable_until_a_pass_is_queued(window) -> None:
+    window._survey_rows = []  # no length is knowable yet
+    window._update_memory_profile_warning()
+
+    assert window._capacity_advice.isHidden()
+    assert window._memory_advisory == ""
+    assert "Add a pass" in window._capacity_detail.text()
+
+
+def test_the_capacity_colour_tracks_warn_against_block(window, monkeypatch) -> None:
+    """Amber and red have to stay distinguishable: one says the pass is close to
+    the limit, the other says it is expected to run out and stop."""
+    import deepreefmap_gui.profiling.system_probe as probe
+
+    def profile(total_gb):
         return probe.SystemProfile(
             os_name="Linux", os_release="x", cpu_logical=8, cpu_physical=4,
-            total_ram_bytes=32 * 1024**3, available_ram_bytes=avail_gb * 1024**3,
-            total_swap_bytes=swap_gb * 1024**3, free_swap_bytes=swap_gb * 1024**3,
+            total_ram_bytes=total_gb * 1024**3, available_ram_bytes=total_gb * 1024**3,
+            total_swap_bytes=0, free_swap_bytes=0,
             gpu=probe.GpuInfo(probe.GPU_NONE, "CPU only", None, None),
             disk_total_bytes=0, disk_free_bytes=0, disk_path="/",
         )
 
-    # Fits only with swap -> amber warn.
-    monkeypatch.setattr(probe, "probe_system", lambda *a, **k: profile(20, 30))
+    _queue_pass(window, seconds=378.0, fps=5)
+    monkeypatch.setattr(probe, "probe_system", lambda *a, **k: profile(40))
     window._update_memory_profile_warning()
-    assert not window._memory_notice.isHidden()
-    assert UPDATE in window._memory_notice.styleSheet()
-    assert BLOCK not in window._memory_notice.styleSheet()
+    assert UPDATE in window._capacity_advice.styleSheet()
+    assert BLOCK not in window._capacity_advice.styleSheet()
 
-    # Exceeds RAM and swap -> red block.
-    monkeypatch.setattr(probe, "probe_system", lambda *a, **k: profile(6, 0))
+    monkeypatch.setattr(probe, "probe_system", lambda *a, **k: profile(22))
     window._update_memory_profile_warning()
-    assert BLOCK in window._memory_notice.styleSheet()
+    assert BLOCK in window._capacity_advice.styleSheet()
 
 
 def test_recorded_runs_summary_shows_peak_and_risk(window, monkeypatch) -> None:

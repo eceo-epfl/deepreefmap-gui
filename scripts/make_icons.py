@@ -1,9 +1,11 @@
-"""Generate installer icon files from the bundled PNG.
+"""Generate icon files from the bundled PNG.
 
 Writes dist/icon.ico (multi-resolution, consumed by the Inno Setup installer for
-the Start Menu / desktop shortcuts and the Add/Remove Programs entry). macOS
-.icns generation lives in scripts/make_app_bundle.sh (sips + iconutil need a
-macOS host). Run with Pillow available, e.g.:
+the Start Menu / desktop shortcuts and the Add/Remove Programs entry), and
+deepreefmap_gui/resources/icon.icns, which ships as package data so the macOS
+wrapper bundle can be written on any host. scripts/make_app_bundle.sh builds the
+distributed .app's icon with sips + iconutil and still needs a macOS host; this
+one only has to be regenerated when icon.png changes. Run with Pillow available:
 
     uvx --with pillow python scripts/make_icons.py
 """
@@ -20,11 +22,16 @@ SIZES = [16, 24, 32, 48, 64, 128, 256]
 
 
 def main() -> None:
-    out = REPO / "dist" / "icon.ico"
-    out.parent.mkdir(exist_ok=True)
     image = Image.open(SOURCE).convert("RGBA")
-    image.save(out, format="ICO", sizes=[(s, s) for s in SIZES])
-    print(f"Wrote {out}")
+
+    ico = REPO / "dist" / "icon.ico"
+    ico.parent.mkdir(exist_ok=True)
+    image.save(ico, format="ICO", sizes=[(s, s) for s in SIZES])
+    print(f"Wrote {ico}")
+
+    icns = SOURCE.with_suffix(".icns")
+    image.save(icns, format="ICNS")
+    print(f"Wrote {icns}")
 
 
 if __name__ == "__main__":

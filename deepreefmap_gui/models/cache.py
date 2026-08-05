@@ -1,3 +1,26 @@
+"""Every weight the app can fetch, and what this disk already has of it.
+
+The single source of truth for both: the model cards render one row per `ALL_MODELS` entry, and
+the Run step gates its button on `is_model_cached` for the selected backends. A weight missing
+from these lists still loads, it just downloads mid-run instead, which is fatal on a field laptop
+that has already gone offline.
+
+Two kinds of entry do not describe themselves:
+
+- **A DPT head needs its backbone repo listed alongside it.** `EPFL-ECEO/coralscapes-vit-*-dpt`
+  ships the head and a loader that calls `from_pretrained` on the DINOv3 encoder named in its
+  `config.json#encoder_id`, so a head cached on its own still reaches for the network on first
+  use. Both repos in `hf_repos` means one download covers the pair.
+- **LoGeR reads its checkpoints from a fixed path**, not by repo id, so its `materialise_to` maps
+  snapshot-relative files to that path and `prefetch_model` symlinks them there afterwards
+  (copying where symlinks are unavailable). `is_model_cached` stays False until every destination
+  exists, which is what stops a half-materialised model from looking ready.
+
+Qt-free: the cards, the download progress and the login prompt are `models/cache_ui.py`. Free
+disk is checked before the network is touched, so a thin SSD gets a refusal rather than a partial
+cache that confuses the next launch.
+"""
+
 from __future__ import annotations
 
 import json
@@ -341,7 +364,7 @@ def _snapshot_dir(repo_id: str) -> Path | None:
 
 
 # Public accessors over the module-level cache roots and per-repo helpers. Code
-# outside this module (models/library.py) must go through these rather than
+# outside this module (models/packs.py) must go through these rather than
 # importing the globals: _HF_CACHE_ROOT / _LOGER_CKPTS are import-time snapshots
 # that tests monkeypatch on the module object, and reading them at call time is
 # what lets that monkeypatch (and a future HF_HOME relocation) take effect.

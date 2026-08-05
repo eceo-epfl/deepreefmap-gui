@@ -29,7 +29,7 @@ CORAL_CONF = np.array([0.1, 0.5, 0.9], dtype=np.float32)
 
 @pytest.fixture
 def viewer(qapp):
-    from deepreefmap_gui.viewer.widget import QtPointCloudViewer
+    from deepreefmap_gui.viewer.point_cloud import QtPointCloudViewer
 
     v = QtPointCloudViewer(class_colors=COLORS, class_names=NAMES)
     v._ensure_plotter()

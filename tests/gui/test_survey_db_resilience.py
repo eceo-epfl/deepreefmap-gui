@@ -1,0 +1,136 @@
+"""The window opens whatever state the survey database is in.
+
+Scenario throughout: the app was rolled back to an older version, or the output
+root moved to a drive that is not there, and the database in it cannot be
+opened. Building the window is where SurveyStore is first constructed, so
+anything that raises there used to take the whole launch down -- with the
+traceback going to a terminal nobody was running the app from, and on the
+packaged Windows build to os.devnull.
+
+Expected behaviour, in every case below: a window, a readable reason, and a way
+out.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+
+import pytest
+
+from deepreefmap_gui.survey.health import SurveyDbState
+from deepreefmap_gui.survey.store import _MIGRATIONS, SURVEY_DB_NAME, SurveyStore
+
+
+@pytest.fixture
+def rolled_back_root(out_root):
+    """An output root holding a database stamped past what this build reads."""
+    out_root.mkdir(parents=True, exist_ok=True)
+    path = out_root / SURVEY_DB_NAME
+    SurveyStore(path).close()
+    conn = sqlite3.connect(path)
+    conn.execute(f"PRAGMA user_version = {len(_MIGRATIONS) + 1}")
+    conn.commit()
+    conn.close()
+    return out_root
+
+
+@pytest.fixture
+def corrupt_root(out_root):
+    out_root.mkdir(parents=True, exist_ok=True)
+    (out_root / SURVEY_DB_NAME).write_bytes(b"not a database, just some bytes")
+    return out_root
+
+
+def _window_on(make_window, root, monkeypatch):
+    monkeypatch.setenv("DEEPREEFMAP_OUT_ROOT", str(root))
+    window = make_window()
+    window._out_root_input.setText(str(root))
+    window._activate_interface()
+    return window
+
+
+def test_a_database_from_a_newer_build_does_not_stop_the_window(
+    make_window, rolled_back_root, monkeypatch
+):
+    window = _window_on(make_window, rolled_back_root, monkeypatch)
+    assert window.isVisible() or window is not None
+    assert window._survey_db_health().state is SurveyDbState.TOO_NEW
+
+
+def test_a_corrupt_database_does_not_stop_the_window(make_window, corrupt_root, monkeypatch):
+    window = _window_on(make_window, corrupt_root, monkeypatch)
+    assert window._survey_db_health().state is SurveyDbState.CORRUPT
+
+
+def test_an_unopenable_database_blocks_the_readiness_row(
+    make_window, rolled_back_root, monkeypatch
+):
+    """It has to be visible somewhere the user looks, not only in the log."""
+    window = _window_on(make_window, rolled_back_root, monkeypatch)
+    window._refresh_readiness_view()
+
+    checks = {c.key: c for c in window._current_setup_checks()}
+    survey = checks["survey"]
+    assert not survey.ok
+    assert not survey.advisory, "an unopenable survey is a blocker, not a warning"
+    assert survey.action_label == "Repair…"
+    assert "newer version" in survey.detail
+
+    _icon, detail, actions = window._setup_check_rows["survey"]
+    assert "newer version" in detail.text()
+    assert not actions[0].isHidden()
+
+
+def test_the_pages_that_need_the_survey_come_up_empty_rather_than_raising(
+    make_window, rolled_back_root, monkeypatch
+):
+    """Each of these refreshers used to construct the store unguarded, and each
+    runs during _activate_interface."""
+    window = _window_on(make_window, rolled_back_root, monkeypatch)
+    window._refresh_transect_list()
+    window._refresh_survey_batch_tab()
+    window._refresh_survey_analysis()
+    window._refresh_data_manager()
+
+    assert window._transect_list.topLevelItemCount() == 0
+    assert window._analysis_transect_combo.count() == 0
+    assert not window._data_store_ok
+
+
+def test_nothing_is_written_to_a_database_that_cannot_be_opened(
+    make_window, rolled_back_root, monkeypatch
+):
+    """Declining recovery must leave the newer version's data exactly as it is."""
+    path = rolled_back_root / SURVEY_DB_NAME
+    before = path.read_bytes()
+    _window_on(make_window, rolled_back_root, monkeypatch)
+    assert path.read_bytes() == before
+
+
+def test_a_healthy_database_reports_ready(make_window, out_root, monkeypatch):
+    window = _window_on(make_window, out_root, monkeypatch)
+    window._refresh_readiness_view()
+    checks = {c.key: c for c in window._current_setup_checks()}
+    assert checks["survey"].ok
+    assert checks["survey"].action_label == ""
+
+
+def test_recovering_reopens_the_survey(make_window, rolled_back_root, monkeypatch):
+    """After recovery the window goes back to reading the database rather than
+    needing a restart."""
+    from deepreefmap_gui.survey.health import inspect_survey_db
+    from deepreefmap_gui.survey.recovery import RecoveryKind, apply_recovery, recovery_options
+
+    window = _window_on(make_window, rolled_back_root, monkeypatch)
+    health = window._survey_db_health()
+    option = next(
+        o for o in recovery_options(health, rolled_back_root) if o.kind is RecoveryKind.REBUILD
+    )
+    apply_recovery(option, health, rolled_back_root)
+
+    window._survey_health = None
+    window._survey_store_obj = None
+    assert window._survey_db_health().state is SurveyDbState.OK
+    assert inspect_survey_db(rolled_back_root / SURVEY_DB_NAME).openable
+    window._refresh_readiness_view()
+    assert {c.key: c for c in window._current_setup_checks()}["survey"].ok

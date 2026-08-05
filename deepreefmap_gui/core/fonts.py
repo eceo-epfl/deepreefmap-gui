@@ -1,3 +1,14 @@
+"""Register the bundled fonts and pin the app's base font, before any widget exists.
+
+Layouts here are tuned against a known metric. Left to the platform, the app gets a different
+family at a different base size on each OS (macOS .AppleSystemUIFont at 13pt against Linux "Sans
+Serif" at 9pt), so a panel that fits on the machine it was built on overflows on the next one, and
+a bare "monospace" request resolves to nothing at all on macOS.
+
+Failure is deliberately soft: a font the packaged build did not ship is logged and skipped, and
+the app falls back to the platform default rather than refusing to start over typography.
+"""
+
 from __future__ import annotations
 
 import logging

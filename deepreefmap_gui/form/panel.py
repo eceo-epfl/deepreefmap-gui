@@ -22,7 +22,6 @@ from PySide6.QtCore import (
     Qt,
     QTimer,
     QUrl,
-    Signal,
 )
 from PySide6.QtGui import (
     QDesktopServices,
@@ -44,11 +43,11 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QStyle,
     QToolButton,
-    QToolTip,
     QVBoxLayout,
     QWidget,
 )
 
+from deepreefmap_gui.core.icons import log_icon
 from deepreefmap_gui.core.spinner import SpinnerStopButton
 from deepreefmap_gui.core.theme import (
     BAR_HEIGHT,
@@ -64,7 +63,9 @@ from deepreefmap_gui.core.theme import (
     PRIMARY,
     PRIMARY_DARK,
     RADIUS_SM,
+    SPACE_SM,
     SPACE_XS,
+    SUCCESS,
     SURFACE_HI,
     TEXT_MUTED,
     TEXT_SECONDARY,
@@ -73,9 +74,15 @@ from deepreefmap_gui.core.theme import (
     WEIGHT_BOLD,
     bar_qss,
 )
-from deepreefmap_gui.core.widgets import EmptyState, warning_banner_qss
+from deepreefmap_gui.core.widgets import (
+    EmptyState,
+    lent_panel_home,
+    muted_label,
+    utility_button_qss,
+    warning_banner_qss,
+)
 from deepreefmap_gui.core.window_protocol import MixinBase
-from deepreefmap_gui.packaging.releases import current_version, pyapp_binary_path
+from deepreefmap_gui.packaging.releases import current_version
 from deepreefmap_gui.runs.progress import (
     _LOAD_PHASES,
     _RECON_PHASES,
@@ -85,28 +92,15 @@ from deepreefmap_gui.runs.sunburst import SunburstWidget
 from deepreefmap_gui.runs.timing_popup import HoverColumn
 from deepreefmap_gui.system.log_view import LogView, install_qt_log_handler
 
-
-class _InstantTipLabel(QLabel):
-    """A QLabel whose tooltip appears the instant the cursor enters, no delay."""
-
-    # Lets the whole label act as a button, so the glyph can be a color-honouring
-    # span: Qt paints anchor links in the palette color and ignores inline color.
-    clicked = Signal()
-
-    def enterEvent(self, event) -> None:  # noqa: N802 (Qt override)
-        if self.toolTip():
-            QToolTip.showText(event.globalPosition().toPoint(), self.toolTip(), self)
-        super().enterEvent(event)
-
-    def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt override)
-        self.clicked.emit()
-        super().mousePressEvent(event)
-
-
 # Transport controls sit in the bottom bar where they are the primary run
 # affordance, so they are larger than the old 40px top-bar cluster.
 _TRANSPORT_SIZE = 34
 _TRANSPORT_ICON = 28
+
+# Fill colours for the stacked progress pair. The total bar takes the darker
+# shade so the two are told apart where they meet.
+_STAGE_CHUNK = PRIMARY
+_TOTAL_CHUNK = PRIMARY_DARK
 
 
 def _separator() -> QWidget:
@@ -135,6 +129,7 @@ class FormPanelMixin(MixinBase):
             viewer_layout,
             models_layout,
             system_layout,
+            updates_layout,
         ) = self._build_panel_homes()
 
         self._build_deferred_top_bar_widgets(setup_layout)
@@ -149,7 +144,7 @@ class FormPanelMixin(MixinBase):
         self._build_progress_widgets()
         self._build_results_group(viewer_layout)
         self._build_models_panel(models_layout)
-        self._build_updates_section(system_layout)
+        self._build_updates_section(updates_layout)
 
         # Start in SETUP, no run loaded yet. The mode flips to RUNNING when a
         # batch starts and to VIEWING when a past run is selected or a
@@ -160,8 +155,8 @@ class FormPanelMixin(MixinBase):
         """A permanent home for each panel that is shown somewhere else.
 
         None of these are on screen as built. The run form is lent to the run
-        settings dialog; the results, model and system panels are lent to View
-        mode and to This machine. Every one gets a holder of its own rather than
+        settings dialog; the results, model, system and update panels are lent to
+        View mode and to Setup. Every one gets a holder of its own rather than
         sharing a layout, because a panel handed back into a shared layout lands
         wherever that layout happens to append it.
 
@@ -197,15 +192,17 @@ class FormPanelMixin(MixinBase):
         models_layout.setContentsMargins(0, 0, 0, 0)
         models_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        from deepreefmap_gui.system.panel import build_system_home
-
-        self._system_home, self._system_page, system_layout = build_system_home(self)
+        self._system_home, self._system_page, system_layout = lent_panel_home(self)
         self._build_system_panel(system_layout)
+        # The updater is a page of its own on Setup rather than a footnote under
+        # the gauges: it is the one thing there that changes the software itself.
+        self._updates_home, self._updates_page, updates_layout = lent_panel_home(self)
         return (
             setup_layout,
             results_layout,
             models_layout,
             system_layout,
+            updates_layout,
         )
 
     def _build_deferred_top_bar_widgets(self, setup_layout: QVBoxLayout) -> None:
@@ -215,10 +212,18 @@ class FormPanelMixin(MixinBase):
         # Log toggle button, checkable so the pressed state mirrors panel
         # visibility. The panel is opened on request only: a batch reports
         # itself on the Run step, and the log is for looking closer.
-        self._log_toggle_btn = QPushButton("Log")
+        #
+        # A QToolButton carrying the shared utility stylesheet, because it sits
+        # in the header beside Setup and the two have to be the same
+        # control. A QPushButton on a hard-coded height was neither.
+        self._log_toggle_btn = QToolButton()
+        self._log_toggle_btn.setText("Log")
+        self._log_toggle_btn.setIcon(log_icon())
+        self._log_toggle_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self._log_toggle_btn.setToolTip("Show or hide the live log panel")
         self._log_toggle_btn.setCheckable(True)
-        self._log_toggle_btn.setFixedHeight(28)
+        self._log_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._log_toggle_btn.setStyleSheet(utility_button_qss())
         self._log_toggle_btn.toggled.connect(self._set_log_panel_visible)
 
         self._warnings_label_running = QLabel("")
@@ -257,7 +262,36 @@ class FormPanelMixin(MixinBase):
         fps_col.addWidget(self._fps_spin)
         profile_fps_row.addLayout(fps_col)
         ig.addLayout(profile_fps_row)
+        self._build_capacity_readout(ig)
         setup_layout.addWidget(input_group)
+
+    def _build_capacity_readout(self, ig: QVBoxLayout) -> None:
+        """How much of the machine the longest queued pass would use.
+
+        Sits with FPS because frame rate and trim are the two controls that move
+        it; the system panel can only report the machine, not change the run.
+        """
+        from deepreefmap_gui.core.widgets import MeterBar
+
+        ig.addSpacing(SPACE_SM)
+        self._capacity_caption = QLabel()
+        self._capacity_caption.setStyleSheet(f"color: {TEXT_MUTED}; font-size: {FONT_SM};")
+        ig.addWidget(self._capacity_caption)
+
+        self._capacity_bar = MeterBar()
+        ig.addWidget(self._capacity_bar)
+
+        self._capacity_detail = QLabel()
+        self._capacity_detail.setWordWrap(True)
+        self._capacity_detail.setStyleSheet(f"color: {TEXT_MUTED}; font-size: {FONT_SM};")
+        ig.addWidget(self._capacity_detail)
+
+        self._capacity_advice = QLabel()
+        self._capacity_advice.setWordWrap(True)
+        self._capacity_advice.setTextFormat(Qt.TextFormat.RichText)
+        self._capacity_advice.setVisible(False)
+        self._capacity_advice.linkActivated.connect(lambda _: self._reveal_memory_detail())
+        ig.addWidget(self._capacity_advice)
 
     def _build_model_selection_group(
         self, setup_layout: QVBoxLayout, seg_models: list[str], map_backends: list[str]
@@ -313,12 +347,12 @@ class FormPanelMixin(MixinBase):
         # Not a setting: it is the root a whole survey lands under, which is a
         # property of this computer. The run settings dialog hides the group
         # whole for that reason, which also keeps it from rendering as an empty
-        # titled frame once This machine has borrowed the controls out of it.
+        # titled frame once Setup has borrowed the controls out of it.
         self._output_group = output_group
         og = QVBoxLayout(output_group)
 
         style = self.style()
-        # Wrapped in one widget so it can be lent to This machine, which is
+        # Wrapped in one widget so it can be lent to Setup, which is
         # where the output root is edited. Offering a second place to change it
         # would invite two answers to one question.
         self._out_root_widget = QWidget()
@@ -364,7 +398,7 @@ class FormPanelMixin(MixinBase):
         input_row.addWidget(root_default_btn)
         out_root_layout.addLayout(input_row)
         # An empty holder rather than the group itself, so the controls can be
-        # lent to This machine and handed back to the same place. The advanced
+        # lent to Setup and handed back to the same place. The advanced
         # form and the machine page describe one folder, so they share one set
         # of widgets rather than each carrying their own.
         self._out_root_home = QWidget()
@@ -388,12 +422,6 @@ class FormPanelMixin(MixinBase):
         # System-RAM grade, shown inline like the VRAM notice above, and linked
         # through to the readiness rows that repeat it in plainer words. Anything
         # that changes the projected frame count re-grades the run.
-        self._memory_notice = QLabel()
-        self._memory_notice.setWordWrap(True)
-        self._memory_notice.setStyleSheet(f"color: {UPDATE}; font-size: {FONT_SM}; margin: 2px 0 4px 0;")
-        self._memory_notice.setVisible(False)
-        self._memory_notice.linkActivated.connect(lambda _: self._reveal_memory_detail())
-        setup_layout.addWidget(self._memory_notice)
         self._fps_spin.valueChanged.connect(self._update_memory_profile_warning)
 
     def _build_advanced_panel(self, setup_layout: QVBoxLayout) -> None:
@@ -654,8 +682,6 @@ class FormPanelMixin(MixinBase):
         # so the two percentages read as a unit at half the width. Bar text is
         # hidden to avoid cramped labels: the numbers live in the status text, the
         # overall-estimate label, and the hover breakdown. Empty when idle.
-        _STAGE_CHUNK = PRIMARY
-        _TOTAL_CHUNK = PRIMARY_DARK  # darker PRIMARY, unique to the stacked total bar
         self._progress_bar = QProgressBar()
         self._progress_bar.setRange(0, 100)
         self._progress_bar.setValue(0)
@@ -683,8 +709,7 @@ class FormPanelMixin(MixinBase):
 
         # Overall (all-stages) remaining estimate, kept visible rather than buried
         # in the hover breakdown.
-        self._eta_total_label = QLabel("")
-        self._eta_total_label.setStyleSheet(f"color: {TEXT_MUTED};")
+        self._eta_total_label = muted_label("")
         self._eta_total_label.setMinimumWidth(78)
 
         self._recon_model = ProgressModel(_RECON_PHASES)
@@ -719,7 +744,6 @@ class FormPanelMixin(MixinBase):
         # The legend lives as a floating overlay on the 3D canvas; this dict
         # is populated by _build_legend and queried by _enabled_class_set.
         self._legend_toggles: dict[int, QCheckBox] = {}
-        self._legend_solo_buttons: dict[int, QToolButton] = {}
         # Legend sort state: column "selected" (visibility), "name", or "size",
         # plus a direction. _legend_order_cache lets _apply_legend_sort skip
         # reflows when the resulting order is unchanged.
@@ -829,7 +853,7 @@ class FormPanelMixin(MixinBase):
         viewer_layout.addStretch()
 
     def _build_models_panel(self, models_layout: QVBoxLayout) -> None:
-        # Untitled: This machine's view switch already says Models above it,
+        # Untitled: Setup's view switch already says Models above it,
         # and a frame whose caption repeats the control that reached it says
         # nothing twice.
         models_group = QGroupBox()
@@ -856,7 +880,7 @@ class FormPanelMixin(MixinBase):
 
         # Model library: reveal the cache folder, and export/import portable model
         # packs so offline field laptops can be provisioned from a USB stick without
-        # re-downloading. Logic lives in models/library.py + models/library_ui.py.
+        # re-downloading. Logic lives in models/packs.py + models/packs_ui.py.
         lib_row = QHBoxLayout()
         lib_row.setContentsMargins(0, 0, 0, 0)
         lib_row.setSpacing(6)
@@ -952,7 +976,7 @@ class FormPanelMixin(MixinBase):
         # state without forcing the user to leave the form for common cases.
         #
         # The group is the only child of the tab, which is what lets
-        # _host_machine_panels lend it to This machine and take it back: the tab
+        # _host_machine_panels lend it to Setup and take it back: the tab
         # top-aligns its contents already, so there is no trailing stretch for a
         # returning widget to land underneath.
         self._models_group = models_group
@@ -978,27 +1002,21 @@ class FormPanelMixin(MixinBase):
         update_row.addWidget(self._update_btn)
         updates_layout.addLayout(update_row)
         self._update_show_all = QCheckBox("Show older versions (rollback)")
+        self._update_show_all.setToolTip(
+            "An older version may not be able to open surveys this one has "
+            "already saved. A backup is taken before rolling back."
+        )
         self._update_show_all.setVisible(False)
         self._update_show_all.toggled.connect(self._on_toggle_show_all_versions)
         updates_layout.addWidget(self._update_show_all)
         self._available_releases: list[dict] = []
         self._current_version_str = current_version()
 
-        # Linux menu integration. Windows/macOS get shortcuts from their
-        # installers; on Linux the bare binary registers itself on demand. The
-        # entry points at the current binary path, which the in-app updater
-        # swaps in place, so it survives updates and rollbacks.
-        from deepreefmap_gui.packaging.desktop_entry import desktop_entry_supported
-
-        self._desktop_entry_btn = QPushButton()
-        self._desktop_entry_btn.clicked.connect(self._on_toggle_desktop_entry)
-        # Parented before shown: setVisible on a parentless widget maps it as a
-        # top-level window, which flashes an empty titlebar box on screen.
-        updates_layout.addWidget(self._desktop_entry_btn)
-        self._desktop_entry_btn.setVisible(
-            desktop_entry_supported() and pyapp_binary_path() is not None
-        )
-        self._refresh_desktop_entry_button()
+        # Applications-menu integration is a Setup readiness row rather than a
+        # button here: whether the app is in the menu is a fact about this
+        # machine, alongside its graphics card and its disk, and a row can say
+        # "installed by the installer" where a button could only offer to
+        # remove someone else's shortcut.
 
         threading.Thread(target=self._check_for_update, daemon=True).start()
 
@@ -1018,11 +1036,10 @@ class FormPanelMixin(MixinBase):
         h.setSpacing(GUTTER)
         h.addStretch(1)
 
-        # The stage/total bars, and nothing else. Everything that used to share
-        # this band now lives where it belongs: the log toggle and This machine
-        # in the workspace header, the memory advisory on This machine's button,
-        # and the "+" nowhere, because a batch of passes has no single loaded run
-        # to clear. A whole band of chrome for one button was not worth its
+        # The stage/total bars, and nothing else. The log toggle and Setup live
+        # in the workspace header and the memory advisory on Setup's button; a
+        # batch of passes has no single loaded run to clear, so there is no "+".
+        # A whole band of chrome for one button was not worth its
         # height, so the bar goes with them and comes back only while a run is
         # in flight, which _set_progress_widgets_visible drives.
         self._progress_stack.setVisible(False)
@@ -1257,88 +1274,92 @@ class FormPanelMixin(MixinBase):
         self._update_memory_profile_warning()
 
     def _memory_grade_frames(self, fps: int) -> int | None:
-        """Frames the memory grade is computed over.
-
-        There is no single video to grade, so this grades the longest clip in
-        the queued batch: that is the pass most likely to run the machine low,
-        and every other pass fits under it.
-        """
+        """Frames the memory grade is computed over: the longest queued pass."""
         return self._simple_peak_frames(fps)
 
+    def _current_fit(self):
+        """Grade the longest queued pass against this machine, or None.
+
+        None when nothing is queued or the probe fails; callers fall back to
+        reporting the machine's capacity without a run to compare it to.
+        """
+        from deepreefmap_gui.profiling.memory_estimate import fit_for_pass
+        from deepreefmap_gui.profiling.run_history import history_key, load_expected_peaks
+        from deepreefmap_gui.profiling.system_probe import probe_system
+
+        seconds = self._simple_peak_seconds()
+        if not seconds:
+            return None
+        fps = self._fps_spin.value()
+        w, h = self._proc_width_spin.value(), self._proc_height_spin.value()
+        mapping = self._map_combo.currentText()
+        seg = self._seg_combo.currentText()
+        return fit_for_pass(
+            probe_system(),
+            seconds=seconds,
+            fps=fps,
+            width=w,
+            height=h,
+            mapping_backend=mapping,
+            seg_model=seg,
+            batch_size=self._batch_size_spin.value(),
+            recorded=load_expected_peaks(history_key(mapping, seg, w, h, fps)),
+        )
+
     def _update_memory_profile_warning(self) -> None:
-        """Grade the queued batch and report it, inline and on This machine."""
+        """Refresh the capacity readout and the advisory Setup reads from it."""
         # Advisory only: a warn or block grade never gates the run.
-        notice = getattr(self, "_memory_notice", None)
-        if notice is None:  # form not built yet
+        if getattr(self, "_capacity_bar", None) is None:  # form not built yet
             return
-        setup_label = getattr(self, "_setup_memory_label", None)
-
-        def hide() -> None:
-            notice.setVisible(False)
-            if setup_label is not None:
-                setup_label.setVisible(False)
-            self._memory_advisory = ""
-            self._refresh_machine_button()
-
         try:
-            from deepreefmap_gui.profiling.memory_estimate import estimate_peak_bytes, preflight_check
-            from deepreefmap_gui.profiling.run_history import history_key, load_expected_peaks
-            from deepreefmap_gui.profiling.system_probe import format_bytes, probe_system
-
-            fps = self._fps_spin.value()
-            frames = self._memory_grade_frames(fps)
-            if not frames:
-                hide()
-                return
-            w, h = self._proc_width_spin.value(), self._proc_height_spin.value()
-            mapping = self._map_combo.currentText()
-            seg = self._seg_combo.currentText()
-            est = estimate_peak_bytes(
-                frames, w, h, mapping, seg,
-                recorded=load_expected_peaks(history_key(mapping, seg, w, h, fps)),
-            )
-            profile = probe_system()
-            verdict = preflight_check(profile, est)
+            fit = self._current_fit()
         except Exception:
-            hide()
-            return
-        if verdict.level == "ok":
-            hide()
-            return
-
-        color = BLOCK if verdict.level == "block" else UPDATE
-        headline = f"Crash risk: {verdict.risk}"
-        cap_word = "RAM + swap" if profile.free_swap_bytes else "RAM"
-
-        # Inline notice: concise, always-visible indicator in the form.
-        notice.setStyleSheet(f"color: {color}; font-size: {FONT_SM}; margin: 2px 0 4px 0;")
-        notice.setText(
-            f"{headline}: ~{format_bytes(verdict.ram_need_bytes)} "
-            f"({verdict.percent:.0f}% of {cap_word}). "
-            f'<a href="#system" style="color:{color};">This machine</a>'
-        )
-        notice.setVisible(True)
-
-        # Readiness view: the same warning without the numbers, for the diver
-        # who never reads them. The header button reports it too, which is why
-        # the sentence is kept rather than only painted: the button's verdict is
-        # computed, not read back off a label.
-        self._memory_advisory = (
-            "This batch may exhaust memory on this machine. Processing will "
-            "proceed; a pass may stop."
-        )
-        if setup_label is not None:
-            setup_label.setStyleSheet(f"color: {color}; font-size: {FONT_SM};")
-            setup_label.setText(self._memory_advisory)
-            setup_label.setVisible(True)
+            fit = None
+        self._paint_capacity_readout(fit)
+        self._memory_advisory = "" if fit is None or fit.fits else fit.headline
         self._refresh_machine_button()
+        self._refresh_readiness_view()
+
+    def _paint_capacity_readout(self, fit) -> None:
+        """Show the longest pass against what this machine can give one run."""
+        from deepreefmap_gui.profiling.memory_estimate import format_duration
+        from deepreefmap_gui.profiling.system_probe import format_bytes
+
+        if fit is None:
+            self._capacity_caption.setText("Memory needed")
+            self._capacity_bar.set_unavailable()
+            self._capacity_detail.setText("Add a pass to see what it would need.")
+            self._capacity_advice.setVisible(False)
+            return
+
+        colour = {"ok": SUCCESS, "warn": UPDATE, "block": BLOCK}[fit.level]
+        budget = fit.verdict.budget.ram_bytes
+        need = fit.verdict.cost.ram_bytes
+        self._capacity_caption.setText(
+            f"Longest pass: {format_duration(fit.seconds)} at {fit.fps} FPS"
+        )
+        self._capacity_bar.set_level(100.0 * need / budget if budget else 0.0, colour)
+        self._capacity_detail.setText(
+            f"Needs about {format_bytes(need)} of the {format_bytes(budget)} "
+            f"this machine can give one run. It can process about "
+            f"{format_duration(fit.max_seconds)} at {fit.fps} FPS."
+        )
+        if fit.fits:
+            self._capacity_advice.setVisible(False)
+            return
+        self._capacity_advice.setStyleSheet(f"color: {colour}; font-size: {FONT_SM};")
+        self._capacity_advice.setText(
+            f"<b>{fit.headline}.</b> {fit.advice} "
+            f'<a href="#system" style="color:{colour};">Setup</a>'
+        )
+        self._capacity_advice.setVisible(True)
 
     def _update_gated_warning(self) -> None:
         seg_name = self._seg_combo.currentText()
         if self._skip_seg_check.isChecked():
             self._gated_warning.setVisible(False)
             return
-        from deepreefmap_gui.models.manager import DPT_BACKBONE_MAP
+        from deepreefmap_gui.models.cache import DPT_BACKBONE_MAP
 
         backbone_name = DPT_BACKBONE_MAP.get(seg_name)
         if not backbone_name:
@@ -1391,14 +1412,11 @@ class FormPanelMixin(MixinBase):
         self._rr_override_spin.setValue(0.0)
 
     def _gpu_available(self) -> bool:
+        from deepreefmap_gui.profiling.system_probe import gpu_present
+
         cached = getattr(self, "_gpu_available_cache", None)
         if cached is None:
-            try:
-                from deepreefmap.device import resolve_device
-
-                cached = resolve_device().type != "cpu"
-            except Exception:
-                cached = False
+            cached = gpu_present()
             self._gpu_available_cache = cached
         return cached
 
@@ -1409,7 +1427,7 @@ class FormPanelMixin(MixinBase):
         so a CPU-only laptop cannot be told it is fine by one and blocked by
         the other.
         """
-        from deepreefmap_gui.models.manager import GPU_ONLY_BACKENDS
+        from deepreefmap_gui.models.cache import GPU_ONLY_BACKENDS
 
         mapping = self._map_combo.currentText()
         if mapping in GPU_ONLY_BACKENDS and not self._gpu_available():

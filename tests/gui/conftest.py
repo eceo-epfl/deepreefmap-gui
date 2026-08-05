@@ -28,7 +28,7 @@ def require_torch() -> None:
 def _reset_setup_complete(qapp):
     """Keep the persisted readiness acknowledgement from leaking between tests.
 
-    It decides whether a window opens on This machine or straight on Plan, so a
+    It decides whether a window opens on Setup or straight on Plan, so a
     test that reaches ready would otherwise change where the next one starts.
     """
     from PySide6.QtCore import QSettings
@@ -103,6 +103,29 @@ def _offline_tiles(qapp):
     cache = shared_tile_cache()
     cache.network_enabled = False
     yield
+
+
+@pytest.fixture
+def tile_cache_root(tmp_path, monkeypatch):
+    """The tile cache directory, redirected into tmp_path. Created by the first tile."""
+    from deepreefmap_gui.map import tile_cache as tile_cache_mod
+
+    root = tmp_path / "tiles"
+    monkeypatch.setattr(tile_cache_mod, "tile_cache_dir", lambda: root)
+    return root
+
+
+@pytest.fixture
+def tile_cache(qapp, tile_cache_root):
+    """A TileCache of its own, so a test may prune and fail tiles freely.
+
+    Not named `cache`: that is a pytest builtin, and overriding it here would
+    shadow it for every test in this directory.
+    """
+    from deepreefmap_gui.map.layers import OSM_LAYER
+    from deepreefmap_gui.map.tile_cache import TileCache
+
+    return TileCache(OSM_LAYER)
 
 
 @pytest.fixture(autouse=True)

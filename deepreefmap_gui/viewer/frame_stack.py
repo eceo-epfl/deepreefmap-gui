@@ -1,10 +1,8 @@
 """The frame, segmentation and depth images as one stack of blended layers.
 
-The three used to sit side by side, each a third of the panel's width, which is
-the worst of both: no single one is big enough to read, and comparing them means
-carrying a feature across two gaps by eye. They are the same pixel grid for a
-given frame, so stacking them puts a class boundary directly over the reef it
-was drawn from, and the pane is three times the size.
+The three are the same pixel grid for a given frame, so stacking rather than
+tiling them puts a class boundary directly over the reef it was drawn from, and
+gives each three times the width.
 
 Opacity is what makes the stack readable rather than a mess: sliding
 segmentation up dissolves it over the frame, and a layer soloed to itself is the
@@ -14,7 +12,6 @@ old single-image view.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable
 
 import numpy as np
 from PySide6.QtCore import QRectF, QSize, Qt, Signal
@@ -126,7 +123,7 @@ class ScrubSlider(QSlider):
             )
         )
 
-    def paintEvent(self, event) -> None:  # noqa: N802 (Qt override)
+    def paintEvent(self, event) -> None:
         super().paintEvent(event)
         if self._hover_x is None or self.isSliderDown():
             return
@@ -143,12 +140,12 @@ class ScrubSlider(QSlider):
         painter.setBrush(color)
         painter.drawRoundedRect(preview, groove.height() / 2, groove.height() / 2)
 
-    def leaveEvent(self, event) -> None:  # noqa: N802 (Qt override)
+    def leaveEvent(self, event) -> None:
         self._hover_x = None
         self.update()
         super().leaveEvent(event)
 
-    def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt override)
+    def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             self.setSliderDown(True)
             self.setValue(self._value_at(event.position().x()))
@@ -156,7 +153,7 @@ class ScrubSlider(QSlider):
             return
         super().mousePressEvent(event)
 
-    def mouseMoveEvent(self, event) -> None:  # noqa: N802 (Qt override)
+    def mouseMoveEvent(self, event) -> None:
         self._hover_x = event.position().x()
         if self.isSliderDown():
             self.setValue(self._value_at(self._hover_x))
@@ -165,7 +162,7 @@ class ScrubSlider(QSlider):
         self.update()
         super().mouseMoveEvent(event)
 
-    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 (Qt override)
+    def mouseReleaseEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton and self.isSliderDown():
             self.setSliderDown(False)
             event.accept()
@@ -315,7 +312,7 @@ class CompositeFrameView(QWidget):
             painter.drawPixmap(target, pixmap, QRectF(pixmap.rect()))
         painter.setOpacity(1.0)
 
-    def paintEvent(self, event) -> None:  # noqa: N802 (Qt override)
+    def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.fillRect(self.rect(), self.palette().window())
         target = self._target_rect()
@@ -339,7 +336,7 @@ class CompositeFrameView(QWidget):
         painter.end()
         return out
 
-    def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt override)
+    def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit()
         super().mousePressEvent(event)
@@ -492,7 +489,3 @@ class FrameLayerControls(QWidget):
 
     def solo(self) -> str | None:
         return self._solo
-
-    def apply_to(self, view: CompositeFrameView, kinds: Iterable[str] = FRAME_LAYERS) -> None:
-        for kind in kinds:
-            view.set_opacity(kind, self._slider(kind).value() / 100.0)

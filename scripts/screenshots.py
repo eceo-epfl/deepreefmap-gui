@@ -58,6 +58,13 @@ def _isolate_config() -> Path:
     return out_root
 
 
+def _standard_preset():
+    """The organisation preset a capture's runs claim to have been made under."""
+    from deepreefmap_gui.survey.preset import load_active_preset
+
+    return load_active_preset().org
+
+
 def seed_survey(out_root: Path) -> None:
     """Write the survey a capture describes: three transects, six passes, six runs.
 
@@ -65,8 +72,15 @@ def seed_survey(out_root: Path) -> None:
     appears once a table has rows, a name is long enough to elide, or a detail
     pane has something to show.
     """
-    from deepreefmap_gui.survey.models import RunRecord, Transect, TransectPass, VideoAsset
+    from deepreefmap_gui.survey.models import (
+        RunRecord,
+        SurveyBatch,
+        Transect,
+        TransectPass,
+        VideoAsset,
+    )
     from deepreefmap_gui.survey.models.convert import survey_manifest_block
+    from deepreefmap_gui.survey.preset import manifest_config_block
     from deepreefmap_gui.survey.store import SURVEY_DB_NAME, SurveyStore
 
     places = [
@@ -83,6 +97,11 @@ def seed_survey(out_root: Path) -> None:
     statuses = ["succeeded", "succeeded", "succeeded", "succeeded", "failed", "succeeded"]
 
     store = SurveyStore(out_root / SURVEY_DB_NAME)
+    # Two sessions, so By session has something to be a grouping of rather than
+    # one node holding everything.
+    sessions = [SurveyBatch(name="2026-08-04"), SurveyBatch(name="2026-08-02")]
+    for session in sessions:
+        store.add_batch(session)
     transects = []
     for index, (name, lat, lon, length) in enumerate(places):
         transect = Transect(
@@ -97,12 +116,16 @@ def seed_survey(out_root: Path) -> None:
         store.add_transect(transect)
         transects.append(transect)
 
+    # The last clip carries no checksum, so the rail's third link state has
+    # something to paint. The paths point nowhere on purpose: every clip comes
+    # back "missing", which is the state a capture would otherwise never show
+    # and the one whose copy most needs reading.
     videos = [
         store.upsert_video(
             VideoAsset(
                 file_name=f"GX01000{n + 1}.MP4",
                 path=f"/data/dive1/GX01000{n + 1}.MP4",
-                hash=f"{n:02d}" * 16,
+                hash=None if n == len(statuses) - 1 else f"{n:02d}" * 16,
             )
         )
         for n in range(len(statuses))
@@ -110,12 +133,14 @@ def seed_survey(out_root: Path) -> None:
 
     for index, status in enumerate(statuses):
         transect = transects[index % len(transects)]
+        session = sessions[0] if index >= 2 else sessions[1]
         pass_ = TransectPass(
             transect_id=transect.id,
             video_id=videos[index].id,
             begin_s=0.0,
             end_s=90.0 + 30 * index,
             direction="forward" if index % 2 == 0 else "reverse",
+            batch_id=session.id,
         )
         store.add_pass(pass_)
         run = RunRecord(pass_id=pass_.id, run_dir_name=f"20260804-10{index}000", status=status)
@@ -138,12 +163,56 @@ def seed_survey(out_root: Path) -> None:
                     "fps": 5,
                     "semantic_reference_points": 1_200_000,
                     "benthic_cover": covers[index % len(covers)],
-                    "survey": survey_manifest_block(run, pass_, transect, None),
+                    # What produced the numbers, as a real run records it. The
+                    # last pass deviated, so the provenance rows are captured
+                    # saying so rather than only saying "as standard".
+                    "segmentation_model": "coralscapes-vit-b-dpt",
+                    "mapping_backend": "loger_star",
+                    "deepreefmap_version": "1.4.0",
+                    "survey": survey_manifest_block(
+                        run,
+                        pass_,
+                        transect,
+                        session,
+                        config=manifest_config_block(
+                            _standard_preset(), {"fps": 3} if index == 5 else {}
+                        ),
+                    ),
                 }
             ),
             encoding="utf-8",
         )
+        # The cover the analysis actually reads. Without this the Transects page
+        # captures its empty state, which is the one thing a shot of a cover
+        # panel must not show.
+        if status == "succeeded":
+            (run_dir / "benthic_cover.json").write_text(
+                json.dumps(_cover_file(index)), encoding="utf-8"
+            )
     store.close()
+
+
+# Class ids from the bundled Coralscapes table, so aggregate_cover can group
+# them. Two passes of one transect differ slightly, which is what makes the
+# repeatability columns say anything.
+_COVER_IDS = {"1": 0.34, "13": 0.22, "3": 0.18, "4": 0.09, "20": 0.17}
+
+
+def _cover_file(index: int) -> dict:
+    """One run's benthic_cover.json, jittered per pass so the spread is real."""
+    jitter = 1.0 + (0.06 if index % 2 else -0.06)
+    total = 250_000.0
+    return {
+        "classes": {
+            class_id: {
+                "name": class_id,
+                "count": fraction * jitter * total,
+                "fraction": fraction * jitter,
+            }
+            for class_id, fraction in _COVER_IDS.items()
+        },
+        "denominator": total,
+    }
 
 
 class Capture:
@@ -218,12 +287,17 @@ def capture_all(out_dir: Path) -> None:
     capture.settle(STARTUP_MS)
 
     capture.settle(SETTLE_MS * 2)
+    # The link scan is threaded in the app; here it is resolved directly so the
+    # clip rail is captured with its answers rather than mid-flight.
+    from deepreefmap_gui.survey.catalogue import resolve_link_states
 
-    for section in ("plan", "run", "browse"):
+    window._apply_clip_link_states(resolve_link_states(window._video_entries))
+
+    for section in ("transects", "process", "browse"):
         window._set_simple_section(section)
         capture.shot(section)
 
-    # Each view of This machine: they share a page, so a regression in one is
+    # Each view of Setup: they share a page, so a regression in one is
     # invisible in a shot of another.
     window._set_simple_section("machine")
     for view in MACHINE_VIEWS:
@@ -237,10 +311,21 @@ def capture_all(out_dir: Path) -> None:
     window._data_run_table.selectRow(0)
     capture.shot("browse-selected")
 
-    for facet in ("transects", "videos"):
+    for facet in ("sessions", "transects", "videos"):
         window._data_facet_buttons[facet].click()
         capture.settle()
         capture.shot(f"browse-by-{facet}")
+        # Selecting the first group too: each facet has its own detail pane, and
+        # a shot of the resting state never shows any of them. The table's
+        # selection is cleared first, because a selected run outranks the group
+        # in the pane and the earlier browse-selected shot left one behind.
+        tree = window._data_tree
+        if tree.topLevelItemCount():
+            window._data_run_table.clearSelection()
+            window._data_run_table.setCurrentCell(-1, -1)
+            tree.setCurrentItem(tree.topLevelItem(0))
+            capture.settle()
+            capture.shot(f"browse-by-{facet}-selected")
     window._data_facet_buttons["runs"].click()
 
 

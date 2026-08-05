@@ -1,7 +1,14 @@
 import json
 
 import pytest
-from _factories import make_transect, make_video, seed_pass, seed_survey_run, write_run
+from _factories import (
+    make_batch,
+    make_transect,
+    make_video,
+    seed_pass,
+    seed_survey_run,
+    write_run,
+)
 
 from deepreefmap_gui.survey import catalogue
 from deepreefmap_gui.survey.catalogue import UNASSIGNED_TITLE
@@ -66,6 +73,69 @@ def test_transects_facet_lists_transects_without_runs(out_root, store):
     assert groups[0].all_entries() == []
 
 
+def test_sessions_facet_gathers_a_day_across_transects(out_root, store):
+    """The session is the only container that spans transects, which is the
+    whole reason it earns a facet of its own."""
+    batch = make_batch(store, "2026-07-01")
+    seed_survey_run(store, out_root, "north", transect=make_transect("North"), batch=batch)
+    seed_survey_run(store, out_root, "south", transect=make_transect("South"), batch=batch)
+
+    groups = catalogue.sessions_facet(scan(out_root, store), store.list_batches())
+    assert [g.title for g in groups] == ["2026-07-01"]
+    assert sorted(e.dir_name for e in groups[0].all_entries()) == ["north", "south"]
+    assert catalogue.session_summary(groups[0]) == "2 runs · 2 transects"
+
+
+def test_sessions_facet_orders_newest_first(out_root, store):
+    older = make_batch(store, "2026-06-01")
+    newer = make_batch(store, "2026-07-01")
+    seed_survey_run(
+        store, out_root, "old_run", batch=older, run_timestamp="2026-06-01T10:00:00+00:00"
+    )
+    seed_survey_run(
+        store,
+        out_root,
+        "new_run",
+        transect=make_transect("Other"),
+        batch=newer,
+        run_timestamp="2026-07-01T10:00:00+00:00",
+    )
+    groups = catalogue.sessions_facet(scan(out_root, store), store.list_batches())
+    assert [g.title for g in groups] == ["2026-07-01", "2026-06-01"]
+
+
+def test_sessions_facet_surfaces_runs_with_no_session_first(out_root, store):
+    """Runs from before sessions were recorded still have to be reachable."""
+    batch = make_batch(store)
+    seed_survey_run(store, out_root, "filed", batch=batch)
+    write_run(out_root, "loose")
+    groups = catalogue.sessions_facet(scan(out_root, store), store.list_batches())
+    assert groups[0].title == catalogue.UNFILED_SESSION_TITLE
+    assert [e.dir_name for e in groups[0].entries] == ["loose"]
+
+
+def test_sessions_facet_lists_a_session_with_no_runs(out_root, store):
+    make_batch(store, "Empty day")
+    groups = catalogue.sessions_facet(scan(out_root, store), store.list_batches())
+    assert [g.title for g in groups] == ["Empty day"]
+    assert groups[0].all_entries() == []
+
+
+def test_session_key_agrees_from_the_manifest_and_the_database(out_root, store):
+    """Both sides of the join have to land on one key or a session splits in two.
+
+    A run folder copied off another machine has a manifest and no row here, so
+    the manifest fallback is the case that matters.
+    """
+    batch = make_batch(store)
+    seed_survey_run(store, out_root, "run_a", batch=batch)
+    fresh = SurveyStore(out_root / "fresh.db")
+    entry = scan(out_root, fresh)[0]
+    assert entry.db_pass is None
+    assert entry.session_id == batch.id
+    assert catalogue.session_group_key(entry.session_id) == catalogue.session_group_key(batch.id)
+
+
 def test_videos_facet_separates_windows_on_shared_video(out_root, store):
     t1, t2 = make_transect("T1"), make_transect("T2")
     seed_survey_run(store, out_root, "first_half", transect=t1)
@@ -85,6 +155,34 @@ def test_videos_facet_separates_windows_on_shared_video(out_root, store):
     assert len(groups[0].children) == 2
     titles = {c.title for c in groups[0].children}
     assert any("T1" in t for t in titles) and any("T2" in t for t in titles)
+
+
+def test_an_unhashed_clip_and_its_runs_are_one_group(out_root, store):
+    """Scenario: a clip added while its file was unreadable has no checksum, so
+    both sides of the By video join fall back to a name.
+
+    Expected behaviour: one group. Both sides fall back to the file name, so a
+    clip and the runs cut from it still meet.
+    """
+    video = store.upsert_video(
+        make_video(content_hash=None, file_name="GX010001.MP4", path="/data/GX010001.MP4")
+    )
+    transect = make_transect()
+    store.add_transect(transect)
+    pass_ = TransectPass(
+        transect_id=transect.id, video_id=video.id, begin_s=0.0, end_s=60.0
+    )
+    store.add_pass(pass_)
+    run = RunRecord(pass_id=pass_.id, run_dir_name="a_run", status="succeeded")
+    store.add_run(run)
+    write_run(out_root, "a_run", video_hashes=[], input_videos=["/data/GX010001.MP4"])
+
+    library = catalogue.video_library(
+        store.list_videos(), store.list_passes(), store.list_runs()
+    )
+    groups = catalogue.videos_facet(scan(out_root, store), library)
+    assert [g.title for g in groups] == ["GX010001.MP4"]
+    assert len(groups[0].all_entries()) == 1
 
 
 def test_reconcile_database_wins_and_records_move(out_root, store):

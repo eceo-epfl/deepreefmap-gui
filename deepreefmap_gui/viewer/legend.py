@@ -24,6 +24,7 @@ from deepreefmap_gui.core.theme import (
     FONT_XS,
     OVERLAY_BG,
     OVERLAY_BORDER,
+    OVERLAY_BORDER_STRONG,
     OVERLAY_FILL,
     OVERLAY_FILL_HI,
     OVERLAY_TEXT,
@@ -268,8 +269,12 @@ class LegendOverlay(QWidget):
         on_toggle: Callable[[], None],
         on_solo: Callable[[int], None] | None = None,
         class_counts: dict[int, int] | None = None,
-    ) -> tuple[dict[int, QCheckBox], dict[int, QToolButton]]:
-        """Populate one row per class present in the cloud; return (toggles, solo_buttons)."""
+    ) -> dict[int, QCheckBox]:
+        """Populate one row per class present in the cloud; return the toggles.
+
+        The solo buttons stay in ``self._rows`` for reorder(); handing a second
+        dict of them back was a copy no caller ever read.
+        """
         self.clear()
         self._rows = {}
         toggles: dict[int, QCheckBox] = {}
@@ -285,7 +290,7 @@ class LegendOverlay(QWidget):
             swatch.setFixedSize(12, 12)
             swatch.setStyleSheet(
                 f"background-color: rgb({r},{g},{b}); "
-                "border: 1px solid {OVERLAY_BORDER_STRONG};"
+                f"border: 1px solid {OVERLAY_BORDER_STRONG};"
             )
             cb = QCheckBox(name)
             cb.setChecked(True)
@@ -336,7 +341,7 @@ class LegendOverlay(QWidget):
         self._list_content_h = inner_h + 4
         self._list_row_h = max(18, inner_h // n_rows) if n_rows else 18
         self._scroll.setMinimumHeight(min(self._list_content_h, 2 * self._list_row_h))
-        return toggles, solo_buttons
+        return toggles
 
     def reposition(self) -> None:
         parent = self.parentWidget()

@@ -38,11 +38,11 @@ class HoverColumn(QWidget):
         self.hovered.emit(event.globalPosition())
         super().enterEvent(event)
 
-    def mouseMoveEvent(self, event) -> None:  # noqa: N802 (Qt override)
+    def mouseMoveEvent(self, event) -> None:
         self.hovered.emit(event.globalPosition())
         super().mouseMoveEvent(event)
 
-    def leaveEvent(self, event) -> None:  # noqa: N802 (Qt override)
+    def leaveEvent(self, event) -> None:
         self.hovered.emit(None)
         super().leaveEvent(event)
 

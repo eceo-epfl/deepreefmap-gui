@@ -1,6 +1,6 @@
 """Batch job CSV parsing.
 
-Covers deepreefmap_gui/form/batch.py: the timestamp-range mini-parser and the CSV
+Covers deepreefmap_gui/io/batch_csv.py: the timestamp-range mini-parser and the CSV
 loader (column detection, blank-row skipping, Excel rejection).
 """
 
@@ -20,13 +20,13 @@ import pytest
     ],
 )
 def test_parse_timestamp_range(text, expected) -> None:
-    from deepreefmap_gui.form.batch import _parse_timestamp_range
+    from deepreefmap_gui.io.batch_csv import _parse_timestamp_range
 
     assert _parse_timestamp_range(text) == expected
 
 
 def test_load_batch_csv_parses_rows(tmp_path) -> None:
-    from deepreefmap_gui.form.batch import load_batch_csv
+    from deepreefmap_gui.io.batch_csv import load_batch_csv
 
     csv_path = tmp_path / "jobs.csv"
     csv_path.write_text(
@@ -48,7 +48,7 @@ def test_load_batch_csv_parses_rows(tmp_path) -> None:
 
 
 def test_load_batch_csv_case_insensitive_columns(tmp_path) -> None:
-    from deepreefmap_gui.form.batch import load_batch_csv
+    from deepreefmap_gui.io.batch_csv import load_batch_csv
 
     csv_path = tmp_path / "jobs.csv"
     csv_path.write_text(
@@ -60,7 +60,7 @@ def test_load_batch_csv_case_insensitive_columns(tmp_path) -> None:
 
 
 def test_load_batch_csv_rejects_missing_columns(tmp_path) -> None:
-    from deepreefmap_gui.form.batch import load_batch_csv
+    from deepreefmap_gui.io.batch_csv import load_batch_csv
 
     csv_path = tmp_path / "jobs.csv"
     csv_path.write_text("videos,timestamps\nx.mp4,0-10\n")
@@ -69,7 +69,7 @@ def test_load_batch_csv_rejects_missing_columns(tmp_path) -> None:
 
 
 def test_load_batch_csv_skips_blank_rows(tmp_path) -> None:
-    from deepreefmap_gui.form.batch import load_batch_csv
+    from deepreefmap_gui.io.batch_csv import load_batch_csv
 
     csv_path = tmp_path / "jobs.csv"
     csv_path.write_text(
@@ -84,7 +84,7 @@ def test_load_batch_csv_skips_blank_rows(tmp_path) -> None:
 
 def test_load_batch_csv_reads_an_optional_transect(tmp_path) -> None:
     """The Run step assigns each imported pass to the transect this column names."""
-    from deepreefmap_gui.form.batch import load_batch_csv
+    from deepreefmap_gui.io.batch_csv import load_batch_csv
 
     csv_path = tmp_path / "jobs.csv"
     csv_path.write_text(
@@ -98,7 +98,7 @@ def test_load_batch_csv_reads_an_optional_transect(tmp_path) -> None:
 
 def test_load_batch_csv_without_a_transect_column(tmp_path) -> None:
     """A sheet written before the column existed still imports, unassigned."""
-    from deepreefmap_gui.form.batch import load_batch_csv
+    from deepreefmap_gui.io.batch_csv import load_batch_csv
 
     csv_path = tmp_path / "jobs.csv"
     csv_path.write_text("videos,timestamps,transect_length,crop_width\na.mp4,,10,2\n")
@@ -106,7 +106,7 @@ def test_load_batch_csv_without_a_transect_column(tmp_path) -> None:
 
 
 def test_load_batch_csv_rejects_excel(tmp_path) -> None:
-    from deepreefmap_gui.form.batch import load_batch_csv
+    from deepreefmap_gui.io.batch_csv import load_batch_csv
 
     bogus = tmp_path / "jobs.xlsx"
     bogus.write_bytes(b"not actually excel")

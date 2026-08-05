@@ -27,10 +27,22 @@ def _gui_mixins():
 
 
 def _methods(cls) -> dict[str, object]:
+    """Every name a mixin contributes to the fused window's namespace.
+
+    Descriptors count. `inspect.isfunction` is False for a `property`,
+    `staticmethod` or `classmethod`, and MRO discards a duplicate of those just
+    as silently as it does a plain method -- `_sanitize_run_name` is a
+    staticmethod called from another mixin, so a second definition would have
+    gone unnoticed.
+    """
     return {
         name: value
         for name, value in vars(cls).items()
-        if inspect.isfunction(value) and not name.startswith("__")
+        if not name.startswith("__")
+        and (
+            inspect.isfunction(value)
+            or isinstance(value, (staticmethod, classmethod, property))
+        )
     }
 
 

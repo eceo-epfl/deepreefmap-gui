@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from deepreefmap_gui.survey.backup import write_backup
 from deepreefmap_gui.survey.models.common import utc_now_iso
 from deepreefmap_gui.survey.models.convert import (
     build_document,
@@ -140,6 +141,21 @@ _MIGRATIONS = [
 ]
 
 
+def resolved_path(path: str) -> str | None:
+    """A path in the one form two records of the same file can be compared in.
+
+    Never touches the filesystem: resolve(strict=False) is pure string work, so
+    a clip on an unplugged drive still compares equal to itself. Returns None
+    for an empty path, which is not a location and must not match another.
+    """
+    if not path:
+        return None
+    try:
+        return str(Path(path).expanduser().resolve(strict=False))
+    except (OSError, ValueError):
+        return path
+
+
 def _insert_sql(table: str, row: dict[str, Any]) -> str:
     columns = ", ".join(row)
     params = ", ".join(f":{c}" for c in row)
@@ -232,10 +248,28 @@ class SurveyStore:
                 f"survey.db is schema v{version}, but this build knows up to "
                 f"v{len(_MIGRATIONS)}. Update the app to open this survey."
             )
-        for number, script in enumerate(_MIGRATIONS[version:], start=version + 1):
+        pending = _MIGRATIONS[version:]
+        if not pending:
+            return
+        # Version 0 is the database _conn just brought into being; there is no
+        # prior build's work in it to protect.
+        if version > 0:
+            self._backup_before_migrating(version)
+        for number, script in enumerate(pending, start=version + 1):
             with conn:
                 conn.executescript(script)
                 conn.execute(f"PRAGMA user_version = {number}")
+
+    def _backup_before_migrating(self, version: int) -> None:
+        """Copy the database in the shape the previous build wrote it.
+
+        Migrating is one-way -- an older build refuses a database stamped past
+        what it knows -- so this copy is what a rolled-back update restores,
+        instead of piecing the survey back together from run manifests. A backup
+        that cannot be taken is not a reason to refuse to migrate; write_backup
+        logs and returns None.
+        """
+        write_backup(self._db_path, version)
 
     def _add(self, table: str, model: Any) -> None:
         row = to_row(model)
@@ -305,12 +339,27 @@ class SurveyStore:
     # --- Videos ---
 
     def upsert_video(self, asset: VideoAsset) -> VideoAsset:
-        """Insert ``asset``, or refresh and return the existing row with the same hash."""
+        """Insert ``asset``, or refresh and return the row that is already this clip.
+
+        Matched on the content hash, and on the resolved path when there is no
+        hash. The path fallback carries clips that cannot be hashed, off an
+        unplugged drive or otherwise unreadable, which would otherwise insert a
+        fresh row on every add.
+
+        A path is only ever a fallback: two different files can sit at one path
+        over time, so a hash wins when there is one on both sides.
+        """
         existing = self.find_video_by_hash(asset.hash) if asset.hash else None
+        if existing is None and not asset.hash:
+            existing = self.find_video_by_path(asset.path)
+            # Only adopt an unhashed row: one that already knows its hash is a
+            # different, identified clip that happens to have lived here.
+            if existing is not None and existing.hash:
+                existing = None
         if existing is None:
             self._add("video_asset", asset)
             return asset
-        for name in ("file_name", "path", "size_bytes", "mtime", "duration_s", "fps"):
+        for name in ("file_name", "path", "hash", "size_bytes", "mtime", "duration_s", "fps"):
             value = getattr(asset, name)
             if value is not None:
                 setattr(existing, name, value)
@@ -325,11 +374,64 @@ class SurveyStore:
         ).fetchone()
         return from_row(VideoAsset, row) if row is not None else None
 
+    def find_video_by_path(self, path: str) -> VideoAsset | None:
+        """The clip recorded at this path, matched on the resolved location.
+
+        Resolved on both sides so a relative path, a symlinked mount and the
+        absolute path of the same file are one clip rather than three.
+        """
+        wanted = resolved_path(path)
+        if wanted is None:
+            return None
+        for video in self.list_videos():
+            if resolved_path(video.path) == wanted:
+                return video
+        return None
+
     def get_video(self, video_id: uuid.UUID) -> VideoAsset | None:
         return self._get("video_asset", VideoAsset, video_id)
 
     def list_videos(self) -> list[VideoAsset]:
         return self._list("video_asset", VideoAsset, "created_at, file_name")
+
+    def update_video(self, asset: VideoAsset) -> None:
+        self._update("video_asset", asset)
+
+    def merge_videos(self, keeper_id: uuid.UUID, loser_ids: list[uuid.UUID]) -> int:
+        """Fold duplicate clip rows into one, and repoint what pointed at them.
+
+        Returns the number of passes moved. Both ends of a pass are repointed:
+        ``video_id`` and the ``extra_video_ids`` a chaptered recording carries,
+        or the second half of a swim the camera split at 4 GB would go on
+        naming a row that no longer exists.
+
+        A pass that would end up naming the keeper twice keeps it once. That is
+        not hypothetical: a chaptered pass whose chapters were separately
+        unhashed has every chapter merging into the same keeper, and
+        TransectPass refuses to hold the same video in both places.
+        """
+        losers = {lid for lid in loser_ids if lid != keeper_id}
+        if not losers:
+            return 0
+        moved = 0
+        for pass_ in self.list_passes():
+            ids = pass_.video_ids()
+            if not losers.intersection(ids):
+                continue
+            remapped: list[uuid.UUID] = []
+            for video_id in ids:
+                mapped = keeper_id if video_id in losers else video_id
+                if mapped not in remapped:
+                    remapped.append(mapped)
+            pass_.video_id = remapped[0]
+            pass_.extra_video_ids = remapped[1:]
+            self.update_pass(pass_)
+            moved += 1
+        with self._conn() as conn:
+            conn.executemany(
+                "DELETE FROM video_asset WHERE id = ?", [(str(lid),) for lid in losers]
+            )
+        return moved
 
     # --- Batches ---
 

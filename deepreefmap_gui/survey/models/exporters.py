@@ -93,7 +93,7 @@ def save_long_format_csv(path: Path, rows: Sequence[LongCoverRow]) -> None:
     """
     from deepreefmap_gui.survey.analysis import LONG_COVER_COLUMNS
 
-    with path.open("w", newline="") as f:
+    with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(LONG_COVER_COLUMNS)
         for row in rows:

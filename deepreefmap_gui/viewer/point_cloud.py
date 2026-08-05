@@ -44,6 +44,7 @@ from deepreefmap_gui.core.theme import (
     CARD_BG,
     GROOVE,
     OVERLAY_TEXT,
+    PREVIEW_BG,
     PRIMARY,
     PRIMARY_DARK,
     SLIDER_HANDLE,
@@ -57,8 +58,8 @@ from deepreefmap_gui.viewer.frame_stack import (
 from deepreefmap_gui.viewer.legend import LegendOverlay
 from deepreefmap_gui.viewer.picking import ViewerPickingMixin
 from deepreefmap_gui.viewer.render import (
+    FrameLookup,
     _build_frustum_lines,
-    _colorize_depth,
     _colorize_seg,
     _compute_transect_view,
     _estimate_world_up,
@@ -148,7 +149,7 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         # through the reconstruction, so we give it a tall handle, a clear
         # groove, and tick marks.
         slider_row = QWidget()
-        slider_row.setStyleSheet("background-color: {PREVIEW_BG};")
+        slider_row.setStyleSheet(f"background-color: {PREVIEW_BG};")
         slider_layout = QHBoxLayout(slider_row)
         slider_layout.setContentsMargins(8, 4, 8, 6)
         slider_layout.setSpacing(8)
@@ -240,11 +241,9 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
 
         self._simple_actor: Any = None
         self._live_actor: Any = None
-        self._live_polydata: pv.PolyData | None = None
         self._class_actors: dict[int, Any] = {}
         self._class_polydata: dict[int, pv.PolyData] = {}
         self._frustum_batch_actor: Any = None
-        self._frustum_batch_pd: Any = None
         self._frustum_highlight_actor: Any = None
         self._frustum_highlight_pd: Any = None
         self._frustum_frame_ids: list[int] = []
@@ -264,6 +263,7 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         self._live_cache: LiveFrameCloudCache | None = None
         self._frame_batch: FrameBatch | None = None
         self._mapping_result: MappingSequenceResult | None = None
+        self._frame_lookup: FrameLookup | None = None
         self._max_label_id = 0
         # Geometry-only mode: a single static RGB cloud with a frustum/image
         # timeline but no semantic per-class partitioning (no FinalCloudIndex).
@@ -295,7 +295,6 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         # offsets from the anchor so update_pick_anchor can reposition them.
         self._pick_tick_sources: list[tuple[Any, float, float, float, float]] = []
         self._picked_xyz: tuple[float, float, float] | None = None
-        self._picked_color: tuple[int, int, int] = (255, 220, 60)
         self._picked_leader_target: tuple[float, float] | None = None
         self._pick_camera_obs_id: int | None = None
         self._pick_mode_enabled: bool = False
@@ -382,6 +381,21 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
                 self._pick_press_pos = None
         return super().eventFilter(obj, event)
 
+    def _safe_render(self) -> bool:
+        """Render, returning False if it raised. A render failure is never fatal.
+
+        Logged at debug: a failure is expected during teardown, when the render
+        window is already gone.
+        """
+        if self._plotter is None:
+            return False
+        try:
+            self._plotter.render()
+        except Exception:
+            logger.debug("Plotter render failed", exc_info=True)
+            return False
+        return True
+
     def _ensure_plotter(self):
         if self._plotter is not None:
             return self._plotter
@@ -450,9 +464,7 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         """Repaint the VTK viewport and re-raise the overlays on top of it."""
         if self._plotter is None:
             return
-        try:
-            self._plotter.render()
-        except Exception:
+        if not self._safe_render():
             return
         self.legend_overlay.raise_()
         self.legend_overlay.update()
@@ -519,10 +531,7 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
             return
         if self._canvas_stack.currentWidget() is not self._canvas_container:
             return
-        try:
-            self._plotter.render()
-        except Exception:
-            pass
+        self._safe_render()
 
     def set_placeholder_widget(self, widget: QWidget) -> None:
         """Install the widget shown in place of the 3D canvas while it is off."""
@@ -598,6 +607,77 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
 
     # --- Scene data ---
 
+    def _install_indexed_scene(
+        self,
+        frame_batch: FrameBatch,
+        mapping_result: MappingSequenceResult,
+        plotter: Any,
+    ) -> None:
+        """Build the live cache, class actors, frustums and camera for _final_index.
+
+        The tail both scene loaders share; they differ only in whether they build
+        the index or are handed one. Keeping it in one place is what stops a fix
+        to actor setup being applied to only one of them.
+
+        Assumes the caller has already assigned ``self._final_index`` and is
+        inside ``_scene_mutation()``.
+        """
+        import pyvista as pv
+
+        assert self._final_index is not None
+        self._live_cache = LiveFrameCloudCache(
+            frame_batch, mapping_result, self._final_index.frame_order,
+        )
+        self._max_label_id = max(
+            (max(self._class_colors.keys(), default=0)),
+            max(self._final_index.class_ids, default=0),
+        )
+
+        n_classes = len(self._final_index.class_ids)
+        for i, cid in enumerate(self._final_index.class_ids):
+            if i == 0 or (i & 0x3) == 0 or i == n_classes - 1:
+                self._emit_setup("Preparing class actors", i, n_classes)
+            empty = pv.PolyData(np.zeros((1, 3), dtype=np.float32))
+            empty["colors"] = np.zeros((1, 3), dtype=np.uint8)
+            actor = plotter.add_mesh(
+                empty, scalars="colors", rgb=True, point_size=2.0,
+                style="points", name=f"class_{cid}",
+            )
+            actor.SetVisibility(False)
+            self._class_actors[cid] = actor
+            self._class_polydata[cid] = empty
+        self._emit_setup("Preparing class actors", n_classes, n_classes)
+
+        self._build_frustums(frame_batch, mapping_result)
+
+        if self._final_index.class_ids:
+            self._emit_setup("Fitting camera", 0, 0)
+            all_xyz = [
+                self._final_index.xyz_by_class[c]
+                for c in self._final_index.class_ids
+                if c in self._final_index.xyz_by_class
+            ]
+            if all_xyz:
+                combined = np.concatenate(all_xyz, axis=0)
+                if combined.shape[0] > 0:
+                    self._auto_fit_camera(combined)
+
+        self._reveal_canvas()
+        self._notify_status("scene_loaded")
+
+    def _begin_scene(
+        self,
+        frame_batch: FrameBatch,
+        mapping_result: MappingSequenceResult,
+    ) -> Any:
+        """Reset the panel labels and adopt the new batch; returns the plotter."""
+        self._set_frame_label_visible("seg", True)
+        self._set_frame_label_visible("depth", True)
+        plotter = self._ensure_plotter()
+        self._frame_batch = frame_batch
+        self._mapping_result = mapping_result
+        return plotter
+
     def load_scene_data(
         self,
         frame_batch: FrameBatch,
@@ -605,61 +685,16 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         reference_cloud: SemanticPointCloud,
         classes_config: ClassConfig,
     ) -> None:
-        import pyvista as pv
-
         self._clear_scene_data()
         with self._scene_mutation():
-            self._set_frame_label_visible("seg", True)
-            self._set_frame_label_visible("depth", True)
-            plotter = self._ensure_plotter()
-            self._frame_batch = frame_batch
-            self._mapping_result = mapping_result
-
+            plotter = self._begin_scene(frame_batch, mapping_result)
             frame_order = [int(f.frame_index) for f in frame_batch.frames]
             self._emit_setup("Indexing point cloud", 0, 0)
             self._final_index = build_final_cloud_index(
                 reference_cloud, frame_order, self._class_colors,
                 progress=self._emit_setup,
             )
-            self._live_cache = LiveFrameCloudCache(
-                frame_batch, mapping_result, self._final_index.frame_order,
-            )
-            self._max_label_id = max(
-                (max(self._class_colors.keys(), default=0)),
-                max(self._final_index.class_ids, default=0),
-            )
-
-            n_classes = len(self._final_index.class_ids)
-            for i, cid in enumerate(self._final_index.class_ids):
-                if i == 0 or (i & 0x3) == 0 or i == n_classes - 1:
-                    self._emit_setup("Preparing class actors", i, n_classes)
-                empty = pv.PolyData(np.zeros((1, 3), dtype=np.float32))
-                empty["colors"] = np.zeros((1, 3), dtype=np.uint8)
-                actor = plotter.add_mesh(
-                    empty, scalars="colors", rgb=True, point_size=2.0,
-                    style="points", name=f"class_{cid}",
-                )
-                actor.SetVisibility(False)
-                self._class_actors[cid] = actor
-                self._class_polydata[cid] = empty
-            self._emit_setup("Preparing class actors", n_classes, n_classes)
-
-            self._build_frustums(frame_batch, mapping_result)
-
-            if self._final_index.class_ids:
-                self._emit_setup("Fitting camera", 0, 0)
-                all_xyz = [
-                    self._final_index.xyz_by_class[c]
-                    for c in self._final_index.class_ids
-                    if c in self._final_index.xyz_by_class
-                ]
-                if all_xyz:
-                    combined = np.concatenate(all_xyz, axis=0)
-                    if combined.shape[0] > 0:
-                        self._auto_fit_camera(combined)
-
-            self._reveal_canvas()
-            self._notify_status("scene_loaded")
+            self._install_indexed_scene(frame_batch, mapping_result, plotter)
 
     def load_scene_data_indexed(
         self,
@@ -669,56 +704,11 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         classes_config: ClassConfig,
     ) -> None:
         """Like load_scene_data but accepts a pre-built FinalCloudIndex."""
-        import pyvista as pv
-
         self._clear_scene_data()
         with self._scene_mutation():
-            self._set_frame_label_visible("seg", True)
-            self._set_frame_label_visible("depth", True)
-            plotter = self._ensure_plotter()
-            self._frame_batch = frame_batch
-            self._mapping_result = mapping_result
-
+            plotter = self._begin_scene(frame_batch, mapping_result)
             self._final_index = final_cloud_index
-            self._live_cache = LiveFrameCloudCache(
-                frame_batch, mapping_result, self._final_index.frame_order,
-            )
-            self._max_label_id = max(
-                (max(self._class_colors.keys(), default=0)),
-                max(self._final_index.class_ids, default=0),
-            )
-
-            n_classes = len(self._final_index.class_ids)
-            for i, cid in enumerate(self._final_index.class_ids):
-                if i == 0 or (i & 0x3) == 0 or i == n_classes - 1:
-                    self._emit_setup("Preparing class actors", i, n_classes)
-                empty = pv.PolyData(np.zeros((1, 3), dtype=np.float32))
-                empty["colors"] = np.zeros((1, 3), dtype=np.uint8)
-                actor = plotter.add_mesh(
-                    empty, scalars="colors", rgb=True, point_size=2.0,
-                    style="points", name=f"class_{cid}",
-                )
-                actor.SetVisibility(False)
-                self._class_actors[cid] = actor
-                self._class_polydata[cid] = empty
-            self._emit_setup("Preparing class actors", n_classes, n_classes)
-
-            self._build_frustums(frame_batch, mapping_result)
-
-            if self._final_index.class_ids:
-                self._emit_setup("Fitting camera", 0, 0)
-                all_xyz = [
-                    self._final_index.xyz_by_class[c]
-                    for c in self._final_index.class_ids
-                    if c in self._final_index.xyz_by_class
-                ]
-                if all_xyz:
-                    combined = np.concatenate(all_xyz, axis=0)
-                    if combined.shape[0] > 0:
-                        self._auto_fit_camera(combined)
-
-            self._reveal_canvas()
-            self._notify_status("scene_loaded")
+            self._install_indexed_scene(frame_batch, mapping_result, plotter)
 
     def load_geometry_scene(
         self,
@@ -778,44 +768,29 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         self._update_frustum_visibility(frustums_visible, t)
         self._update_geometry_image_panel(t)
         if self._plotter is not None:
-            try:
-                self._plotter.render()
-            except Exception:
-                pass
+            self._safe_render()
+
+    def _panel_frames(self) -> "FrameLookup | None":
+        """The frame lookup for the loaded scene, rebuilt when the scene changes."""
+        if self._frame_batch is None or self._mapping_result is None:
+            return None
+        lookup = self._frame_lookup
+        if lookup is None or not lookup.built_from(self._frame_batch, self._mapping_result):
+            lookup = FrameLookup(self._frame_batch, self._mapping_result)
+            self._frame_lookup = lookup
+        return lookup
 
     def _compose_geometry_frame_panel(self, t: int) -> "tuple[np.ndarray, np.ndarray] | None":
         """RGB + colorized depth for geometry-only frame t (no segmentation labels)."""
-        import cv2
-
         order = self._geometry_frame_order
-        if not order or self._frame_batch is None or self._mapping_result is None:
+        lookup = self._panel_frames()
+        if not order or lookup is None:
             return None
         tt = int(np.clip(t, 0, len(order) - 1))
-        frame_idx = int(order[tt])
-
-        frame = None
-        for f in self._frame_batch.frames:
-            if int(f.frame_index) == frame_idx:
-                frame = f
-                break
-        if frame is None:
+        views = lookup.frame_views(int(order[tt]))
+        if views is None:
             return None
-
-        mapping_indices = np.asarray(self._mapping_result.frame_indices, dtype=np.int32).reshape(-1)
-        mi = None
-        for i, fid in enumerate(mapping_indices.tolist()):
-            if int(fid) == frame_idx:
-                mi = i
-                break
-        if mi is None:
-            return None
-
-        rgb = np.asarray(frame.image_rgb, dtype=np.uint8)
-        depth = np.asarray(self._mapping_result.depth_maps[mi], dtype=np.float32)
-        h, w = rgb.shape[:2]
-        depth_color = _colorize_depth(
-            cv2.resize(depth, (w, h), interpolation=cv2.INTER_NEAREST),
-        )
+        _frame, rgb, depth_color = views
         return rgb, depth_color
 
     def _update_geometry_image_panel(self, t: int) -> None:
@@ -867,7 +842,6 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
             pd, color=(0.5, 0.5, 0.5), line_width=1, opacity=0.6,
             name="frustums_batch",
         )
-        self._frustum_batch_pd = pd
         self._frustum_frame_ids = frustum_frame_ids
         self._frustum_fid_to_idx = {fid: i for i, fid in enumerate(frustum_frame_ids)}
         self._frustum_pts_per = 16  # 8 line segments × 2 endpoints
@@ -931,21 +905,16 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
             if self._simple_actor is not None:
                 _remove(self._simple_actor)
             self.clear_picked_marker()
-            try:
-                self._plotter.render()
-            except Exception:
-                pass
+            self._safe_render()
         self._class_actors.clear()
         self._class_polydata.clear()
         self._frustum_batch_actor = None
-        self._frustum_batch_pd = None
         self._frustum_highlight_actor = None
         self._frustum_highlight_pd = None
         self._frustum_frame_ids = []
         self._frustum_fid_to_idx = {}
         self._frustum_all_pts = []
         self._live_actor = None
-        self._live_polydata = None
         self._simple_actor = None
         self._final_index = None
         self._live_cache = None
@@ -955,6 +924,7 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         self._fit_camera_params = None
         self._frame_batch = None
         self._mapping_result = None
+        self._frame_lookup = None
         self._frame_panel_cache.clear()
         self._frame_panel_bytes = 0
         self._clear_frame_layers()
@@ -1002,10 +972,7 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
             return
         if self._fit_camera_params is not None:
             self._apply_camera_params(*self._fit_camera_params)
-            try:
-                self._plotter.render()
-            except Exception:
-                pass
+            self._safe_render()
             return
         if self._geometry_mode:
             combined = self._geometry_xyz
@@ -1021,10 +988,7 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         if combined is None or combined.shape[0] == 0:
             return
         self._auto_fit_camera(combined)
-        try:
-            self._plotter.render()
-        except Exception:
-            pass
+        self._safe_render()
 
     def zoom_to_point(self, xyz: tuple[float, float, float], radius: float = 0.3) -> None:
         """Move the camera to look at *xyz* from *radius* metres away."""
@@ -1041,10 +1005,7 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
             direction /= norm
         cam.focal_point = tuple(target.tolist())
         cam.position = tuple((target + direction * radius).tolist())
-        try:
-            self._plotter.render()
-        except Exception:
-            pass
+        self._safe_render()
 
     def view_from_frame_pose(self, t: int, backoff_m: float = 0.0) -> bool:
         """Snap the 3D camera to frame `t`'s pose, optionally pulled back."""
@@ -1074,10 +1035,7 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         self._plotter.camera.position = tuple(cam_pos.tolist())
         self._plotter.camera.focal_point = tuple(focal.tolist())
         self._plotter.camera.up = tuple((-down).tolist())
-        try:
-            self._plotter.render()
-        except Exception:
-            pass
+        self._safe_render()
         return True
 
     # --- State application ---
@@ -1196,10 +1154,8 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
                 pd, scalars="colors", rgb=True, point_size=point_size,
                 style="points", name="live_cloud",
             )
-            self._live_polydata = pd
         else:
             self._live_actor.GetMapper().SetInputData(pd)
-            self._live_polydata = pd
             self._live_actor.GetProperty().SetPointSize(point_size)
             self._live_actor.SetVisibility(True)
 
@@ -1455,41 +1411,20 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         import cv2
 
         fi = self._final_index
-        if fi is None or len(fi.frame_order) == 0:
-            return None
-        if self._frame_batch is None or self._mapping_result is None:
+        lookup = self._panel_frames()
+        if fi is None or len(fi.frame_order) == 0 or lookup is None:
             return None
         tt = int(np.clip(t, 0, len(fi.frame_order) - 1))
-        frame_idx = int(fi.frame_order[tt])
-
-        frame = None
-        for f in self._frame_batch.frames:
-            if int(f.frame_index) == frame_idx:
-                frame = f
-                break
-        if frame is None:
+        views = lookup.frame_views(int(fi.frame_order[tt]))
+        if views is None:
             return None
+        frame, rgb, depth_color = views
 
-        mapping_indices = np.asarray(self._mapping_result.frame_indices, dtype=np.int32).reshape(-1)
-        mi = None
-        for i, fid in enumerate(mapping_indices.tolist()):
-            if int(fid) == frame_idx:
-                mi = i
-                break
-        if mi is None:
-            return None
-
-        rgb = np.asarray(frame.image_rgb, dtype=np.uint8)
         labels = np.asarray(frame.labels, dtype=np.int32)
-        depth = np.asarray(self._mapping_result.depth_maps[mi], dtype=np.float32)
-
         h, w = rgb.shape[:2]
         seg_color = _colorize_seg(
             cv2.resize(labels, (w, h), interpolation=cv2.INTER_NEAREST),
             self._class_colors,
-        )
-        depth_color = _colorize_depth(
-            cv2.resize(depth, (w, h), interpolation=cv2.INTER_NEAREST),
         )
         return rgb, seg_color, depth_color
 

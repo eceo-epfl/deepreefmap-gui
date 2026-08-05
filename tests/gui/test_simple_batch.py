@@ -183,7 +183,7 @@ def test_assigning_transect_persists_pass(batch_window, tmp_path, monkeypatch):
     assert passes[0].direction == "forward"
     assert passes[0].batch_id is not None
     assert batch_window._survey_start_btn.isEnabled()
-    assert batch_window._survey_start_btn.text() == "Next: Process (1) →"
+    assert batch_window._survey_start_btn.text() == "Start processing (1 pass)"
 
 
 def test_split_pass_duplicates_row(batch_window, tmp_path, monkeypatch):
@@ -255,8 +255,13 @@ def test_run_batch_records_success_and_links_manifest(
     assert survey["pass"]["direction"] == "forward"
     runs = batch_window._survey_store().list_runs()
     assert [r.status for r in runs] == ["succeeded"]
-    # Nothing left to process, so the step points at the archive instead.
-    assert batch_window._survey_start_btn.text() == "Open Browse →"
+    # Nothing left to process, so the start button has no action and says so.
+    # The quiet route to the results is there for a return visit; the batch
+    # itself has already taken the user to them.
+    assert batch_window._survey_start_btn.text() == "Nothing left to process"
+    assert not batch_window._survey_start_btn.isEnabled()
+    batch_window._set_simple_section("process")
+    assert batch_window._survey_results_btn.isVisibleTo(batch_window)
     assert batch_window._survey_pass_table.item(batch_window._table_row_of(0), _COL_STATUS).text() == "Succeeded"
 
 
@@ -326,9 +331,13 @@ def test_advanced_settings_reach_a_survey_run(batch_window, tmp_path, monkeypatc
     assert calls[0]["require_gravity_telemetry"] is True
 
 
-def test_batch_stays_on_run_when_done(batch_window, tmp_path, monkeypatch, qapp):
-    """Expected behaviour: a finished batch reports where the work happened
-    rather than relocating the user to another section."""
+def test_a_finished_batch_lands_on_what_it_produced(batch_window, tmp_path, monkeypatch, qapp):
+    """Scenario: a batch is walked away from, so the state it is found in
+    should be its results.
+
+    Expected behaviour: Browse, grouped by session and opened on this one. The
+    summary is still written to the Process page for when it is returned to.
+    """
     monkeypatch.setattr(
         "deepreefmap.pipeline.orchestrator.run_reconstruction", lambda **k: None
     )
@@ -339,7 +348,10 @@ def test_batch_stays_on_run_when_done(batch_window, tmp_path, monkeypatch, qapp)
     assert batch_window._simple_stack.currentIndex() == 1
     await_batch(batch_window, qapp)
     assert batch_window._app_mode == "SETUP"
-    assert batch_window._simple_stack.currentIndex() == 1
+    assert batch_window._simple_stack.currentIndex() == 2
+    assert batch_window._data_facet == "sessions"
+    assert batch_window._data_detail_stack.currentWidget() is batch_window._session_detail
+
     summary = batch_window._survey_summary_label
     assert not summary.isHidden()
     assert "1 of 1 pass succeeded" in summary.text()
@@ -391,7 +403,7 @@ def test_failed_run_keeps_pass_remaining(batch_window, tmp_path, monkeypatch, qa
     assert batch_window._survey_start_btn.isEnabled()
     # The pass has been through a run, so pressing again continues the batch
     # rather than starting it.
-    assert batch_window._survey_start_btn.text() == "Continue batch (1) →"
+    assert batch_window._survey_start_btn.text() == "Continue processing (1 pass)"
 
 
 def test_failed_pass_keeps_its_cause_on_the_row(batch_window, tmp_path, monkeypatch, qapp):
@@ -615,7 +627,10 @@ def test_a_running_batch_puts_start_out_of_reach(
     blocking_pass.release.set()
     await_batch(batch_window, qapp)
 
-    assert batch_window._survey_start_btn.isEnabled()
+    # The one pass queued has now run, so the transport goes and the start
+    # button stays out of reach for want of anything to do rather than because
+    # something is in flight.
+    assert not batch_window._survey_start_btn.isEnabled()
     assert batch_window._pause_btn.isHidden()
 
 
@@ -757,9 +772,9 @@ def test_gate_summary_and_run_settings_agree(window, monkeypatch):
     are exactly those _collect_run_settings() names, and the label describes the
     same run.
     """
-    from deepreefmap_gui.models import manager
+    from deepreefmap_gui.models import cache
 
-    monkeypatch.setattr(manager, "is_model_cached", lambda info: False)
+    monkeypatch.setattr(cache, "is_model_cached", lambda info: False)
     window._skip_seg_check.setChecked(False)
     window._seg_combo.setCurrentText("segformer-b2")
     window._map_combo.setCurrentText("scsfmlearner")
@@ -839,7 +854,7 @@ def test_bulk_assign_sets_every_selected_row_and_gates_once(
         assert combo.currentText() == target.name
         # The amber "not assigned" variant is a per-widget stylesheet.
         assert combo.styleSheet() == ""
-    assert batch_window._survey_start_btn.text() == "Next: Process (3) →"
+    assert batch_window._survey_start_btn.text() == "Start processing (3 passes)"
 
 
 def test_pass_table_allows_a_multi_row_selection(batch_window, tmp_path, monkeypatch):
@@ -1228,13 +1243,13 @@ def test_held_pass_is_skipped_by_the_next_batch(batch_window, tmp_path, monkeypa
         add_video(batch_window, tmp_path, monkeypatch, name=name)
     assign_transect(batch_window, 0)
     assign_transect(batch_window, 1)
-    assert batch_window._survey_start_btn.text() == "Next: Process (2) →"
+    assert batch_window._survey_start_btn.text() == "Start processing (2 passes)"
 
     batch_window._move_rows([1], hold=True)
     assert [row.held for row in batch_window._survey_rows] == [False, True]
     assert len(batch_window._survey_remaining_rows()) == 1
-    assert batch_window._survey_start_btn.text() == "Next: Process (1) →"
-    assert group_headings(batch_window) == ["In the next batch  (1)", "Held back  (1)"]
+    assert batch_window._survey_start_btn.text() == "Start processing (1 pass)"
+    assert group_headings(batch_window) == ["To process  (1)", "Held back  (1)"]
     status = batch_window._survey_pass_table.item(
         batch_window._table_row_of(1), _COL_STATUS
     )
@@ -1259,7 +1274,7 @@ def test_returning_a_held_pass_puts_it_back_in_the_batch(batch_window, tmp_path,
     batch_window._move_rows([0], hold=False)
     assert not batch_window._survey_rows[0].held
     assert len(batch_window._survey_remaining_rows()) == 1
-    assert group_headings(batch_window) == ["In the next batch  (1)"]
+    assert group_headings(batch_window) == ["To process  (1)"]
 
 
 def test_a_processed_pass_leaves_the_batch_until_asked_for_again(
@@ -1279,7 +1294,7 @@ def test_a_processed_pass_leaves_the_batch_until_asked_for_again(
     assert batch_window._survey_remaining_rows() == []
 
     batch_window._move_rows([0], hold=False)
-    assert group_headings(batch_window) == ["In the next batch  (1)"]
+    assert group_headings(batch_window) == ["To process  (1)"]
     assert len(batch_window._survey_remaining_rows()) == 1
 
 
@@ -1309,7 +1324,7 @@ def test_each_row_carries_the_one_move_it_can_make(batch_window, tmp_path, monke
         ).text()
         for index in range(3)
     ]
-    assert labels == ["Hold", "Return", "Run again"]
+    assert labels == ["Hold", "Return", "Process again"]
 
     # Clicking a row's own button moves that row, without selecting it first.
     batch_window._survey_pass_table.cellWidget(
@@ -1412,7 +1427,7 @@ def test_stopping_a_batch_leaves_it_continuable(batch_window, tmp_path, monkeypa
         "cancelled",
     ]
     assert len(batch_window._survey_remaining_rows()) == 2
-    assert batch_window._survey_start_btn.text() == "Continue batch (2) →"
+    assert batch_window._survey_start_btn.text() == "Continue processing (2 passes)"
 
 
 def test_batch_standing_reports_what_is_behind_you(batch_window, tmp_path, monkeypatch, qapp):
@@ -1474,3 +1489,19 @@ def test_dropping_videos_is_refused_while_processing(batch_window, tmp_path, mon
     batch_window._add_video_paths([str(path)])
     assert len(batch_window._survey_rows) == 1
     assert batch_window._status_label.text() == "Unavailable while processing."
+
+
+def test_no_row_action_label_is_clipped(batch_window):
+    """The action column holds widgets, so its width has to fit the longest of
+    them. "Process again" is longer than the "Run again" it replaced and was
+    rendering as "rocess agai"."""
+    from PySide6.QtGui import QFontMetrics
+
+    from deepreefmap_gui.simple.batch import _COL_ACTION, _MOVE_LABELS
+
+    table = batch_window._survey_pass_table
+    metrics = QFontMetrics(table.font())
+    widest = max(metrics.horizontalAdvance(label) for label in _MOVE_LABELS.values())
+    # Padding either side of a push button's text; generous rather than exact,
+    # because the point is that the column is not sized to the text alone.
+    assert table.columnWidth(_COL_ACTION) >= widest + 24
