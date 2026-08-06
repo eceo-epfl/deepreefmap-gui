@@ -1,6 +1,7 @@
 import json
 import threading
 import time
+from pathlib import Path
 
 import pytest
 from _factories import make_transect
@@ -384,6 +385,8 @@ def test_batch_stops_cleanly_when_the_disk_runs_out(batch_window, tmp_path, monk
     assert ran == []
     runs = batch_window._survey_store().list_runs()
     assert [r.status for r in runs] == ["cancelled"]
+    # Cancelled evades the failure count, so the row itself carries the reason.
+    assert "disk space" in runs[0].error
     assert "disk space" in batch_window._status_label.text().lower()
 
 
@@ -404,6 +407,124 @@ def test_failed_run_keeps_pass_remaining(batch_window, tmp_path, monkeypatch, qa
     # The pass has been through a run, so pressing again continues the batch
     # rather than starting it.
     assert batch_window._survey_start_btn.text() == "Continue processing (1 pass)"
+
+
+def test_a_failure_before_the_first_pass_still_ends_the_batch(
+    batch_window, tmp_path, monkeypatch, qapp
+):
+    """Scenario: something outside the per-pass handler raises, before any pass
+    starts.
+
+    Expected behaviour: the batch ends, the page un-freezes, and the summary
+    says why. Previously the thread died silently and the whole page stayed
+    frozen until restart.
+    """
+    def broken_versions(_names):
+        raise OSError("cache unreadable")
+
+    monkeypatch.setattr(
+        "deepreefmap_gui.models.cache.resolve_model_versions", broken_versions
+    )
+    add_video(batch_window, tmp_path, monkeypatch)
+    assign_transect(batch_window, 0)
+    batch_window._on_survey_start()
+    await_batch(batch_window, qapp)
+
+    assert not batch_window._survey_worker_running
+    assert batch_window._app_mode == "SETUP"
+    assert "cache unreadable" in batch_window._survey_summary_label.text()
+
+
+def test_a_retry_lands_in_its_own_directory(batch_window, tmp_path, out_root, monkeypatch, qapp):
+    """Scenario: a pass fails, the diver starts processing again.
+
+    Expected behaviour: the retry gets a directory of its own, derived from the
+    first attempt's recorded name, and the failed attempt's directory survives
+    with its log. Repeats are the reproducibility data.
+    """
+    def broken_run(**kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("deepreefmap.pipeline.orchestrator.run_reconstruction", broken_run)
+    add_video(batch_window, tmp_path, monkeypatch)
+    assign_transect(batch_window, 0)
+    batch_window._on_survey_start()
+    await_batch(batch_window, qapp)
+
+    store = batch_window._survey_store()
+    first = store.list_runs()[0]
+    first_dir = out_root / first.run_dir_name
+
+    def fake_run(**kwargs):
+        (kwargs["output_dir"] / "run_manifest.json").write_text(json.dumps({"mode": "semantic"}))
+
+    monkeypatch.setattr("deepreefmap.pipeline.orchestrator.run_reconstruction", fake_run)
+    batch_window._on_survey_start()
+    await_batch(batch_window, qapp)
+
+    runs = {r.run_dir_name: r.status for r in store.list_runs()}
+    assert runs == {
+        first.run_dir_name: "failed",
+        f"{first.run_dir_name}__r02": "succeeded",
+    }
+    assert first_dir.exists()
+    assert (out_root / f"{first.run_dir_name}__r02" / "run_manifest.json").exists()
+
+
+def test_attempt_names_survive_a_transect_rename(batch_window):
+    """The stem comes from the first run's recorded name, not the live transect."""
+    from _factories import make_video
+
+    from deepreefmap_gui.survey.models import RunRecord, TransectPass
+
+    store = batch_window._survey_store()
+    transect = store.list_transects()[0]
+    video = store.upsert_video(make_video())
+    pass_ = TransectPass(transect_id=transect.id, video_id=video.id, begin_s=0.0, end_s=60.0)
+    store.add_pass(pass_)
+    store.add_run(
+        RunRecord(pass_id=pass_.id, run_dir_name="T1__p01__abcd1234", status="failed")
+    )
+    transect.name = "Renamed"
+    store.update_transect(transect)
+
+    assert batch_window._pass_dir_name(pass_, transect, store) == "T1__p01__abcd1234__r02"
+
+    store.add_run(
+        RunRecord(pass_id=pass_.id, run_dir_name="T1__p01__abcd1234__r02", status="failed")
+    )
+    assert batch_window._pass_dir_name(pass_, transect, store) == "T1__p01__abcd1234__r03"
+
+
+def test_the_worker_skips_a_pass_held_after_checkout(
+    batch_window, tmp_path, monkeypatch, qapp
+):
+    """Hold on a not-yet-started row is the one per-item control a running
+    order keeps, and it only works because the worker re-reads the store."""
+    add_videos(batch_window, tmp_path, monkeypatch, ["GX010001.MP4", "GX010002.MP4"])
+    assign_transect(batch_window, 0)
+    assign_transect(batch_window, 1)
+    store = batch_window._survey_store()
+    second_pass_id = batch_window._survey_rows[1].pass_id
+    calls = []
+
+    def fake_run(**kwargs):
+        if not calls:
+            held = store.get_pass(second_pass_id)
+            held.held = True
+            store.update_pass(held)
+        calls.append(kwargs)
+        (kwargs["output_dir"] / "run_manifest.json").write_text(json.dumps({"mode": "semantic"}))
+
+    monkeypatch.setattr("deepreefmap.pipeline.orchestrator.run_reconstruction", fake_run)
+    batch_window._on_survey_start()
+    await_batch(batch_window, qapp)
+
+    assert len(calls) == 1
+    statuses = {r.pass_id: r for r in store.list_runs()}
+    skipped = statuses[second_pass_id]
+    assert skipped.status == "cancelled"
+    assert "Held or removed" in skipped.error
 
 
 def test_failed_pass_keeps_its_cause_on_the_row(batch_window, tmp_path, monkeypatch, qapp):
@@ -1055,16 +1176,34 @@ def test_a_lone_pass_is_never_asked_about_bulk_trim(batch_window, tmp_path, monk
 # --- Retrying a pass ---
 
 
-def test_retrying_a_pass_reuses_its_run_dir(batch_window, tmp_path, monkeypatch, qapp):
-    """Scenario: a pass fails, and the batch is run again.
+def test_a_retry_seeds_from_the_failed_attempts_frames(
+    batch_window, tmp_path, out_root, monkeypatch, qapp
+):
+    """Scenario: a pass fails after preprocessing, and the batch is run again.
 
-    Expected behaviour: the retry lands in the directory the first attempt
-    created, so the frames it already decoded are there to resume from.
+    Expected behaviour: the retry gets its own directory but hard-links the
+    frames the failed attempt already decoded, so the afternoon is not spent
+    twice. Seeding scans every sibling, earlier attempts included.
     """
+    from deepreefmap.pipeline import resume as resume_mod
+
+    from deepreefmap_gui.runs.seeding import preprocess_key_for_settings
+
     dirs = []
 
     def failing(**kwargs):
-        dirs.append(kwargs["output_dir"])
+        out_dir = kwargs["output_dir"]
+        dirs.append(out_dir)
+        # Preprocessing completed before the failure: frames plus the sidecar
+        # that marks the stage done, which is what seeding matches on.
+        clip = batch_window._survey_rows[0].videos[0].path
+        for dirname in ("frames", "labels", "masks"):
+            (out_dir / dirname).mkdir(parents=True, exist_ok=True)
+            (out_dir / dirname / "000000.png").write_bytes(b"data")
+        key = preprocess_key_for_settings(
+            batch_window._collect_run_settings(), [Path(clip)], 0.0, 60.0
+        )
+        resume_mod.write_sidecar(out_dir, resume_mod.STAGE_PREPROCESS, key)
         raise RuntimeError("boom")
 
     monkeypatch.setattr("deepreefmap.pipeline.orchestrator.run_reconstruction", failing)
@@ -1075,8 +1214,10 @@ def test_retrying_a_pass_reuses_its_run_dir(batch_window, tmp_path, monkeypatch,
     await_batch(batch_window, qapp)
 
     assert len(dirs) == 2
-    assert dirs[0] == dirs[1]
+    assert dirs[1] == Path(f"{dirs[0]}__r02")
     assert "__p01__" in dirs[0].name
+    # The retry's frames arrived by seeding before the pipeline was called.
+    assert (dirs[1] / "frames" / "000000.png").read_bytes() == b"data"
 
 
 def test_survey_worker_seeds_from_a_matching_run(
@@ -1286,16 +1427,25 @@ def test_a_processed_pass_leaves_the_batch_until_asked_for_again(
     assign_transect(batch_window, 0)
     row = batch_window._survey_rows[0]
     batch_window._survey_store().add_run(
-        RunRecord(pass_id=row.pass_id, run_dir_name="run_001", status="succeeded")
+        RunRecord(
+            pass_id=row.pass_id,
+            run_dir_name="run_001",
+            status="succeeded",
+            batch_id=batch_window._survey_batch.id,
+        )
     )
     batch_window._rebuild_survey_table()
     batch_window._recompute_survey_start()
     assert group_headings(batch_window) == ["Already processed  (1)"]
     assert batch_window._survey_remaining_rows() == []
 
+    # Process again: the same pass, ordered into a fresh cart.
+    first_session = batch_window._survey_batch
     batch_window._move_rows([0], hold=False)
+    assert batch_window._survey_batch.id != first_session.id
     assert group_headings(batch_window) == ["To process  (1)"]
     assert len(batch_window._survey_remaining_rows()) == 1
+    assert "cart" in batch_window._status_label.text().lower()
 
 
 def test_each_row_carries_the_one_move_it_can_make(batch_window, tmp_path, monkeypatch):
@@ -1314,6 +1464,7 @@ def test_each_row_carries_the_one_move_it_can_make(batch_window, tmp_path, monke
             pass_id=batch_window._survey_rows[2].pass_id,
             run_dir_name="run_001",
             status="succeeded",
+            batch_id=batch_window._survey_batch.id,
         )
     )
     batch_window._move_rows([1], hold=True)
@@ -1331,6 +1482,89 @@ def test_each_row_carries_the_one_move_it_can_make(batch_window, tmp_path, monke
         batch_window._table_row_of(0), _COL_ACTION
     ).click()
     assert batch_window._survey_rows[0].held
+
+
+def test_holding_a_not_yet_started_row_mid_run_reaches_the_store(
+    batch_window, tmp_path, monkeypatch
+):
+    for name in ("GX010001.MP4", "GX010002.MP4"):
+        add_video(batch_window, tmp_path, monkeypatch, name=name)
+    assign_transect(batch_window, 0)
+    batch_window._survey_worker_running = True
+    batch_window._survey_running_batch = batch_window._survey_batch
+    batch_window._survey_job_pass_ids = [r.pass_id for r in batch_window._survey_rows]
+    batch_window._survey_running_index = 0
+
+    batch_window._move_rows([1], hold=True)
+
+    held = batch_window._survey_store().get_pass(batch_window._survey_rows[1].pass_id)
+    assert held.held is True
+    # The pass in flight cannot be held any more; the click does nothing.
+    batch_window._move_rows([0], hold=True)
+    in_flight = batch_window._survey_store().get_pass(batch_window._survey_rows[0].pass_id)
+    assert in_flight.held is False
+    batch_window._survey_worker_running = False
+    batch_window._survey_running_batch = None
+
+
+def test_a_finished_order_hands_the_page_to_the_cart(
+    batch_window, tmp_path, monkeypatch, qapp
+):
+    """Scenario: passes were added to the cart while the order ran.
+
+    Expected behaviour: once the order finishes, the page shows the cart, ready
+    to start, and the order's rows are read in Browse instead.
+    """
+    def fake_run(**kwargs):
+        (kwargs["output_dir"] / "run_manifest.json").write_text(json.dumps({"mode": "semantic"}))
+
+    monkeypatch.setattr("deepreefmap.pipeline.orchestrator.run_reconstruction", fake_run)
+    add_video(batch_window, tmp_path, monkeypatch)
+    assign_transect(batch_window, 0)
+    order = batch_window._survey_batch
+    batch_window._on_survey_start()
+    # Queue a rerun of the same pass mid-run; it lands in the next cart.
+    batch_window._add_pass_to_cart(batch_window._survey_rows[0].pass_id)
+    cart = batch_window._survey_batch
+    assert cart.id != order.id
+    await_batch(batch_window, qapp)
+
+    assert batch_window._survey_batch.id == cart.id
+    assert batch_window._survey_running_batch is None
+    assert [row.in_cart for row in batch_window._survey_rows] == [False]
+    assert len(batch_window._survey_remaining_rows()) == 1
+    assert batch_window._survey_start_btn.isEnabled()
+
+
+def test_the_cart_badge_follows_the_queue(batch_window, tmp_path, monkeypatch):
+    """Adds, holds and checkouts all funnel through _recompute_survey_start,
+    which is what keeps the badge honest."""
+    assert batch_window._cart_button._count == 0
+    add_video(batch_window, tmp_path, monkeypatch)
+    assert batch_window._cart_button._count == 1
+    batch_window._move_rows([0], hold=True)
+    assert batch_window._cart_button._count == 0
+    batch_window._move_rows([0], hold=False)
+    assert batch_window._cart_button._count == 1
+
+
+def test_the_cart_badge_counts_next_session_rows_mid_run(
+    batch_window, tmp_path, monkeypatch
+):
+    add_video(batch_window, tmp_path, monkeypatch)
+    order = batch_window._survey_batch
+    batch_window._survey_worker_running = True
+    batch_window._survey_running_batch = order
+    batch_window._survey_job_pass_ids = [batch_window._survey_rows[0].pass_id]
+    batch_window._recompute_survey_start()
+    # The running order's own queue is not the cart.
+    assert batch_window._cart_button._count == 0
+
+    add_video(batch_window, tmp_path, monkeypatch, name="GX010099.MP4")
+    assert batch_window._cart_button._count == 1
+
+    batch_window._survey_worker_running = False
+    batch_window._survey_running_batch = None
 
 
 def test_median_pass_seconds_is_silent_without_history(monkeypatch):
@@ -1445,12 +1679,15 @@ def test_batch_standing_reports_what_is_behind_you(batch_window, tmp_path, monke
     assert "1 held back" in text
 
 
-def test_batch_assembly_freezes_while_processing(batch_window, tmp_path, monkeypatch):
+def test_a_running_order_freezes_but_keeps_hold_and_adding_open(
+    batch_window, tmp_path, monkeypatch
+):
     """Scenario: a batch is running and the diver reaches for the table.
 
-    Expected behaviour: nothing about what the batch *is* can still be changed. An
-    edit here would never reach the pass in flight, so the table would end up
-    claiming something the run did not do.
+    Expected behaviour: what the order *is* can no longer change -- its
+    transect, direction and trim are frozen and the header acts on nothing.
+    What stays open: Hold on a pass the worker has not reached, and adding
+    videos, which go to the next session's cart.
     """
     for name in ("GX010001.MP4", "GX010002.MP4"):
         add_video(batch_window, tmp_path, monkeypatch, name=name)
@@ -1458,37 +1695,70 @@ def test_batch_assembly_freezes_while_processing(batch_window, tmp_path, monkeyp
     table_row = batch_window._table_row_of(0)
     editors = [
         batch_window._survey_pass_table.cellWidget(table_row, column)
-        for column in (_COL_TRANSECT, _COL_DIRECTION, _COL_TRIM, _COL_ACTION)
+        for column in (_COL_TRANSECT, _COL_DIRECTION, _COL_TRIM)
     ]
-    controls = [
+    frozen_controls = [
         batch_window._survey_batch_name,
         batch_window._survey_new_batch_btn,
         batch_window._survey_settings_btn,
         batch_window._survey_audit_btn,
-        batch_window._survey_add_btn,
-        batch_window._survey_import_btn,
         batch_window._survey_sort_btn,
     ]
-    assert all(widget.isEnabled() for widget in controls + editors)
+    open_controls = [batch_window._survey_add_btn, batch_window._survey_import_btn]
+    move = batch_window._survey_pass_table.cellWidget(table_row, _COL_ACTION)
+    assert all(w.isEnabled() for w in frozen_controls + open_controls + editors + [move])
 
     batch_window._survey_worker_running = True
+    batch_window._survey_running_batch = batch_window._survey_batch
+    batch_window._survey_job_pass_ids = [r.pass_id for r in batch_window._survey_rows]
+    batch_window._survey_running_index = 0
     batch_window._recompute_row_actions()
-    assert not any(widget.isEnabled() for widget in controls + editors)
+    assert not any(w.isEnabled() for w in frozen_controls + editors)
+    assert all(w.isEnabled() for w in open_controls)
+    # Row 0 is the pass in flight, so its Hold can no longer take effect; the
+    # pass behind it can still be held.
+    assert not batch_window._survey_pass_table.cellWidget(
+        batch_window._table_row_of(0), _COL_ACTION
+    ).isEnabled()
+    assert batch_window._survey_pass_table.cellWidget(
+        batch_window._table_row_of(1), _COL_ACTION
+    ).isEnabled()
 
     batch_window._survey_worker_running = False
+    batch_window._survey_running_batch = None
     batch_window._recompute_row_actions()
-    assert all(widget.isEnabled() for widget in controls + editors)
+    assert all(w.isEnabled() for w in frozen_controls + open_controls + editors)
 
 
-def test_dropping_videos_is_refused_while_processing(batch_window, tmp_path, monkeypatch):
-    """A drop lands on the table, not the greyed-out button, so it needs its own guard."""
+def test_videos_added_mid_run_land_in_the_next_session(
+    batch_window, tmp_path, monkeypatch
+):
+    """Scenario: a batch is running and more footage comes off the card.
+
+    Expected behaviour: the clips queue into a fresh session, shown under the
+    Next session divider, and the running order is untouched.
+    """
     add_video(batch_window, tmp_path, monkeypatch)
+    assign_transect(batch_window, 0)
+    order = batch_window._survey_batch
     batch_window._survey_worker_running = True
-    path = tmp_path / "GX010099.MP4"
-    path.write_bytes(b"x" * 4096)
-    batch_window._add_video_paths([str(path)])
-    assert len(batch_window._survey_rows) == 1
-    assert batch_window._status_label.text() == "Unavailable while processing."
+    batch_window._survey_running_batch = order
+    batch_window._survey_job_pass_ids = [batch_window._survey_rows[0].pass_id]
+
+    add_video(batch_window, tmp_path, monkeypatch, name="GX010099.MP4")
+
+    assert batch_window._survey_batch.id != order.id
+    states = batch_window._survey_row_states()
+    assert states.count("next") == 1
+    headings = group_headings(batch_window)
+    assert any(h.startswith("Next session") for h in headings)
+    assert not batch_window._survey_next_cart_label.isHidden()
+    assert "Next session" in batch_window._survey_next_cart_label.text()
+    # The pending cart never leaks into what the running order will process.
+    assert len(batch_window._survey_remaining_rows()) == 1
+
+    batch_window._survey_worker_running = False
+    batch_window._survey_running_batch = None
 
 
 def test_no_row_action_label_is_clipped(batch_window):

@@ -36,6 +36,41 @@ def parse_latlon(text: str) -> tuple[float, float]:
     return lat, lon
 
 
+def build_transect(
+    name: str,
+    start_text: str,
+    end_text: str,
+    length_m: float | None = None,
+    depth_m: float | None = None,
+    description: str = "",
+) -> Transect:
+    """Validate and build a transect from typed fields, naming the field at fault.
+
+    Shared by the Transects form and the new-transect dialog so their
+    validation cannot drift. Both endpoints are required: inventing 0,0 would
+    file the transect in the Gulf of Guinea.
+    """
+    coords: list[float] = []
+    for which, raw in (("start", start_text), ("end", end_text)):
+        cleaned = raw.strip()
+        if not cleaned:
+            raise ValueError(f"Missing {which} point")
+        try:
+            coords.extend(parse_latlon(cleaned))
+        except ValueError as exc:
+            raise ValueError(f"{which.capitalize()} point: {exc}") from None
+    return Transect(
+        name=name.strip(),
+        start_lat=coords[0],
+        start_lon=coords[1],
+        end_lat=coords[2],
+        end_lon=coords[3],
+        length_m=length_m or None,
+        depth_m=depth_m or None,
+        description=description,
+    )
+
+
 def _parse_decimal_pair(text: str) -> tuple[float, float]:
     parts = text.replace(",", " ").split()
     if len(parts) != 2:

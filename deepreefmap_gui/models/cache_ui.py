@@ -551,6 +551,11 @@ class ModelManagementMixin(MixinBase):
         threading.Thread(target=_do_login, daemon=True).start()
 
     def _on_delete_click(self, model_name: str) -> None:
+        # Never mid-batch: a later pass may need the model. Refused before
+        # arming, so the button cannot sit on "Confirm?" while a batch runs.
+        if getattr(self, "_survey_worker_running", False):
+            self._status_label.setText("Unavailable while processing.")
+            return
         # First click arms the button; second click within 3 s executes.
         container = self._model_actions.get(model_name)
         if container is None:

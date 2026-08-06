@@ -60,8 +60,18 @@ VIDEO_UNPROCESSED, VIDEO_PENDING, VIDEO_FAILED, VIDEO_PROCESSED = (
 
 
 def entry_status(entry: RunEntry) -> str:
-    """The run's own status. A directory holding a manifest is a finished run."""
-    return "succeeded" if not entry.incomplete else entry.status_label
+    """The run's own status. A directory holding a manifest is a finished run.
+
+    The database overrides the manifest only for ``failed`` and ``cancelled``:
+    a failure can be recorded after the manifest is written. ``interrupted``
+    does not override, because reconcile-on-open stamps complete runs too.
+    """
+    if entry.incomplete:
+        return entry.status_label
+    run = entry.db_run
+    if run is not None and run.status in ("failed", "cancelled"):
+        return run.status
+    return "succeeded"
 
 
 def entry_outcome(entry: RunEntry) -> str:
@@ -94,6 +104,7 @@ class RunEntry:
     db_run: RunRecord | None = None
     db_pass: TransectPass | None = None
     db_transect_name: str | None = None
+    db_session_name: str | None = None
     moved_from: str | None = None
     size_bytes: int | None = None
     # A run directory that never wrote a manifest: crashed, cancelled, or still
@@ -118,13 +129,20 @@ class RunEntry:
     def session_id(self) -> uuid.UUID | None:
         """The session this run was queued in, database first then manifest.
 
-        The manifest is the fallback rather than the source: a run folder copied
-        off another machine carries its session in the manifest and has no row
-        here until rebuild_from_scan writes one.
+        The run's own session outranks the pass's, which only says where the
+        pass was first catalogued. The manifest is the last resort: a run
+        folder copied off another machine has no row here until
+        rebuild_from_scan writes one.
         """
+        if self.db_run is not None and self.db_run.batch_id is not None:
+            return self.db_run.batch_id
         if self.db_pass is not None and self.db_pass.batch_id is not None:
             return self.db_pass.batch_id
         return self.manifest_batch_id
+
+    @property
+    def session_name(self) -> str | None:
+        return self.db_session_name or self.manifest_batch_name
 
     @property
     def transect_name(self) -> str | None:
@@ -322,12 +340,16 @@ def reconcile(entries: list[RunEntry], store: SurveyStore) -> None:
     runs = {r.run_dir_name: r for r in store.list_runs()}
     passes = {p.id: p for p in store.list_passes()}
     transects = {t.id: t for t in store.list_transects()}
+    batches = {b.id: b for b in store.list_batches()}
     for entry in entries:
         run = runs.get(entry.dir_name)
         if run is None:
             continue
         entry.db_run = run
         pass_ = passes.get(run.pass_id)
+        session_id = run.batch_id or (pass_.batch_id if pass_ is not None else None)
+        batch = batches.get(session_id) if session_id is not None else None
+        entry.db_session_name = batch.name if batch is not None else None
         if pass_ is None:
             continue
         entry.db_pass = pass_
@@ -499,15 +521,16 @@ def video_group_key(video_hash: str | None, fallback: str | None) -> tuple:
 
 
 def videos_facet(
-    entries: list[RunEntry], library: Iterable[VideoLibraryEntry] = ()
+    entries: list[RunEntry],
+    library: Iterable[VideoLibraryEntry] = (),
+    transects: Iterable[Transect] = (),
 ) -> list[FacetGroup]:
     """Video-file groups over time-window groups. One file can hold several
     transect passes, so the window level is what keeps them apart.
 
-    ``library`` lists every clip the survey has imported, so a clip that has
-    never been processed still gets a group. Without it the facet can only show
-    footage that already produced a run -- exactly the wrong half when the
-    question being asked is what still needs doing.
+    ``library`` lists every clip the survey has imported, so an unprocessed
+    clip still gets a group and a never-run section still gets a child node.
+    ``transects`` resolves the names those section nodes carry.
     """
     by_video: dict[tuple, FacetGroup] = {}
     # Kept beside the groups rather than spelled into the title as they are
@@ -524,12 +547,28 @@ def videos_facet(
             )
             hashes[key] = video_hash
         _child_for(group, group_key(entry), _window_title(entry)).entries.append(entry)
+    library = list(library)
     for clip in library:
         key = video_group_key(clip.video.hash, clip.video.file_name)
         if key in by_video:
             continue
         by_video[key] = FacetGroup(key=key, title=clip.video.file_name)
         hashes[key] = clip.video.hash
+    names = {t.id: t.name for t in transects}
+    for clip in library:
+        group = by_video.get(video_group_key(clip.video.hash, clip.video.file_name))
+        if group is None:
+            continue
+        present = {child.key for child in group.children}
+        for pass_ in clip.passes:
+            pass_key = ("pass", str(pass_.id))
+            if pass_key in present:
+                continue
+            title = f"{pass_.begin_s:g}–{pass_.end_s:g} s"
+            name = names.get(pass_.transect_id) if pass_.transect_id is not None else None
+            if name:
+                title += f" · {name}"
+            group.children.append(FacetGroup(key=pass_key, title=title))
     for group in by_video.values():
         _fold_lone_window(group)
     _name_clips_apart(by_video.values(), hashes)
@@ -784,40 +823,57 @@ def assign_to_transect(
         _adopt_group(store, group, transect_id, direction)
 
 
+def ensure_pass_for_entry(
+    store: SurveyStore,
+    entry: RunEntry,
+    transect_id: uuid.UUID | None = None,
+    direction: str = "forward",
+) -> TransectPass:
+    """The database pass behind a run entry, created from the manifest if missing.
+
+    Manifest ids are kept so a later rebuild_from_scan stays idempotent.
+    ``transect_id`` assigns only when given; None leaves the pass as it is.
+    Raises ValueError when an ad-hoc run's time window cannot be recovered.
+    """
+    pass_ = entry.db_pass
+    if pass_ is None and entry.manifest_pass_id is not None:
+        pass_ = store.get_pass(entry.manifest_pass_id)
+    if pass_ is None:
+        manifest = entry.manifest
+        videos = manifest.get("input_videos") or [""]
+        hashes = manifest.get("video_hashes") or [None]
+        sizes = manifest.get("video_sizes") or [None]
+        mtimes = manifest.get("video_mtimes") or [None]
+        video = store.upsert_video(VideoAsset(
+            file_name=Path(videos[0]).name or "unknown",
+            path=videos[0],
+            hash=hashes[0],
+            size_bytes=sizes[0],
+            mtime=mtimes[0],
+        ))
+        begin, end = _pass_window(entry)
+        pass_ = TransectPass(
+            id=entry.manifest_pass_id or uuid.uuid4(),
+            transect_id=transect_id,
+            video_id=video.id,
+            begin_s=begin,
+            end_s=end,
+            direction=entry.manifest_direction or direction,
+        )
+        store.add_pass(pass_)
+    elif transect_id is not None and pass_.transect_id != transect_id:
+        pass_.transect_id = transect_id
+        store.update_pass(pass_)
+    return pass_
+
+
 def _adopt_group(
     store: SurveyStore,
     group: list[RunEntry],
     transect_id: uuid.UUID,
     direction: str,
 ) -> None:
-    first = group[0]
-    manifest = first.manifest
-    videos = manifest.get("input_videos") or [""]
-    hashes = manifest.get("video_hashes") or [None]
-    sizes = manifest.get("video_sizes") or [None]
-    mtimes = manifest.get("video_mtimes") or [None]
-    video = store.upsert_video(VideoAsset(
-        file_name=Path(videos[0]).name or "unknown",
-        path=videos[0],
-        hash=hashes[0],
-        size_bytes=sizes[0],
-        mtime=mtimes[0],
-    ))
-    begin, end = _pass_window(first)
-    pass_ = store.get_pass(first.manifest_pass_id) if first.manifest_pass_id else None
-    if pass_ is None:
-        pass_ = TransectPass(
-            id=first.manifest_pass_id or uuid.uuid4(),
-            transect_id=transect_id,
-            video_id=video.id,
-            begin_s=begin,
-            end_s=end,
-            direction=first.manifest_direction or direction,
-        )
-        store.add_pass(pass_)
-    elif pass_.transect_id != transect_id:
-        pass_.transect_id = transect_id
-        store.update_pass(pass_)
+    pass_ = ensure_pass_for_entry(store, group[0], transect_id, direction)
     for entry in group:
         if store.run_by_dir_name(entry.dir_name) is None:
             run_id = entry.manifest_run_id
@@ -829,6 +885,7 @@ def _adopt_group(
                 run_dir_name=entry.dir_name,
                 status="succeeded",
                 started_at=entry.manifest.get("run_timestamp"),
+                batch_id=entry.manifest_batch_id,
             ))
 
 

@@ -13,7 +13,29 @@ Download the build for your platform from the [releases page](https://github.com
 
 macOS builds are unsigned, so the first launch needs System Settings > Privacy & Security > "Open Anyway"; Linux builds need `chmod +x`. The first launch provisions its own Python environment (several GB). Updates and rollbacks are under Setup.
 
-Three destinations, none a prerequisite for another. **Transects** are the lines you survey, with the cover and repeatability their repeat passes agree on. **Process** queues a session's videos as passes and runs them. **Browse** is everything produced so far, grouped by session, transect, clip or run. **Setup** covers whether the laptop can process a dive, the models installed on it, and what it is doing while it runs. Models are downloaded there, or imported from a USB pack for machines that stay offline; the `coralscapes-*` models need a free Hugging Face account.
+Three destinations, none a prerequisite for another. **Transects** are the lines you survey, with the cover and repeatability their repeat passes agree on. **Cart** queues sections for the next session and runs them: add them from anywhere in the app, then Start processing checks the cart out as a session, and reruns land beside their originals in Browse. **Browse** is everything produced so far, grouped by session, transect, clip or run. **Setup** covers whether the laptop can process a dive, the models installed on it, and what it is doing while it runs. Models are downloaded there, or imported from a USB pack for machines that stay offline; the `coralscapes-*` models need a free Hugging Face account.
+
+## Glossary
+
+Footage:
+
+- **Video (clip)**: a file off the camera. Identity is its content hash, so a moved file is still the same clip. GoPro chapters of one recording are separate files, one swim.
+- **Section (pass)**: a cutout of a video, the unit everything else works on. Identity is `video + start/end time + direction`. One traversal of a transect, when there is one.
+- **Transect**: a named tape line with GPS endpoints, tape length and depth. Optional on a section; without one the run is unscaled and skipped by the repeatability comparison.
+
+Queueing:
+
+- **Cart**: the newest un-started session, filled from anywhere via Add to cart. The header's Cart button counts it.
+- **Checkout**: Start processing. Turns the cart into an order by placing a run for every queued section.
+- **Order**: a started session. Membership is closed; the only mid-run controls are pause, cancel, and Hold on a section the worker has not reached.
+- **Next session**: the cart assembled while an order runs, under its own divider on the Cart page. Startable once the order finishes.
+- **Held**: a section kept in its session but skipped when processing starts.
+
+Results:
+
+- **Run**: one reconstruction of one section, in its own directory. A rerun is a second run of the same section; repeats are the reproducibility data.
+- **Attempt**: one run among several of the same section, numbered by its directory suffix (`__r02`, `__r03`, ...) and listed under the section node in Browse.
+- **Session**: the set of runs placed together, usually a dive or a day. A run records its session; a section only records where it was first catalogued.
 
 ## Settings
 

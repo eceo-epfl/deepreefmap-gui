@@ -128,6 +128,7 @@ def run_gate(
     has_preset: bool,
     missing_models: list[str],
     gpu_only_mapper: str = "",
+    unscaled: int = 0,
 ) -> SectionState:
     """Process's verdict, and by construction the Start processing button's.
 
@@ -179,6 +180,14 @@ def run_gate(
             f"{counts} · {unassigned} without a transect",
             f"{passes_phrase(unassigned)} will run without a transect, so they will not be "
             "compared against repeat passes.",
+        )
+    # Below unassigned: a missing transect swallows a missing tape length.
+    if unscaled:
+        return SectionState(
+            OK,
+            f"{counts} · {unscaled} unscaled",
+            f"{passes_phrase(unscaled)} are on a transect with no tape length, so they "
+            "will run unscaled. Set the length under Transects.",
         )
     if remaining:
         return SectionState(OK, f"{counts} · {remaining} to process")

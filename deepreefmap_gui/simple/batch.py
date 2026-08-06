@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 import threading
 import uuid
@@ -68,6 +69,7 @@ from deepreefmap_gui.simple.section_state import (
 )
 from deepreefmap_gui.survey.models import (
     PASS_DIRECTIONS,
+    BatchItem,
     RunRecord,
     SurveyBatch,
     Transect,
@@ -88,26 +90,30 @@ logger = logging.getLogger(__name__)
 _COL_VIDEO, _COL_TRANSECT, _COL_DIRECTION, _COL_TRIM, _COL_STATUS, _COL_ACTION = range(6)
 
 # What will happen to a pass when processing next starts. Every row is in
-# exactly one of these, and the table is grouped in this order.
-QUEUED, HELD, DONE = "queued", "held", "done"
+# exactly one of these, and the table is grouped in this order. NEXT holds the
+# cart assembled while an order runs: those rows belong to the next session.
+QUEUED, HELD, DONE, NEXT = "queued", "held", "done", "next"
 _GROUP_TITLES = {
     QUEUED: "To process",
     HELD: "Held back",
     DONE: "Already processed",
+    NEXT: "Next session",
 }
 _GROUP_HINTS = {
     QUEUED: "Processing works these, top to bottom.",
     HELD: "Skipped until returned, however often processing starts.",
-    DONE: "Succeeded once. Process again to redo one.",
+    DONE: "Succeeded once. Process again queues it for the next session.",
+    NEXT: "Queued for the next session. Starts once the current one finishes.",
 }
 # The one move each row can make, on a button in the row itself. A pass is held
 # or released one at a time far more often than in bulk, and a button beside the
 # row it acts on needs no selection and no explanation.
-_MOVE_LABELS = {QUEUED: "Hold", HELD: "Return", DONE: "Process again"}
+_MOVE_LABELS = {QUEUED: "Hold", HELD: "Return", DONE: "Process again", NEXT: "Hold"}
 _MOVE_HINTS = {
     QUEUED: "Keep this pass in the session but skip it when processing starts.",
     HELD: "Put this pass back among the ones to process.",
-    DONE: "Reconstruct this pass again the next time processing starts.",
+    DONE: "Reconstruct this pass again, as part of the next session.",
+    NEXT: "Keep this pass in the next session but skip it when it starts.",
 }
 
 # File-name prefixes a GoPro uses for the second and later chapters of one
@@ -341,9 +347,9 @@ class _PassRow:
     pass_id: uuid.UUID | None = None
     # Held back from processing, and kept that way in the database.
     held: bool = False
-    # A pass that already succeeded and has been asked for again. Deliberately
-    # not persisted: it says what this batch should do next, not what the pass is.
-    requeued: bool = False
+    # A row of the next session's cart, shown under its own divider while an
+    # order runs. Display state, not persisted: membership lives in batch_item.
+    in_cart: bool = False
 
     @property
     def video(self) -> VideoAsset:
@@ -383,6 +389,9 @@ class SimpleBatchMixin(MixinBase):
         self._survey_table_index: list[int | None] = []
         self._survey_transects = []
         self._survey_batch = None
+        # The order currently running, distinct from _survey_batch, which a cart
+        # minted mid-run takes over.
+        self._survey_running_batch = None
         self._survey_cancel_event = None
         self._survey_worker_running = False
         # Which job the worker is on, and the pass behind each job, so a percent
@@ -424,6 +433,11 @@ class SimpleBatchMixin(MixinBase):
         self._survey_new_batch_btn.clicked.connect(self._on_survey_new_batch)
         name_row.addWidget(self._survey_new_batch_btn)
         header_layout.addLayout(name_row)
+        # Only while an order runs and a next cart exists: names where new
+        # additions are going, since the table above belongs to the order.
+        self._survey_next_cart_label = muted_label("")
+        self._survey_next_cart_label.setVisible(False)
+        header_layout.addWidget(self._survey_next_cart_label)
 
         preset_row = QHBoxLayout()
         preset_row.setSpacing(SPACE_SM)
@@ -538,7 +552,7 @@ class SimpleBatchMixin(MixinBase):
         # without the checkbox beside it finishing its sentence.
         add_row = QHBoxLayout()
         add_row.setSpacing(SPACE_SM)
-        add_row.addWidget(muted_label("Add to this session"))
+        add_row.addWidget(muted_label("Add to the cart"))
         self._survey_add_btn = QPushButton("Add videos…")
         self._survey_add_btn.setToolTip("Pick clips off the card to queue as passes.")
         self._survey_add_btn.clicked.connect(self._on_survey_add_videos)
@@ -621,29 +635,39 @@ class SimpleBatchMixin(MixinBase):
         return page
 
     def _set_batch_editing_enabled(self, enabled: bool) -> None:
-        """Freeze what a batch is made of while that batch is being processed.
+        """Freeze the running order while it is processed; the next cart stays live.
 
-        Assembling a batch and watching it run share this page, and only the
-        second is available once the worker starts: a transect or trim edited
-        mid-run would never reach the pass in flight, leaving the table claiming
-        something the run did not do.
+        An edit mid-run would never reach the pass in flight, so order rows
+        freeze apart from the moves _row_movable_mid_run allows. Cart rows are
+        the next session's and stay editable, and adding stays open because
+        the first add is what mints the next session.
         """
         for widget in (
             self._survey_batch_name,
             self._survey_new_batch_btn,
             self._survey_settings_btn,
             self._survey_audit_btn,
-            self._survey_add_btn,
-            self._survey_import_btn,
         ):
             widget.setEnabled(enabled)
+        self._survey_add_btn.setEnabled(True)
+        self._survey_import_btn.setEnabled(True)
+        states = self._survey_row_states()
         for table_row, model_index in enumerate(self._survey_table_index):
             if model_index is None:
                 continue
-            for column in (_COL_TRANSECT, _COL_DIRECTION, _COL_TRIM, _COL_ACTION):
+            row = self._survey_rows[model_index]
+            row_editable = enabled or row.in_cart
+            for column in (_COL_TRANSECT, _COL_DIRECTION, _COL_TRIM):
                 cell = self._survey_pass_table.cellWidget(table_row, column)
                 if cell is not None:
-                    cell.setEnabled(enabled)
+                    cell.setEnabled(row_editable)
+            move = self._survey_pass_table.cellWidget(table_row, _COL_ACTION)
+            if move is not None:
+                state = states[model_index]
+                hold = state in (QUEUED, NEXT)
+                move.setEnabled(
+                    row_editable or self._row_movable_mid_run(row, state, hold)
+                )
 
     def _recompute_row_actions(self) -> None:
         """Split and remove act on a selected row, so they say when there isn't one."""
@@ -785,17 +809,80 @@ class SimpleBatchMixin(MixinBase):
 
     # --- Batch and table state ---
 
-    def _ensure_survey_batch(self) -> SurveyBatch:
-        if self._survey_batch is None:
-            name = self._survey_batch_name.text().strip() or datetime.now().strftime("%Y-%m-%d")  # noqa: DTZ005 (local time is intended: this is a user-facing default name)
-            batch = SurveyBatch(name=name)
-            # Name the configuration on the batch too, so a folder rebuilt from
-            # manifests alone still knows which settings the day was run under.
-            if self._active_preset is not None:
-                batch.preset_name = self._active_preset.org.name
-            self._survey_store().add_batch(batch)
-            self._survey_batch = batch
-        return self._survey_batch
+    def _ensure_cart_batch(self) -> SurveyBatch:
+        """The cart: the newest un-started session, minted when first needed.
+
+        A started order is closed to new members, so a fresh session is minted
+        and adopted in its place; the running order stays reachable on
+        _survey_running_batch.
+        """
+        store = self._survey_store()
+        batch = self._survey_batch
+        if batch is not None:
+            running = self._survey_running_batch
+            started = store.batch_run_count(batch.id) > 0 or (
+                running is not None and batch.id == running.id
+            )
+            if not started:
+                return batch
+        name = self._survey_batch_name.text().strip()
+        # A cart minted under a started order must not inherit its name.
+        if not name or (batch is not None and name == batch.name):
+            name = datetime.now().strftime("%Y-%m-%d")  # noqa: DTZ005 (local time is intended: this is a user-facing default name)
+        cart = SurveyBatch(name=name)
+        # Name the configuration on the batch too, so a folder rebuilt from
+        # manifests alone still knows which settings the day was run under.
+        if self._active_preset is not None:
+            cart.preset_name = self._active_preset.org.name
+        store.add_batch(cart)
+        self._survey_batch = cart
+        if not self._survey_worker_running:
+            self._survey_batch_name.setText(cart.name)
+        return cart
+
+    def _update_cart_button(self) -> None:
+        """The badge: queued, un-held passes of the current cart.
+
+        During a run that is the Next session rows. A continuable order counts
+        zero: its remaining passes are an order's, not a cart's.
+        """
+        button = getattr(self, "_cart_button", None)
+        if button is None:
+            return  # pages are built before the header button exists
+        states = self._survey_row_states()
+        if self._survey_worker_running:
+            count = states.count(NEXT)
+        else:
+            store = self._try_survey_store()
+            batch = self._survey_batch
+            is_cart = (
+                batch is not None
+                and store is not None
+                and store.batch_run_count(batch.id) == 0
+            )
+            count = states.count(QUEUED) if is_cart else 0
+        button.set_count(count)
+
+    def _cart_add(self, pass_id: uuid.UUID) -> None:
+        """Record cart membership without repainting; already a member is a no-op."""
+        store = self._survey_store()
+        batch = self._ensure_cart_batch()
+        store.add_batch_item(BatchItem(batch_id=batch.id, pass_id=pass_id))
+        # A pass with no origin session adopts this one.
+        pass_ = store.get_pass(pass_id)
+        if pass_ is not None and pass_.batch_id is None:
+            pass_.batch_id = batch.id
+            store.update_pass(pass_)
+
+    def _add_pass_to_cart(self, pass_id: uuid.UUID) -> None:
+        """Queue a pass for the next session, from anywhere in the app.
+
+        Trim, direction and transect ride on the pass itself; settings are
+        per-order and read at checkout.
+        """
+        self._cart_add(pass_id)
+        self._refresh_survey_batch_tab()
+        self._status_label.setText("Added to the cart.")
 
     def _on_survey_new_batch(self) -> None:
         self._survey_batch = None
@@ -805,7 +892,12 @@ class SimpleBatchMixin(MixinBase):
         self._recompute_survey_start()
 
     def _refresh_survey_batch_tab(self) -> None:
-        """Adopt the most recent batch from the store and rebuild the pass table."""
+        """Rebuild the pass table from the store.
+
+        Shows the running order (with the next cart's rows under their own
+        divider) while a batch runs; else the current cart; else the newest
+        order, which stays continuable while it has queued items.
+        """
         store = self._try_survey_store()
         if store is None:
             self._survey_transects = []
@@ -813,31 +905,64 @@ class SimpleBatchMixin(MixinBase):
             self._recompute_survey_start()
             return
         self._survey_transects = store.list_transects()
-        if self._survey_batch is None:
-            batches = store.list_batches()
-            if batches:
-                self._survey_batch = batches[0]
-                self._survey_batch_name.setText(batches[0].name)
+        shown: SurveyBatch | None
+        if self._survey_worker_running and self._survey_running_batch is not None:
+            shown = self._survey_running_batch
+            cart = store.current_cart()
+        else:
+            if self._survey_batch is None:
+                cart = store.current_cart()
+                batches = store.list_batches() if cart is None else []
+                self._survey_batch = cart if cart is not None else (
+                    batches[0] if batches else None
+                )
+                if self._survey_batch is not None:
+                    self._survey_batch_name.setText(self._survey_batch.name)
+            shown = self._survey_batch
+            cart = None  # no divider when nothing is running
         self._survey_rows = []
         self._survey_pass_table.setRowCount(0)
-        if self._survey_batch is not None:
-            for pass_ in store.list_passes(batch_id=self._survey_batch.id):
-                # A chapter the library has lost is dropped rather than faked, so
-                # the row cannot claim a file the run would fail to open.
-                videos = [store.get_video(video_id) for video_id in pass_.video_ids()]
-                if any(video is None for video in videos):
-                    continue
-                self._survey_rows.append(_PassRow(
-                    videos=[video for video in videos if video is not None],
-                    begin_s=pass_.begin_s,
-                    end_s=pass_.end_s,
-                    direction=pass_.direction,
-                    transect_id=pass_.transect_id,
-                    pass_id=pass_.id,
-                    held=pass_.held,
-                ))
+        if shown is not None:
+            self._survey_rows.extend(self._rows_for_batch(store, shown))
+        if cart is not None and (shown is None or cart.id != shown.id):
+            for row in self._rows_for_batch(store, cart):
+                row.in_cart = True
+                self._survey_rows.append(row)
+        self._refresh_next_cart_label(cart)
         self._rebuild_survey_table()
         self._recompute_survey_start()
+
+    def _rows_for_batch(self, store: SurveyStore, batch: SurveyBatch) -> list[_PassRow]:
+        """The session's worklist as table rows, in the order it was filled."""
+        rows = []
+        for pass_ in store.passes_in_batch(batch.id):
+            # A chapter the library has lost is dropped rather than faked, so
+            # the row cannot claim a file the run would fail to open.
+            videos = [store.get_video(video_id) for video_id in pass_.video_ids()]
+            if any(video is None for video in videos):
+                continue
+            rows.append(_PassRow(
+                videos=[video for video in videos if video is not None],
+                begin_s=pass_.begin_s,
+                end_s=pass_.end_s,
+                direction=pass_.direction,
+                transect_id=pass_.transect_id,
+                pass_id=pass_.id,
+                held=pass_.held,
+            ))
+        return rows
+
+    def _refresh_next_cart_label(self, cart: SurveyBatch | None) -> None:
+        """Name the pending cart while an order runs, under the order's name."""
+        if cart is None:
+            self._survey_next_cart_label.setVisible(False)
+            return
+        count = len(self._survey_store().list_batch_items(cart.id))
+        self._survey_next_cart_label.setText(
+            f"Next session '{cart.name}': {passes_phrase(count)} queued. "
+            "Starts once this one finishes."
+        )
+        self._survey_next_cart_label.setVisible(True)
 
     def _refresh_survey_transect_combos(self) -> None:
         store = self._try_survey_store()
@@ -883,14 +1008,26 @@ class SimpleBatchMixin(MixinBase):
         if not self._survey_rows:
             return []
         store = self._try_survey_store()
-        # Without the store nothing is known to have succeeded, so every row
-        # reads as still to do rather than silently as done.
-        succeeded = store.succeeded_pass_ids() if store is not None else set()
+        shown = (
+            self._survey_running_batch
+            if self._survey_worker_running and self._survey_running_batch is not None
+            else self._survey_batch
+        )
+        # Succeeded within the shown session only: a pass re-ordered in a new
+        # cart has succeeded before, but not yet in that session, and DONE
+        # would silently drop it from the next batch.
+        succeeded = (
+            store.succeeded_pass_ids(shown.id)
+            if store is not None and shown is not None
+            else set()
+        )
         states = []
         for row in self._survey_rows:
             if row.held:
                 states.append(HELD)
-            elif row.pass_id is not None and row.pass_id in succeeded and not row.requeued:
+            elif row.in_cart:
+                states.append(NEXT)
+            elif row.pass_id is not None and row.pass_id in succeeded:
                 states.append(DONE)
             else:
                 states.append(QUEUED)
@@ -922,7 +1059,7 @@ class SimpleBatchMixin(MixinBase):
         table.setRowCount(0)
         self._survey_table_index = []
         states = self._survey_row_states()
-        for state in (QUEUED, HELD, DONE):
+        for state in (QUEUED, HELD, DONE, NEXT):
             members = [index for index, value in enumerate(states) if value == state]
             # Only the groups that have something in them: an empty "Held back"
             # heading is a permanent reminder of a feature, not information.
@@ -994,9 +1131,8 @@ class SimpleBatchMixin(MixinBase):
         move_btn = QPushButton(_MOVE_LABELS[state])
         move_btn.setProperty("quiet", "true")
         move_btn.setToolTip(_MOVE_HINTS[state])
-        move_btn.setEnabled(not self._survey_worker_running)
         move_btn.clicked.connect(
-            partial(self._move_rows, [model_index], state == QUEUED)
+            partial(self._move_rows, [model_index], state in (QUEUED, NEXT))
         )
         table.setCellWidget(index, _COL_ACTION, move_btn)
 
@@ -1054,11 +1190,6 @@ class SimpleBatchMixin(MixinBase):
         """
         if not paths:
             return
-        # Dropping onto the table bypasses the greyed-out Add videos button, so
-        # the freeze is enforced here as well as on the controls.
-        if self._survey_worker_running:
-            self._status_label.setText("Unavailable while processing.")
-            return
         self._status_label.setText(f"Reading {len(paths)} video(s)…")
 
         def worker() -> None:
@@ -1075,6 +1206,10 @@ class SimpleBatchMixin(MixinBase):
         groups = _group_chapters(readable)
         for group in groups:
             self._add_pass_for_chapters(group)
+        # Mid-run the new passes belong to the next session's cart; re-derive
+        # the rows so they land under the right divider.
+        if self._survey_worker_running and groups:
+            self._refresh_survey_batch_tab()
         self._recompute_survey_start()
         parts = []
         if groups:
@@ -1301,32 +1436,69 @@ class SimpleBatchMixin(MixinBase):
 
     # --- Holding a pass back ---
 
+    def _row_hold_allowed_mid_run(self, row: _PassRow) -> bool:
+        """Whether holding this running-order row can still take effect.
+
+        The worker re-reads the store before each pass, so a hold works until
+        the pass starts and never after.
+        """
+        if row.pass_id is None:
+            return False
+        try:
+            job_index = self._survey_job_pass_ids.index(row.pass_id)
+        except ValueError:
+            return True  # not part of the running order's jobs at all
+        running = self._survey_running_index
+        return running is None or job_index > running
+
+    def _row_movable_mid_run(self, row: _PassRow, state: str, hold: bool) -> bool:
+        """The moves a running order still allows.
+
+        Cart rows move freely. Order rows keep two moves: Hold on a pass the
+        worker has not reached, and Process again, which adds to the next cart.
+        """
+        if row.in_cart:
+            return True
+        if state == DONE and not hold:
+            return True
+        return state == QUEUED and hold and self._row_hold_allowed_mid_run(row)
+
     def _move_rows(self, indices: list[int], hold: bool) -> None:
-        """Move a selection between the batch and the held group."""
-        if self._survey_worker_running:
-            self._status_label.setText("Unavailable while processing.")
-            return
+        """Move a selection between the batch, the held group and the next cart."""
         states = self._survey_row_states()
-        moved = 0
+        running = self._survey_worker_running
+        moved = carted = 0
         for index in indices:
             if not 0 <= index < len(self._survey_rows):
                 continue
             row = self._survey_rows[index]
+            state = states[index]
+            if running and not self._row_movable_mid_run(row, state, hold):
+                continue
             if hold:
-                if states[index] == HELD:
+                if state == HELD:
                     continue
                 row.held = True
-                row.requeued = False
-            else:
-                if states[index] == QUEUED:
-                    continue
+                self._write_survey_row(row)
+                moved += 1
+            elif state == DONE:
+                # Process again: the same pass, ordered in the next session.
+                if row.pass_id is not None:
+                    self._cart_add(row.pass_id)
+                    carted += 1
+            elif state != QUEUED:
                 row.held = False
-                # A pass that already succeeded needs saying so explicitly, or
-                # the group it just left would take it straight back.
-                row.requeued = states[index] == DONE
-            self._write_survey_row(row)
-            moved += 1
-        if not moved:
+                self._write_survey_row(row)
+                moved += 1
+        if not moved and not carted:
+            if running:
+                self._status_label.setText("Unavailable while processing.")
+            return
+        if carted:
+            self._refresh_survey_batch_tab()
+            self._status_label.setText(
+                f"Added {carted} pass{'' if carted == 1 else 'es'} to the cart."
+            )
             return
         self._rebuild_survey_table()
         self._recompute_survey_start()
@@ -1420,9 +1592,11 @@ class SimpleBatchMixin(MixinBase):
         touches and rebuild the gate once at the end rather than per row.
         """
         store = self._survey_store()
-        batch = self._ensure_survey_batch()
         extra_video_ids = [video.id for video in row.videos[1:]]
         if row.pass_id is None:
+            # The cart is minted here, not on updates: editing a row of a
+            # finished order must not conjure an empty new session.
+            batch = self._ensure_cart_batch()
             pass_ = TransectPass(
                 transect_id=row.transect_id,
                 video_id=row.video.id,
@@ -1434,6 +1608,7 @@ class SimpleBatchMixin(MixinBase):
                 held=row.held,
             )
             store.add_pass(pass_)
+            store.add_batch_item(BatchItem(batch_id=batch.id, pass_id=pass_.id))
             row.pass_id = pass_.id
         else:
             stored = store.get_pass(row.pass_id)
@@ -1546,7 +1721,10 @@ class SimpleBatchMixin(MixinBase):
 
     def _survey_failed_count(self) -> int:
         """Passes whose most recent run failed and has not since succeeded."""
-        store = self._survey_store()
+        # _recompute_survey_start must repaint even when the store cannot open.
+        store = self._try_survey_store()
+        if store is None:
+            return 0
         failed = 0
         for row in self._survey_rows:
             if row.pass_id is None:
@@ -1580,12 +1758,21 @@ class SimpleBatchMixin(MixinBase):
             else "Already on the standard settings."
         )
         self._refresh_batch_standing()
+        # Before the running early-return, or the badge freezes for the batch.
+        self._update_cart_button()
         if self._survey_worker_running:
             self._survey_start_btn.setEnabled(False)
             self._refresh_section_state()
             return
 
         unassigned = sum(1 for row in self._survey_rows if row.transect_id is None)
+        # Assigned to a transect that has no tape length: runs, but unscaled.
+        lengths = {t.id: t.length_m for t in self._survey_transects}
+        unscaled = sum(
+            1
+            for row in self._survey_rows
+            if row.transect_id is not None and lengths.get(row.transect_id) is None
+        )
         remaining = self._survey_remaining_rows() if self._survey_rows else []
         missing = self._survey_missing_models() if self._survey_preset is not None else []
         gate = run_gate(
@@ -1596,6 +1783,7 @@ class SimpleBatchMixin(MixinBase):
             has_preset=self._survey_preset is not None,
             missing_models=missing,
             gpu_only_mapper=self._gpu_only_mapper(),
+            unscaled=unscaled,
         )
         self._survey_gate = gate
         self._paint_not_ready_strip(gate)
@@ -1718,11 +1906,11 @@ class SimpleBatchMixin(MixinBase):
         from deepreefmap_gui.simple.setup import estimate_batch_disk
 
         out_root = Path(self._out_root_input.text()).expanduser()
-        out_root.mkdir(parents=True, exist_ok=True)
         try:
+            out_root.mkdir(parents=True, exist_ok=True)
             free = shutil.disk_usage(out_root).free
         except OSError:
-            return True  # can't measure the drive, so don't stand in the way
+            return True  # can't reach the drive, so don't stand in the way
         estimate = estimate_batch_disk(pass_count, free)
         if estimate.fits:
             return True
@@ -1744,17 +1932,30 @@ class SimpleBatchMixin(MixinBase):
     def _pass_dir_name(
         self, pass_: TransectPass, transect: Transect | None, store: SurveyStore
     ) -> str:
-        """The run-dir name a pass keeps for every attempt at it.
+        """A directory of its own for every attempt at a pass.
 
-        A fresh timestamp per attempt handed each retry an empty directory, so a
-        pass that failed in mapping decoded and segmented its clip again from
-        scratch. Keying the name on the pass id makes a retry land back in the
-        directory holding that work, where the library's own resume cache picks
-        it up. The ordinal is there only so the folder reads as a pass.
+        The first attempt is named ``{stem}__pNN__{passid8}``. A later attempt
+        derives from the first run's recorded name and appends ``__rNN``, so a
+        renamed transect or a deleted sibling cannot move a pass that already
+        ran. Attempts never share a directory: repeats are the reproducibility
+        data, and each keeps its own log and manifest. Resume speed relies on
+        seed_run_dir_from_match scanning every sibling, earlier attempts
+        included, and hard-linking matching frames.
 
         A pass with no transect is named after its clip instead, which is the
         only thing it has to be recognised by in a folder listing.
         """
+        prior = store.runs_for_pass(pass_.id)
+        if prior:
+            base = re.sub(r"__r\d+$", "", prior[0].run_dir_name)
+            out_root = Path(self._out_root_input.text()).expanduser()
+            attempt = len(prior) + 1
+            while True:
+                name = f"{base}__r{attempt:02d}"
+                taken = store.run_by_dir_name(name)
+                if taken is None and not (out_root / name).exists():
+                    return name
+                attempt += 1
         if transect is not None:
             siblings = store.list_passes(transect_id=pass_.transect_id)
             stem = transect.name
@@ -1777,7 +1978,8 @@ class SimpleBatchMixin(MixinBase):
         if not remaining or not self._confirm_batch_space(len(remaining)):
             return
         store = self._survey_store()
-        batch = self._ensure_survey_batch()
+        # The cart, or an order being continued after an interruption.
+        batch = self._survey_batch if self._survey_batch is not None else self._ensure_cart_batch()
         jobs = []
         for row in remaining:
             assert row.pass_id is not None
@@ -1790,7 +1992,7 @@ class SimpleBatchMixin(MixinBase):
                 else None
             )
             dir_name = self._pass_dir_name(pass_, transect, store)
-            run = RunRecord(pass_id=pass_.id, run_dir_name=dir_name)
+            run = RunRecord(pass_id=pass_.id, run_dir_name=dir_name, batch_id=batch.id)
             store.add_run(run)
             jobs.append(_SurveyJob(
                 run=run,
@@ -1803,6 +2005,8 @@ class SimpleBatchMixin(MixinBase):
             return
         self._survey_job_pass_ids = [job.pass_.id for job in jobs]
         self._survey_running_index = None
+        # Held apart from _survey_batch, which a cart minted mid-run takes over.
+        self._survey_running_batch = batch
         self._batch_progress.set_batch_plan(len(jobs), _median_pass_seconds())
         self._batch_progress.set_idle("Starting…")
         self._batch_progress.setVisible(True)
@@ -1856,108 +2060,133 @@ class SimpleBatchMixin(MixinBase):
         from deepreefmap_gui.simple.setup import ROUGH_PASS_BYTES
         from deepreefmap_gui.system.log_view import close_run_log_file, open_run_log_file
 
-        # Which model versions this batch ran against, constant across its passes.
-        # These are HuggingFace commit revisions read off the cache, so the call
-        # is disk-only and safe on this worker thread.
-        version_names = [settings.get("mapping_name")]
-        if not settings.get("skip_segmentation"):
-            version_names.append(settings.get("segmentation_name"))
-        model_versions = resolve_model_versions(n for n in version_names if n)
-
         ok = 0
         last_error = ""
         disk_stopped = False
-        for index, job in enumerate(jobs, start=1):
-            # Hold between passes too, so pausing doesn't let the next one start.
-            pause_event.wait()
-            cancel_event = self._survey_cancel_event
-            if cancel_event is not None and cancel_event.is_set():
-                store.set_run_status(job.run.id, "cancelled")
-                continue
-            try:
-                free_bytes = shutil.disk_usage(out_root).free
-            except OSError:
-                free_bytes = None
-            if free_bytes is not None and free_bytes < ROUGH_PASS_BYTES:
-                # Stop cleanly: mark this pass and every one after it not-started,
-                # so the batch runs again from here once space is freed.
-                disk_stopped = True
-                for pending in jobs[index - 1:]:
-                    store.set_run_status(pending.run.id, "cancelled")
-                break
-            # The transect name reads as a place, not the run-dir slug: the panel
-            # already carries the "pass N of M" number, so the name need not. A
-            # pass with no transect is named by its clip, which is the only
-            # thing it has to be recognised by.
-            label = job.transect.name if job.transect else job.videos[0].file_name
-            self._sig_survey_progress.emit(index, len(jobs), label)
-            store.set_run_status(job.run.id, "running")
-            out_dir = out_root / job.dir_name
-            out_dir.mkdir(parents=True, exist_ok=True)
-            # A retry lands back in its own directory and resumes from what is
-            # already there. Seeding covers the rest: another pass of the same
-            # clip and settings, or a first attempt whose name has since changed.
-            seeded = seed_from_settings(
-                out_dir,
-                out_root,
-                settings,
-                [Path(video.path) for video in job.videos],
-                job.pass_.begin_s,
-                job.pass_.end_s,
-            )
-            if seeded is not None:
-                # Say the afternoon is not being spent again, so a diver watching
-                # a retry knows preparation was skipped.
-                self._sig_status_text.emit(
-                    f"Pass {index} of {len(jobs)}: reusing prepared frames from an "
-                    "earlier attempt."
-                )
-            # A log file per pass, beside the outputs it describes. The live log
-            # view is in memory and a batch runs unattended for hours, so
-            # without this a pass that failed overnight leaves nothing to read
-            # in the morning. RunDetailPanel already looks for run.log here.
-            log_handler = open_run_log_file(out_dir)
-            # Published on the window as well as held here, so closing the
-            # window mid-pass detaches it. The handler is on the root logger,
-            # and one left attached goes on writing into a run directory
-            # nothing is running in any more.
-            self._run_log_file_handler = log_handler
-            try:
-                instrumented_reconstruction(
-                    video_paths=[video.path for video in job.videos],
-                    output_dir=out_dir,
-                    transect_length=job.transect.length_m if job.transect else None,
-                    begin_s=job.pass_.begin_s,
-                    end_s=job.pass_.end_s,
-                    run_name=job.dir_name,
-                    viewer=self._viewer,
-                    cancel_event=cancel_event,
-                    pause_event=pause_event,
-                    manifest_extra={
-                        "survey": survey_manifest_block(
-                            job.run, job.pass_, job.transect, batch,
-                            config=config, model_versions=model_versions,
+        # The outer try exists so _sig_survey_done fires whatever happens; a
+        # dead worker with no done signal leaves the page frozen until restart.
+        try:
+            # Which model versions this batch ran against, constant across its
+            # passes. These are HuggingFace commit revisions read off the cache,
+            # so the call is disk-only and safe on this worker thread.
+            version_names = [settings.get("mapping_name")]
+            if not settings.get("skip_segmentation"):
+                version_names.append(settings.get("segmentation_name"))
+            model_versions = resolve_model_versions(n for n in version_names if n)
+
+            for index, job in enumerate(jobs, start=1):
+                # Hold between passes too, so pausing doesn't let the next one start.
+                pause_event.wait()
+                cancel_event = self._survey_cancel_event
+                if cancel_event is not None and cancel_event.is_set():
+                    store.set_run_status(job.run.id, "cancelled")
+                    continue
+                # Re-read the pass: Hold on a not-yet-started row only works
+                # if the worker looks. One query per multi-minute job.
+                current = store.get_pass(job.pass_.id)
+                if current is None or current.held:
+                    store.set_run_status(
+                        job.run.id, "cancelled",
+                        error="Held or removed before this pass started.",
+                    )
+                    continue
+                try:
+                    free_bytes = shutil.disk_usage(out_root).free
+                except OSError:
+                    free_bytes = None
+                if free_bytes is not None and free_bytes < ROUGH_PASS_BYTES:
+                    # Stop cleanly: mark this pass and every one after it
+                    # not-started, so the batch runs again from here once space
+                    # is freed. The reason goes on each row: cancelled evades
+                    # the failure count, so the rows must say it themselves.
+                    disk_stopped = True
+                    for pending in jobs[index - 1:]:
+                        store.set_run_status(
+                            pending.run.id, "cancelled",
+                            error="Ran out of disk space before this pass started.",
                         )
-                    },
-                    **settings,
-                )
-                store.set_run_status(job.run.id, "succeeded")
-                ok += 1
-            except ReconstructionCancelled:
-                store.set_run_status(job.run.id, "cancelled")
-            except Exception as exc:
-                logger.exception("Pass %s failed", job.dir_name)
-                last_error = f"{job.dir_name}: {exc}"
-                store.set_run_status(job.run.id, "failed", error=str(exc)[:300])
-            finally:
-                # Closed per pass, not per batch: the next pass opens its own,
-                # and a handler left attached would keep writing into the
-                # previous pass's directory.
-                close_run_log_file(log_handler)
-                self._run_log_file_handler = None
-        if disk_stopped and not last_error:
-            last_error = "Ran out of disk space before every pass finished."
-        self._sig_survey_done.emit(ok, len(jobs), last_error[:300])
+                    break
+                log_handler = None
+                try:
+                    # The transect name reads as a place, not the run-dir slug:
+                    # the panel already carries the "pass N of M" number, so the
+                    # name need not. A pass with no transect is named by its
+                    # clip, which is the only thing it has to be recognised by.
+                    label = job.transect.name if job.transect else job.videos[0].file_name
+                    self._sig_survey_progress.emit(index, len(jobs), label)
+                    store.set_run_status(job.run.id, "running")
+                    out_dir = out_root / job.dir_name
+                    out_dir.mkdir(parents=True, exist_ok=True)
+                    # A retry gets a fresh directory; seeding hard-links
+                    # prepared frames from any sibling with the same clip and
+                    # settings, earlier attempts of this pass included.
+                    seeded = seed_from_settings(
+                        out_dir,
+                        out_root,
+                        settings,
+                        [Path(video.path) for video in job.videos],
+                        job.pass_.begin_s,
+                        job.pass_.end_s,
+                    )
+                    if seeded is not None:
+                        # Say the afternoon is not being spent again, so a diver
+                        # watching a retry knows preparation was skipped.
+                        self._sig_status_text.emit(
+                            f"Pass {index} of {len(jobs)}: reusing prepared frames "
+                            "from an earlier attempt."
+                        )
+                    # A log file per pass, beside the outputs it describes. The
+                    # live log view is in memory and a batch runs unattended for
+                    # hours, so without this a pass that failed overnight leaves
+                    # nothing to read in the morning. RunDetailPanel already
+                    # looks for run.log here.
+                    log_handler = open_run_log_file(out_dir)
+                    # Published on the window as well as held here, so closing
+                    # the window mid-pass detaches it. The handler is on the
+                    # root logger, and one left attached goes on writing into a
+                    # run directory nothing is running in any more.
+                    self._run_log_file_handler = log_handler
+                    instrumented_reconstruction(
+                        video_paths=[video.path for video in job.videos],
+                        output_dir=out_dir,
+                        transect_length=job.transect.length_m if job.transect else None,
+                        begin_s=job.pass_.begin_s,
+                        end_s=job.pass_.end_s,
+                        run_name=job.dir_name,
+                        viewer=self._viewer,
+                        cancel_event=cancel_event,
+                        pause_event=pause_event,
+                        manifest_extra={
+                            "survey": survey_manifest_block(
+                                job.run, job.pass_, job.transect, batch,
+                                config=config, model_versions=model_versions,
+                            )
+                        },
+                        **settings,
+                    )
+                    store.set_run_status(job.run.id, "succeeded")
+                    ok += 1
+                except ReconstructionCancelled:
+                    store.set_run_status(job.run.id, "cancelled")
+                except Exception as exc:
+                    logger.exception("Pass %s failed", job.dir_name)
+                    last_error = f"{job.dir_name}: {exc}"
+                    store.set_run_status(job.run.id, "failed", error=str(exc)[:300])
+                finally:
+                    # Closed per pass, not per batch: the next pass opens its
+                    # own, and a handler left attached would keep writing into
+                    # the previous pass's directory.
+                    if log_handler is not None:
+                        close_run_log_file(log_handler)
+                    self._run_log_file_handler = None
+            if disk_stopped and not last_error:
+                last_error = "Ran out of disk space before every pass finished."
+        except Exception as exc:
+            logger.exception("Batch worker failed between passes")
+            if not last_error:
+                last_error = str(exc)
+        finally:
+            self._sig_survey_done.emit(ok, len(jobs), last_error[:300])
 
     def _on_survey_progress(self, index: int, total: int, name: str) -> None:
         self._status_label.setText(f"Processing pass {index} of {total}: {name}")
@@ -1971,10 +2200,6 @@ class SimpleBatchMixin(MixinBase):
 
     def _on_survey_done(self, ok: int, total: int, last_error: str) -> None:
         self._survey_worker_running = False
-        # The re-run request is spent: a pass asked for again belongs back with
-        # the processed ones once the batch that redid it has finished.
-        for row in self._survey_rows:
-            row.requeued = False
         # These passes are the newest evidence of what a run costs, so both
         # estimates built on past runs are recomputed rather than kept: the
         # footage capacity on disk, and the memory grade, which reads the peaks
@@ -2020,12 +2245,16 @@ class SimpleBatchMixin(MixinBase):
             )
         else:
             self._status_label.setText(f"Session finished: {ok}/{total} succeeded.")
-        self._refresh_survey_pass_statuses()
-        self._recompute_survey_start()
+        # The order + next-cart view gives way to the cart when one was
+        # assembled mid-run, else to the finished order.
+        self._refresh_survey_batch_tab()
         self._refresh_data_manager()
         self._refresh_survey_analysis()
         if ok:
             self._show_session_results()
+        # The order is over; whatever session is current now is the cart.
+        self._survey_running_batch = None
+        self._survey_next_cart_label.setVisible(False)
 
     def _show_session_results(self) -> None:
         """Land on what the session produced, rather than on a button offering it.
@@ -2038,7 +2267,8 @@ class SimpleBatchMixin(MixinBase):
         explicit move: the queue is frozen during a batch, so anywhere the user
         has navigated to since is somewhere they chose.
         """
-        batch = self._survey_batch
+        # The order that ran, not whatever cart holds _survey_batch by now.
+        batch = self._survey_running_batch or self._survey_batch
         if batch is None or self._current_section() != "process":
             return
         self._go_to_section("browse")

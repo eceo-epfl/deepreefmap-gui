@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QSizePolicy,
     QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
@@ -46,6 +47,7 @@ from deepreefmap_gui.core.theme import (
     SPACE_XS,
     SUCCESS,
     SURFACE_HI,
+    TABLE_ROW_HEIGHT,
     TEXT_DIM,
     TEXT_MUTED,
     WARN_BG,
@@ -121,6 +123,29 @@ def section_card(title: str = "", *, spacing: int = SPACE_SM) -> tuple[QWidget, 
     return card, outer
 
 
+def section_column(title: str = "", *, spacing: int = SPACE_SM) -> tuple[QWidget, QVBoxLayout]:
+    """A titled pane that *is* the page, rather than a card sitting on one.
+
+    The same shape as `section_card` without the fill, the border and the
+    margins. An item view already draws itself as a recessed BASE panel with its
+    own hairline, so wrapping one in a card draws the frame twice and spends
+    24px of margin restating it -- which is why `section_card` has to suppress
+    the inner border to look right at all.
+
+    Use this for the pane holding a page's primary content, and `section_card`
+    for a pane describing one selected thing. A page whose every pane is a card
+    has no figure and no ground: the raised fill stops reading as "this is
+    raised" and just makes the window lighter.
+    """
+    column = QWidget()
+    layout = QVBoxLayout(column)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(spacing)
+    if title:
+        layout.addWidget(SectionHeader(title))
+    return column, layout
+
+
 def lent_panel_home(parent: QWidget) -> tuple[QWidget, QWidget, QVBoxLayout]:
     """A permanent holder for a panel that lives somewhere else, and the panel.
 
@@ -178,8 +203,11 @@ class KeyValueList(QWidget):
     hunted for inside a sentence.
     """
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None, *, wrap: bool = True) -> None:
         super().__init__(parent)
+        self._wrap = wrap
+        self._keys: list[str] = []
+        self._values: list[QLabel] = []
         self._grid = QGridLayout(self)
         self._grid.setContentsMargins(0, 0, 0, 0)
         self._grid.setHorizontalSpacing(SPACE_MD)
@@ -187,22 +215,49 @@ class KeyValueList(QWidget):
         self._grid.setColumnStretch(1, 1)
 
     def set_rows(self, rows: list[tuple[str, str]]) -> None:
+        """Fill the list. Rebuilt only when the *keys* change.
+
+        A caller showing a fixed set of fields calls this once per selection with
+        the same keys every time, and rewriting the values in place means the
+        layout never reflows. Rebuilding unconditionally is what let a pane grow
+        and shrink under the cursor as the table was arrowed through.
+        """
+        if [key for key, _ in rows] == self._keys:
+            for (_, value), label in zip(rows, self._values, strict=True):
+                self._fill(label, value)
+            return
+
         while self._grid.count():
             item = self._grid.takeAt(0)
             widget = item.widget() if item is not None else None
             if widget is not None:
                 widget.deleteLater()
+        self._keys = [key for key, _ in rows]
+        self._values = []
         for row, (key, value) in enumerate(rows):
             name = QLabel(key)
             name.setStyleSheet(f"color: {TEXT_MUTED}; font-size: {FONT_SM};")
             name.setAlignment(
-                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop
+                Qt.AlignmentFlag.AlignRight
+                | (Qt.AlignmentFlag.AlignTop if self._wrap else Qt.AlignmentFlag.AlignVCenter)
             )
             self._grid.addWidget(name, row, 0)
-            shown = secondary_label(value)
-            shown.setWordWrap(True)
+            shown = secondary_label()
+            shown.setWordWrap(self._wrap)
+            if not self._wrap:
+                # Ignored, not Preferred: a long value's own width hint would
+                # otherwise widen the whole pane to fit it and shove the table
+                # aside, which is the same reason the ortho strip is Ignored.
+                shown.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
             shown.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+            self._fill(shown, value)
             self._grid.addWidget(shown, row, 1)
+            self._values.append(shown)
+
+    def _fill(self, label: QLabel, value: str) -> None:
+        label.setText(value)
+        # The tooltip carries what a one-line row cannot show in full.
+        label.setToolTip("" if self._wrap else value)
 
     def clear(self) -> None:
         self.set_rows([])
@@ -538,6 +593,10 @@ def configure_table(
     """
     table.setHorizontalHeaderLabels(list(headers))
     table.verticalHeader().setVisible(False)
+    # Row height lives here, not in the QSS item padding: QTableView sizes its
+    # rows off defaultSectionSize and ignores that padding, so the stylesheet
+    # alone changed how a row looked without fitting another one on screen.
+    table.verticalHeader().setDefaultSectionSize(TABLE_ROW_HEIGHT)
     table.setShowGrid(False)
     table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
     table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)

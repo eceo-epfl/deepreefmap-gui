@@ -29,6 +29,29 @@ def test_apply_theme_sets_dark_palette(qapp) -> None:
             qapp.setStyle(prev_style)
 
 
+def test_apply_theme_wakes_tooltips_sooner_than_fusion(qapp) -> None:
+    """In the run table the tooltip is the detail view, and Fusion's 700ms wait
+    makes hunting down a column feel stuck. See TOOLTIP_DELAY_MS."""
+    from PySide6.QtGui import QPalette
+    from PySide6.QtWidgets import QStyle
+
+    from deepreefmap_gui.core.theme import TOOLTIP_DELAY_MS, apply_theme
+
+    prev_style = qapp.style().objectName()
+    prev_palette = QPalette(qapp.palette())
+    prev_qss = qapp.styleSheet()
+    try:
+        apply_theme(qapp)
+        hint = QStyle.StyleHint.SH_ToolTip_WakeUpDelay
+        assert qapp.style().styleHint(hint) == TOOLTIP_DELAY_MS
+        assert TOOLTIP_DELAY_MS < 700
+    finally:
+        qapp.setStyleSheet(prev_qss)
+        qapp.setPalette(prev_palette)
+        if prev_style:
+            qapp.setStyle(prev_style)
+
+
 def test_theme_semantic_constants_are_valid_hex() -> None:
     from PySide6.QtGui import QColor
 

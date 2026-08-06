@@ -13,6 +13,7 @@ from _factories import (
 from deepreefmap_gui.survey import catalogue
 from deepreefmap_gui.survey.catalogue import UNASSIGNED_TITLE
 from deepreefmap_gui.survey.models import RunRecord, TransectPass
+from deepreefmap_gui.survey.models.convert import survey_manifest_block
 from deepreefmap_gui.survey.store import SurveyStore
 
 
@@ -136,6 +137,56 @@ def test_session_key_agrees_from_the_manifest_and_the_database(out_root, store):
     assert catalogue.session_group_key(entry.session_id) == catalogue.session_group_key(batch.id)
 
 
+def test_a_rerun_in_a_later_session_files_under_that_session(out_root, store):
+    """The run's own session outranks the pass's: a rerun is the same pass
+    ordered again, so its attempt belongs to the day it was placed."""
+    first = make_batch(store, "2026-07-01")
+    transect, pass_, _run = seed_survey_run(store, out_root, "attempt1", batch=first)
+    second = make_batch(store, "2026-07-02")
+    rerun = RunRecord(
+        pass_id=pass_.id, run_dir_name="attempt2", status="succeeded", batch_id=second.id
+    )
+    store.add_run(rerun)
+    write_run(
+        out_root, "attempt2",
+        run_timestamp="2026-07-02T10:00:00+00:00",
+        survey=survey_manifest_block(rerun, pass_, transect, second),
+    )
+
+    groups = catalogue.sessions_facet(scan(out_root, store), store.list_batches())
+    by_title = {g.title: [e.dir_name for e in g.all_entries()] for g in groups}
+    assert by_title == {"2026-07-01": ["attempt1"], "2026-07-02": ["attempt2"]}
+
+
+def test_run_entry_carries_its_session_name(out_root, store):
+    batch = make_batch(store, "Day 1")
+    seed_survey_run(store, out_root, "run_a", batch=batch)
+    entry = scan(out_root, store)[0]
+    assert entry.db_session_name == "Day 1"
+    assert entry.session_name == "Day 1"
+
+
+@pytest.mark.parametrize(
+    "recorded, shown",
+    [("failed", "failed"), ("cancelled", "cancelled"), ("interrupted", "succeeded")],
+)
+def test_entry_status_lets_a_recorded_failure_override_the_manifest(
+    out_root, store, recorded, shown
+):
+    """Scenario: the run wrote its manifest, then the batch recorded a failure
+    (the fold-in step raised) or the app died holding the row.
+
+    Expected behaviour: failed and cancelled override the manifest; interrupted
+    does not, because reconcile-on-open stamps complete runs too.
+    """
+    _, _, pass_ = seed_pass(store)
+    run = RunRecord(pass_id=pass_.id, run_dir_name="late", status=recorded)
+    store.add_run(run)
+    write_run(out_root, "late")
+    entry = scan(out_root, store)[0]
+    assert catalogue.entry_status(entry) == shown
+
+
 def test_videos_facet_separates_windows_on_shared_video(out_root, store):
     t1, t2 = make_transect("T1"), make_transect("T2")
     seed_survey_run(store, out_root, "first_half", transect=t1)
@@ -155,6 +206,26 @@ def test_videos_facet_separates_windows_on_shared_video(out_root, store):
     assert len(groups[0].children) == 2
     titles = {c.title for c in groups[0].children}
     assert any("T1" in t for t in titles) and any("T2" in t for t in titles)
+
+
+def test_videos_facet_lists_a_section_that_never_ran(out_root, store):
+    """A section cut from a clip but never processed still gets a child node:
+    the section is the browsable unit, and the unprocessed half is what the
+    facet is asked about."""
+    transect, video, pass_ = seed_pass(store)
+    pass_.begin_s, pass_.end_s = 10.0, 50.0
+    store.update_pass(pass_)
+    library = catalogue.video_library(
+        store.list_videos(), store.list_passes(), store.list_runs()
+    )
+    groups = catalogue.videos_facet(
+        scan(out_root, store), library, store.list_transects()
+    )
+    assert [g.title for g in groups] == ["GX010001.MP4"]
+    children = groups[0].children
+    assert [c.title for c in children] == ["10–50 s · T1"]
+    assert children[0].key == ("pass", str(pass_.id))
+    assert children[0].all_entries() == []
 
 
 def test_an_unhashed_clip_and_its_runs_are_one_group(out_root, store):

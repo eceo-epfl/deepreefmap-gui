@@ -25,7 +25,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QPointF, QStandardPaths, Qt
 from PySide6.QtGui import QColor, QPainter, QPalette, QPen, QPixmap
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QProxyStyle, QStyle
 
 logger = logging.getLogger(__name__)
 
@@ -127,13 +127,30 @@ SPACE_MD = 12
 SPACE_LG = 16
 SPACE_XL = 24
 SPACE_XXL = 32
-PAGE_MARGIN = SPACE_LG  # padding between a page's content and the window edge
+PAGE_MARGIN = SPACE_MD  # padding between a page's content and the window edge
 GUTTER = SPACE_MD  # gap between two panes, cards, or rows of controls
 
 # Smallest comfortable click target. Chips, inline cell buttons and icon buttons
 # all sit on this floor: below it they are fiddly with a trackpad, which is how
 # this app is driven in the field.
 CONTROL_HEIGHT = 28
+
+# Row padding in the item views, apart from the spacing scale above. A row is
+# padded against the rows either side of it rather than against a panel edge, so
+# it wants a tighter step than SPACE_XS: rows are the densest surface the app
+# draws, and Browse lists a whole field season of them, where every pixel of
+# padding costs one less run on screen. A row still clears CONTROL_HEIGHT once
+# the text is inside it, so these do not make a row hard to hit.
+ROW_PAD_V = 2  # table rows, which carry text and nothing else
+TREE_ROW_PAD_V = 3  # tree rows, which also carry a link-state icon
+ROW_PAD_H = 8
+HEADER_PAD_V = 4  # column headers, a shade looser so they read as a header
+
+# A table row's height, set on the vertical header rather than left to the QSS
+# above. QTableView takes its row height from defaultSectionSize and ignores the
+# item padding entirely, so tightening only the stylesheet changed the look of a
+# row without fitting one more of them on the screen.
+TABLE_ROW_HEIGHT = 26
 
 # A readable measure for a page of prose and short rows. Stretched to fill a
 # 1500px window such a page is a card with a hole in it, and the eye has to track
@@ -154,6 +171,29 @@ FONT_XL = f"{FONT_XL_PT}pt"
 # the one thing on a screen that has to be read first.
 WEIGHT_SEMIBOLD = 600
 WEIGHT_BOLD = 700
+
+
+# How long the pointer rests before the first tooltip appears, in ms.
+#
+# Fusion waits 700, which is tuned for a tooltip that explains a control you are
+# already looking at. In the run table the tooltip *is* the detail view: a reader
+# hunting down a column opens one per row, and 700ms each makes that hunt feel
+# stuck. Platforms cluster around 500 (Windows, and Material's desktop guidance),
+# and usability guidance puts the floor near 300 -- below roughly 200 the tooltip
+# flickers up while the pointer is only crossing a row on its way elsewhere.
+#
+# 400 sits inside that band, nearer the responsive end because the content here
+# is worth reading rather than a label restating a button.
+TOOLTIP_DELAY_MS = 400
+
+
+class _AppStyle(QProxyStyle):
+    """Fusion, with a tooltip that wakes up sooner. See TOOLTIP_DELAY_MS."""
+
+    def styleHint(self, hint, option=None, widget=None, data=None) -> int:  # noqa: N802
+        if hint == QStyle.StyleHint.SH_ToolTip_WakeUpDelay:
+            return TOOLTIP_DELAY_MS
+        return super().styleHint(hint, option, widget, data)
 
 
 def _chevron_file(direction: str, color: str, size: int = 16) -> str:
@@ -381,11 +421,11 @@ QListWidget, QListView, QTreeWidget, QTreeView, QTableWidget, QTableView {{
     gridline-color: {BORDER};
 }}
 QListWidget::item, QListView::item, QTreeWidget::item, QTreeView::item {{
-    padding: 5px 8px;
+    padding: {TREE_ROW_PAD_V}px {ROW_PAD_H}px;
     border-radius: {RADIUS_SM}px;
 }}
 QTableWidget::item, QTableView::item {{
-    padding: 4px 8px;
+    padding: {ROW_PAD_V}px {ROW_PAD_H}px;
 }}
 QListWidget::item:hover, QListView::item:hover, QTreeWidget::item:hover,
 QTreeView::item:hover {{
@@ -404,7 +444,7 @@ QHeaderView::section {{
     font-weight: 600;
     border: none;
     border-bottom: 1px solid {BORDER};
-    padding: 6px 8px;
+    padding: {HEADER_PAD_V}px {ROW_PAD_H}px;
 }}
 QHeaderView::section:hover {{
     color: {WINDOW_TEXT};
@@ -521,7 +561,7 @@ def apply_theme(app: QApplication) -> None:
     # Otherwise the app inherits the platform palette: on macOS in Light mode the
     # standard widgets render light while the hardcoded-dark stylesheets stay dark.
     try:
-        app.setStyle("Fusion")
+        app.setStyle(_AppStyle("Fusion"))
     except Exception:
         logger.warning("Could not set Fusion style; keeping platform style", exc_info=True)
 

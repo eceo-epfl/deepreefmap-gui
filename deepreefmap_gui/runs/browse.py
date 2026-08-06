@@ -38,7 +38,6 @@ from deepreefmap_gui.core.theme import (
     GUTTER,
     PRIMARY,
     SPACE_SM,
-    SPACE_XS,
 )
 from deepreefmap_gui.core.widgets import (
     SCOPE_FILTERS,
@@ -48,7 +47,7 @@ from deepreefmap_gui.core.widgets import (
     clip_outcome_color,
     confirm,
     secondary_label,
-    section_card,
+    section_column,
     segmented_qss,
 )
 from deepreefmap_gui.core.window_protocol import MixinBase
@@ -64,11 +63,12 @@ from deepreefmap_gui.runs.transect_detail import TransectDetailPanel
 from deepreefmap_gui.runs.video_detail import VideoDetailPanel
 from deepreefmap_gui.survey import catalogue, statuses
 from deepreefmap_gui.survey.catalogue import (
+    LINK_LINKED,
     FacetGroup,
     RunEntry,
     VideoLibraryEntry,
 )
-from deepreefmap_gui.survey.models.transect_pass import PASS_DIRECTIONS
+from deepreefmap_gui.survey.models.transect_pass import PASS_DIRECTIONS, TransectPass
 from deepreefmap_gui.survey.models.video_asset import VideoAsset
 
 logger = logging.getLogger(__name__)
@@ -150,9 +150,11 @@ _GROUP_KEY_ROLE = Qt.ItemDataRole.UserRole
 # about how much room Browse actually has.
 _SPLIT_MIN_TOTAL = 400
 
-# Wide enough for a transect name or a GoPro filename to survive elision; the
-# old 260 with a tree indent left "GX0100..." and a horizontal scrollbar.
-_RAIL_WIDTH = 300
+# Wide enough for a transect name or a GoPro filename to survive elision. Down
+# from 300 once the rail stopped being a card and the tree stopped indenting
+# 20px a level: 240 now shows more of a name than 300 did, and the 60px is what
+# lets the run table hold nine columns without a horizontal scrollbar.
+_RAIL_WIDTH = 240
 
 # Below this the rail is not showing names any more, so a remembered width this
 # small is a layout artefact rather than a choice the user made.
@@ -166,7 +168,7 @@ _RAIL_MAP_MIN_HEIGHT = 140
 # How much of the space left over from the rail the detail pane takes. The run
 # table is the page and gets the rest; the pane holds one run's facts and its
 # ortho strip, which is not a 50/50 amount of content.
-_DETAIL_SHARE = 0.30
+_DETAIL_SHARE = 0.28
 
 # Narrow enough that the proportion still holds on a laptop screen, where
 # the rail and the table have already taken their share.
@@ -230,8 +232,8 @@ class BrowseMixin(MixinBase):
 
         panel = QWidget()
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(0, SPACE_XS, 0, 0)
-        layout.setSpacing(GUTTER)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(SPACE_SM)
 
         # Facets and the disk total sit above the split, so neither disappears
         # with the rail when a facet has no grouping to show.
@@ -298,19 +300,36 @@ class BrowseMixin(MixinBase):
         self._data_disk_label = secondary_label("")
 
         self._data_split = QSplitter(Qt.Orientation.Horizontal)
-        self._data_split.setHandleWidth(GUTTER)
+        self._data_split.setHandleWidth(SPACE_SM)
 
         # "All runs" has no grouping, so the whole rail goes rather than leaving
         # a dead column.
-        self._data_rail, rail_layout = section_card("Group")
+        #
+        # A column rather than a card: the rail and the table are the page, and
+        # only the detail pane describes a single thing. Three cards side by
+        # side made the raised fill the dominant surface, so nothing said which
+        # pane to read first.
+        self._data_rail, rail_layout = section_column("Group")
         self._data_tree = QTreeWidget()
         self._data_tree.setHeaderHidden(True)
+        # Fusion indents 20px a level and measures every row on its own. The
+        # rail is 240px holding GoPro file names, so every pixel of indent is a
+        # pixel of name that stops eliding; 8px (down from 12, from Fusion's 20)
+        # still leaves the disclosure arrow a readable offset. The arrows stay:
+        # a clip really can hold several sections, and that is the one place
+        # the second level earns its keep.
+        self._data_tree.setIndentation(SPACE_SM)
+        self._data_tree.setUniformRowHeights(True)
+        self._data_tree.setTextElideMode(Qt.TextElideMode.ElideMiddle)
         self._data_tree.itemSelectionChanged.connect(self._on_data_tree_selection)
         # Clicks as well as selection changes: clicking the row that is already
         # selected changes no selection and emits nothing, so a run picked in
         # the table since could not be got out of the detail pane by pointing at
         # the transect again.
         self._data_tree.itemClicked.connect(lambda *_: self._on_data_tree_selection())
+        # Right-click on a section node offers the cart; other nodes have no menu.
+        self._data_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._data_tree.customContextMenuRequested.connect(self._on_data_tree_menu)
         self._data_tree_stack = QStackedWidget()
         self._data_tree_stack.addWidget(self._data_tree)
         self._data_tree_stack.addWidget(EmptyState("Nothing to group yet"))
@@ -329,7 +348,7 @@ class BrowseMixin(MixinBase):
         self._data_view_timer.timeout.connect(self._apply_data_view_change)
         self._data_map.view_changed.connect(self._data_view_timer.start)
         rail_split = QSplitter(Qt.Orientation.Vertical)
-        rail_split.setHandleWidth(GUTTER)
+        rail_split.setHandleWidth(SPACE_SM)
         rail_split.addWidget(self._data_map)
         rail_split.addWidget(self._data_tree_stack)
         rail_split.setStretchFactor(0, 0)
@@ -340,7 +359,7 @@ class BrowseMixin(MixinBase):
         self._data_rail.setMinimumWidth(_RAIL_MIN_WIDTH)
         self._data_split.addWidget(self._data_rail)
 
-        runs_card, runs_layout = section_card()
+        runs_card, runs_layout = section_column()
         header_row = QHBoxLayout()
         self._data_group_header = secondary_label("")
         self._data_group_header.setWordWrap(True)
@@ -375,12 +394,10 @@ class BrowseMixin(MixinBase):
         self._data_more_btn.setText("More…")
         self._data_more_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         more_menu = QMenu(self._data_more_btn)
-        self._data_rename_action = more_menu.addAction("Rename…", self._on_data_rename_clicked)
-        self._data_assign_action = more_menu.addAction(
-            "Assign to transect…", self._on_data_assign_clicked
-        )
-        more_menu.addSeparator()
-        self._data_delete_action = more_menu.addAction("Delete…", self._on_data_delete_clicked)
+        # The whole list, including the two beside it as buttons. A menu that
+        # offers only the leftovers makes you learn which half is where, and the
+        # right-click menu is built from the same list so neither can go stale.
+        self._data_more_actions = self._fill_data_row_actions(more_menu)
         more_menu.addSeparator()
         # Housekeeping that belongs to the panel, not to a selection: a run
         # folder from anywhere on disk, and a re-read of the output root.
@@ -406,6 +423,7 @@ class BrowseMixin(MixinBase):
             EmptyState("Nothing selected", "Pick a run or a transect to see its detail.")
         )
         self._run_detail = RunDetailPanel()
+        self._run_detail.cover.set_classes_config(self._classes_config)
         # Opening the selected run is the pane's own primary action, beside the
         # small Open under the table: the pane is where you decide, so the
         # button belongs where the deciding happens.
@@ -420,6 +438,7 @@ class BrowseMixin(MixinBase):
         self._video_detail.queue_requested.connect(self._on_data_queue_clip)
         self._video_detail.show_in_folder_requested.connect(self._on_data_show_clip_folder)
         self._video_detail.pass_activated.connect(self._on_data_clip_pass_activated)
+        self._video_detail.add_to_cart_requested.connect(self._on_data_pass_to_cart)
         self._video_detail.relocate_requested.connect(self._on_data_relocate_clip)
         self._video_detail.preview_requested.connect(self._on_data_preview_clip)
 
@@ -752,7 +771,118 @@ class BrowseMixin(MixinBase):
     def _on_data_queue_clip(self) -> None:
         clip = self._video_detail.entry
         if clip is not None:
+            self._new_section_from_clip(clip)
+
+    def _new_section_from_clip(self, clip: VideoLibraryEntry) -> None:
+        """Cut a section from a clip, file it, and drop it in the cart.
+
+        Scrub first (the window is the section's identity), then the assign
+        step, where a transect is a choice rather than a requirement. A clip
+        with a missing file or unknown duration cannot be scrubbed and falls
+        back to queueing the whole clip.
+        """
+        from deepreefmap_gui.form.video_scrub import VideoScrubDialog
+        from deepreefmap_gui.simple.section_dialog import SectionAssignDialog
+
+        duration = clip.video.duration_s or 0.0
+        if clip.link_state != LINK_LINKED or duration <= 0.0:
             self._queue_video_path(clip.video.path)
+            return
+        if not getattr(self, "_data_store_ok", False):
+            self._status_label.setText("Survey database unavailable; cannot queue.")
+            return
+        scrub = VideoScrubDialog(clip.video.path, duration, 0.0, duration, parent=self)
+        if scrub.exec() != QDialog.DialogCode.Accepted:
+            return
+        begin_s, end_s = scrub.time_range()
+        store = self._survey_store()
+        assign = SectionAssignDialog(self, store)
+        if assign.exec() != QDialog.DialogCode.Accepted:
+            return
+        transect_id, direction = assign.choice()
+        pass_ = TransectPass(
+            transect_id=transect_id,
+            video_id=clip.video.id,
+            begin_s=begin_s,
+            end_s=end_s,
+            direction=direction,
+        )
+        store.add_pass(pass_)
+        self._add_pass_to_cart(pass_.id)
+
+    def _pass_in_current_cart(self, pass_id_str: object) -> bool:
+        if not getattr(self, "_data_store_ok", False):
+            return False
+        try:
+            pass_id = uuid.UUID(str(pass_id_str))
+        except (ValueError, TypeError):
+            return False
+        store = self._survey_store()
+        cart = store.current_cart()
+        if cart is None:
+            return False
+        return any(item.pass_id == pass_id for item in store.list_batch_items(cart.id))
+
+    def _on_data_pass_to_cart(self, pass_id_str: str) -> None:
+        """A section node asked for the cart, from the clip detail or the rail."""
+        try:
+            pass_id = uuid.UUID(pass_id_str)
+        except (ValueError, AttributeError, TypeError):
+            return
+        if not getattr(self, "_data_store_ok", False):
+            self._status_label.setText("Survey database unavailable; cannot queue.")
+            return
+        if self._survey_store().get_pass(pass_id) is None:
+            return
+        self._add_pass_to_cart(pass_id)
+
+    def _on_data_tree_menu(self, pos) -> None:
+        item = self._data_tree.itemAt(pos)
+        key = item.data(0, _GROUP_KEY_ROLE) if item is not None else None
+        if not (isinstance(key, tuple) and len(key) >= 2 and key[0] == "pass"):
+            return
+        menu = QMenu(self._data_tree)
+        menu.addAction("Add to cart", lambda: self._on_data_pass_to_cart(str(key[1])))
+        menu.exec(self._data_tree.viewport().mapToGlobal(pos))
+
+    def _on_data_add_to_cart_clicked(self) -> None:
+        """Queue the selected runs' passes for the next session.
+
+        The pass carries trim, direction and transect already; reruns of one
+        pass collapse to one cart item.
+        """
+        entries = [e for e in self._data_selected_entries() if not e.incomplete]
+        if not entries:
+            return
+        if not getattr(self, "_data_store_ok", False):
+            self._status_label.setText("Survey database unavailable; cannot queue.")
+            return
+        store = self._survey_store()
+        added: set[uuid.UUID] = set()
+        skipped = 0
+        for entry in entries:
+            try:
+                pass_ = catalogue.ensure_pass_for_entry(store, entry)
+            except ValueError:
+                skipped += 1
+                continue
+            if pass_.id in added:
+                continue
+            self._cart_add(pass_.id)
+            added.add(pass_.id)
+        if not added and not skipped:
+            return
+        if added:
+            self._refresh_survey_batch_tab()
+            self._refresh_data_manager()
+        message = (
+            f"Added {len(added)} pass{'' if len(added) == 1 else 'es'} to the cart."
+            if added
+            else "Nothing was added to the cart."
+        )
+        if skipped:
+            message += f" Skipped {skipped} with no recoverable time range."
+        self._status_label.setText(message)
 
     def _on_data_show_clip_folder(self) -> None:
         """Open the clip's folder, not the clip: a player is not what is wanted here."""
@@ -885,7 +1015,15 @@ class BrowseMixin(MixinBase):
             # Filtered here rather than after the fact: an outcome chip narrows
             # which clips the rail lists, which is the whole point of having it
             # beside a rail that lists clips.
-            return catalogue.videos_facet(self._data_entries, self._visible_clips())
+            transects = []
+            if getattr(self, "_data_store_ok", False):
+                try:
+                    transects = self._survey_store().list_transects()
+                except Exception:
+                    logger.exception("Could not list transects")
+            return catalogue.videos_facet(
+                self._data_entries, self._visible_clips(), transects
+            )
         return []
 
     def _repair_video_identity(self, store) -> None:
@@ -1098,14 +1236,11 @@ class BrowseMixin(MixinBase):
         openers stay off for one.
         """
         current = self._data_selected_entry()
-        selected = self._data_selected_entries()
         complete_current = current is not None and not current.incomplete
         self._data_open_btn.setEnabled(complete_current)
-        self._data_rename_action.setEnabled(complete_current)
         # Showing a crashed run in its folder is exactly how you inspect it.
         self._data_show_btn.setEnabled(current is not None)
-        self._data_assign_action.setEnabled(any(not e.incomplete for e in selected))
-        self._data_delete_action.setEnabled(bool(selected))
+        self._gate_data_row_actions(self._data_more_actions)
         self._refresh_data_detail()
 
     def _refresh_data_detail(self) -> None:
@@ -1121,7 +1256,7 @@ class BrowseMixin(MixinBase):
         """
         entry = self._data_selected_entry()
         if entry is not None:
-            self._run_detail.show_entry(entry)
+            self._run_detail.show_entry(entry, self._related_for(entry))
             self._set_data_detail_page(_DETAIL_RUN)
             return
         key = self._data_selected_key
@@ -1148,10 +1283,17 @@ class BrowseMixin(MixinBase):
         group = self._data_groups.get(key) if key is not None else None
         grouped = group.all_entries() if group is not None else None
         if grouped and len(grouped) == 1:
-            self._run_detail.show_entry(grouped[0])
+            self._run_detail.show_entry(grouped[0], self._related_for(grouped[0]))
             self._set_data_detail_page(_DETAIL_RUN)
             return
+        # A group of several has no pane of its own, and wants none: selecting it
+        # has already filtered the table to exactly those runs, and the pane
+        # collapsing hands its width back to them. Picking one opens it.
         self._set_data_detail_page(_DETAIL_EMPTY)
+
+    def _related_for(self, entry: RunEntry) -> int:
+        """Sibling runs of the same footage, as last counted for the table."""
+        return getattr(self, "_data_related", {}).get(entry.run_dir, 0)
 
     def _set_data_detail_page(self, page: int) -> None:
         """Switch the detail pane, and re-divide when it comes or goes.
@@ -1335,6 +1477,9 @@ class BrowseMixin(MixinBase):
         self._refresh_data_status_counts()
         listed = self._data_listed_entries()
         related = related_run_counts([(e.run_dir, e.manifest) for e in self._data_entries])
+        # Kept, because the detail pane names the same number the table's tooltip
+        # does and neither should count it for itself.
+        self._data_related = related
         self._data_run_table.set_entries(listed, related)
         self._data_group_header.setText(self._data_header_text(listed))
         self._data_group_header.setVisible(bool(listed))
@@ -1342,7 +1487,16 @@ class BrowseMixin(MixinBase):
         # the difference between "nothing here", "nothing matches" and "nothing
         # where you are looking".
         scoped = self._data_scoped_entries()
-        if not listed and not scoped and self._data_grouped_entries():
+        key = self._data_selected_key
+        if not listed and isinstance(key, tuple) and key and key[0] == "pass":
+            # A section that has never run.
+            self._data_empty_state.set_text(
+                "Not processed yet",
+                "It is in the cart."
+                if self._pass_in_current_cart(key[1])
+                else "Add it to the cart to process it.",
+            )
+        elif not listed and not scoped and self._data_grouped_entries():
             self._data_empty_state.set_text(
                 "No runs on this part of the map",
                 "Pan or zoom out, or switch to All transects.",
@@ -1441,6 +1595,63 @@ class BrowseMixin(MixinBase):
         if entry is not None:
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(entry.run_dir)))
 
+    def _data_row_action_specs(self) -> tuple[tuple[str | None, str, object], ...]:
+        """Everything that acts on whichever runs are selected, in one list.
+
+        Both the More menu and the row's context menu are built from this. Two
+        hand-written menus is how one of them ends up missing the thing you went
+        looking for, which is what happened to "Copy run command".
+
+        A None key is a separator.
+        """
+        return (
+            ("open", "Open", self._on_data_open_clicked),
+            ("show", "Show in folder", self._on_data_show_in_folder_clicked),
+            ("rename", "Rename…", self._on_data_rename_clicked),
+            ("assign", "Assign to transect…", self._on_data_assign_clicked),
+            ("cart", "Add to cart", self._on_data_add_to_cart_clicked),
+            ("copy", "Copy run command", self._on_data_copy_command_clicked),
+            (None, "", None),
+            ("delete", "Delete…", self._on_data_delete_clicked),
+        )
+
+    def _fill_data_row_actions(self, menu: QMenu) -> dict:
+        actions = {}
+        for key, label, slot in self._data_row_action_specs():
+            if key is None:
+                menu.addSeparator()
+                continue
+            actions[key] = menu.addAction(label, slot)
+        return actions
+
+    def _gate_data_row_actions(self, actions: dict) -> None:
+        """Grey out what the current selection cannot do.
+
+        A run with no manifest can only be shown in a folder or deleted, so the
+        openers stay off for one.
+        """
+        current = self._data_selected_entry()
+        selected = self._data_selected_entries()
+        complete = current is not None and not current.incomplete
+        for key, enabled in (
+            ("open", complete),
+            ("rename", complete),
+            # A crashed run still wrote the command that made it, and that is
+            # exactly what a diagnosis starts from.
+            ("copy", current is not None),
+            ("show", current is not None),
+            # Assign works from a table selection or from the selected tree
+            # group, so it asks the same source the handler will act on.
+            ("assign", bool(self._data_assign_targets())),
+            # Deliberately not gated on a running batch: while an order runs is
+            # exactly when the next cart matters.
+            ("cart", any(not e.incomplete for e in selected)),
+            ("delete", bool(selected)),
+        ):
+            action = actions.get(key)
+            if action is not None:
+                action.setEnabled(enabled)
+
     def _on_data_context_menu(self, pos) -> None:
         item = self._data_run_table.itemAt(pos)
         # Leave an existing multi-selection alone: collapsing it to the
@@ -1448,13 +1659,7 @@ class BrowseMixin(MixinBase):
         if item is not None and not item.isSelected():
             self._data_run_table.setCurrentCell(item.row(), COL_NAME)
         menu = QMenu(self._data_run_table)
-        menu.addAction("Open", self._on_data_open_clicked)
-        menu.addAction("Show in folder", self._on_data_show_in_folder_clicked)
-        menu.addAction("Rename…", self._on_data_rename_clicked)
-        menu.addAction("Assign to transect…", self._on_data_assign_clicked)
-        menu.addAction("Copy run command", self._on_data_copy_command_clicked)
-        menu.addSeparator()
-        menu.addAction("Delete…", self._on_data_delete_clicked)
+        self._gate_data_row_actions(self._fill_data_row_actions(menu))
         menu.exec(self._data_run_table.mapToGlobal(pos))
 
     # --- Drag and drop ---
@@ -1592,10 +1797,12 @@ class BrowseMixin(MixinBase):
         if selected:
             keys = {catalogue.group_key(e) for e in selected}
             return [e for e in self._data_entries if catalogue.group_key(e) in keys]
-        if self._data_selected_key is not None:
-            group = self._data_groups.get(self._data_selected_key)
-        return group.all_entries() if group is not None else []
-        return []
+        if self._data_selected_key is None:
+            return []
+        group = self._data_groups.get(self._data_selected_key)
+        if group is None:
+            return []
+        return [e for e in group.all_entries() if not e.incomplete]
 
     def _ask_assign_target(self, transects: list) -> tuple[uuid.UUID, str] | None:
         dialog = QDialog(self)
@@ -1648,6 +1855,9 @@ class BrowseMixin(MixinBase):
         self._refresh_data_manager()
         self._refresh_transect_list()
         self._refresh_survey_analysis()
+        # The Process table holds its own copy of each pass row, and its next
+        # write would put the stale transect back over this assignment.
+        self._refresh_survey_batch_tab()
 
     def _queue_video_path(self, path: str | None) -> None:
         """Turn a library clip into a fresh pass, off the GUI thread."""

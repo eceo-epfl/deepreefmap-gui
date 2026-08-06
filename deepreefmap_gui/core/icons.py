@@ -308,6 +308,23 @@ def browse_icon(p: QPainter, size: int, c: QColor) -> None:
     p.drawRect(QRectF(m, size * 0.50, size - 2 * m, size * 0.34))
 
 
+@_drawn(size=ICON_SM, cap=True, join=True)
+def cart_icon(p: QPainter, size: int, c: QColor) -> None:
+    """A shopping trolley: handle, tilted basket, two wheels."""
+    w = size
+    p.drawLine(QPointF(0.10 * w, 0.20 * w), QPointF(0.24 * w, 0.20 * w))
+    basket = QPainterPath(QPointF(0.24 * w, 0.20 * w))
+    basket.lineTo(QPointF(0.34 * w, 0.60 * w))
+    basket.lineTo(QPointF(0.76 * w, 0.60 * w))
+    basket.lineTo(QPointF(0.86 * w, 0.32 * w))
+    basket.lineTo(QPointF(0.27 * w, 0.32 * w))
+    p.drawPath(basket)
+    p.setBrush(c)
+    r = 0.07 * w
+    p.drawEllipse(QPointF(0.40 * w, 0.78 * w), r, r)
+    p.drawEllipse(QPointF(0.70 * w, 0.78 * w), r, r)
+
+
 # Glyphs for the header's alert box. Only the two states worth acting on get
 # one: a badge that is always lit is a badge nobody reads.
 #

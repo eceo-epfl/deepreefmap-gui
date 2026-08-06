@@ -135,6 +135,9 @@ class _MarkingViewer:
         # copy arrives through a queued signal and may not have been indexed yet
         # when the run ends, so the scene writer reads it from here instead.
         self.data: dict | None = None
+        # Quality warnings the pipeline raised, bound for the manifest: the
+        # live viewer's list is cleared by the next pass of a batch.
+        self.warnings: list[str] = []
 
     def _mark_once(self, name) -> None:
         if name and name not in self._instr.marks:
@@ -158,6 +161,8 @@ class _MarkingViewer:
 
     def set_stage(self, stage, status, message=None):
         self._mark_for(stage, message)
+        if status == "warning" and message and message not in self.warnings:
+            self.warnings.append(message)
         if self._inner is not None:
             self._inner.set_stage(stage, status, message)
 
@@ -248,6 +253,10 @@ def instrumented_reconstruction(
     manifest: dict | None = None
     try:
         run_reconstruction(viewer=proxy, **kwargs)
+        # Into the extra block both folds share, so the post-scene re-fold
+        # keeps them. Only when there are any: an absent key reads as clean.
+        if proxy.warnings:
+            extra["quality_warnings"] = list(proxy.warnings)
         # Fold the run name, survey block and timings in before the scene file is
         # written: the scene embeds the manifest and is read back in place of it,
         # so a scene built from the raw pipeline manifest would come back missing

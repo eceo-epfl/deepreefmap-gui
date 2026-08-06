@@ -21,6 +21,7 @@ from deepreefmap.pipeline.artifacts import FrameBatch, MappingSequenceResult, Pr
 from deepreefmap.pointcloud.final_cloud_index import FinalCloudIndex
 
 from deepreefmap_gui.survey.models import (
+    BatchItem,
     RunRecord,
     SurveyBatch,
     Transect,
@@ -101,6 +102,8 @@ def seed_pass(
         batch_id=batch.id if batch is not None else None,
     )
     store.add_pass(pass_)
+    if batch is not None:
+        store.add_batch_item(BatchItem(batch_id=batch.id, pass_id=pass_.id))
     return transect, video, pass_
 
 
@@ -120,7 +123,12 @@ def seed_survey_run(
 ):
     """A succeeded run, in the database and on disk with a matching manifest."""
     transect, _video, pass_ = seed_pass(store, transect=transect, batch=batch)
-    run = RunRecord(pass_id=pass_.id, run_dir_name=dir_name, status="succeeded")
+    run = RunRecord(
+        pass_id=pass_.id,
+        run_dir_name=dir_name,
+        status="succeeded",
+        batch_id=batch.id if batch is not None else None,
+    )
     store.add_run(run)
     write_run(
         root,

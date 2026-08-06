@@ -148,7 +148,7 @@ def test_three_named_destinations_each_carry_a_glyph(window):
     assert list(window._simple_nav_buttons) == ["transects", "process", "browse"]
     assert [b.text() for b in window._simple_nav_buttons.values()] == [
         "Transects",
-        "Process",
+        "Cart",
         "Browse",
     ]
     for button in window._simple_nav_buttons.values():
@@ -227,3 +227,24 @@ def test_the_machine_destination_is_named_for_the_job(window):
     assert button.text() == "Setup"
     assert not button.icon().isNull()
     assert not window._log_toggle_btn.icon().isNull()
+
+
+def test_the_cart_pill_is_the_process_destination(window):
+    """One button: the process pill says Cart and sits apart from the others."""
+    button = window._cart_button
+    assert button is window._simple_nav_buttons["process"]
+    assert button.text() == "Cart"
+    assert not button.icon().isNull()
+    window._set_simple_section("browse")
+    button.click()
+    assert window._current_section() == "process"
+    assert button.isChecked()
+
+
+def test_the_cart_badge_counts_the_queue(window):
+    button = window._cart_button
+    assert button._count == 0
+    button.set_count(3)
+    assert button.accessibleName() == "Cart: 3 queued"
+    button.set_count(0)
+    assert button.accessibleName() == "Cart: 0 queued"

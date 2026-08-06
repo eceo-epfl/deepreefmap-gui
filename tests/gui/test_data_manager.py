@@ -2,12 +2,13 @@ import json
 from pathlib import Path
 
 import pytest
-from _factories import make_batch, make_transect, seed_survey_run, write_run
+from _factories import make_batch, make_transect, seed_pass, seed_survey_run, write_run
 from _qt_wait import wait_until
 from PySide6.QtCore import QEvent, Qt, QUrl
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QSizePolicy
 
+from deepreefmap_gui.runs.browse import _DETAIL_SHARE
 from deepreefmap_gui.runs.run_detail import OrthoDialog
 from deepreefmap_gui.runs.run_table import COL_NAME, COL_POINTS, COL_SIZE, COL_STATUS
 from deepreefmap_gui.survey.catalogue import UNASSIGNED_TITLE
@@ -494,6 +495,214 @@ def test_multi_select_assign_moves_all_selected(out_root, make_window, monkeypat
     assert entries["loose_b"].transect_name == "T1"
 
 
+def test_a_selected_tree_group_can_be_assigned_without_a_table_selection(
+    out_root, make_window, monkeypatch
+):
+    """Scenario: a whole group of loose runs is selected in the rail, nothing
+    in the table.
+
+    Expected behaviour: assign acts on the group's runs. The docstring always
+    promised this; the group branch was unreachable before.
+    """
+    transect = write_survey_run(out_root, "assigned")
+    write_run(out_root, "loose_a", video_hashes=["cd" * 16])
+    write_run(out_root, "loose_b", video_hashes=["cd" * 16])
+    window = make_window()
+    window._data_facet_buttons["transects"].click()
+    unassigned = window._data_tree.topLevelItem(0)
+    window._data_tree.setCurrentItem(unassigned)
+    window._data_run_table.clearSelection()
+
+    targets = {e.dir_name for e in window._data_assign_targets()}
+    assert targets == {"loose_a", "loose_b"}
+
+    monkeypatch.setattr(
+        window, "_ask_assign_target", lambda transects: (transect.id, "forward")
+    )
+    window._on_data_assign_clicked()
+    entries = {e.dir_name: e for e in window._data_entries}
+    assert entries["loose_a"].transect_name == "T1"
+    assert entries["loose_b"].transect_name == "T1"
+
+
+def test_assigning_from_browse_reaches_the_process_table(
+    out_root, make_window, monkeypatch
+):
+    """Scenario: a run is assigned to a transect from Browse while its pass sits
+    in the Process table.
+
+    Expected behaviour: the Process row updates too. It held a stale copy
+    before, and its next write put the old transect back over the assignment.
+    """
+    store = SurveyStore(out_root / "survey.db")
+    batch = make_batch(store)
+    _t1, pass_, _run = seed_survey_run(store, out_root, "assigned", batch=batch)
+    other = make_transect("T2")
+    store.add_transect(other)
+    store.close()
+
+    window = make_window()
+    assert any(row.pass_id == pass_.id for row in window._survey_rows)
+    monkeypatch.setattr(
+        window, "_ask_assign_target", lambda transects: (other.id, "forward")
+    )
+    select_run(window, row_of(window, "assigned"))
+    window._on_data_assign_clicked()
+
+    row = next(r for r in window._survey_rows if r.pass_id == pass_.id)
+    assert row.transect_id == other.id, "the Process table kept its stale copy"
+    # The next row write must keep the assignment, not put the old value back.
+    window._write_survey_row(row)
+    reopened = window._survey_store()
+    assert reopened.get_pass(pass_.id).transect_id == other.id
+
+
+def test_run_record_names_the_session_in_tooltip_and_detail(out_root, make_window):
+    """The table has no Session column, so the tooltip and the detail pane are
+    where a run's session is read."""
+    from deepreefmap_gui.runs.run_cards import format_run_metadata
+    from deepreefmap_gui.runs.run_detail import run_fact_rows
+
+    store = SurveyStore(out_root / "survey.db")
+    batch = make_batch(store, "Day 1")
+    seed_survey_run(store, out_root, "filed", batch=batch)
+    store.close()
+    window = make_window()
+    entry = next(e for e in window._data_entries if e.dir_name == "filed")
+
+    assert "Session: Day 1" in format_run_metadata(entry)
+    rows = dict(run_fact_rows(entry))
+    assert rows["Session"] == "Day 1"
+
+    write_run(out_root, "loose", video_hashes=["cd" * 16])
+    window._refresh_data_manager()
+    loose = next(e for e in window._data_entries if e.dir_name == "loose")
+    assert dict(run_fact_rows(loose))["Session"] == "No session recorded"
+
+
+def test_a_rerun_names_its_attempt_in_the_tooltip(out_root, make_window):
+    from deepreefmap_gui.runs.run_cards import format_run_metadata
+
+    write_run(out_root, "T1__p01__abcd1234__r02")
+    window = make_window()
+    entry = next(e for e in window._data_entries)
+    assert "Attempt: 2" in format_run_metadata(entry)
+
+
+def test_a_section_with_no_runs_says_it_is_not_processed(out_root, make_window):
+    """Selecting a run-less section node shows an empty list that says why."""
+    store = SurveyStore(out_root / "survey.db")
+    _t, _v, pass_ = seed_pass(store, transect=make_transect("Rail T"))
+    store.close()
+    window = make_window()
+    window._data_facet_buttons["videos"].click()
+    clip = window._data_tree.topLevelItem(0)
+    section = clip.child(0)
+    assert section is not None
+    window._data_tree.setCurrentItem(section)
+
+    assert window._data_run_table.rowCount() == 0
+    assert "Not processed yet" in window._data_empty_state._message.text()
+    """Scenario: a finished run should be reprocessed.
+
+    Expected behaviour: Add to cart queues its pass into a fresh session. The
+    pass carries trim, direction and transect, so nothing is copied; the badge
+    moves with it.
+    """
+    store = SurveyStore(out_root / "survey.db")
+    batch = make_batch(store)
+    _t, pass_, _run = seed_survey_run(store, out_root, "done_run", batch=batch)
+    store.close()
+
+    window = make_window()
+    select_run(window, row_of(window, "done_run"))
+    window._on_data_add_to_cart_clicked()
+
+    store = window._survey_store()
+    cart = store.current_cart()
+    assert cart is not None
+    assert cart.id != batch.id
+    assert [i.pass_id for i in store.list_batch_items(cart.id)] == [pass_.id]
+    assert window._cart_button._count == 1
+    assert "cart" in window._status_label.text().lower()
+
+
+def test_add_to_cart_adopts_an_adhoc_run_unassigned(out_root, make_window):
+    """A run the database has never seen becomes a pass with no transect --
+    a section is a cutout first, filing it is optional."""
+    write_run(out_root, "loose", begin_s=10.0, end_s=50.0)
+    window = make_window()
+    select_run(window, row_of(window, "loose"))
+    window._on_data_add_to_cart_clicked()
+
+    store = window._survey_store()
+    passes = store.list_passes()
+    assert len(passes) == 1
+    adopted = passes[0]
+    assert adopted.transect_id is None
+    assert (adopted.begin_s, adopted.end_s) == (10.0, 50.0)
+    cart = store.current_cart()
+    assert [p.id for p in store.passes_in_batch(cart.id)] == [adopted.id]
+    # The pass took the cart as its origin session.
+    assert adopted.batch_id == cart.id
+
+
+def test_new_section_flow_cuts_a_window_and_carts_it(out_root, make_window, monkeypatch):
+    from types import SimpleNamespace
+
+    from PySide6.QtWidgets import QDialog
+
+    from deepreefmap_gui.survey.catalogue import LINK_LINKED
+
+    window = make_window()
+    store = window._survey_store()
+    video = store.upsert_video(
+        VideoAsset(
+            file_name="GX010001.MP4",
+            path="/data/GX010001.MP4",
+            hash="ab" * 16,
+            duration_s=120.0,
+        )
+    )
+
+    class FakeScrub:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+        def time_range(self):
+            return (12.0, 48.0)
+
+    class FakeAssign:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+        def choice(self):
+            return (None, "reverse")
+
+    monkeypatch.setattr("deepreefmap_gui.form.video_scrub.VideoScrubDialog", FakeScrub)
+    monkeypatch.setattr(
+        "deepreefmap_gui.simple.section_dialog.SectionAssignDialog", FakeAssign
+    )
+
+    clip = SimpleNamespace(video=video, link_state=LINK_LINKED)
+    window._new_section_from_clip(clip)
+
+    passes = store.list_passes()
+    assert len(passes) == 1
+    section = passes[0]
+    assert (section.begin_s, section.end_s) == (12.0, 48.0)
+    assert section.direction == "reverse"
+    assert section.transect_id is None
+    cart = store.current_cart()
+    assert [i.pass_id for i in store.list_batch_items(cart.id)] == [section.id]
+
+
 # --- T1.6 video library facet ---
 
 
@@ -915,11 +1124,11 @@ def test_every_grouping_gives_the_detail_pane_the_same_share(out_root, make_wind
 
     window._data_facet_buttons["transects"].click()
     select_transect(window, "T1")
-    assert detail_share(window) == pytest.approx(0.30, abs=0.02)
+    assert detail_share(window) == pytest.approx(_DETAIL_SHARE, abs=0.02)
 
     window._data_facet_buttons["runs"].click()
     select_run(window, 0)
-    assert detail_share(window) == pytest.approx(0.30, abs=0.02)
+    assert detail_share(window) == pytest.approx(_DETAIL_SHARE, abs=0.02)
 
 
 def test_a_dragged_handle_survives_the_next_resize(out_root, make_window):
@@ -937,6 +1146,12 @@ def test_a_dragged_handle_survives_the_next_resize(out_root, make_window):
 
 
 def test_detail_pane_shows_the_ortho_a_run_produced(out_root, make_window):
+    """Expected behaviour: the strip appears for a run that wrote one, and the
+    band it sits in keeps its height for a run that did not.
+
+    Hiding the label instead pulled everything below it up the pane, so arrowing
+    between a run with an ortho and one without moved the row being read.
+    """
     run_dir = write_run(out_root, "with_ortho")
     write_run(out_root, "no_ortho")
     QImage(60, 20, QImage.Format.Format_RGB32).save(str(run_dir / "ortho.png"))
@@ -945,9 +1160,186 @@ def test_detail_pane_shows_the_ortho_a_run_produced(out_root, make_window):
     select_run(window, row_of(window, "with_ortho"))
     assert not window._run_detail.ortho.isHidden()
     assert not window._run_detail.ortho.pixmap().isNull()
+    band = window._run_detail.ortho.height()
 
     select_run(window, row_of(window, "no_ortho"))
-    assert window._run_detail.ortho.isHidden()
+    assert window._run_detail.ortho.pixmap().isNull()
+    assert window._run_detail.ortho.height() == band
+
+
+@pytest.mark.parametrize("available", [1440, 1080, 900, 830])
+def test_the_run_table_fits_its_columns_rather_than_scrolling(available):
+    """Expected behaviour: nine columns divide the width they are given.
+
+    Sized to their contents they overflowed instead, so a run with a long clip
+    name put a horizontal scrollbar under the one table the page is for. 830px
+    is about what Browse leaves the table with the rail open and a run selected.
+    """
+    from deepreefmap_gui.runs.run_table import COL_NAME, COL_TRANSECT, COL_VIDEO, column_widths
+
+    widths = column_widths(available)
+    assert sum(widths.values()) <= available
+    # Name identifies the row, so it takes the largest share of the slack.
+    assert widths[COL_NAME] > widths[COL_VIDEO] >= widths[COL_TRANSECT]
+
+
+def test_a_window_too_narrow_for_nine_columns_keeps_them_readable():
+    """A column shrunk past reading is not a column, so below the floors' total
+    the floors win and the table scrolls rather than eliding everything away."""
+    from deepreefmap_gui.runs.run_table import COL_NAME, COL_VIDEO, column_widths
+
+    widths = column_widths(400)
+    assert widths[COL_NAME] == 140
+    assert widths[COL_VIDEO] == 100
+    assert sum(widths.values()) > 400
+
+
+def test_a_tooltip_points_at_the_column_it_was_opened_over(out_root, make_window):
+    """Expected behaviour: hovering Video lifts the Input line, hovering Size
+    lifts Disk, and every other fact stays where it was.
+
+    The tooltip lists a dozen facts and the pointer is already resting on the one
+    the reader wants, so finding it again in the list is work worth saving them.
+    """
+    from deepreefmap_gui.runs.run_table import COL_SIZE, COL_VIDEO
+
+    write_run(out_root, "a_run", input_videos=["/data/GX_ONE.MP4"])
+    window = make_window()
+    table = window._data_run_table
+
+    video_tip = table.item(0, COL_VIDEO).toolTip()
+    size_tip = table.item(0, COL_SIZE).toolTip()
+
+    assert "<b>Video: GX_ONE.MP4" in video_tip
+    assert "<b>Video: GX_ONE.MP4" not in size_tip
+    # Lifted, not filtered: the rest of the block is why the tooltip is useful.
+    assert "Mode: semantic" in video_tip and "Mode: semantic" in size_tip
+
+
+def test_the_tooltip_carries_a_line_for_every_column(out_root, make_window):
+    """Expected behaviour: a line per column, present even when the run has no
+    value for it.
+
+    The tooltip is opened over a column in order to read that column, so a line
+    that quietly disappears is the one answer it must never give. Transect and
+    Status had no line at all, and the rest vanished when null.
+    """
+    from deepreefmap_gui.runs.run_table import COL_NAME, COL_TRANSECT
+
+    write_run(out_root, "bare", input_videos=[], semantic_reference_points=None)
+    window = make_window()
+    tooltip = window._data_run_table.item(0, COL_NAME).toolTip()
+
+    for label in ("Status", "Created", "Transect", "Video", "Frames", "Points", "Runtime", "Size"):
+        assert f"{label}:" in tooltip, f"{label} missing from {tooltip}"
+    missing = "—"
+    assert "Transect: Not assigned yet" in tooltip
+    assert f"Video: {missing}" in tooltip
+    assert f"Points: {missing}" in tooltip
+
+    # And the column that had no line at all is now emphasised like the rest.
+    assert "<b>Transect:" in window._data_run_table.item(0, COL_TRANSECT).toolTip()
+
+
+def test_numeric_headers_line_up_with_their_digits(window):
+    """A right-aligned column under a centred header shares no edge with it."""
+    from deepreefmap_gui.runs.run_table import COL_POINTS
+
+    header = window._data_run_table.horizontalHeaderItem(COL_POINTS)
+    assert header.textAlignment() & Qt.AlignmentFlag.AlignRight
+
+
+def _fact_keys(window) -> list[str]:
+    grid = window._run_detail.facts._grid
+    return [
+        grid.itemAtPosition(row, 0).widget().text()
+        for row in range(grid.rowCount())
+        if grid.itemAtPosition(row, 0) is not None
+    ]
+
+
+def _fact_values(window) -> dict[str, str]:
+    grid = window._run_detail.facts._grid
+    rows = {}
+    for row in range(grid.rowCount()):
+        key = grid.itemAtPosition(row, 0)
+        value = grid.itemAtPosition(row, 1)
+        if key is not None and value is not None:
+            rows[key.widget().text()] = value.widget().text()
+    return rows
+
+
+def test_the_detail_pane_shows_the_same_fields_for_every_run(out_root, make_window):
+    """Scenario: one run recorded everything, the next crashed before it
+    recorded anything.
+
+    Expected behaviour: the same rows in the same order for both, so arrowing
+    down the table does not move the row being read out from under the cursor.
+    """
+    write_run(out_root, "complete", frames_processed=900, fps=5, camera_profile="gopro11")
+    write_run(
+        out_root,
+        "sparse",
+        semantic_reference_points=None,
+        run_duration_s=None,
+        frames_processed=None,
+        input_videos=[],
+        video_hashes=[],
+    )
+    window = make_window()
+
+    select_run(window, row_of(window, "complete"))
+    complete_keys = _fact_keys(window)
+
+    select_run(window, row_of(window, "sparse"))
+    assert _fact_keys(window) == complete_keys
+
+    # Absent facts say so rather than dropping their row.
+    values = _fact_values(window)
+    assert values["Points"] == "—"
+    assert values["Runtime"] == "—"
+
+
+def test_a_run_that_fell_back_to_depth_says_so(out_root, make_window):
+    """The fallback is materially weaker geometry and the manifest is the only
+    place that records it, so the pane flags it rather than reading like any
+    other success."""
+    write_run(out_root, "world", geometry_source="world_points")
+    write_run(out_root, "fallback", geometry_source="depth_unprojection")
+    window = make_window()
+
+    select_run(window, row_of(window, "world"))
+    assert _fact_values(window)["Geometry"] == "world points (full)"
+
+    select_run(window, row_of(window, "fallback"))
+    assert _fact_values(window)["Geometry"].startswith("⚠")
+
+
+def test_the_pane_shows_the_cover_a_run_measured(out_root, make_window):
+    run_dir = write_run(out_root, "with_cover")
+    (run_dir / "benthic_cover.json").write_text(
+        json.dumps(
+            {
+                "classes": {
+                    "1": {"name": "hard coral", "count": 60, "fraction": 0.6},
+                    "2": {"name": "sand", "count": 40, "fraction": 0.4},
+                },
+                "denominator": 100.0,
+            }
+        )
+    )
+    write_run(out_root, "no_cover")
+    window = make_window()
+
+    select_run(window, row_of(window, "with_cover"))
+    legend = " ".join(line.text() for line in window._run_detail.cover._legend)
+    assert "hard coral" in legend and "60%" in legend
+
+    # A run that measured none keeps the block's height rather than collapsing
+    # everything below it.
+    height = window._run_detail.cover.height()
+    select_run(window, row_of(window, "no_cover"))
+    assert window._run_detail.cover.height() == height
 
 
 def test_the_ortho_never_widens_the_detail_pane(out_root, make_window):

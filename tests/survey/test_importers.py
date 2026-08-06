@@ -6,6 +6,7 @@ import pytest
 from deepreefmap_gui.survey.models import Transect
 from deepreefmap_gui.survey.models.exporters import save_transects_csv
 from deepreefmap_gui.survey.models.importers import (
+    build_transect,
     import_transects_csv,
     import_transects_gpx,
     parse_latlon,
@@ -31,6 +32,22 @@ def test_parse_latlon_accepts_space_and_comma():
     assert parse_latlon("-17.5 177.1") == (-17.5, 177.1)
     assert parse_latlon("-17.5, 177.1") == (-17.5, 177.1)
     assert parse_latlon("-17.5,177.1") == (-17.5, 177.1)
+
+
+def test_build_transect_names_the_field_at_fault():
+    with pytest.raises(ValueError, match="Missing end point"):
+        build_transect("T9", "-17.5, 177.1", "")
+    with pytest.raises(ValueError, match="Start point"):
+        build_transect("T9", "not coords", "-17.5, 177.1")
+
+
+def test_build_transect_reads_zero_length_and_depth_as_unset():
+    transect = build_transect(
+        " T9 ", "-17.5, 177.1", "-17.5005, 177.1005", length_m=0.0, depth_m=0.0
+    )
+    assert transect.name == "T9"
+    assert transect.length_m is None
+    assert transect.depth_m is None
 
 
 def test_parse_latlon_rejects_garbage():

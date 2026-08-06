@@ -61,6 +61,7 @@ from deepreefmap_gui.survey.models import (
 )
 from deepreefmap_gui.survey.models.exporters import save_transects_csv
 from deepreefmap_gui.survey.models.importers import (
+    build_transect,
     import_transects_csv,
     import_transects_gpx,
     parse_latlon,
@@ -806,15 +807,12 @@ class SimplePlanMixin(MixinBase):
     def _on_transect_save(self) -> None:
         store = self._survey_store()
         try:
-            lat1, lon1, lat2, lon2 = self._form_coordinates()
-            transect = Transect(
-                name=self._tr_name_input.text().strip(),
-                start_lat=lat1,
-                start_lon=lon1,
-                end_lat=lat2,
-                end_lon=lon2,
-                length_m=self._tr_length.value() or None,
-                depth_m=self._tr_depth.value() or None,
+            transect = build_transect(
+                self._tr_name_input.text(),
+                self._tr_start_coord.text(),
+                self._tr_end_coord.text(),
+                length_m=self._tr_length.value(),
+                depth_m=self._tr_depth.value(),
                 description=self._tr_description.toPlainText().strip(),
             )
         except ValueError as exc:

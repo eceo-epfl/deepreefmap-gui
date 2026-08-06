@@ -1,5 +1,6 @@
 """Survey domain models, one per module, with conversion tools alongside."""
 
+from deepreefmap_gui.survey.models.batch_item import BatchItem
 from deepreefmap_gui.survey.models.run_record import RUN_STATUSES, TERMINAL_STATUSES, RunRecord
 from deepreefmap_gui.survey.models.survey_batch import SurveyBatch
 from deepreefmap_gui.survey.models.transect import (
@@ -15,6 +16,7 @@ __all__ = [
     "PASS_DIRECTIONS",
     "RUN_STATUSES",
     "TERMINAL_STATUSES",
+    "BatchItem",
     "RunRecord",
     "SurveyBatch",
     "Transect",

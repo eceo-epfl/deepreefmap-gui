@@ -6,21 +6,27 @@ detail pane, the top banner) each own their own layout.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from pathlib import Path
 
 from deepreefmap_gui.core.theme import (
     BANNER_TEXT,
     FONT_LG,
+    PRIMARY,
 )
 from deepreefmap_gui.profiling.eta import format_duration
 from deepreefmap_gui.profiling.system_probe import format_bytes
-from deepreefmap_gui.survey.catalogue import run_duration_s
+from deepreefmap_gui.survey.catalogue import RunEntry, run_duration_s
 
 _GEOMETRY_LABELS = {
     "world_points": "world points (full)",
     "depth_unprojection": "depth-unprojection",
 }
+
+# A column with nothing in it. The bare token, because test_design_system.py
+# fails any other spelling of an em dash in the tree.
+_MISSING = "—"
 
 
 def format_timestamp(value: object) -> str:
@@ -52,6 +58,21 @@ def related_run_counts(entries: list[tuple[Path, dict]]) -> dict[Path, int]:
         related.discard(run_dir)
         counts[run_dir] = len(related)
     return counts
+
+
+def geometry_label(manifest: dict) -> str:
+    """How a run got its 3D, and a warning when it fell back to depth.
+
+    A mapper that cannot solve world points estimates them by unprojecting
+    depth instead. The result is materially weaker and the manifest is the only
+    place that records which happened, so a run carrying the fallback says so
+    wherever it is described rather than reading like any other success.
+    """
+    source = manifest.get("geometry_source")
+    if not source:
+        return ""
+    label = _GEOMETRY_LABELS.get(source, str(source))
+    return f"⚠ {label}" if source == "depth_unprojection" else label
 
 
 def points_label(n: int) -> str:
@@ -105,26 +126,60 @@ def _disk_label(run_dir: Path, disk_bytes: int | None) -> str | None:
     return format_disk_size(run_dir)
 
 
-def format_run_metadata(
-    manifest: dict,
-    run_dir: Path,
-    *,
-    include_disk_size: bool,
-    disk_bytes: int | None = None,
-) -> str:
-    """Multi-line format used in tooltips and the results block."""
+def _video_line(entry: RunEntry) -> str:
+    """The clip, with its checksum and size, and a count of any others."""
+    videos = entry.manifest.get("input_videos") or []
+    if not videos:
+        return _MISSING
+    details = video_details(entry.manifest, 0)
+    line = Path(videos[0]).name + (f" ({', '.join(details)})" if details else "")
+    if len(videos) > 1:
+        line += f" (+{len(videos) - 1} more)"
+    return line
+
+
+def _column_lines(entry: RunEntry) -> list[str]:
+    """One line per column the run table shows, present whether or not it has a value.
+
+    The tooltip is opened over a column in order to read that column, so a line
+    quietly missing is the one answer it must never give. These are labelled with
+    the column headings themselves, so what is being pointed at is obvious.
+    """
+    from deepreefmap_gui.survey import catalogue
+
+    manifest = entry.manifest
+    frames = manifest.get("frames_processed")
+    fps = manifest.get("fps")
+    return [
+        f"Status: {catalogue.entry_status(entry).capitalize()}",
+        f"Created: {format_timestamp(manifest.get('run_timestamp')) or _MISSING}",
+        f"Transect: {entry.transect_name or 'Not assigned yet'}",
+        # No column shows the session, so the tooltip is where it lives; in the
+        # always-shown block because its absence is a fact too.
+        f"Session: {entry.session_name or _MISSING}",
+        f"Video: {_video_line(entry)}",
+        f"Frames: {f'{int(frames):,}' if frames else _MISSING}"
+        + (f" @ {fps} fps" if frames and fps else ""),
+        f"Points: {f'{int(entry.points):,}' if entry.points else _MISSING}",
+        f"Runtime: {format_duration(entry.duration_s) if entry.duration_s else _MISSING}",
+        f"Size: {format_bytes(entry.size_bytes) if entry.size_bytes is not None else _MISSING}",
+    ]
+
+
+def _detail_lines(entry: RunEntry) -> list[str]:
+    """How the run was made. No column shows these, so they stay conditional:
+    "no camera profile recorded" is a real difference from "not applicable"."""
+    manifest = entry.manifest
     lines: list[str] = []
-    name = (manifest.get("name") or "").strip() or run_dir.name
-    lines.append(f"<b>{name}</b>  <i>({run_dir.name})</i>")
-    mode = manifest.get("mode")
-    if mode:
-        lines.append(f"Mode: {mode}")
-    seg = manifest.get("segmentation_model")
-    if seg:
-        lines.append(f"Segmentation: {seg}")
-    mapping = manifest.get("mapping_backend")
-    if mapping:
-        lines.append(f"Mapping: {mapping}")
+    # Later attempts carry their number in the dir name; the first says nothing.
+    attempt = re.search(r"__r(\d+)$", entry.dir_name)
+    if attempt:
+        lines.append(f"Attempt: {int(attempt.group(1))}")
+    for label, key in (("Mode", "mode"), ("Segmentation", "segmentation_model")):
+        if manifest.get(key):
+            lines.append(f"{label}: {manifest[key]}")
+    if manifest.get("mapping_backend"):
+        lines.append(f"Mapping: {manifest['mapping_backend']}")
     mopts = manifest.get("mapping_options") or {}
     if mopts.get("window_size") is not None:
         lines.append(
@@ -132,43 +187,64 @@ def format_run_metadata(
         )
     if manifest.get("refine_intrinsics_from_mapper"):
         lines.append("Intrinsics: refined from mapper")
-    geom = manifest.get("geometry_source")
+    geom = geometry_label(manifest)
     if geom:
-        lines.append(f"Geometry: {_GEOMETRY_LABELS.get(geom, geom)}")
-    profile = manifest.get("camera_profile")
-    if profile:
-        lines.append(f"Camera profile: {profile}")
-    frames = manifest.get("frames_processed")
-    if frames is not None:
-        fps = manifest.get("fps")
-        lines.append(f"Frames: {frames}" + (f" @ {fps} fps" if fps else ""))
+        lines.append(f"Geometry: {geom}")
+    if manifest.get("camera_profile"):
+        lines.append(f"Camera profile: {manifest['camera_profile']}")
     pw, ph = manifest.get("processing_width"), manifest.get("processing_height")
     if pw and ph:
         lines.append(f"Processing size: {pw}×{ph}")
-    sem_pts = manifest.get("semantic_reference_points")
-    if sem_pts:
-        lines.append(f"Semantic points: {int(sem_pts):,}")
     metric_pts = manifest.get("metric_points")
     if metric_pts:
         lines.append(f"Metric points: {int(metric_pts):,}")
-    for i, v in enumerate(manifest.get("input_videos") or []):
-        details = video_details(manifest, i)
-        suffix = f" ({', '.join(details)})" if details else ""
-        lines.append(f"Input: {Path(v).name}{suffix}")
     trim = format_trim_range(manifest)
     if trim:
         lines.append(f"Range: {trim}")
-    dur = run_duration_s(manifest)
-    if dur:
-        lines.append(f"Runtime: {format_duration(dur)}")
-    created = format_timestamp(manifest.get("run_timestamp"))
-    if created:
-        lines.append(f"Created: {created}")
-    if include_disk_size:
-        disk = _disk_label(run_dir, disk_bytes)
-        if disk:
-            lines.append(f"Disk: {disk}")
-    return "<br>".join(lines)
+    return lines
+
+
+def format_run_metadata(entry: RunEntry) -> str:
+    """A run's whole record, as the run table's tooltip.
+
+    Two blocks. First every column the table shows, always, so hovering a column
+    always has a line to point at. Then the facts no column has room for, which
+    are omitted when absent because their absence means something.
+    """
+    name = (entry.manifest.get("name") or "").strip() or entry.dir_name
+    # The folder only when it adds something: an unnamed run takes its timestamp
+    # as a name, so spelling both printed the same string twice.
+    header = f"<b>{name}</b>"
+    if name != entry.dir_name:
+        header += f"  <i>({entry.dir_name})</i>"
+    detail = _detail_lines(entry)
+    blocks = [header, *_column_lines(entry)]
+    if detail:
+        blocks.append("")
+        blocks.extend(detail)
+    return "<br>".join(blocks)
+
+
+def emphasise_line(metadata: str, label: str | None) -> str:
+    """Lift the one line a label names out of a run's metadata block.
+
+    A tooltip opened over the Video column lists a dozen facts, and the pointer
+    is already resting on the one the reader wants. Finding it again in the list
+    is work the interface can do for them.
+
+    Lifted rather than filtered: the surrounding facts are the reason the tooltip
+    is worth opening at all, so they stay exactly where they were and the eye is
+    pointed at one of them.
+    """
+    if not label:
+        return metadata
+    prefix = f"{label}:"
+    return "<br>".join(
+        f'<span style="color: {PRIMARY}"><b>{line}</b></span>'
+        if line.startswith(prefix)
+        else line
+        for line in metadata.split("<br>")
+    )
 
 
 def format_run_metadata_compact(

@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     from deepreefmap_gui.runs.run_table import RunTable
     from deepreefmap_gui.runs.sunburst import SunburstWidget
     from deepreefmap_gui.runs.timing_popup import HoverColumn, TimingPopup
+    from deepreefmap_gui.simple.cart import CartButton
     from deepreefmap_gui.survey.health import SurveyDbHealth
     from deepreefmap_gui.survey.models import SurveyBatch
     from deepreefmap_gui.survey.preset import ActivePreset
@@ -85,6 +86,8 @@ if TYPE_CHECKING:
         # its mixin, which mypy cannot infer an element type for on its own.
         _survey_transects: list
         _survey_batch: SurveyBatch | None
+        _survey_running_batch: SurveyBatch | None
+        _cart_button: CartButton
         _analysis_covers: list
         _analysis_all_covers: list
         _analysis_provenance_label: QLabel
@@ -366,6 +369,8 @@ if TYPE_CHECKING:
         def _on_transect_selected(self) -> None: ...  # SimplePlanMixin
         def _refresh_survey_analysis(self) -> None: ...  # SimpleAnalysisMixin
         def _refresh_survey_batch_tab(self) -> None: ...  # SimpleBatchMixin
+        def _add_pass_to_cart(self, pass_id: uuid.UUID) -> None: ...  # SimpleBatchMixin
+        def _cart_add(self, pass_id: uuid.UUID) -> None: ...  # SimpleBatchMixin
         def _refresh_survey_transect_combos(self) -> None: ...  # SimpleBatchMixin
         def _refresh_survey_pass_statuses(self) -> None: ...  # SimpleBatchMixin
         def _recompute_survey_start(self) -> None: ...  # SimpleBatchMixin

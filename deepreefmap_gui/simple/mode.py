@@ -43,7 +43,7 @@ from PySide6.QtWidgets import (
 
 from deepreefmap_gui.core.icons import (
     browse_icon,
-    process_icon,
+    cart_icon,
     section_state_icon,
     transects_icon,
 )
@@ -62,6 +62,7 @@ from deepreefmap_gui.core.theme import (
 from deepreefmap_gui.core.widgets import HeaderAlert, muted_label, utility_button_qss
 from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.runs.run_detail import RunDetailPanel
+from deepreefmap_gui.simple.cart import CartButton
 from deepreefmap_gui.simple.section_state import (
     browse_state,
     headline,
@@ -97,14 +98,18 @@ DESTINATIONS = ("transects", "process", "browse")
 # state would leave the pill with no stable identity to recognise it by.
 _DESTINATION_ICONS = {
     "transects": transects_icon,
-    "process": process_icon,
+    "process": cart_icon,
     "browse": browse_icon,
 }
+
+# What each destination pill says. The process pill reads Cart: the queue is
+# the cart, checkout is Start processing.
+_DESTINATION_LABELS = {"transects": "Transects", "process": "Cart", "browse": "Browse"}
 
 # One line per destination, said in the terms of the work rather than the widget.
 _DESTINATION_TIPS = {
     "transects": "The lines you survey, and what repeat passes of each one found.",
-    "process": "Queue this session's videos as passes, and watch them run.",
+    "process": "The cart: sections queued for the next session, and the batch as it runs.",
     "browse": "Every run and clip so far, grouped however you need to read it.",
 }
 
@@ -410,7 +415,7 @@ class InterfaceShellMixin(MixinBase):
         header.setStyleSheet(_BAR_QSS)
         self._simple_header = header
         nav = QHBoxLayout(header)
-        nav.setContentsMargins(PAGE_MARGIN, SPACE_SM, PAGE_MARGIN, SPACE_SM)
+        nav.setContentsMargins(PAGE_MARGIN, SPACE_XS, PAGE_MARGIN, SPACE_XS)
         nav.setSpacing(SPACE_XS)
 
         self._simple_stack = QStackedWidget()
@@ -431,8 +436,13 @@ class InterfaceShellMixin(MixinBase):
         nav_group.setExclusive(True)
         self._destination_group = nav_group
         for name in DESTINATIONS:
-            btn = QToolButton()
-            btn.setText(name.capitalize())
+            # The process pill is the cart, so it carries the cart's count badge.
+            if name == "process":
+                self._cart_button = CartButton()
+                btn: QToolButton = self._cart_button
+            else:
+                btn = QToolButton()
+            btn.setText(_DESTINATION_LABELS[name])
             btn.setCheckable(True)
             btn.setStyleSheet(_DESTINATION_QSS)
             btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
@@ -440,7 +450,10 @@ class InterfaceShellMixin(MixinBase):
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setToolTip(_DESTINATION_TIPS[name])
             nav_group.addButton(btn)
-            nav.addWidget(btn)
+            # Every pill but the cart sits at the left with the work; the cart
+            # goes to the far right, past the utilities, behind a divider.
+            if name != "process":
+                nav.addWidget(btn)
             btn.toggled.connect(partial(self._on_simple_nav_toggled, name))
             self._simple_nav_buttons[name] = btn
 
@@ -457,6 +470,15 @@ class InterfaceShellMixin(MixinBase):
         # where you are working.
         nav.addWidget(self._log_toggle_btn)
         nav.addWidget(self._build_machine_nav_button())
+        # The cart last, split from the utilities: it is a destination, badged
+        # with what the next session holds.
+        nav.addSpacing(SPACE_SM)
+        divider = QWidget()
+        divider.setFixedWidth(1)
+        divider.setStyleSheet(f"background: {BORDER};")
+        nav.addWidget(divider)
+        nav.addSpacing(SPACE_SM)
+        nav.addWidget(self._cart_button)
         layout.addWidget(header)
 
         for name in SIMPLE_SECTIONS:
@@ -573,6 +595,7 @@ class InterfaceShellMixin(MixinBase):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(GUTTER)
         self._view_detail = RunDetailPanel()
+        self._view_detail.cover.set_classes_config(self._classes_config)
         layout.addWidget(self._view_detail)
         layout.addWidget(self._results_page)
         layout.addStretch(1)
@@ -666,8 +689,8 @@ class InterfaceShellMixin(MixinBase):
         self._section_alert_target = name
         icon = section_state_icon(verdict.state)
         self._section_alert.show_alert(
-            f"{name.capitalize()}: {headline(verdict.reason)}",
-            tooltip=f"{verdict.reason}\nGo to {name.capitalize()}.",
+            f"{_DESTINATION_LABELS[name]}: {headline(verdict.reason)}",
+            tooltip=f"{verdict.reason}\nGo to {_DESTINATION_LABELS[name]}.",
             pixmap=(
                 icon.pixmap(_DESTINATION_ICON_PX, _DESTINATION_ICON_PX)
                 if icon is not None

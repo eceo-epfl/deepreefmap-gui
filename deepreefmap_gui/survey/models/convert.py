@@ -8,6 +8,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import fields
 from typing import Any, TypeVar, cast, get_args, get_origin, get_type_hints
 
+from deepreefmap_gui.survey.models.batch_item import BatchItem
 from deepreefmap_gui.survey.models.run_record import RunRecord
 from deepreefmap_gui.survey.models.survey_batch import SurveyBatch
 from deepreefmap_gui.survey.models.transect import Transect
@@ -18,12 +19,14 @@ T = TypeVar("T")
 
 DOCUMENT_SCHEMA_VERSION = 1
 
-# Insert order respects foreign keys: passes need transects/videos/batches, runs need passes.
+# Insert order respects foreign keys: passes need transects/videos/batches,
+# batch items and runs need passes.
 DOCUMENT_SECTIONS: dict[str, type] = {
     "transects": Transect,
     "videos": VideoAsset,
     "batches": SurveyBatch,
     "passes": TransectPass,
+    "batch_items": BatchItem,
     "runs": RunRecord,
 }
 
@@ -80,9 +83,17 @@ def build_document(
     batches: Iterable[SurveyBatch],
     passes: Iterable[TransectPass],
     runs: Iterable[RunRecord],
+    batch_items: Iterable[BatchItem] = (),
 ) -> dict[str, Any]:
     """One multi-object JSON document holding a whole survey."""
-    sections = {"transects": transects, "videos": videos, "batches": batches, "passes": passes, "runs": runs}
+    sections = {
+        "transects": transects,
+        "videos": videos,
+        "batches": batches,
+        "passes": passes,
+        "batch_items": batch_items,
+        "runs": runs,
+    }
     doc: dict[str, Any] = {"schema_version": DOCUMENT_SCHEMA_VERSION}
     for name, models in sections.items():
         doc[name] = [to_row(m) for m in models]

@@ -15,6 +15,8 @@ __all__ = ["RUN_STATUSES", "TERMINAL_STATUSES", "RunRecord"]
 class RunRecord:
     """Re-running a pass creates a new record; repeats are the reproducibility data.
 
+    ``batch_id`` is the session the attempt ran in; a rerun of the same pass can
+    belong to a later session than the pass itself.
     ``run_dir_name`` is relative to the output root so a moved folder keeps working.
     Cover numbers stay in the run directory's benthic_cover.json, never in the database.
     """
@@ -25,6 +27,7 @@ class RunRecord:
     started_at: str | None = None
     finished_at: str | None = None
     error: str = ""
+    batch_id: uuid.UUID | None = None
     id: uuid.UUID = field(default_factory=uuid.uuid4)
     created_at: str = field(default_factory=utc_now_iso)
 

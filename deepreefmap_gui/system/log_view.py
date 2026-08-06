@@ -183,7 +183,9 @@ def open_run_log_file(run_dir: Path, level: int = logging.INFO) -> logging.FileH
     """
     run_dir.mkdir(parents=True, exist_ok=True)
     log_path = run_dir / "run.log"
-    fh = logging.FileHandler(log_path, mode="w", encoding="utf-8")
+    # Append: attempts get directories of their own now, but a legacy directory
+    # revisited must not lose the log of what happened to it before.
+    fh = logging.FileHandler(log_path, mode="a", encoding="utf-8")
     fh.setLevel(level)
     fh.setFormatter(logging.Formatter(_FMT, datefmt=_DATEFMT))
     logging.getLogger("deepreefmap").addHandler(fh)

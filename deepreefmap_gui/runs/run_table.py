@@ -21,7 +21,11 @@ from PySide6.QtWidgets import (
 from deepreefmap_gui.core.widgets import StatusPillDelegate, configure_table
 from deepreefmap_gui.profiling.eta import format_duration
 from deepreefmap_gui.profiling.system_probe import format_bytes
-from deepreefmap_gui.runs.run_cards import format_run_metadata, points_label
+from deepreefmap_gui.runs.run_cards import (
+    emphasise_line,
+    format_run_metadata,
+    points_label,
+)
 from deepreefmap_gui.survey import catalogue
 from deepreefmap_gui.survey.catalogue import RunEntry
 
@@ -40,20 +44,89 @@ _HEADERS = (
     "Video",
 )
 
-# Name absorbs the slack; every other column is as wide as its content needs
-# and no wider, so the numeric columns stay in a readable block.
-_STRETCH_COLUMNS = (COL_NAME,)
+# Columns whose width is a property of what they hold rather than of the window:
+# a status pill, a fixed-width timestamp, a formatted number. Sizing these to
+# content instead let them take the viewport and squeeze Name to an ellipsis,
+# and sizing them to the window would only pad digits with air.
+_FIXED_WIDTHS = {
+    COL_STATUS: 88,
+    COL_CREATED: 112,
+    COL_FRAMES: 64,
+    COL_POINTS: 64,
+    COL_RUNTIME: 72,
+    COL_SIZE: 72,
+}
+
+# What is left over, shared out by weight. Qt's Stretch mode splits slack
+# equally, which would hand Transect as much room as Name; the name is what
+# identifies a row, so it takes the larger share and the two weaker identifiers
+# follow it.
+_FLEX_WEIGHTS = {COL_NAME: 3, COL_VIDEO: 2, COL_TRANSECT: 1}
+
+# Below these a column has stopped saying which run, which clip or which line,
+# so it holds its floor and the table scrolls instead. That only happens on a
+# window too narrow to hold nine columns by any arrangement.
+_FLEX_MINIMUMS = {COL_NAME: 140, COL_VIDEO: 100, COL_TRANSECT: 80}
 
 # No column narrower than this, whatever its content measures.
 _MIN_SECTION_WIDTH = 64
 
-# Enough for a GoPro filename; draggable from there.
-_VIDEO_WIDTH = 150
-
 # Numbers read right-aligned, which also lines up their digits down the column.
+# Their headers follow them, so label and value share an edge.
 _NUMERIC_COLUMNS = (COL_FRAMES, COL_POINTS, COL_RUNTIME, COL_SIZE)
 
 _MISSING = "—"
+
+# The tooltip line each column is about, so a tooltip opened over a column points
+# at the fact that column shows. The tooltip labels its column block with these
+# same headings, so this is very nearly an identity map, and every column but
+# Name has an entry: Name is the tooltip's own heading and is already bold.
+_TOOLTIP_LABELS = {
+    COL_STATUS: "Status",
+    COL_CREATED: "Created",
+    COL_FRAMES: "Frames",
+    COL_POINTS: "Points",
+    COL_RUNTIME: "Runtime",
+    COL_SIZE: "Size",
+    COL_TRANSECT: "Transect",
+    COL_VIDEO: "Video",
+}
+
+
+def column_widths(available: int) -> dict[int, int]:
+    """How a viewport of `available` px divides between the nine columns.
+
+    The fixed columns take theirs first; the rest is shared by weight. A share
+    that falls under a column's floor is clamped to it and the *remainder* is
+    re-divided among the columns still flexing, rather than every column being
+    clamped independently -- doing that over-spends the viewport by the size of
+    each bump and puts back the scrollbar this exists to avoid.
+
+    On a window too narrow to hold nine columns at their floors the floors win
+    and the table scrolls. That is the honest answer: a column shrunk past
+    reading is not a column.
+    """
+    widths = dict(_FIXED_WIDTHS)
+    slack = max(0, available - sum(_FIXED_WIDTHS.values()))
+    flexing = dict(_FLEX_WEIGHTS)
+    while flexing:
+        weight_total = sum(flexing.values())
+        clamped = next(
+            (
+                column
+                for column, weight in flexing.items()
+                if slack * weight // weight_total < _FLEX_MINIMUMS[column]
+            ),
+            None,
+        )
+        if clamped is None:
+            for column, weight in flexing.items():
+                widths[column] = slack * weight // weight_total
+            break
+        widths[clamped] = _FLEX_MINIMUMS[clamped]
+        slack = max(0, slack - _FLEX_MINIMUMS[clamped])
+        del flexing[clamped]
+    return widths
 
 
 class SortableItem(QTableWidgetItem):
@@ -111,18 +184,16 @@ def _frame_count(entry: RunEntry) -> int | None:
 
 
 def _row_tooltip(entry: RunEntry, related: int) -> str:
-    """The full manifest, for the facts no column has room for."""
+    """Everything the row knows: a line per column, then the manifest's extras.
+
+    A run that never wrote a manifest gets the column block too, and says why the
+    rest is missing. It used to get two lines, so hovering the Size column of a
+    crashed run -- the run whose size you are most likely to be checking before
+    deleting it -- answered with nothing at all.
+    """
+    tooltip = format_run_metadata(entry)
     if entry.incomplete:
-        return (
-            f"<b>{entry.dir_name}</b><br>"
-            "<i>No run manifest: this run did not finish.</i>"
-        )
-    tooltip = format_run_metadata(
-        entry.manifest,
-        entry.run_dir,
-        include_disk_size=entry.size_bytes is not None,
-        disk_bytes=entry.size_bytes,
-    )
+        tooltip += "<br><br><i>No run manifest: this run did not finish.</i>"
     if entry.moved_from:
         tooltip += f"<br><i>Recorded at run time as: {entry.moved_from}</i>"
     if related:
@@ -148,24 +219,39 @@ class RunTable(QTableWidget):
         self.setSortingEnabled(True)
         self.setItemDelegateForColumn(COL_STATUS, StatusPillDelegate(self))
 
+        # A long value gives way to an ellipsis rather than to a scrollbar, and
+        # elides from the middle: a run name and a GoPro file name are both told
+        # apart by their two ends, so dropping the tail of GX_VIDEO_1_OF_2.MP4
+        # loses exactly the character that identifies it.
+        self.setTextElideMode(Qt.TextElideMode.ElideMiddle)
+
         header = self.horizontalHeader()
         header.setStretchLastSection(False)
-        # A floor under every column, because the content-sized ones are greedy:
-        # left alone they took the whole viewport and squeezed Name, the one
-        # column identifying the row, down to an ellipsis.
         header.setMinimumSectionSize(_MIN_SECTION_WIDTH)
+        # Every column is driven from _apply_column_widths, so none of them is
+        # content-sized: left to measure themselves the numeric columns took the
+        # viewport and squeezed Name, the one column identifying the row.
         for column in range(len(_HEADERS)):
-            mode = (
-                QHeaderView.ResizeMode.Stretch
-                if column in _STRETCH_COLUMNS
-                else QHeaderView.ResizeMode.ResizeToContents
-            )
-            header.setSectionResizeMode(column, mode)
-        # Interactive, not content-sized: a video name is long enough to eat the
-        # row on its own, and Name has the stronger claim on the slack.
-        header.setSectionResizeMode(COL_VIDEO, QHeaderView.ResizeMode.Interactive)
-        header.resizeSection(COL_VIDEO, _VIDEO_WIDTH)
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
+        for column in _NUMERIC_COLUMNS:
+            item = self.horizontalHeaderItem(column)
+            if item is not None:
+                item.setTextAlignment(
+                    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+                )
         self.sortByColumn(COL_CREATED, Qt.SortOrder.DescendingOrder)
+
+    def _apply_column_widths(self) -> None:
+        header = self.horizontalHeader()
+        available = self.viewport().width()
+        if available <= 0:
+            return
+        for column, width in column_widths(available).items():
+            header.resizeSection(column, width)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        super().resizeEvent(event)
+        self._apply_column_widths()
 
     def current_run_dir(self) -> str | None:
         row = self.currentRow()
@@ -234,7 +320,10 @@ class RunTable(QTableWidget):
             # An em dash rather than an empty cell: a blank reads as a column
             # that failed to load, where a dash says the run has no such fact.
             item = SortableItem(text or (_MISSING if column != COL_NAME else ""), value)
-            item.setToolTip(tooltip)
+            # Per cell rather than per row: Qt shows the tooltip belonging to the
+            # cell under the pointer, so the column being hovered is already
+            # known and needs no mouse tracking of our own.
+            item.setToolTip(emphasise_line(tooltip, _TOOLTIP_LABELS.get(column)))
             if column in _NUMERIC_COLUMNS:
                 item.setTextAlignment(
                     Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter

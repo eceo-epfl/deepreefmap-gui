@@ -250,6 +250,19 @@ def test_usb_import_waits_for_a_running_batch(window, monkeypatch):
     assert "Unavailable while processing" in window._status_label.text()
 
 
+def test_model_delete_waits_for_a_running_batch(window, monkeypatch):
+    """A later pass may need the model, so deletion follows the same rule as
+    downloads and imports."""
+    deleted = []
+    monkeypatch.setattr(window, "_execute_delete", deleted.append)
+    window._survey_worker_running = True
+    window._on_delete_click("segformer-b2")
+    assert deleted == []
+    assert window._delete_armed == {}
+    assert "Unavailable while processing" in window._status_label.text()
+    window._survey_worker_running = False
+
+
 def test_download_starts_for_ungated_models(window, monkeypatch):
     monkeypatch.setattr(window, "_survey_missing_models", lambda: ["scsfmlearner"])
     window._hf_auth_user = None

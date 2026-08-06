@@ -3,7 +3,7 @@ import uuid
 import pytest
 from _factories import make_transect, make_video
 
-from deepreefmap_gui.survey.models import RunRecord, SurveyBatch, TransectPass
+from deepreefmap_gui.survey.models import BatchItem, RunRecord, SurveyBatch, TransectPass
 from deepreefmap_gui.survey.models.convert import (
     build_document,
     from_row,
@@ -75,8 +75,9 @@ def test_row_round_trip_preserves_every_model():
     transect, video = make_transect(), make_video()
     batch = SurveyBatch(name="Day 1")
     pass_ = make_pass(transect, video, batch_id=batch.id, direction="reverse")
-    run = RunRecord(pass_id=pass_.id, run_dir_name="t1__p01__20260720-0900")
-    for model in (transect, video, batch, pass_, run):
+    run = RunRecord(pass_id=pass_.id, run_dir_name="t1__p01__20260720-0900", batch_id=batch.id)
+    item = BatchItem(batch_id=batch.id, pass_id=pass_.id)
+    for model in (transect, video, batch, pass_, run, item):
         row = to_row(model)
         assert all(not isinstance(v, uuid.UUID) for v in row.values())
         assert from_row(type(model), row) == model
@@ -87,15 +88,28 @@ def test_document_round_trip():
     batch = SurveyBatch(name="Day 1")
     pass_ = make_pass(transect, video, batch_id=batch.id)
     run = RunRecord(pass_id=pass_.id, run_dir_name="run")
+    item = BatchItem(batch_id=batch.id, pass_id=pass_.id)
     doc = build_document(
-        transects=[transect], videos=[video], batches=[batch], passes=[pass_], runs=[run]
+        transects=[transect], videos=[video], batches=[batch], passes=[pass_],
+        runs=[run], batch_items=[item],
     )
     sections = parse_document(doc)
     assert sections["transects"] == [transect]
     assert sections["videos"] == [video]
     assert sections["batches"] == [batch]
     assert sections["passes"] == [pass_]
+    assert sections["batch_items"] == [item]
     assert sections["runs"] == [run]
+
+
+def test_a_document_written_before_batch_items_still_parses():
+    transect, video = make_transect(), make_video()
+    pass_ = make_pass(transect, video)
+    doc = build_document(
+        transects=[transect], videos=[video], batches=[], passes=[pass_], runs=[]
+    )
+    del doc["batch_items"]
+    assert parse_document(doc)["batch_items"] == []
 
 
 def test_document_rejects_unknown_schema_version():

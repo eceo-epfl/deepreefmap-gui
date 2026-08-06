@@ -6,7 +6,7 @@ import uuid
 import pytest
 from _factories import make_transect, make_video, seed_pass
 
-from deepreefmap_gui.survey.models import RunRecord, SurveyBatch, TransectPass
+from deepreefmap_gui.survey.models import BatchItem, RunRecord, SurveyBatch, TransectPass
 from deepreefmap_gui.survey.models.convert import survey_manifest_block
 from deepreefmap_gui.survey.store import SurveyStore
 
@@ -192,7 +192,8 @@ def test_json_export_import_round_trip(store, tmp_path):
     _, _, pass_ = seed_pass(store)
     batch = SurveyBatch(name="Day 1")
     store.add_batch(batch)
-    store.add_run(RunRecord(pass_id=pass_.id, run_dir_name="t1__p01"))
+    store.add_batch_item(BatchItem(batch_id=batch.id, pass_id=pass_.id))
+    store.add_run(RunRecord(pass_id=pass_.id, run_dir_name="t1__p01", batch_id=batch.id))
     doc_path = tmp_path / "survey.json"
     store.export_json(doc_path)
 
@@ -202,9 +203,11 @@ def test_json_export_import_round_trip(store, tmp_path):
     assert fresh.list_videos() == store.list_videos()
     assert fresh.list_passes() == store.list_passes()
     assert fresh.list_runs() == store.list_runs()
+    assert fresh.list_all_batch_items() == store.list_all_batch_items()
 
     fresh.import_json(doc_path)
     assert len(fresh.list_passes()) == 1
+    assert len(fresh.list_all_batch_items()) == 1
 
 
 def write_manifest(out_root, run_dir_name, block, video_path="/data/GX010001.MP4"):
@@ -249,9 +252,12 @@ def test_rebuild_from_scan_restores_everything(store, tmp_path):
     restored_run = fresh.get_run(run.id)
     assert restored_run.status == "succeeded"
     assert restored_run.run_dir_name == "t1__p01"
+    assert restored_run.batch_id == batch.id
+    assert [i.pass_id for i in fresh.list_batch_items(batch.id)] == [pass_.id]
 
     again = fresh.rebuild_from_scan(out_root)
     assert (again.transects, again.runs) == (0, 0)
+    assert len(fresh.list_all_batch_items()) == 1
 
 
 def test_store_reopens_existing_database(tmp_path):
@@ -492,6 +498,121 @@ def test_rebuild_restores_a_pass_that_named_no_transect(store, tmp_path):
     restored = fresh.get_pass(pass_.id)
     assert restored is not None
     assert restored.transect_id is None
+
+
+def test_current_cart_is_the_newest_batch_only_while_it_has_run_nothing(store):
+    assert store.current_cart() is None
+
+    _, _, pass_ = seed_pass(store)
+    first = SurveyBatch(name="Day 1")
+    store.add_batch(first)
+    assert store.current_cart() == first
+
+    store.add_run(RunRecord(pass_id=pass_.id, run_dir_name="t1__p01", batch_id=first.id))
+    assert store.batch_run_count(first.id) == 1
+    assert store.current_cart() is None
+
+    second = SurveyBatch(name="Day 2")
+    store.add_batch(second)
+    assert store.current_cart() == second
+
+
+def test_an_older_empty_batch_behind_a_started_one_is_not_the_cart(store):
+    _, _, pass_ = seed_pass(store)
+    abandoned = SurveyBatch(name="Day 1")
+    store.add_batch(abandoned)
+    started = SurveyBatch(name="Day 2")
+    store.add_batch(started)
+    store.add_run(RunRecord(pass_id=pass_.id, run_dir_name="t1__p01", batch_id=started.id))
+    assert store.current_cart() is None
+
+
+def test_a_pass_can_be_a_member_of_two_batches_but_of_one_only_once(store):
+    _, _, pass_ = seed_pass(store)
+    first = SurveyBatch(name="Day 1")
+    second = SurveyBatch(name="Day 2")
+    store.add_batch(first)
+    store.add_batch(second)
+
+    store.add_batch_item(BatchItem(batch_id=first.id, pass_id=pass_.id))
+    store.add_batch_item(BatchItem(batch_id=first.id, pass_id=pass_.id))
+    store.add_batch_item(BatchItem(batch_id=second.id, pass_id=pass_.id))
+    assert len(store.list_batch_items(first.id)) == 1
+    assert [p.id for p in store.passes_in_batch(second.id)] == [pass_.id]
+
+    store.remove_batch_item(first.id, pass_.id)
+    assert store.list_batch_items(first.id) == []
+    assert len(store.list_batch_items(second.id)) == 1
+
+
+def test_passes_in_batch_keeps_the_order_the_cart_was_filled_in(store):
+    transect, video, first = seed_pass(store)
+    later = TransectPass(
+        transect_id=transect.id, video_id=video.id, begin_s=70.0, end_s=120.0
+    )
+    earlier = TransectPass(
+        transect_id=transect.id, video_id=video.id, begin_s=130.0, end_s=180.0
+    )
+    store.add_pass(later)
+    store.add_pass(earlier)
+    batch = SurveyBatch(name="Day 1")
+    store.add_batch(batch)
+    for pass_ in (earlier, first, later):
+        store.add_batch_item(BatchItem(batch_id=batch.id, pass_id=pass_.id))
+    assert [p.id for p in store.passes_in_batch(batch.id)] == [
+        earlier.id, first.id, later.id
+    ]
+
+
+def test_a_database_written_before_run_sessions_migrates(tmp_path):
+    """Scenario: a survey.db from the build where the session lived on the pass.
+
+    Expected behaviour: it opens at v5 with each run's batch_id backfilled from
+    its pass and a batch_item row per pass that had a session, minted with an id
+    from_row can parse back.
+    """
+    from deepreefmap_gui.survey.store import _MIGRATIONS
+
+    transect_id, video_id, batch_id, pass_id, run_id = (uuid.uuid4() for _ in range(5))
+    now = "2026-08-01T00:00:00+00:00"
+    db_path = tmp_path / "old.db"
+    conn = sqlite3.connect(db_path)
+    with conn:
+        for number, script in enumerate(_MIGRATIONS[:4], start=1):
+            conn.executescript(script)
+            conn.execute(f"PRAGMA user_version = {number}")
+        conn.execute(
+            "INSERT INTO transect VALUES (?,?,'',?,?,?,?,?,?,?,?)",
+            (str(transect_id), "T1", -17.5, 177.1, -17.5005, 177.1005, 50.0, 8.0, now, now),
+        )
+        conn.execute(
+            "INSERT INTO video_asset VALUES (?,?,?,?,?,?,?,?,?)",
+            (str(video_id), "GX010001.MP4", "/data/GX010001.MP4", "ab" * 16, 1024, now, 90.0,
+             30.0, now),
+        )
+        conn.execute(
+            "INSERT INTO survey_batch VALUES (?,?,?,?)",
+            (str(batch_id), "Day 1", "survey_preset", now),
+        )
+        conn.execute(
+            "INSERT INTO transect_pass (id, transect_id, video_id, batch_id, direction,"
+            " begin_s, end_s, notes, created_at, extra_video_ids, held)"
+            " VALUES (?,?,?,?,'forward',0,90,'',?,'[]',0)",
+            (str(pass_id), str(transect_id), str(video_id), str(batch_id), now),
+        )
+        conn.execute(
+            "INSERT INTO run_record VALUES (?,?,?,?,?,?,'',?)",
+            (str(run_id), str(pass_id), "t1__p01", "succeeded", now, now, now),
+        )
+    conn.close()
+
+    store = SurveyStore(db_path)
+    assert store.get_run(run_id).batch_id == batch_id
+    items = store.list_batch_items(batch_id)
+    assert [i.pass_id for i in items] == [pass_id]
+    assert isinstance(items[0].id, uuid.UUID)
+    version = sqlite3.connect(db_path).execute("PRAGMA user_version").fetchone()[0]
+    assert version == len(_MIGRATIONS)
 
 
 def test_rebuild_restores_every_chapter_of_a_pass(store, tmp_path):

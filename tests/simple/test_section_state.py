@@ -82,6 +82,22 @@ def test_a_skipped_transect_is_reported_but_never_blocks():
     assert "repeat passes" in state.reason
 
 
+def test_an_unscaled_transect_is_reported_but_never_blocks():
+    """Scenario: a pass sits on a transect whose tape length was never entered.
+
+    Expected behaviour: the batch runs, and the step says the outputs will be
+    unscaled while there is still time to enter the length. Below unassigned,
+    because a missing transect swallows a missing tape reading.
+    """
+    state = gate(pass_count=2, remaining=2, unscaled=1)
+    assert state.state == OK
+    assert "unscaled" in state.count
+    assert "tape length" in state.reason
+
+    both = gate(pass_count=2, remaining=2, unassigned=1, unscaled=1)
+    assert "without a transect" in both.count
+
+
 def test_a_real_blocker_outranks_a_skipped_transect():
     """Only one reason is shown, so it must be the one that stops the batch."""
     state = gate(

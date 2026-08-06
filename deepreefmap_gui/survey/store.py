@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from deepreefmap_gui.survey.backup import write_backup
+from deepreefmap_gui.survey.models.batch_item import BatchItem
 from deepreefmap_gui.survey.models.common import utc_now_iso
 from deepreefmap_gui.survey.models.convert import (
     build_document,
@@ -137,6 +138,29 @@ _MIGRATIONS = [
         FROM transect_pass;
     DROP TABLE transect_pass;
     ALTER TABLE transect_pass_new RENAME TO transect_pass;
+    """,
+    # The session an attempt ran in is a fact of the run, and worklist
+    # membership is a table of its own so a pass can be ordered in several
+    # sessions. Both backfill from the pass, the only session either ever had.
+    # The backfill mints ids in the 8-4-4-4-12 form from_row parses back.
+    """
+    ALTER TABLE run_record ADD COLUMN batch_id TEXT REFERENCES survey_batch(id);
+    UPDATE run_record SET batch_id =
+        (SELECT batch_id FROM transect_pass WHERE transect_pass.id = run_record.pass_id);
+    CREATE TABLE batch_item (
+        id TEXT PRIMARY KEY,
+        batch_id TEXT NOT NULL REFERENCES survey_batch(id),
+        pass_id TEXT NOT NULL REFERENCES transect_pass(id),
+        created_at TEXT NOT NULL,
+        UNIQUE (batch_id, pass_id)
+    );
+    INSERT INTO batch_item (id, batch_id, pass_id, created_at)
+        SELECT printf('%s-%s-%s-%s-%s',
+                      lower(hex(randomblob(4))), lower(hex(randomblob(2))),
+                      lower(hex(randomblob(2))), lower(hex(randomblob(2))),
+                      lower(hex(randomblob(6)))),
+               batch_id, id, created_at
+        FROM transect_pass WHERE batch_id IS NOT NULL;
     """,
 ]
 
@@ -444,6 +468,68 @@ class SurveyStore:
     def list_batches(self) -> list[SurveyBatch]:
         return self._list("survey_batch", SurveyBatch, "created_at DESC")
 
+    def batch_run_count(self, batch_id: uuid.UUID) -> int:
+        """How many runs this session has placed. Zero means it is still a cart."""
+        row = self._conn().execute(
+            "SELECT COUNT(*) AS n FROM run_record WHERE batch_id = ?", (str(batch_id),)
+        ).fetchone()
+        return row["n"]
+
+    def current_cart(self) -> SurveyBatch | None:
+        """The newest session, only while it has run nothing.
+
+        Only the newest: an older empty session behind a started one is
+        abandoned, not the cart. rowid breaks a same-second created_at tie.
+        """
+        row = self._conn().execute(
+            "SELECT * FROM survey_batch ORDER BY created_at DESC, rowid DESC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return None
+        batch = from_row(SurveyBatch, row)
+        return batch if self.batch_run_count(batch.id) == 0 else None
+
+    # --- Batch items ---
+
+    def add_batch_item(self, item: BatchItem) -> None:
+        """Add a pass to a session's worklist; already a member is a no-op."""
+        row = to_row(item)
+        with self._conn() as conn:
+            conn.execute(
+                _insert_sql("batch_item", row).replace("INSERT", "INSERT OR IGNORE", 1), row
+            )
+
+    def remove_batch_item(self, batch_id: uuid.UUID, pass_id: uuid.UUID) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "DELETE FROM batch_item WHERE batch_id = ? AND pass_id = ?",
+                (str(batch_id), str(pass_id)),
+            )
+
+    def list_batch_items(self, batch_id: uuid.UUID) -> list[BatchItem]:
+        # rowid is insertion order, which is the order the cart was filled in.
+        rows = self._conn().execute(
+            "SELECT * FROM batch_item WHERE batch_id = ? ORDER BY rowid", (str(batch_id),)
+        ).fetchall()
+        return [from_row(BatchItem, r) for r in rows]
+
+    def list_all_batch_items(self) -> list[BatchItem]:
+        rows = self._conn().execute("SELECT * FROM batch_item ORDER BY rowid").fetchall()
+        return [from_row(BatchItem, r) for r in rows]
+
+    def passes_in_batch(self, batch_id: uuid.UUID) -> list[TransectPass]:
+        """The session's worklist, in the order it was filled."""
+        rows = self._conn().execute(
+            """
+            SELECT transect_pass.* FROM transect_pass
+            JOIN batch_item ON batch_item.pass_id = transect_pass.id
+            WHERE batch_item.batch_id = ?
+            ORDER BY batch_item.rowid
+            """,
+            (str(batch_id),),
+        ).fetchall()
+        return [from_row(TransectPass, r) for r in rows]
+
     # --- Passes ---
 
     def add_pass(self, pass_: TransectPass) -> None:
@@ -474,8 +560,8 @@ class SurveyStore:
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
         # created_at is second-precision, so passes queued in one action share it.
         # rowid breaks the tie by insertion order, which is the order the user
-        # built the table in, and which the run-dir name a pass keeps across
-        # attempts is numbered from.
+        # built the table in, and which a pass's first run-dir name is numbered
+        # from (later attempts derive from that recorded name).
         rows = self._conn().execute(
             f"SELECT * FROM transect_pass{where} ORDER BY created_at, rowid", params
         ).fetchall()
@@ -539,7 +625,7 @@ class SurveyStore:
 
     def runs_for_pass(self, pass_id: uuid.UUID) -> list[RunRecord]:
         rows = self._conn().execute(
-            "SELECT * FROM run_record WHERE pass_id = ? ORDER BY created_at",
+            "SELECT * FROM run_record WHERE pass_id = ? ORDER BY created_at, rowid",
             (str(pass_id),),
         ).fetchall()
         return [from_row(RunRecord, r) for r in rows]
@@ -556,15 +642,19 @@ class SurveyStore:
         ).fetchall()
         return [from_row(RunRecord, r) for r in rows]
 
-    def succeeded_pass_ids(self) -> set[uuid.UUID]:
+    def succeeded_pass_ids(self, batch_id: uuid.UUID | None = None) -> set[uuid.UUID]:
         """Passes with at least one successful run, in one query.
 
-        The Run table groups every row by whether it still has work to do, and
-        asks on every repaint, so it cannot afford a query per row.
+        The Run table asks on every repaint, so it cannot afford a query per
+        row. Scoped to a session when ``batch_id`` is given: a pass re-ordered
+        in a new cart has succeeded before, but not yet in that session.
         """
-        rows = self._conn().execute(
-            "SELECT DISTINCT pass_id FROM run_record WHERE status = 'succeeded'"
-        ).fetchall()
+        sql = "SELECT DISTINCT pass_id FROM run_record WHERE status = 'succeeded'"
+        params: list[str] = []
+        if batch_id is not None:
+            sql += " AND batch_id = ?"
+            params.append(str(batch_id))
+        rows = self._conn().execute(sql, params).fetchall()
         return {uuid.UUID(row["pass_id"]) for row in rows}
 
     def list_runs(self) -> list[RunRecord]:
@@ -579,6 +669,7 @@ class SurveyStore:
             batches=self.list_batches(),
             passes=self.list_passes(),
             runs=self.list_runs(),
+            batch_items=self.list_all_batch_items(),
         )
         save_survey_json(path, doc)
 
@@ -590,6 +681,7 @@ class SurveyStore:
             "videos": "video_asset",
             "batches": "survey_batch",
             "passes": "transect_pass",
+            "batch_items": "batch_item",
             "runs": "run_record",
         }
         with self._conn() as conn:
@@ -637,6 +729,10 @@ class SurveyStore:
         batch_id = self._restore_batch(survey, report)
         video_ids = self._restore_videos(manifest, report)
         pass_id = self._restore_pass(survey["pass"], transect_id, video_ids, batch_id, report)
+        if batch_id is not None:
+            # The manifest only knows the session the run executed in, so the
+            # rebuilt pass's origin and membership default to that session.
+            self.add_batch_item(BatchItem(batch_id=batch_id, pass_id=pass_id))
         run_id = uuid.UUID(survey["run_id"])
         if self.get_run(run_id) is None:
             self.add_run(RunRecord(
@@ -645,6 +741,7 @@ class SurveyStore:
                 run_dir_name=run_dir_name,
                 status="succeeded",
                 started_at=manifest.get("run_timestamp"),
+                batch_id=batch_id,
             ))
             report.runs += 1
 

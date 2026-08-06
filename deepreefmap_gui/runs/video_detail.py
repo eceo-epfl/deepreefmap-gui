@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QPushButton,
     QStackedWidget,
     QWidget,
@@ -86,6 +87,7 @@ class VideoDetailPanel(DetailCard):
     queue_requested = Signal()
     show_in_folder_requested = Signal()
     pass_activated = Signal(str)
+    add_to_cart_requested = Signal(str)
     relocate_requested = Signal()
     preview_requested = Signal()
 
@@ -103,10 +105,12 @@ class VideoDetailPanel(DetailCard):
         self.pass_list.setTextElideMode(Qt.TextElideMode.ElideMiddle)
         self.pass_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.pass_list.itemDoubleClicked.connect(self._on_pass_activated)
+        self.pass_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.pass_list.customContextMenuRequested.connect(self._on_pass_menu)
         self._pass_stack = QStackedWidget()
         self._pass_stack.addWidget(self.pass_list)
         self._pass_stack.addWidget(
-            EmptyState("Not cut into passes yet", "Queue it to process this clip.")
+            EmptyState("Not cut into sections yet", "New section… to process part or all of it.")
         )
         layout.addWidget(self._pass_stack, 1)
 
@@ -132,8 +136,11 @@ class VideoDetailPanel(DetailCard):
         file_row.addStretch(1)
         layout.addLayout(file_row)
 
-        self.queue_btn = QPushButton("Queue as pass")
-        self.queue_btn.setToolTip("Add this clip to the current session under Process.")
+        self.queue_btn = QPushButton("New section…")
+        self.queue_btn.setToolTip(
+            "Cut out the part of this clip worth processing, file it against a "
+            "transect or none, and add it to the cart."
+        )
         self.queue_btn.clicked.connect(self.queue_requested)
         self.show_btn = QPushButton("Show in folder")
         self.show_btn.clicked.connect(self.show_in_folder_requested)
@@ -143,6 +150,15 @@ class VideoDetailPanel(DetailCard):
 
     def _on_pass_activated(self, item: QListWidgetItem) -> None:
         self.pass_activated.emit(str(item.data(PASS_ID_ROLE) or ""))
+
+    def _on_pass_menu(self, pos) -> None:
+        item = self.pass_list.itemAt(pos)
+        if item is None:
+            return
+        pass_id = str(item.data(PASS_ID_ROLE) or "")
+        menu = QMenu(self.pass_list)
+        menu.addAction("Add to cart", lambda: self.add_to_cart_requested.emit(pass_id))
+        menu.exec(self.pass_list.viewport().mapToGlobal(pos))
 
     @property
     def entry(self) -> VideoLibraryEntry | None:
