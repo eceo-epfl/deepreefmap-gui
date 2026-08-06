@@ -99,7 +99,15 @@ class SectionAssignDialog(QDialog):
     Returns its answer through ``choice()``: (transect_id | None, direction).
     """
 
-    def __init__(self, parent: QWidget | None, store: SurveyStore) -> None:
+    def __init__(
+        self,
+        parent: QWidget | None,
+        store: SurveyStore,
+        *,
+        transect_id: uuid.UUID | None = None,
+        direction: str | None = None,
+        ok_label: str = "Add to cart",
+    ) -> None:
         super().__init__(parent)
         self._store = store
         self.setWindowTitle("File this section")
@@ -107,7 +115,7 @@ class SectionAssignDialog(QDialog):
         transect_row = QHBoxLayout()
         transect_row.setSpacing(SPACE_SM)
         self._transects = QComboBox()
-        self._fill_transects(selected=None)
+        self._fill_transects(selected=transect_id)
         transect_row.addWidget(self._transects, 1)
         new_btn = QPushButton("New transect…")
         new_btn.setProperty("quiet", "true")
@@ -116,11 +124,13 @@ class SectionAssignDialog(QDialog):
         form.addRow("Transect", transect_row)
         self._direction = QComboBox()
         self._direction.addItems(list(PASS_DIRECTIONS))
+        if direction:
+            self._direction.setCurrentText(direction)
         form.addRow("Direction", self._direction)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Add to cart")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText(ok_label)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         form.addRow(buttons)

@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     )
 
     from deepreefmap_gui.core.spinner import SpinnerStopButton
+    from deepreefmap_gui.core.storage_bar import StorageBars
     from deepreefmap_gui.io.lazy_frames import FrameAccessor
     from deepreefmap_gui.map.slippy_map import SlippyMapWidget
     from deepreefmap_gui.models.packs_ui import PackProgressDialog
@@ -201,6 +202,11 @@ if TYPE_CHECKING:
         _data_entries: list
         _data_store_ok: bool
         _run_size_cache: dict[str, int]
+        _storage_bars: StorageBars
+        _storage_scan_running: bool
+        _storage_timer: QTimer
+        _video_entries: list
+        _clip_link_cache: dict[str, str]
         _run_size_stale: set[str]
         # (output root, measured bytes per footage minute); None until measured.
         _footage_rate_cache: tuple[Path, float | None] | None
@@ -272,6 +278,7 @@ if TYPE_CHECKING:
         _sig_run_sizes_done = Signal(object)
         _sig_clip_links_done = Signal(object)
         _sig_videos_probed = Signal(object)
+        _sig_storage_usage = Signal(object)
         _sig_shortcut_done = Signal(object)
 
         # --- cross-mixin methods -----------------------------------------
@@ -313,6 +320,17 @@ if TYPE_CHECKING:
         def _focus_browse_on_session(self, batch_id: uuid.UUID) -> None: ...  # BrowseMixin
         def _set_scope_transect(self, transect_id: uuid.UUID | None) -> None: ...  # BrowseMixin
         def _refresh_data_manager(self) -> None: ...  # BrowseMixin
+        def _load_run_from_dir(self, path: Path) -> None: ...  # BrowseMixin
+        def _build_video_library(self) -> QWidget: ...  # VideoLibraryMixin
+        def _refresh_video_library(self, store=None) -> None: ...  # VideoLibraryMixin
+        def _repair_video_identity(self, store) -> None: ...  # VideoLibraryMixin
+        def _queue_video_path(self, path: str) -> None: ...  # VideoLibraryMixin
+        def _pass_in_current_cart(self, pass_id_str: object) -> bool: ...  # VideoLibraryMixin
+        def _apply_clip_link_states(self, states: dict) -> None: ...  # VideoLibraryMixin
+        def _refresh_storage_bars(self) -> None: ...  # FormPanelMixin
+        def _apply_storage_usage(self, volumes: object) -> None: ...  # FormPanelMixin
+        def _set_storage_compact(self, running: bool) -> None: ...  # RunLoadingMixin
+        def _on_survey_add_videos(self) -> None: ...  # SimpleBatchMixin
         def _request_data_refresh(self) -> None: ...  # BrowseMixin
         def _apply_run_sizes(self, sizes: dict) -> None: ...  # BrowseMixin
         def _hide_run_meta_banner(self) -> None: ...  # PastRunsMixin

@@ -1,6 +1,6 @@
 """The window, and the process it runs in.
 
-`DeepReefMapWindow` builds no feature of its own. It fuses the 17 mixins listed in its bases
+`DeepReefMapWindow` builds no feature of its own. It fuses the 18 mixins listed in its bases
 (the feature-to-file table is in `deepreefmap_gui/__init__.py`), owns the frame they fill in
 (splitters, the run banner, the central layout, the shortcuts), and shuts everything down in
 `closeEvent`. Read `__init__` in order, not in parts: the form widgets are built first because
@@ -70,6 +70,7 @@ from deepreefmap_gui.runs.past_runs import PastRunsMixin
 from deepreefmap_gui.runs.progress import ProgressBarsMixin
 from deepreefmap_gui.runs.progress_panel import ProgressPanel
 from deepreefmap_gui.runs.results import ResultsMixin
+from deepreefmap_gui.runs.videos import VideoLibraryMixin
 from deepreefmap_gui.simple.analysis import SimpleAnalysisMixin
 from deepreefmap_gui.simple.batch import SimpleBatchMixin
 from deepreefmap_gui.simple.machine import SimpleMachineMixin
@@ -100,6 +101,7 @@ class DeepReefMapWindow(
     SimplePlanMixin,
     SimpleSetupMixin,
     SystemPanelMixin,
+    VideoLibraryMixin,
     ViewerControlsMixin,
     VersionCheckMixin,
 ):
@@ -122,6 +124,7 @@ class DeepReefMapWindow(
     _sig_run_sizes_done = Signal(object)
     _sig_clip_links_done = Signal(object)
     _sig_videos_probed = Signal(object)
+    _sig_storage_usage = Signal(object)
     _sig_shortcut_done = Signal(object)
 
     def __init__(self, classes_config: ClassConfig, classes_path: Path | None) -> None:
@@ -152,6 +155,7 @@ class DeepReefMapWindow(
         self._sig_run_sizes_done.connect(self._apply_run_sizes)
         self._sig_clip_links_done.connect(self._apply_clip_link_states)
         self._sig_videos_probed.connect(self._on_videos_probed)
+        self._sig_storage_usage.connect(self._apply_storage_usage)
 
         self.setWindowTitle("DeepReefMap")
         # Open at ~90% of the available screen, capped at the comfortable
@@ -319,6 +323,7 @@ class DeepReefMapWindow(
             "_status_tick_timer",
             "_data_refresh_timer",
             "_out_root_commit_timer",
+            "_storage_timer",
         ):
             timer = getattr(self, attr, None)
             if timer is not None:

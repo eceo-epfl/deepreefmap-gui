@@ -22,6 +22,7 @@ from deepreefmap_gui.simple.batch import (
     _rough_batch_time,
 )
 from deepreefmap_gui.simple.batch_progress import BatchProgressCard
+from deepreefmap_gui.simple.mode import SIMPLE_SECTIONS
 
 
 def test_diagnose_failure_speaks_plainly_and_advises():
@@ -346,10 +347,10 @@ def test_a_finished_batch_lands_on_what_it_produced(batch_window, tmp_path, monk
     assign_transect(batch_window, 0)
     batch_window._on_survey_start()
     assert batch_window._app_mode == "RUNNING"
-    assert batch_window._simple_stack.currentIndex() == 1
+    assert batch_window._simple_stack.currentIndex() == SIMPLE_SECTIONS.index("process")
     await_batch(batch_window, qapp)
     assert batch_window._app_mode == "SETUP"
-    assert batch_window._simple_stack.currentIndex() == 2
+    assert batch_window._simple_stack.currentIndex() == SIMPLE_SECTIONS.index("browse")
     assert batch_window._data_facet == "sessions"
     assert batch_window._data_detail_stack.currentWidget() is batch_window._session_detail
 

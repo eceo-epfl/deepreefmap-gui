@@ -46,6 +46,7 @@ from deepreefmap_gui.core.icons import (
     cart_icon,
     section_state_icon,
     transects_icon,
+    videos_icon,
 )
 from deepreefmap_gui.core.theme import (
     BORDER,
@@ -64,12 +65,15 @@ from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.runs.run_detail import RunDetailPanel
 from deepreefmap_gui.simple.cart import CartButton
 from deepreefmap_gui.simple.section_state import (
+    SectionState,
     browse_state,
     headline,
     most_urgent,
     run_gate,
     transects_state,
+    videos_state,
 )
+from deepreefmap_gui.survey.catalogue import LINK_MISSING
 from deepreefmap_gui.survey.health import SurveyDbHealth, SurveyDbState, inspect_survey_db
 from deepreefmap_gui.survey.preset import (
     ActivePreset,
@@ -81,42 +85,47 @@ from deepreefmap_gui.survey.preset import (
     load_active_preset,
     save_machine_override,
 )
-from deepreefmap_gui.survey.store import _MIGRATIONS, SURVEY_DB_NAME, SurveyStore
+from deepreefmap_gui.survey.store import SURVEY_DB_NAME, SurveyStore, latest_schema_version
 
 logger = logging.getLogger(__name__)
 
-# Two nouns and a verb, all peers. None is a prerequisite for another: a pass
-# with no transect processes perfectly well, so ordering them as steps claimed a
-# dependency the gate does not enforce.
-#
-# Three, not four: the clip library is Browse's By video grouping, its rail and
-# its detail pane, rather than a destination answering the same question.
-DESTINATIONS = ("transects", "process", "browse")
+# Peers, not steps. None is a prerequisite for another: a pass with no transect
+# processes perfectly well, so ordering them as a sequence would claim a
+# dependency the gate does not enforce. They read in the order a dive day moves
+# through them, which is a habit rather than a rule.
+DESTINATIONS = ("transects", "videos", "process", "browse")
 
 # The glyph that says what a destination holds. Constant per destination: what
 # it currently has to report is the badge's job, and an icon that changed with
 # state would leave the pill with no stable identity to recognise it by.
 _DESTINATION_ICONS = {
     "transects": transects_icon,
+    "videos": videos_icon,
     "process": cart_icon,
     "browse": browse_icon,
 }
 
 # What each destination pill says. The process pill reads Cart: the queue is
 # the cart, checkout is Start processing.
-_DESTINATION_LABELS = {"transects": "Transects", "process": "Cart", "browse": "Browse"}
+_DESTINATION_LABELS = {
+    "transects": "Transects",
+    "videos": "Videos",
+    "process": "Cart",
+    "browse": "Browse",
+}
 
 # One line per destination, said in the terms of the work rather than the widget.
 _DESTINATION_TIPS = {
     "transects": "The lines you survey, and what repeat passes of each one found.",
+    "videos": "The footage itself: every clip, when it was shot, and what has been cut from it.",
     "process": "The cart: sections queued for the next session, and the batch as it runs.",
-    "browse": "Every run and clip so far, grouped however you need to read it.",
+    "browse": "Every run so far, grouped however you need to read it.",
 }
 
 # Every destination the stack can show, in stack order. Machine and view are
-# appended last so the first three stack indices other code and tests rely on
-# stay put; neither is a destination. Machine is a utility you visit and leave,
-# and view is where an opened run goes, reached by opening one.
+# appended last, and neither is a destination: machine is a utility you visit
+# and leave, and view is where an opened run goes, reached by opening one.
+# Everything is keyed by name, so the destinations may be reordered freely.
 SIMPLE_SECTIONS = (*DESTINATIONS, "machine", "view")
 
 # What the info panel takes when it is open. Wide enough for the metadata block
@@ -234,7 +243,7 @@ class InterfaceShellMixin(MixinBase):
         self._set_machine_view("readiness")
 
     def _idle_status_text(self) -> str:
-        return "Ready. Add videos under Process, and mark out transects to compare them against."
+        return "Ready. Add videos under Videos, and mark out transects to compare them against."
 
     def _refresh_browse_state(self) -> None:
         """Cache Browse's count from entries the data manager already scanned."""
@@ -426,6 +435,7 @@ class InterfaceShellMixin(MixinBase):
         # the start button, and Transects builds the list its badge counts.
         pages = {
             "transects": self._build_plan_page(),
+            "videos": self._build_video_library(),
             "process": self._build_simple_run_page(),
             "browse": self._build_browse_page(),
             "machine": self._build_machine_page(),
@@ -651,6 +661,12 @@ class InterfaceShellMixin(MixinBase):
             ink = QColor(ON_ACCENT if button.isChecked() else WINDOW_TEXT)
             button.setIcon(_DESTINATION_ICONS[name](_DESTINATION_ICON_PX, ink))
 
+    def _videos_verdict(self) -> SectionState:
+        """What the footage has to report, counted off the library as it stands."""
+        clips = getattr(self, "_video_entries", [])
+        missing = sum(1 for clip in clips if clip.link_state == LINK_MISSING)
+        return videos_state(len(clips), missing)
+
     def _refresh_section_state(self) -> None:
         """Paint the header from the cached verdicts: tooltips, and the alert.
 
@@ -662,6 +678,7 @@ class InterfaceShellMixin(MixinBase):
             return
         states = {
             "transects": getattr(self, "_plan_state", None) or transects_state(0, False),
+            "videos": self._videos_verdict(),
             "process": getattr(self, "_survey_gate", None) or run_gate(
                 pass_count=0,
                 unassigned=0,
@@ -829,7 +846,7 @@ class InterfaceShellMixin(MixinBase):
                 store.close()
             store = SurveyStore(db_path)
             self._survey_store_obj = store
-        self._survey_health = SurveyDbHealth(SurveyDbState.OK, db_path, len(_MIGRATIONS))
+        self._survey_health = SurveyDbHealth(SurveyDbState.OK, db_path, latest_schema_version())
         return store
 
     def _try_survey_store(self) -> SurveyStore | None:
@@ -867,7 +884,7 @@ class InterfaceShellMixin(MixinBase):
             # can go wrong in a read-write open, so this is the backstop.
             logger.exception("Survey database unavailable at %s", db_path)
             self._survey_health = SurveyDbHealth(
-                SurveyDbState.CORRUPT, db_path, len(_MIGRATIONS), detail=str(exc)
+                SurveyDbState.CORRUPT, db_path, latest_schema_version(), detail=str(exc)
             )
             return None
 

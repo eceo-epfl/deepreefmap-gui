@@ -78,6 +78,7 @@ class RunLoadingMixin(MixinBase):
         step's own button is what launches a batch."""
         self._spinner_stop.setVisible(False)
         self._pause_btn.setVisible(False)
+        self._set_storage_compact(False)
 
     def _begin_run_controls(self) -> None:
         """Raise pause and the stop spinner while work is in flight."""
@@ -86,6 +87,17 @@ class RunLoadingMixin(MixinBase):
         self._pause_btn.setVisible(True)
         self._pause_btn.setEnabled(True)
         self._pause_btn.setChecked(False)
+        self._set_storage_compact(True)
+
+    def _set_storage_compact(self, running: bool) -> None:
+        """Narrow the storage bars to the drive being written to while a run works.
+
+        Free space matters most mid-run, so they stay rather than being hidden,
+        but four drives beside a live estimate is more than the row can hold.
+        """
+        bars = getattr(self, "_storage_bars", None)
+        if bars is not None:
+            bars.set_compact(running)
 
     def _on_stop_clicked(self) -> None:
         # The spinner is shared between a live pipeline run and a cached-run

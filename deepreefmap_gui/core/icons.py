@@ -271,6 +271,20 @@ def broken_link_icon(p: QPainter, size: int, c: QColor) -> None:
     _chain_links(p, size, size * 0.34)
 
 
+@_drawn(size=ICON_SM, join=True)
+def folder_icon(p: QPainter, size: int, c: QColor) -> None:
+    """A tabbed folder: where the file itself sits, rather than where the app files it."""
+    w = size
+    body = QPainterPath(QPointF(0.12 * w, 0.28 * w))
+    body.lineTo(QPointF(0.44 * w, 0.28 * w))
+    body.lineTo(QPointF(0.54 * w, 0.42 * w))
+    body.lineTo(QPointF(0.88 * w, 0.42 * w))
+    body.lineTo(QPointF(0.88 * w, 0.80 * w))
+    body.lineTo(QPointF(0.12 * w, 0.80 * w))
+    body.closeSubpath()
+    p.drawPath(body)
+
+
 @_drawn(size=ICON_SM, cap=True, join=True)
 def transects_icon(p: QPainter, size: int, c: QColor) -> None:
     """A tape between two marked ends: the transect as the map draws it."""
@@ -323,6 +337,18 @@ def cart_icon(p: QPainter, size: int, c: QColor) -> None:
     r = 0.07 * w
     p.drawEllipse(QPointF(0.40 * w, 0.78 * w), r, r)
     p.drawEllipse(QPointF(0.70 * w, 0.78 * w), r, r)
+
+
+@_drawn(size=ICON_SM, join=True)
+def videos_icon(p: QPainter, size: int, c: QColor) -> None:
+    """A film frame: the footage itself, before anything has been cut from it."""
+    w = size
+    p.drawRect(QRectF(0.10 * w, 0.20 * w, 0.80 * w, 0.60 * w))
+    p.setBrush(c)
+    hole = 0.10 * w
+    for y in (0.31 * w, 0.59 * w):
+        p.drawRect(QRectF(0.16 * w, y, hole, hole))
+        p.drawRect(QRectF(0.74 * w, y, hole, hole))
 
 
 # Glyphs for the header's alert box. Only the two states worth acting on get

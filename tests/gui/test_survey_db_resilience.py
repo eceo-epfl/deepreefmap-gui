@@ -18,7 +18,7 @@ import sqlite3
 import pytest
 
 from deepreefmap_gui.survey.health import SurveyDbState
-from deepreefmap_gui.survey.store import _MIGRATIONS, SURVEY_DB_NAME, SurveyStore
+from deepreefmap_gui.survey.store import SURVEY_DB_NAME, SurveyStore, latest_schema_version
 
 
 @pytest.fixture
@@ -28,7 +28,7 @@ def rolled_back_root(out_root):
     path = out_root / SURVEY_DB_NAME
     SurveyStore(path).close()
     conn = sqlite3.connect(path)
-    conn.execute(f"PRAGMA user_version = {len(_MIGRATIONS) + 1}")
+    conn.execute(f"PRAGMA user_version = {latest_schema_version() + 1}")
     conn.commit()
     conn.close()
     return out_root

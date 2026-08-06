@@ -1,5 +1,9 @@
-from deepreefmap_gui.simple.mode import SIMPLE_SECTIONS
+from deepreefmap_gui.simple.mode import DESTINATIONS, SIMPLE_SECTIONS
 from deepreefmap_gui.simple.section_state import browse_state, transects_state
+
+
+def _index(name: str) -> int:
+    return SIMPLE_SECTIONS.index(name)
 
 
 def test_the_run_form_is_kept_off_screen_in_its_holder(window):
@@ -32,11 +36,11 @@ def test_bundled_preset_reaches_the_run_settings(window):
 
 def test_simple_nav_switches_sections(window):
     window._set_simple_section("process")
-    assert window._simple_stack.currentIndex() == 1
+    assert window._simple_stack.currentIndex() == _index("process")
     window._set_simple_section("browse")
-    assert window._simple_stack.currentIndex() == 2
+    assert window._simple_stack.currentIndex() == _index("browse")
     window._simple_nav_buttons["transects"].click()
-    assert window._simple_stack.currentIndex() == 0
+    assert window._simple_stack.currentIndex() == _index("transects")
 
 
 def test_one_destination_reads_as_live_at_a_time(window):
@@ -49,7 +53,7 @@ def test_one_destination_reads_as_live_at_a_time(window):
     window._set_simple_section("process")
     assert [n for n, b in window._simple_nav_buttons.items() if b.isChecked()] == ["process"]
     window._simple_nav_buttons["browse"].click()
-    assert window._simple_stack.currentIndex() == 2
+    assert window._simple_stack.currentIndex() == _index("browse")
     assert [n for n, b in window._simple_nav_buttons.items() if b.isChecked()] == ["browse"]
     assert window._simple_nav_buttons["transects"].isVisibleTo(window)
 
@@ -78,12 +82,12 @@ def test_only_a_starting_batch_relocates_the_user(window, monkeypatch):
     """Opening a run never moves the page; a batch starting is the one exception."""
     monkeypatch.setattr(window._viewer, "_ensure_plotter", lambda: None)
     window._set_app_mode("RUNNING")
-    assert window._simple_stack.currentIndex() == 1
+    assert window._simple_stack.currentIndex() == _index("process")
     window._set_simple_section("browse")
     window._set_app_mode("VIEWING")
-    assert window._simple_stack.currentIndex() == 2
+    assert window._simple_stack.currentIndex() == _index("browse")
     window._set_app_mode("SETUP")
-    assert window._simple_stack.currentIndex() == 2
+    assert window._simple_stack.currentIndex() == _index("browse")
 
 
 def test_the_viewer_pane_follows_the_section(window, monkeypatch):
@@ -144,10 +148,11 @@ def test_the_survey_db_is_created_under_the_output_root(window):
     assert (root / SURVEY_DB_NAME).exists()
 
 
-def test_three_named_destinations_each_carry_a_glyph(window):
-    assert list(window._simple_nav_buttons) == ["transects", "process", "browse"]
+def test_every_destination_carries_a_name_and_a_glyph(window):
+    assert list(window._simple_nav_buttons) == list(DESTINATIONS)
     assert [b.text() for b in window._simple_nav_buttons.values()] == [
         "Transects",
+        "Videos",
         "Cart",
         "Browse",
     ]
@@ -165,7 +170,7 @@ def test_no_page_carries_a_wizard_footer(window):
     """
     assert not hasattr(window, "_wizard_next_buttons")
     assert not hasattr(window, "_wizard_back_buttons")
-    assert window._simple_stack.widget(2) is window._data_panel
+    assert window._simple_stack.widget(_index("browse")) is window._data_panel
 
 
 def test_starting_is_named_for_what_it_does(window):

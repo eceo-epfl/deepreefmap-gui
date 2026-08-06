@@ -10,6 +10,7 @@ the Run step instead.
 
 from __future__ import annotations
 
+import logging
 import threading
 from pathlib import Path
 from typing import cast
@@ -49,6 +50,7 @@ from PySide6.QtWidgets import (
 
 from deepreefmap_gui.core.icons import log_icon
 from deepreefmap_gui.core.spinner import SpinnerStopButton
+from deepreefmap_gui.core.storage_bar import StorageBars
 from deepreefmap_gui.core.theme import (
     BAR_HEIGHT,
     BLOCK,
@@ -83,6 +85,7 @@ from deepreefmap_gui.core.widgets import (
 )
 from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.packaging.releases import current_version
+from deepreefmap_gui.profiling.volumes import group_by_volume
 from deepreefmap_gui.runs.progress import (
     _LOAD_PHASES,
     _RECON_PHASES,
@@ -101,6 +104,13 @@ _TRANSPORT_ICON = 28
 # shade so the two are told apart where they meet.
 _STAGE_CHUNK = PRIMARY
 _TOTAL_CHUNK = PRIMARY_DARK
+
+# Slow enough to be free, often enough that a drive filling up during a long
+# batch shows before the run that fails on it.
+_STORAGE_REFRESH_MS = 15_000
+
+
+logger = logging.getLogger(__name__)
 
 
 def _separator() -> QWidget:
@@ -1079,6 +1089,11 @@ class FormPanelMixin(MixinBase):
         row.setSpacing(GUTTER)
         self._status_label.setStyleSheet(f"color: {TEXT_SECONDARY};")
         row.addWidget(self._status_label, 1)
+        # Storage rides on this row rather than a band of its own: the bars are
+        # BAR_HEIGHT tall inside a row already twice that, so the one number
+        # that can stop a run mid-dive costs no height to keep on screen.
+        self._storage_bars = StorageBars()
+        row.addWidget(self._storage_bars)
         self._eta_total_label.setVisible(False)
         row.addWidget(self._eta_total_label)
         # No prospective command here. Runs are launched as a batch of passes
@@ -1088,7 +1103,76 @@ class FormPanelMixin(MixinBase):
         row.addWidget(self._pause_btn)
         row.addWidget(self._spinner_stop)
         outer.addLayout(row)
+
+        # Free space moves without the app touching anything, so the bars are
+        # polled rather than only refreshed on the events that grow them.
+        self._storage_timer = QTimer(self)
+        self._storage_timer.setInterval(_STORAGE_REFRESH_MS)
+        self._storage_timer.timeout.connect(self._refresh_storage_bars)
+        self._storage_timer.start()
+        self._refresh_storage_bars()
         return bar
+
+    def _refresh_storage_bars(self) -> None:
+        """Re-measure the drives this survey uses, off the thread painting them.
+
+        ``disk_usage`` blocks for seconds on a mount that has gone away, which in
+        the field is a card reader somebody unplugged, so the snapshot is taken
+        here and the measuring happens on a worker.
+        """
+        if getattr(self, "_storage_scan_running", False):
+            return
+        bars = getattr(self, "_storage_bars", None)
+        if bars is None:
+            return
+
+        videos: list[tuple[str, int | None]] = []
+        store = self._try_survey_store()
+        if store is not None:
+            try:
+                videos = [(v.path, v.size_bytes) for v in store.list_videos()]
+            except Exception:
+                logger.exception("Could not read the clip library for the storage bars")
+        field = getattr(self, "_out_root_input", None)
+        if field is None:
+            return
+        root = Path(field.text()).expanduser()
+        # The output root goes in at zero bytes so its drive is listed even
+        # before anything has been written to it: it is the drive whose free
+        # space decides whether the next run can start.
+        outputs: list[tuple[str, int | None]] = [(str(root), 0)]
+        outputs += [
+            (str(root / name), size) for name, size in getattr(self, "_run_size_cache", {}).items()
+        ]
+
+        self._storage_scan_running = True
+        threading.Thread(
+            target=self._scan_storage, args=(videos, outputs), name="storage-scan", daemon=True
+        ).start()
+
+    def _scan_storage(
+        self, videos: list[tuple[str, int | None]], outputs: list[tuple[str, int | None]]
+    ) -> None:
+        try:
+            # Only clips that are actually there: a file on an unplugged drive
+            # takes up none of the space being reported.
+            present = [(path, size) for path, size in videos if Path(path).is_file()]
+            volumes = group_by_volume(present, outputs)
+        except Exception:
+            logger.exception("Could not measure the survey's drives")
+            volumes = []
+        try:
+            self._sig_storage_usage.emit(volumes)
+        except (RuntimeError, TypeError):
+            # A scan outlives a window closed while a mount was answering slowly,
+            # and by then there is no C++ object left to deliver to.
+            logger.debug("The window closed before its drives were measured")
+
+    def _apply_storage_usage(self, volumes: object) -> None:
+        self._storage_scan_running = False
+        bars = getattr(self, "_storage_bars", None)
+        if bars is not None and isinstance(volumes, list):
+            bars.set_volumes(volumes)
 
     def _build_log_panel(self) -> QWidget:
         """Bottom-of-window panel hosting the live log."""
@@ -1272,10 +1356,6 @@ class FormPanelMixin(MixinBase):
             self._vram_notice.setVisible(False)
         self._update_dpt_warning()
         self._update_memory_profile_warning()
-
-    def _memory_grade_frames(self, fps: int) -> int | None:
-        """Frames the memory grade is computed over: the longest queued pass."""
-        return self._simple_peak_frames(fps)
 
     def _current_fit(self):
         """Grade the longest queued pass against this machine, or None.

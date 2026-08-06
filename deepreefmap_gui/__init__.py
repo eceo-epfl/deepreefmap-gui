@@ -11,14 +11,15 @@ transect they belong to, whether this laptop can run another one.
 
 ## Where the code for a feature is
 
-The window is a single class fused from 17 mixins, so a feature is a file rather than a widget
+The window is a single class fused from 18 mixins, so a feature is a file rather than a widget
 subtree. `class <Mixin>` is the only grep you need after this table:
 
 | What you see                                          | Mixin                  | File                   |
 | ----------------------------------------------------- | ---------------------- | ---------------------- |
 | Transects: the lines, the map, imports                | `SimplePlanMixin`      | `simple/plan.py`       |
-| Process: videos become passes, and run                | `SimpleBatchMixin`     | `simple/batch.py`      |
+| Cart: the queued sections, and the batch as it runs   | `SimpleBatchMixin`     | `simple/batch.py`      |
 | Repeat-pass comparison, shown under Transects         | `SimpleAnalysisMixin`  | `simple/analysis.py`   |
+| Videos: the clip library, its sections and link state | `VideoLibraryMixin`    | `runs/videos.py`       |
 | Browse: the run archive, its rail, table and detail   | `BrowseMixin`          | `runs/browse.py`       |
 | The shell: destinations, settings dialog, the store   | `InterfaceShellMixin`  | `simple/mode.py`       |
 | Setup: the destination and its header button          | `SimpleMachineMixin`   | `simple/machine.py`    |
@@ -74,10 +75,10 @@ Qt one needs `tests/gui/` and a real window.
 
 Several features answer to two or three names. Prefer the first in prose, comments and UI text.
 
-- **Destination**, not workspace, step or tab. There are three (Transects, Cart, Browse) and
-  none gates another. `DESTINATIONS` in `simple/mode.py` is the list; the Cart pill's section key
-  is still `process` in code. Setup and View are sections of the same stack but not destinations,
-  so `SIMPLE_SECTIONS` is the longer tuple.
+- **Destination**, not workspace, step or tab. There are four (Transects, Videos, Cart, Browse)
+  and none gates another. `DESTINATIONS` in `simple/mode.py` is the list; the Cart pill's section
+  key is still `process` in code. Setup and View are sections of the same stack but not
+  destinations, so `SIMPLE_SECTIONS` is the longer tuple.
 - **Survey**, not simple. `simple/` is the package name left over from the Simple/Advanced
   interface split. `survey/` is a different thing: the Qt-free domain layer (transects, passes,
   the store, the preset) that `simple/` draws.

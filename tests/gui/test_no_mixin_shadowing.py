@@ -1,6 +1,6 @@
 """No two mixins may define the same method name.
 
-Scenario: DeepReefMapWindow fuses 16 mixins. When two define the same name, MRO
+Scenario: DeepReefMapWindow fuses 18 mixins. When two define the same name, MRO
 silently picks one and the other becomes dead code that looks live -- editing it
 changes nothing, and the reader has no signal that it is not the one running.
 

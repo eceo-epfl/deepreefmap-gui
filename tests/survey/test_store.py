@@ -1,14 +1,22 @@
 import json
+import re
 import sqlite3
 import threading
 import uuid
 
 import pytest
-from _factories import make_transect, make_video, seed_pass
+from _factories import (
+    make_transect,
+    make_video,
+    seed_pass,
+    seed_survey_run,
+    write_v0_2_0_database,
+)
 
 from deepreefmap_gui.survey.models import BatchItem, RunRecord, SurveyBatch, TransectPass
 from deepreefmap_gui.survey.models.convert import survey_manifest_block
 from deepreefmap_gui.survey.store import SurveyStore
+from deepreefmap_gui.survey.video_probe import UNKNOWN, YES
 
 
 def test_transect_crud_round_trip(store):
@@ -147,12 +155,12 @@ def test_a_newer_schema_is_refused_rather_than_opened_blindly(tmp_path):
     Expected behaviour: opening it raises a readable error, rather than running
     an empty migration slice and reading columns this build does not understand.
     """
-    from deepreefmap_gui.survey.store import _MIGRATIONS
+    from deepreefmap_gui.survey.store import latest_schema_version
 
     path = tmp_path / "survey.db"
     SurveyStore(path).close()
     conn = sqlite3.connect(path)
-    conn.execute(f"PRAGMA user_version = {len(_MIGRATIONS) + 5}")
+    conn.execute(f"PRAGMA user_version = {latest_schema_version() + 5}")
     conn.commit()
     conn.close()
 
@@ -398,29 +406,64 @@ def test_pass_chapters_round_trip(store):
     assert store.get_pass(chaptered.id).extra_video_ids == []
 
 
-def test_a_database_written_before_chapters_migrates(tmp_path):
-    """A survey.db from an earlier build opens, and its passes read back."""
-    from deepreefmap_gui.survey.store import _MIGRATIONS
+def _normalised_ddl(sql):
+    return re.sub(r"\s*([,()])\s*", r"\1", " ".join((sql or "").replace('"', "").split()))
 
-    pass_id, transect_id, video_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
-    db_path = tmp_path / "old.db"
+
+def database_shape(db_path):
+    """Every object in a database, in a form two builds can be compared in.
+
+    Identifier quoting is stripped and space around punctuation collapsed: a
+    table SQLite rebuilt and renamed carries quotes the same table created
+    outright does not, and ADD COLUMN splices its column in before the closing
+    paren rather than reflowing the statement.
+    """
+    conn = sqlite3.connect(db_path)
+    try:
+        objects = conn.execute("SELECT type, name, sql FROM sqlite_master ORDER BY name").fetchall()
+        shape = {
+            "version": conn.execute("PRAGMA user_version").fetchone()[0],
+            "objects": [(kind, name, _normalised_ddl(sql)) for kind, name, sql in objects],
+        }
+        for kind, name, _sql in objects:
+            if kind != "table":
+                continue
+            shape[f"columns:{name}"] = conn.execute(f"PRAGMA table_info({name})").fetchall()
+            shape[f"keys:{name}"] = conn.execute(f"PRAGMA foreign_key_list({name})").fetchall()
+    finally:
+        conn.close()
+    return shape
+
+
+def test_a_database_older_than_v0_2_0_is_refused(tmp_path):
+    """Scenario: a survey.db predating the oldest version this build carries forward.
+
+    Expected behaviour: it refuses to open and names the version that can bring
+    the database forward, rather than running a script written for a shape it
+    does not have.
+    """
+    db_path = tmp_path / "ancient.db"
     conn = sqlite3.connect(db_path)
     with conn:
-        conn.executescript(_MIGRATIONS[0])
         conn.execute("PRAGMA user_version = 1")
-        # foreign_keys is off on a raw connection, so the pass can stand alone.
-        conn.execute(
-            "INSERT INTO transect_pass (id, transect_id, video_id, direction, begin_s, end_s,"
-            " notes, created_at) VALUES (?, ?, ?, 'forward', 0.0, 60.0, '', ?)",
-            (str(pass_id), str(transect_id), str(video_id), "2026-07-01T00:00:00+00:00"),
-        )
     conn.close()
 
-    restored = SurveyStore(db_path).get_pass(pass_id)
-    assert restored is not None
-    assert restored.video_ids() == [video_id]
-    version = sqlite3.connect(db_path).execute("PRAGMA user_version").fetchone()[0]
-    assert version == len(_MIGRATIONS)
+    with pytest.raises(RuntimeError, match="0.2.0"):
+        SurveyStore(db_path)
+
+
+def test_a_carried_forward_survey_matches_a_fresh_one(tmp_path):
+    """Scenario: one machine upgraded from v0.2.0, another was installed today.
+
+    Expected behaviour: the two schemas are identical. A difference between them
+    only ever shows up on whichever kind of machine the developer does not have.
+    """
+    carried = write_v0_2_0_database(tmp_path / "carried.db")
+    SurveyStore(carried).close()
+    fresh = tmp_path / "fresh.db"
+    SurveyStore(fresh).close()
+
+    assert database_shape(carried) == database_shape(fresh)
 
 
 def test_a_database_written_before_optional_transects_migrates(tmp_path):
@@ -431,16 +474,11 @@ def test_a_database_written_before_optional_transects_migrates(tmp_path):
     is the only way SQLite can relax NOT NULL, so it is worth proving against a
     database written the old way rather than one this build made.
     """
-    from deepreefmap_gui.survey.store import _MIGRATIONS
-
     transect_id, video_id, pass_id, run_id = (uuid.uuid4() for _ in range(4))
     now = "2026-08-01T00:00:00+00:00"
-    db_path = tmp_path / "old.db"
+    db_path = write_v0_2_0_database(tmp_path / "old.db")
     conn = sqlite3.connect(db_path)
     with conn:
-        for number, script in enumerate(_MIGRATIONS[:3], start=1):
-            conn.executescript(script)
-            conn.execute(f"PRAGMA user_version = {number}")
         conn.execute(
             "INSERT INTO transect VALUES (?,?,'',?,?,?,?,?,?,?,?)",
             (str(transect_id), "T1", -17.5, 177.1, -17.5005, 177.1005, 50.0, 8.0, now, now),
@@ -473,6 +511,22 @@ def test_a_database_written_before_optional_transects_migrates(tmp_path):
     unfiled = TransectPass(transect_id=None, video_id=video_id, begin_s=0.0, end_s=30.0)
     store.add_pass(unfiled)
     assert store.get_pass(unfiled.id).transect_id is None
+
+
+def test_a_pass_that_names_no_transect_is_counted_against_none(store):
+    """Scenario: a clip is cut without naming a transect, which the schema allows.
+
+    Expected behaviour: it is tallied against no transect, and the null group is
+    never read as a transect id.
+    """
+    transect, video, _assigned = seed_pass(store)
+    unfiled = TransectPass(transect_id=None, video_id=video.id, begin_s=0.0, end_s=30.0)
+    store.add_pass(unfiled)
+    store.add_run(RunRecord(pass_id=unfiled.id, run_dir_name="unfiled"))
+
+    counts = store.transect_usage_counts()
+    assert set(counts) == {transect.id}
+    assert counts[transect.id] == (1, 0)
 
 
 def test_rebuild_restores_a_pass_that_named_no_transect(store, tmp_path):
@@ -564,23 +618,20 @@ def test_passes_in_batch_keeps_the_order_the_cart_was_filled_in(store):
     ]
 
 
-def test_a_database_written_before_run_sessions_migrates(tmp_path):
-    """Scenario: a survey.db from the build where the session lived on the pass.
+def test_carrying_a_survey_forward_gives_every_run_its_session(tmp_path):
+    """Scenario: a v0.2.0 survey.db, where the session lived only on the pass.
 
-    Expected behaviour: it opens at v5 with each run's batch_id backfilled from
-    its pass and a batch_item row per pass that had a session, minted with an id
-    from_row can parse back.
+    Expected behaviour: each run's batch_id is backfilled from its pass, and a
+    pass that had a session gains a batch_item row whose id from_row can parse
+    back.
     """
-    from deepreefmap_gui.survey.store import _MIGRATIONS
+    from deepreefmap_gui.survey.store import latest_schema_version
 
     transect_id, video_id, batch_id, pass_id, run_id = (uuid.uuid4() for _ in range(5))
     now = "2026-08-01T00:00:00+00:00"
-    db_path = tmp_path / "old.db"
+    db_path = write_v0_2_0_database(tmp_path / "old.db")
     conn = sqlite3.connect(db_path)
     with conn:
-        for number, script in enumerate(_MIGRATIONS[:4], start=1):
-            conn.executescript(script)
-            conn.execute(f"PRAGMA user_version = {number}")
         conn.execute(
             "INSERT INTO transect VALUES (?,?,'',?,?,?,?,?,?,?,?)",
             (str(transect_id), "T1", -17.5, 177.1, -17.5005, 177.1005, 50.0, 8.0, now, now),
@@ -612,7 +663,69 @@ def test_a_database_written_before_run_sessions_migrates(tmp_path):
     assert [i.pass_id for i in items] == [pass_id]
     assert isinstance(items[0].id, uuid.UUID)
     version = sqlite3.connect(db_path).execute("PRAGMA user_version").fetchone()[0]
-    assert version == len(_MIGRATIONS)
+    assert version == latest_schema_version()
+
+
+def test_carrying_a_survey_forward_leaves_every_clip_unprobed(tmp_path):
+    """Scenario: a v0.2.0 survey.db, from before clips carried container metadata.
+
+    Expected behaviour: the clip keeps everything it already knew, and the two
+    tri-states read 'unknown' rather than 'no', since nothing has looked at the
+    file yet.
+    """
+    from deepreefmap_gui.survey.store import latest_schema_version
+
+    video_id = uuid.uuid4()
+    now = "2026-08-01T00:00:00+00:00"
+    db_path = write_v0_2_0_database(tmp_path / "old.db")
+    conn = sqlite3.connect(db_path)
+    with conn:
+        conn.execute(
+            "INSERT INTO video_asset VALUES (?,?,?,?,?,?,?,?,?)",
+            (str(video_id), "GX010001.MP4", "/data/GX010001.MP4", "ab" * 16, 1024, now, 90.0,
+             30.0, now),
+        )
+    conn.close()
+
+    restored = SurveyStore(db_path).get_video(video_id)
+    assert restored is not None
+    assert restored.hash == "ab" * 16
+    assert restored.duration_s == 90.0
+    assert restored.created_at == now
+    assert restored.captured_at is None
+    assert restored.probed_at is None
+    assert (restored.gravity, restored.gps) == (UNKNOWN, UNKNOWN)
+    version = sqlite3.connect(db_path).execute("PRAGMA user_version").fetchone()[0]
+    assert version == latest_schema_version()
+
+
+def test_rebuild_repeats_cleanly_and_keeps_what_a_probe_learned(store, tmp_path):
+    """Scenario: a manifest records the clip's path, hash and size, nothing else.
+
+    Expected behaviour: rebuilding a second time adds no rows, and a clip that
+    has since been probed keeps its capture time and probe stamp rather than
+    being flattened back to what the manifest knows.
+    """
+    out_root = tmp_path / "out"
+    seed_survey_run(store, out_root, "t1__p01")
+
+    fresh = SurveyStore(tmp_path / "rebuilt.db")
+    first = fresh.rebuild_from_scan(out_root)
+    assert (first.videos, first.passes, first.runs, first.skipped) == (1, 1, 1, [])
+
+    probed = fresh.list_videos()[0]
+    probed.captured_at = "2026-06-01T09:15:00+00:00"
+    probed.probed_at = "2026-08-01T00:00:00+00:00"
+    probed.gravity = YES
+    fresh.update_video(probed)
+
+    second = fresh.rebuild_from_scan(out_root)
+    assert (second.videos, second.passes, second.runs, second.skipped) == (0, 0, 0, [])
+    assert len(fresh.list_videos()) == 1
+    kept = fresh.get_video(probed.id)
+    assert kept.captured_at == "2026-06-01T09:15:00+00:00"
+    assert kept.probed_at == "2026-08-01T00:00:00+00:00"
+    assert kept.gravity == YES
 
 
 def test_rebuild_restores_every_chapter_of_a_pass(store, tmp_path):

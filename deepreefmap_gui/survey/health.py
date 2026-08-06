@@ -52,9 +52,9 @@ class SurveyDbHealth:
 
 
 def _known_version() -> int:
-    from deepreefmap_gui.survey.store import _MIGRATIONS
+    from deepreefmap_gui.survey.store import latest_schema_version
 
-    return len(_MIGRATIONS)
+    return latest_schema_version()
 
 
 def _writable(path: Path) -> tuple[bool, str]:

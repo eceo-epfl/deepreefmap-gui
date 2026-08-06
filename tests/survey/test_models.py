@@ -1,9 +1,16 @@
 import uuid
+from dataclasses import fields
 
 import pytest
-from _factories import make_transect, make_video
+from _factories import VIDEO_PATH, make_transect, make_video
 
-from deepreefmap_gui.survey.models import BatchItem, RunRecord, SurveyBatch, TransectPass
+from deepreefmap_gui.survey.models import (
+    BatchItem,
+    RunRecord,
+    SurveyBatch,
+    TransectPass,
+    VideoAsset,
+)
 from deepreefmap_gui.survey.models.convert import (
     build_document,
     from_row,
@@ -11,6 +18,7 @@ from deepreefmap_gui.survey.models.convert import (
     survey_manifest_block,
     to_row,
 )
+from deepreefmap_gui.survey.video_probe import NO, UNKNOWN, YES
 
 
 def make_pass(transect, video, **overrides):
@@ -167,6 +175,60 @@ def test_pass_rejects_a_chapter_that_repeats_its_first_video():
     transect, video = make_transect(), make_video()
     with pytest.raises(ValueError):
         make_pass(transect, video, extra_video_ids=[video.id])
+
+
+def test_every_video_field_is_covered_by_a_carry_over_group():
+    """Scenario: a new column is added to VideoAsset and to nothing else.
+
+    Expected behaviour: this fails. Both carry-over policies are written in terms
+    of the groups, so a field in none of them is dropped whenever two rows for the
+    same clip are folded into one, which is silent and only shows as lost data.
+    """
+    grouped = (
+        VideoAsset.IDENTITY_FIELDS
+        + VideoAsset.LOCATION_FIELDS
+        + VideoAsset.CARRIED_FIELDS
+        + VideoAsset.TRISTATE_FIELDS
+    )
+    assert len(set(grouped)) == len(grouped), "a field is named in two groups"
+    assert set(grouped) == {f.name for f in fields(VideoAsset)}
+
+
+def test_overlay_takes_the_newer_reading_but_not_its_ignorance():
+    """Upsert semantics: the clip just described off disk wins where it knows."""
+    stored = make_video(duration_s=60.0, codec="hvc1", gravity=YES)
+    described = make_video(path="/moved/GX010001.MP4", duration_s=61.0)
+    stored.overlay_from(described)
+    assert stored.path == "/moved/GX010001.MP4"
+    assert stored.duration_s == 61.0
+    assert stored.codec == "hvc1"
+    assert stored.gravity == YES
+
+
+def test_fill_keeps_the_keeper_and_takes_only_what_it_lacks():
+    """Merge semantics: where the survivor lives is never a duplicate's to say."""
+    keeper = make_video(duration_s=60.0, gravity=NO)
+    loser = make_video(
+        path="/elsewhere/GX010001.MP4", duration_s=61.0, fps=30.0, gravity=YES, gps=YES
+    )
+    keeper.fill_from(loser)
+    assert keeper.path == VIDEO_PATH
+    assert keeper.duration_s == 60.0
+    assert keeper.fps == 30.0
+    assert keeper.gravity == NO
+    assert keeper.gps == YES
+
+
+def test_a_video_document_written_before_container_metadata_still_imports():
+    video = make_video()
+    doc = build_document(transects=[], videos=[video], batches=[], passes=[], runs=[])
+    for name in VideoAsset.CARRIED_FIELDS + VideoAsset.TRISTATE_FIELDS:
+        doc["videos"][0].pop(name, None)
+    restored = parse_document(doc)["videos"][0]
+    assert restored.hash is None
+    assert restored.captured_at is None
+    assert (restored.gravity, restored.gps) == (UNKNOWN, UNKNOWN)
+    assert restored.id == video.id
 
 
 def test_a_document_written_before_chapters_still_parses():

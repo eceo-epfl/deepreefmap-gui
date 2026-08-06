@@ -7,14 +7,21 @@ into one clip, and moves the passes cut from the losers onto the survivor.
 
 from __future__ import annotations
 
-from _factories import make_transect, make_video
+from datetime import datetime, timezone
+
+import pytest
+from _factories import make_transect, make_video, write_test_mp4
 
 from deepreefmap_gui.survey.models import TransectPass, VideoAsset
+from deepreefmap_gui.survey.video_probe import NO, SOURCE_CONTAINER, UNKNOWN, YES
 from deepreefmap_gui.survey.video_repair import (
     backfill_hashes,
+    backfill_metadata,
     merge_duplicates,
     repair_video_identity,
 )
+
+SHOT_AT = datetime(2023, 5, 17, 8, 27, 16, tzinfo=timezone.utc)
 
 
 def write_clip(tmp_path, name="GX010001.MP4", content=b"footage"):
@@ -103,7 +110,7 @@ def test_backfill_hashes_only_what_it_can_read(store, tmp_path):
 def test_merge_repoints_passes_onto_the_survivor(store, tmp_path):
     path = write_clip(tmp_path)
     older = force_duplicate(store, path)
-    newer = force_duplicate(store, path, duration_s=90.0)
+    newer = force_duplicate(store, path, duration_s=90.0, gravity=YES)
     pass_a = add_pass(store, older)
     pass_b = add_pass(store, newer, transect=make_transect("T2"))
 
@@ -116,6 +123,7 @@ def test_merge_repoints_passes_onto_the_survivor(store, tmp_path):
     assert survivor.id == older.id
     assert survivor.hash, "the survivor is hashed by the backfill that runs first"
     assert survivor.duration_s == 90.0, "what the later row knew is carried across"
+    assert survivor.gravity == YES, "a stale 'unknown' does not outrank a reading"
     assert store.get_pass(pass_a.id).video_id == survivor.id
     assert store.get_pass(pass_b.id).video_id == survivor.id
 
@@ -168,3 +176,55 @@ def test_rows_with_neither_hash_nor_path_are_left_alone(store):
     merged, moved = merge_duplicates(store)
     assert (merged, moved) == (0, 0)
     assert len(store.list_videos()) == 2
+
+
+def test_a_clip_nobody_has_read_gets_its_container_read(store, tmp_path):
+    """Rows predate the container read, and rebuilt rows never had one."""
+    clip = write_test_mp4(tmp_path / "GX010040.MP4", created_at=SHOT_AT)
+    video = force_duplicate(store, clip)
+    assert video.probed_at is None
+
+    assert backfill_metadata(store) == 1
+
+    stored = store.get_video(video.id)
+    assert stored.captured_at == SHOT_AT.isoformat()
+    assert stored.captured_source == SOURCE_CONTAINER
+    assert stored.gravity == YES
+    assert stored.width == 1920
+    assert stored.probed_at
+
+
+def test_a_clip_already_read_is_not_read_again(store, tmp_path):
+    clip = write_test_mp4(tmp_path / "GX010041.MP4", created_at=SHOT_AT)
+    force_duplicate(store, clip)
+    backfill_metadata(store)
+
+    assert backfill_metadata(store) == 0
+
+
+def test_a_clip_on_an_unplugged_drive_stays_unread(store, tmp_path):
+    """The answer is still there once the drive is back, so nothing is written off."""
+    force_duplicate(store, tmp_path / "gone.MP4")
+
+    assert backfill_metadata(store) == 0
+    assert store.list_videos()[0].probed_at is None
+
+
+def test_a_file_that_is_no_container_is_read_off_once(store, tmp_path):
+    """An AVI will not turn into an MP4, so re-reading it every open buys nothing."""
+    video = force_duplicate(store, write_clip(tmp_path, "hand.avi"))
+
+    assert backfill_metadata(store) == 1
+    stored = store.get_video(video.id)
+    assert stored.probed_at
+    assert stored.gravity == UNKNOWN
+
+
+def test_importing_a_clip_reads_its_container(tmp_path):
+    clip = write_test_mp4(tmp_path / "GX010042.MP4", created_at=SHOT_AT, gravity=False)
+
+    asset = VideoAsset.from_path(clip)
+    assert asset.captured_at == SHOT_AT.isoformat()
+    assert asset.gravity == NO
+    assert asset.codec == "hvc1"
+    assert asset.duration_s == pytest.approx(12.0)

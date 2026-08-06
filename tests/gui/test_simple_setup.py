@@ -306,7 +306,7 @@ def test_the_memory_grade_sizes_the_longest_queued_pass(window):
         SimpleNamespace(begin_s=0.0, end_s=10.0),
         SimpleNamespace(begin_s=0.0, end_s=40.0),
     ]
-    assert window._memory_grade_frames(5) == 200
+    assert window._simple_peak_frames(5) == 200
 
 
 # --- batch pre-flight --------------------------------------------------------

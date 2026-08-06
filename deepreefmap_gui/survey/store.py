@@ -40,85 +40,111 @@ SURVEY_DB_NAME = "survey.db"
 # list and the pass status, so it reads as a fact, not a stack trace.
 _INTERRUPTED_REASON = "The app closed before this run finished."
 
-_MIGRATIONS = [
-    """
-    CREATE TABLE transect (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL UNIQUE,
-        description TEXT NOT NULL DEFAULT '',
-        start_lat REAL NOT NULL,
-        start_lon REAL NOT NULL,
-        end_lat REAL NOT NULL,
-        end_lon REAL NOT NULL,
-        length_m REAL,
-        depth_m REAL,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-    );
-    CREATE TABLE video_asset (
-        id TEXT PRIMARY KEY,
-        file_name TEXT NOT NULL,
-        path TEXT NOT NULL,
-        hash TEXT,
-        size_bytes INTEGER,
-        mtime TEXT,
-        duration_s REAL,
-        fps REAL,
-        created_at TEXT NOT NULL
-    );
-    CREATE INDEX video_asset_hash ON video_asset(hash);
-    CREATE TABLE survey_batch (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        preset_name TEXT NOT NULL,
-        created_at TEXT NOT NULL
-    );
-    CREATE TABLE transect_pass (
-        id TEXT PRIMARY KEY,
-        transect_id TEXT NOT NULL REFERENCES transect(id),
-        video_id TEXT NOT NULL REFERENCES video_asset(id),
-        batch_id TEXT REFERENCES survey_batch(id),
-        direction TEXT NOT NULL CHECK (direction IN ('forward', 'reverse')),
-        begin_s REAL NOT NULL,
-        end_s REAL NOT NULL,
-        notes TEXT NOT NULL DEFAULT '',
-        created_at TEXT NOT NULL
-    );
-    CREATE TABLE run_record (
-        id TEXT PRIMARY KEY,
-        pass_id TEXT NOT NULL REFERENCES transect_pass(id),
-        run_dir_name TEXT NOT NULL,
-        status TEXT NOT NULL,
-        started_at TEXT,
-        finished_at TEXT,
-        error TEXT NOT NULL DEFAULT '',
-        created_at TEXT NOT NULL
-    );
-    """,
-    # A swim longer than about 4 GB arrives as GoPro chapters, so a pass names
-    # the chapters that follow its first video. A JSON array rather than a join
-    # table: the list is short, ordered, and only ever read whole. It carries no
-    # foreign key, so get_video returning None is how a missing chapter reads.
-    """
-    ALTER TABLE transect_pass ADD COLUMN extra_video_ids TEXT NOT NULL DEFAULT '[]';
-    """,
-    # Holding a pass back is a property of the pass, not of the session: a batch
-    # left half-run overnight must come back with the same passes held.
-    """
-    ALTER TABLE transect_pass ADD COLUMN held INTEGER NOT NULL DEFAULT 0;
-    """,
-    # A pass may name no transect. Footage worth processing is not always footage
-    # laid against a tape: a spot check, a clip a colleague sent, a swim whose
-    # transect was never planned. Refusing to process it was an artefact of the
-    # survey model rather than a scientific rule -- such a run simply reports no
-    # tape length and is not scaled, exactly as a planned transect with no tape
-    # reading already does.
-    #
-    # SQLite cannot relax NOT NULL in place, so this is the documented 12-step
-    # table rebuild. Foreign keys are off for the duration (they are enabled
-    # per-connection in _conn), and the rebuild happens inside the migration's
-    # own transaction.
-    """
+@dataclass(frozen=True)
+class Migration:
+    """One forward step, applied to any database stamped below ``version``."""
+
+    version: int
+    name: str
+    sql: str
+
+
+SCHEMA_VERSION = 6
+
+# The schema as it stands, written whole into a new database.
+_BASELINE = """
+CREATE TABLE transect (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    description TEXT NOT NULL DEFAULT '',
+    start_lat REAL NOT NULL,
+    start_lon REAL NOT NULL,
+    end_lat REAL NOT NULL,
+    end_lon REAL NOT NULL,
+    length_m REAL,
+    depth_m REAL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+-- The tri-states default to 'unknown' rather than 'no': "the camera recorded no
+-- gravity" is a different fact from "nobody looked". probed_at is what the
+-- backfill selects on, so an unprobed row starts NULL.
+CREATE TABLE video_asset (
+    id TEXT PRIMARY KEY,
+    file_name TEXT NOT NULL,
+    path TEXT NOT NULL,
+    hash TEXT,
+    size_bytes INTEGER,
+    mtime TEXT,
+    duration_s REAL,
+    fps REAL,
+    created_at TEXT NOT NULL,
+    captured_at TEXT,
+    captured_source TEXT,
+    width INTEGER,
+    height INTEGER,
+    codec TEXT,
+    probed_at TEXT,
+    gravity TEXT NOT NULL DEFAULT 'unknown',
+    gps TEXT NOT NULL DEFAULT 'unknown'
+);
+CREATE INDEX video_asset_hash ON video_asset(hash);
+CREATE TABLE survey_batch (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    preset_name TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+-- transect_id is nullable: footage worth processing is not always footage laid
+-- against a tape, and such a run simply reports no tape length and is not
+-- scaled. extra_video_ids is the GoPro chapters that follow the first video, a
+-- JSON array because the list is short, ordered, and only ever read whole.
+-- held belongs to the pass, not the session: a batch left half-run overnight
+-- comes back with the same passes held.
+CREATE TABLE transect_pass (
+    id TEXT PRIMARY KEY,
+    transect_id TEXT REFERENCES transect(id),
+    video_id TEXT NOT NULL REFERENCES video_asset(id),
+    batch_id TEXT REFERENCES survey_batch(id),
+    direction TEXT NOT NULL CHECK (direction IN ('forward', 'reverse')),
+    begin_s REAL NOT NULL,
+    end_s REAL NOT NULL,
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    extra_video_ids TEXT NOT NULL DEFAULT '[]',
+    held INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE run_record (
+    id TEXT PRIMARY KEY,
+    pass_id TEXT NOT NULL REFERENCES transect_pass(id),
+    run_dir_name TEXT NOT NULL,
+    status TEXT NOT NULL,
+    started_at TEXT,
+    finished_at TEXT,
+    error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    batch_id TEXT REFERENCES survey_batch(id)
+);
+-- Worklist membership is a table of its own so a pass can be ordered in
+-- several sessions.
+CREATE TABLE batch_item (
+    id TEXT PRIMARY KEY,
+    batch_id TEXT NOT NULL REFERENCES survey_batch(id),
+    pass_id TEXT NOT NULL REFERENCES transect_pass(id),
+    created_at TEXT NOT NULL,
+    UNIQUE (batch_id, pass_id)
+);
+"""
+
+# Released schema version -> the script that brings it to SCHEMA_VERSION. Only
+# versions an installed build actually wrote appear here; the steps between them
+# never outlived their own transaction.
+_CARRY_FORWARD = {
+    # 0.2.0. SQLite cannot relax NOT NULL in place, so transect_pass is rebuilt.
+    # Foreign keys are off for the duration, set in _migrate. run_record.batch_id
+    # and batch_item both backfill from the pass, the only session either had,
+    # minting ids in the 8-4-4-4-12 form from_row parses back.
+    3: """
     CREATE TABLE transect_pass_new (
         id TEXT PRIMARY KEY,
         transect_id TEXT REFERENCES transect(id),
@@ -138,12 +164,7 @@ _MIGRATIONS = [
         FROM transect_pass;
     DROP TABLE transect_pass;
     ALTER TABLE transect_pass_new RENAME TO transect_pass;
-    """,
-    # The session an attempt ran in is a fact of the run, and worklist
-    # membership is a table of its own so a pass can be ordered in several
-    # sessions. Both backfill from the pass, the only session either ever had.
-    # The backfill mints ids in the 8-4-4-4-12 form from_row parses back.
-    """
+
     ALTER TABLE run_record ADD COLUMN batch_id TEXT REFERENCES survey_batch(id);
     UPDATE run_record SET batch_id =
         (SELECT batch_id FROM transect_pass WHERE transect_pass.id = run_record.pass_id);
@@ -161,8 +182,27 @@ _MIGRATIONS = [
                       lower(hex(randomblob(6)))),
                batch_id, id, created_at
         FROM transect_pass WHERE batch_id IS NOT NULL;
+
+    ALTER TABLE video_asset ADD COLUMN captured_at TEXT;
+    ALTER TABLE video_asset ADD COLUMN captured_source TEXT;
+    ALTER TABLE video_asset ADD COLUMN width INTEGER;
+    ALTER TABLE video_asset ADD COLUMN height INTEGER;
+    ALTER TABLE video_asset ADD COLUMN codec TEXT;
+    ALTER TABLE video_asset ADD COLUMN probed_at TEXT;
+    ALTER TABLE video_asset ADD COLUMN gravity TEXT NOT NULL DEFAULT 'unknown';
+    ALTER TABLE video_asset ADD COLUMN gps TEXT NOT NULL DEFAULT 'unknown';
     """,
-]
+}
+
+_OLDEST_CARRIED = min(_CARRY_FORWARD)
+
+# Steps taken after the baseline was cut. Appended to, never renumbered.
+_MIGRATIONS: list[Migration] = []
+
+
+def latest_schema_version() -> int:
+    return max([SCHEMA_VERSION, *(m.version for m in _MIGRATIONS)])
+
 
 
 def resolved_path(path: str) -> str | None:
@@ -263,26 +303,43 @@ class SurveyStore:
 
     def _run_migrations(self, conn: sqlite3.Connection) -> None:
         version = conn.execute("PRAGMA user_version").fetchone()[0]
-        # A database stamped newer than this build knows must not be opened: the
-        # empty migration slice would run nothing and then read a schema whose
-        # columns this code does not understand. This happens after an update is
-        # rolled back, so it needs to say what to do, not fail obscurely later.
-        if version > len(_MIGRATIONS):
+        latest = latest_schema_version()
+        # A database stamped newer than this build knows must not be opened: it
+        # would run nothing and then read a schema whose columns this code does
+        # not understand. This happens after an update is rolled back, so it
+        # needs to say what to do, not fail obscurely later.
+        if version > latest:
             raise RuntimeError(
                 f"survey.db is schema v{version}, but this build knows up to "
-                f"v{len(_MIGRATIONS)}. Update the app to open this survey."
+                f"v{latest}. Update the app to open this survey."
             )
-        pending = _MIGRATIONS[version:]
-        if not pending:
+        if version == latest:
             return
         # Version 0 is the database _conn just brought into being; there is no
         # prior build's work in it to protect.
         if version > 0:
             self._backup_before_migrating(version)
-        for number, script in enumerate(pending, start=version + 1):
-            with conn:
-                conn.executescript(script)
-                conn.execute(f"PRAGMA user_version = {number}")
+        if version == 0:
+            self._apply(conn, _BASELINE, SCHEMA_VERSION)
+            version = SCHEMA_VERSION
+        elif version < SCHEMA_VERSION:
+            carry = _CARRY_FORWARD.get(version)
+            if carry is None:
+                raise RuntimeError(
+                    f"survey.db is schema v{version}, which this build cannot carry "
+                    f"forward. Open it once with 0.2.0, which brings it to v{_OLDEST_CARRIED}."
+                )
+            self._apply(conn, carry, SCHEMA_VERSION)
+            version = SCHEMA_VERSION
+        for migration in _MIGRATIONS:
+            if migration.version > version:
+                self._apply(conn, migration.sql, migration.version)
+
+    @staticmethod
+    def _apply(conn: sqlite3.Connection, script: str, version: int) -> None:
+        with conn:
+            conn.executescript(script)
+            conn.execute(f"PRAGMA user_version = {version}")
 
     def _backup_before_migrating(self, version: int) -> None:
         """Copy the database in the shape the previous build wrote it.
@@ -341,11 +398,18 @@ class SurveyStore:
 
         Two grouped queries rather than a count per row: the plan list is
         rebuilt on every keystroke while a transect is being typed.
+
+        A pass need not name a transect, so both queries drop the null group.
         """
         counts: dict[uuid.UUID, tuple[int, int]] = {}
         conn = self._conn()
         for row in conn.execute(
-            "SELECT transect_id, COUNT(*) AS n FROM transect_pass GROUP BY transect_id"
+            """
+            SELECT transect_id, COUNT(*) AS n
+            FROM transect_pass
+            WHERE transect_id IS NOT NULL
+            GROUP BY transect_id
+            """
         ):
             counts[uuid.UUID(row["transect_id"])] = (row["n"], 0)
         for row in conn.execute(
@@ -353,6 +417,7 @@ class SurveyStore:
             SELECT transect_pass.transect_id AS transect_id, COUNT(*) AS n
             FROM run_record
             JOIN transect_pass ON transect_pass.id = run_record.pass_id
+            WHERE transect_pass.transect_id IS NOT NULL
             GROUP BY transect_pass.transect_id
             """
         ):
@@ -383,10 +448,7 @@ class SurveyStore:
         if existing is None:
             self._add("video_asset", asset)
             return asset
-        for name in ("file_name", "path", "hash", "size_bytes", "mtime", "duration_s", "fps"):
-            value = getattr(asset, name)
-            if value is not None:
-                setattr(existing, name, value)
+        existing.overlay_from(asset)
         self._update("video_asset", existing)
         return existing
 

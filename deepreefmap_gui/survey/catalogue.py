@@ -422,9 +422,9 @@ def transects_facet(
 def session_group_key(batch_id: uuid.UUID | None) -> tuple:
     """The facet key a run is filed under by session.
 
-    Same two-sided-join contract as video_group_key: a run reaches this from its
-    pass or from its manifest, and a session reaches it from the store, so both
-    have to arrive at the same key or one session would appear twice.
+    A two-sided join: a run reaches this from its pass or from its manifest, and
+    a session reaches it from the store, so both have to arrive at the same key
+    or one session would appear twice.
     """
     return ("unfiled_session",) if batch_id is None else ("session", str(batch_id))
 
@@ -435,9 +435,9 @@ def sessions_facet(
     """Session groups over pass groups, newest session first.
 
     The session is the only container that spans transects: everything else here
-    groups by one line, one clip or one pass, so a day's work had no way to be
-    read as a day's work. It is recorded on every run already, in the manifest
-    and on the pass, and this is what finally shows it.
+    groups by one line or one pass, so a day's work had no way to be read as a
+    day's work. It is recorded on every run already, in the manifest and on the
+    pass, and this is what finally shows it.
 
     ``batches`` may list known sessions so one whose runs have all been deleted
     still appears, the same courtesy transects_facet extends to a transect with
@@ -490,127 +490,8 @@ def _plural(count: int, noun: str) -> str:
     return f"{count} {noun}{'' if count == 1 else 's'}"
 
 
-# The bucket for runs that name no video at all: no hash, and no file name in
-# the manifest. A run that crashed before writing one lands here, so on a machine
-# that has seen a few failures this is most of them.
-NO_VIDEO_TITLE = "No video recorded"
-
-# The window label for a run that took the whole clip. Named because
-# _fold_lone_window keys off it: a single such child is the one window level
-# that tells you nothing its parent has not already said.
+# The window label for a run that took the whole clip.
 _WHOLE_VIDEO = "whole video"
-
-
-def video_group_key(video_hash: str | None, fallback: str | None) -> tuple:
-    """The facet key a clip is filed under, from either side of the join.
-
-    A run knows its video by hash; the library knows the clip itself. Both have
-    to arrive at the same key or an imported clip and the runs cut from it would
-    appear as two separate groups.
-
-    The fallback is the video's *file name* on both sides. It is a weak identity
-    (every card's first clip is GX010001.MP4), which is why hashing is repaired
-    rather than the fallback relied on.
-
-    With neither, the run is anonymous, and every anonymous run is equally so:
-    they share the one `None` key rather than each landing in a group of its own.
-    Keying those on something unique per run -- the run directory, say -- is what
-    turned twelve crashed runs into twelve identically titled groups of one.
-    """
-    return ("video", video_hash or fallback or None)
-
-
-def videos_facet(
-    entries: list[RunEntry],
-    library: Iterable[VideoLibraryEntry] = (),
-    transects: Iterable[Transect] = (),
-) -> list[FacetGroup]:
-    """Video-file groups over time-window groups. One file can hold several
-    transect passes, so the window level is what keeps them apart.
-
-    ``library`` lists every clip the survey has imported, so an unprocessed
-    clip still gets a group and a never-run section still gets a child node.
-    ``transects`` resolves the names those section nodes carry.
-    """
-    by_video: dict[tuple, FacetGroup] = {}
-    # Kept beside the groups rather than spelled into the title as they are
-    # built: whether a checksum is worth showing depends on the other groups,
-    # which are not all known until the loops below have run.
-    hashes: dict[tuple, str | None] = {}
-    for entry in entries:
-        video_hash = entry.video_hashes[0] if entry.video_hashes else None
-        key = video_group_key(video_hash, entry.video_name)
-        group = by_video.get(key)
-        if group is None:
-            group = by_video[key] = FacetGroup(
-                key=key, title=entry.video_name or NO_VIDEO_TITLE
-            )
-            hashes[key] = video_hash
-        _child_for(group, group_key(entry), _window_title(entry)).entries.append(entry)
-    library = list(library)
-    for clip in library:
-        key = video_group_key(clip.video.hash, clip.video.file_name)
-        if key in by_video:
-            continue
-        by_video[key] = FacetGroup(key=key, title=clip.video.file_name)
-        hashes[key] = clip.video.hash
-    names = {t.id: t.name for t in transects}
-    for clip in library:
-        group = by_video.get(video_group_key(clip.video.hash, clip.video.file_name))
-        if group is None:
-            continue
-        present = {child.key for child in group.children}
-        for pass_ in clip.passes:
-            pass_key = ("pass", str(pass_.id))
-            if pass_key in present:
-                continue
-            title = f"{pass_.begin_s:g}–{pass_.end_s:g} s"
-            name = names.get(pass_.transect_id) if pass_.transect_id is not None else None
-            if name:
-                title += f" · {name}"
-            group.children.append(FacetGroup(key=pass_key, title=title))
-    for group in by_video.values():
-        _fold_lone_window(group)
-    _name_clips_apart(by_video.values(), hashes)
-    return sorted(by_video.values(), key=lambda g: g.title)
-
-
-def _fold_lone_window(group: FacetGroup) -> None:
-    """Drop a window level that restates the clip row above it.
-
-    A clip processed once, whole and unassigned, gets a single child reading
-    "whole video" beneath a parent already counting one run. That is a tree row,
-    an indent and a shortened parent title spent saying nothing new.
-
-    Clips holding several passes keep their children, and so does a lone pass
-    that names a transect or a time window: there the window is exactly what
-    tells the runs apart.
-    """
-    if len(group.children) != 1:
-        return
-    child = group.children[0]
-    if child.title != _WHOLE_VIDEO or child.children:
-        return
-    group.entries.extend(child.entries)
-    group.children.clear()
-
-
-def _name_clips_apart(
-    groups: Iterable[FacetGroup], hashes: dict[tuple, str | None]
-) -> None:
-    """Spell the checksum into a clip title only where the file name is ambiguous.
-
-    Every card's first clip is GX010001.MP4, so the hash is what tells two of
-    them apart -- but only while both are on screen. Carried on every row it
-    costs ~70px of a rail that is already eliding the names the hash exists to
-    disambiguate, which is the opposite of the point.
-    """
-    groups = list(groups)
-    shared = Counter(group.title for group in groups)
-    for group in groups:
-        digest = hashes.get(group.key)
-        if digest and shared[group.title] > 1:
-            group.title += f" · #{digest[:8]}"
 
 
 # Whether the file a clip names is still where the survey last saw it. Checked

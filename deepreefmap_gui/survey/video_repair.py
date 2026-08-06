@@ -20,8 +20,9 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from deepreefmap_gui.survey.models.video_asset import VideoAsset
+from deepreefmap_gui.survey.models.video_asset import VideoAsset, container_fields
 from deepreefmap_gui.survey.store import SurveyStore, resolved_path
+from deepreefmap_gui.survey.video_probe import probe_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,9 @@ class RepairReport:
     hashed: int = 0
     merged: int = 0
     passes_moved: int = 0
+    # Reading a container changes nothing the user chose, so it is counted for
+    # the tests and never announced.
+    probed: int = 0
     unreadable: list[str] = field(default_factory=list)
 
     @property
@@ -95,6 +99,41 @@ def backfill_hashes(store: SurveyStore) -> tuple[int, list[str]]:
     return hashed, unreadable
 
 
+def backfill_metadata(store: SurveyStore) -> int:
+    """Read the container of every clip nothing has looked at yet.
+
+    Rows written before the app read containers, and rows rebuilt from run
+    manifests, carry no capture date and no gravity answer. ``probed_at`` is
+    what marks them, so this runs once per clip and then never again.
+
+    A clip whose file is not there keeps ``probed_at`` empty rather than being
+    written off: an unplugged drive is a normal thing to have, and the answer is
+    still available once it comes back.
+    """
+    probed = 0
+    for video in store.list_videos():
+        if video.probed_at:
+            continue
+        path = Path(video.path)
+        if not path.is_file():
+            continue
+        meta = probe_metadata(path)
+        # Through overlay_from rather than field by field, so a file that turns
+        # out not to be a container cannot answer "nobody looked" over a reading
+        # an earlier row already made of it.
+        reading = VideoAsset(
+            file_name=video.file_name,
+            path=video.path,
+            **container_fields(meta, video.mtime),  # type: ignore[arg-type]
+        )
+        video.overlay_from(reading)
+        if video.duration_s is None:
+            video.duration_s = meta.duration_s
+        store.update_video(video)
+        probed += 1
+    return probed
+
+
 def _identity(video: VideoAsset) -> tuple | None:
     """What makes two rows the same clip, or None when nothing can say.
 
@@ -131,13 +170,8 @@ def merge_duplicates(store: SurveyStore) -> tuple[int, int]:
         # Carry across anything the keeper never learned. A duplicate written
         # later often knows more (a probe filled in its duration), and dropping
         # that with the row would lose it for good.
-        for name in ("hash", "size_bytes", "mtime", "duration_s", "fps"):
-            if getattr(keeper, name) is None:
-                for loser in losers:
-                    value = getattr(loser, name)
-                    if value is not None:
-                        setattr(keeper, name, value)
-                        break
+        for loser in losers:
+            keeper.fill_from(loser)
         store.update_video(keeper)
         moved += store.merge_videos(keeper.id, [v.id for v in losers])
         merged += len(losers)
@@ -149,10 +183,16 @@ def repair_video_identity(store: SurveyStore) -> RepairReport:
 
     Order matters: hashing first is what lets two rows for one file be
     recognised as duplicates at all, since without hashes they are only
-    comparable when they also happen to agree on a path.
+    comparable when they also happen to agree on a path. Containers are read
+    last, so a row that is about to be folded into another is not read twice.
     """
     hashed, unreadable = backfill_hashes(store)
     merged, moved = merge_duplicates(store)
+    probed = backfill_metadata(store)
     return RepairReport(
-        hashed=hashed, merged=merged, passes_moved=moved, unreadable=unreadable
+        hashed=hashed,
+        merged=merged,
+        passes_moved=moved,
+        probed=probed,
+        unreadable=unreadable,
     )

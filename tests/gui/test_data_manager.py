@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 import pytest
-from _factories import make_batch, make_transect, seed_pass, seed_survey_run, write_run
+from _factories import make_batch, make_transect, seed_survey_run, write_run
 from _qt_wait import wait_until
 from PySide6.QtCore import QEvent, Qt, QUrl
 from PySide6.QtGui import QImage
@@ -11,8 +11,9 @@ from PySide6.QtWidgets import QSizePolicy
 from deepreefmap_gui.runs.browse import _DETAIL_SHARE
 from deepreefmap_gui.runs.run_detail import OrthoDialog
 from deepreefmap_gui.runs.run_table import COL_NAME, COL_POINTS, COL_SIZE, COL_STATUS
+from deepreefmap_gui.simple.mode import DESTINATIONS
 from deepreefmap_gui.survey.catalogue import UNASSIGNED_TITLE
-from deepreefmap_gui.survey.models import Transect, VideoAsset
+from deepreefmap_gui.survey.models import Transect
 from deepreefmap_gui.survey.store import SurveyStore
 
 
@@ -61,13 +62,6 @@ class _FakeDropEvent:
 
     def acceptProposedAction(self):
         self.accepted = True
-
-
-def add_library_video(root: Path, path: str, content_hash: str) -> None:
-    """Register a clip in the store the window will reopen, then release it."""
-    store = SurveyStore(root / "survey.db")
-    store.upsert_video(VideoAsset(file_name=Path(path).name, path=path, hash=content_hash))
-    store.close()
 
 
 def write_crashed_run(root: Path, dir_name: str) -> Path:
@@ -146,20 +140,10 @@ def test_selecting_a_pass_under_a_session_shows_that_run(out_root, make_window):
     assert window._data_detail_stack.currentWidget() is window._run_detail
 
 
-def test_videos_facet_splits_time_windows(out_root, make_window):
-    write_run(out_root, "first", begin_s=0.0, end_s=60.0)
-    write_run(out_root, "second", begin_s=60.0, end_s=120.0)
-    window = make_window()
-    window._data_facet_buttons["videos"].click()
-    assert window._data_tree.topLevelItemCount() == 1
-    assert window._data_tree.topLevelItem(0).childCount() == 2
-
-
 def test_tree_selection_filters_run_list(out_root, make_window):
-    write_run(out_root, "first", begin_s=0.0, end_s=60.0)
-    write_run(out_root, "second", begin_s=60.0, end_s=120.0)
+    write_session_runs(out_root, "2026-07-01", ["north", "south"])
     window = make_window()
-    window._data_facet_buttons["videos"].click()
+    window._data_facet_buttons["sessions"].click()
     assert len(listed_runs(window)) == 2
     child = window._data_tree.topLevelItem(0).child(0)
     window._data_tree.setCurrentItem(child)
@@ -180,7 +164,7 @@ def test_open_routes_through_auto_load(out_root, make_window, monkeypatch):
 def test_browse_is_the_destination_holding_the_run_browser(make_window):
     """One widget, one name: the destination called Browse is the run browser."""
     window = make_window()
-    assert list(window._simple_nav_buttons) == ["transects", "process", "browse"]
+    assert list(window._simple_nav_buttons) == list(DESTINATIONS)
     assert window._simple_nav_buttons["browse"].text() == "Browse"
 
     window._set_simple_section("browse")
@@ -408,7 +392,7 @@ def test_dropped_unsupported_file_reports(tmp_path, make_window):
     junk.write_text("hi")
     window = make_window()
     window._handle_data_drop([junk])
-    assert "Drop video files or a run folder" in window._status_label.text()
+    assert "Drop video files, a folder of them, or a run folder" in window._status_label.text()
 
 
 # --- T1.5 failed / incomplete runs ---
@@ -589,20 +573,7 @@ def test_a_rerun_names_its_attempt_in_the_tooltip(out_root, make_window):
     assert "Attempt: 2" in format_run_metadata(entry)
 
 
-def test_a_section_with_no_runs_says_it_is_not_processed(out_root, make_window):
-    """Selecting a run-less section node shows an empty list that says why."""
-    store = SurveyStore(out_root / "survey.db")
-    _t, _v, pass_ = seed_pass(store, transect=make_transect("Rail T"))
-    store.close()
-    window = make_window()
-    window._data_facet_buttons["videos"].click()
-    clip = window._data_tree.topLevelItem(0)
-    section = clip.child(0)
-    assert section is not None
-    window._data_tree.setCurrentItem(section)
-
-    assert window._data_run_table.rowCount() == 0
-    assert "Not processed yet" in window._data_empty_state._message.text()
+def test_add_to_cart_requeues_a_finished_run(out_root, make_window):
     """Scenario: a finished run should be reprocessed.
 
     Expected behaviour: Add to cart queues its pass into a fresh session. The
@@ -645,83 +616,6 @@ def test_add_to_cart_adopts_an_adhoc_run_unassigned(out_root, make_window):
     assert [p.id for p in store.passes_in_batch(cart.id)] == [adopted.id]
     # The pass took the cart as its origin session.
     assert adopted.batch_id == cart.id
-
-
-def test_new_section_flow_cuts_a_window_and_carts_it(out_root, make_window, monkeypatch):
-    from types import SimpleNamespace
-
-    from PySide6.QtWidgets import QDialog
-
-    from deepreefmap_gui.survey.catalogue import LINK_LINKED
-
-    window = make_window()
-    store = window._survey_store()
-    video = store.upsert_video(
-        VideoAsset(
-            file_name="GX010001.MP4",
-            path="/data/GX010001.MP4",
-            hash="ab" * 16,
-            duration_s=120.0,
-        )
-    )
-
-    class FakeScrub:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def exec(self):
-            return QDialog.DialogCode.Accepted
-
-        def time_range(self):
-            return (12.0, 48.0)
-
-    class FakeAssign:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def exec(self):
-            return QDialog.DialogCode.Accepted
-
-        def choice(self):
-            return (None, "reverse")
-
-    monkeypatch.setattr("deepreefmap_gui.form.video_scrub.VideoScrubDialog", FakeScrub)
-    monkeypatch.setattr(
-        "deepreefmap_gui.simple.section_dialog.SectionAssignDialog", FakeAssign
-    )
-
-    clip = SimpleNamespace(video=video, link_state=LINK_LINKED)
-    window._new_section_from_clip(clip)
-
-    passes = store.list_passes()
-    assert len(passes) == 1
-    section = passes[0]
-    assert (section.begin_s, section.end_s) == (12.0, 48.0)
-    assert section.direction == "reverse"
-    assert section.transect_id is None
-    cart = store.current_cart()
-    assert [i.pass_id for i in store.list_batch_items(cart.id)] == [section.id]
-
-
-# --- T1.6 video library facet ---
-
-
-def test_queue_as_pass_adds_a_row(tmp_path, out_root, make_window, monkeypatch):
-    """The clip detail is the one route from imported footage into a batch."""
-    out_root.mkdir(parents=True)
-    clip = tmp_path / "clip.mp4"
-    clip.write_bytes(b"x" * 4096)
-    add_library_video(out_root, str(clip), "aa" * 16)
-    window = make_window()
-    monkeypatch.setattr(
-        "deepreefmap_gui.simple.batch._probe_video", lambda _p: (60.0, 30.0)
-    )
-    window._refresh_data_manager()
-    window._data_facet_buttons["videos"].click()
-    window._data_tree.setCurrentItem(window._data_tree.topLevelItem(0))
-    before = len(window._survey_rows)
-    window._on_data_queue_clip()
-    assert wait_until(lambda: len(window._survey_rows) == before + 1)
 
 
 def test_status_chips_count_and_filter_runs(out_root, make_window):
@@ -984,7 +878,7 @@ def test_the_map_scope_appears_only_where_it_decides_anything(out_root, make_win
 
     window._data_facet_buttons["transects"].click()
     assert chips.isVisibleTo(window._data_panel)
-    window._data_facet_buttons["videos"].click()
+    window._data_facet_buttons["sessions"].click()
     assert not chips.isVisibleTo(window._data_panel)
 
 
@@ -1036,7 +930,7 @@ def test_empty_state_blames_the_map_when_the_map_is_the_reason(out_root, make_wi
 
 
 def test_the_map_draws_transects_only_while_grouping_by_them(out_root, make_window):
-    """Grouping by video says nothing about where anything is."""
+    """Grouping by session says nothing about where anything is."""
     write_survey_run(out_root, "assigned")
     window = make_window()
 
@@ -1044,7 +938,7 @@ def test_the_map_draws_transects_only_while_grouping_by_them(out_root, make_wind
     assert window._data_map.isVisibleTo(window._data_rail)
     assert [o.label for o in window._data_map._transects] == ["T1"]
 
-    window._data_facet_buttons["videos"].click()
+    window._data_facet_buttons["sessions"].click()
     assert not window._data_map.isVisibleTo(window._data_rail)
 
 

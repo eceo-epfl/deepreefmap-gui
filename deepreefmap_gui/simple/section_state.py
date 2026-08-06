@@ -119,6 +119,26 @@ def browse_state(run_count: int, unfiled: int) -> SectionState:
     return SectionState(OK, counts)
 
 
+def videos_state(clip_count: int, missing: int) -> SectionState:
+    """What the footage itself has to report: how much of it, and what is lost.
+
+    A clip whose file cannot be found is the one thing worth chasing here. It
+    still lists, and its runs still read, but nothing more can be cut from it
+    until the drive it lives on is back.
+    """
+    if clip_count == 0:
+        return SectionState(TODO, "no footage", "Import the day's clips to start.")
+    counts = _plural(clip_count, "clip")
+    if missing:
+        return SectionState(
+            ATTENTION,
+            f"{counts} · {missing} missing",
+            f"{_plural(missing, 'clip')} cannot be found. "
+            "Relocate them, or plug the drive back in.",
+        )
+    return SectionState(OK, counts)
+
+
 def run_gate(
     *,
     pass_count: int,

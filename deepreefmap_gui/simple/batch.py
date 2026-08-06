@@ -513,11 +513,9 @@ class SimpleBatchMixin(MixinBase):
             (_COL_ACTION, 140),
         ):
             self._survey_pass_table.setColumnWidth(column, width)
-        # Dropping video files onto the table queues them, handled centrally by
-        # the browser's eventFilter (BrowseMixin) so all three drop targets
-        # share one path.
-        self._survey_pass_table.setAcceptDrops(True)
-        self._survey_pass_table.installEventFilter(self)
+        # Footage is imported under Videos and staged from there, so this table
+        # takes no drops: a clip dropped here would arrive with no window cut
+        # from it and no transect, which is the state Videos exists to fill in.
 
         self._survey_table_stack = QStackedWidget()
         self._survey_table_stack.addWidget(self._survey_pass_table)

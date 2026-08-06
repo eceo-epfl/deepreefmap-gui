@@ -1,6 +1,7 @@
 import pytest
 from _factories import make_transect
 
+from deepreefmap_gui.simple.mode import SIMPLE_SECTIONS
 from deepreefmap_gui.simple.plan import DRAFT_ID
 from deepreefmap_gui.survey.models import RunRecord, TransectPass, VideoAsset
 from deepreefmap_gui.survey.models.exporters import save_transects_csv
@@ -576,4 +577,4 @@ def test_browse_routes_a_transect_through_to_transects(out_root, window):
 
     assert window._data_detail_stack.currentWidget() is window._transect_detail
     window._transect_detail.open_btn.click()
-    assert window._simple_stack.currentIndex() == 0
+    assert window._simple_stack.currentIndex() == SIMPLE_SECTIONS.index("transects")

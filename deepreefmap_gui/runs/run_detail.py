@@ -159,11 +159,11 @@ class DetailCard(QWidget):
         """The outcome under the name, as the chip the tables paint it as."""
         self.status.set_status(text, colour)
 
-    def add_actions(self, primary: QPushButton, secondary: QPushButton | None = None) -> None:
-        """Close the card with what it is for, and a quiet action pushed right.
+    def add_actions(self, primary: QPushButton, *secondary: QPushButton) -> None:
+        """Close the card with what it is for, and quiet actions pushed right.
 
         Added at the point the pane calls this, so it lands under whatever the
-        pane put between the facts and here. The quiet action is optional: not
+        pane put between the facts and here. The quiet actions are optional: not
         every pane has a second thing worth offering, and an invented one is
         worse than a row with a single button in it.
         """
@@ -172,9 +172,9 @@ class DetailCard(QWidget):
         primary.setProperty("cta", "true")
         actions.addWidget(primary)
         actions.addStretch(1)
-        if secondary is not None:
-            secondary.setProperty("quiet", "true")
-            actions.addWidget(secondary)
+        for button in secondary:
+            button.setProperty("quiet", "true")
+            actions.addWidget(button)
         self.body.addLayout(actions)
 
     def clear(self) -> None:

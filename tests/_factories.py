@@ -11,6 +11,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sqlite3
+import struct
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import NamedTuple
@@ -137,6 +140,172 @@ def seed_survey_run(
         **manifest_overrides,
     )
     return transect, pass_, run
+
+
+# The schema v0.2.0 shipped, stamped user_version 3. Frozen here because the
+# store carries a database forward from it rather than rebuilding it step by
+# step, so nothing in production states this shape any more.
+V0_2_0_SCHEMA = """
+CREATE TABLE transect (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    description TEXT NOT NULL DEFAULT '',
+    start_lat REAL NOT NULL,
+    start_lon REAL NOT NULL,
+    end_lat REAL NOT NULL,
+    end_lon REAL NOT NULL,
+    length_m REAL,
+    depth_m REAL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE video_asset (
+    id TEXT PRIMARY KEY,
+    file_name TEXT NOT NULL,
+    path TEXT NOT NULL,
+    hash TEXT,
+    size_bytes INTEGER,
+    mtime TEXT,
+    duration_s REAL,
+    fps REAL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX video_asset_hash ON video_asset(hash);
+CREATE TABLE survey_batch (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    preset_name TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE transect_pass (
+    id TEXT PRIMARY KEY,
+    transect_id TEXT NOT NULL REFERENCES transect(id),
+    video_id TEXT NOT NULL REFERENCES video_asset(id),
+    batch_id TEXT REFERENCES survey_batch(id),
+    direction TEXT NOT NULL CHECK (direction IN ('forward', 'reverse')),
+    begin_s REAL NOT NULL,
+    end_s REAL NOT NULL,
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    extra_video_ids TEXT NOT NULL DEFAULT '[]',
+    held INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE run_record (
+    id TEXT PRIMARY KEY,
+    pass_id TEXT NOT NULL REFERENCES transect_pass(id),
+    run_dir_name TEXT NOT NULL,
+    status TEXT NOT NULL,
+    started_at TEXT,
+    finished_at TEXT,
+    error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+"""
+
+
+def write_v0_2_0_database(db_path):
+    """A survey.db in the shape v0.2.0 left it, with no rows."""
+    conn = sqlite3.connect(db_path)
+    with conn:
+        conn.executescript(V0_2_0_SCHEMA)
+        conn.execute("PRAGMA user_version = 3")
+    conn.close()
+    return db_path
+
+
+# --- video containers --------------------------------------------------------
+
+# Enough MP4 to answer video_probe, written as bytes so no clip has to be
+# committed. The GPMF payload carries real keys but no meaningful samples: the
+# probe only looks for the keys, and a fixture that decoded would be pretending.
+
+_QT_EPOCH = datetime(1904, 1, 1, tzinfo=timezone.utc)
+
+
+def _atom(kind: bytes, *parts: bytes) -> bytes:
+    body = b"".join(parts)
+    return struct.pack(">I", len(body) + 8) + kind + body
+
+
+def _gpmf_payload(*, gravity: bool = True, gps: bool = True) -> bytes:
+    parts = [b"DEVC" + bytes([0, 1]) + struct.pack(">H", 0)]
+    if gravity:
+        parts.append(b"GRAV" + b"s" + bytes([6]) + struct.pack(">H", 2) + bytes(12))
+    if gps:
+        parts.append(b"GPS5" + b"l" + bytes([20]) + struct.pack(">H", 1) + bytes(20))
+    return b"".join(parts)
+
+
+def _track(handler: bytes, sample_entry: bytes, *tables: bytes) -> bytes:
+    hdlr = _atom(b"hdlr", bytes(4), bytes(4), handler, bytes(12), b"\x00")
+    stsd = _atom(b"stsd", bytes(4), struct.pack(">I", 1), sample_entry)
+    stbl = _atom(b"stbl", stsd, *tables)
+    return _atom(b"trak", _atom(b"mdia", hdlr, _atom(b"minf", stbl)))
+
+
+def write_test_mp4(
+    path: Path,
+    *,
+    created_at: datetime | None = None,
+    duration_s: float | None = 12.0,
+    codec: bytes = b"hvc1",
+    width: int = 1920,
+    height: int = 1080,
+    telemetry: bool = True,
+    gravity: bool = True,
+    gps: bool = True,
+    moov_last: bool = False,
+    uniform_sizes: bool = True,
+    truncate_to: int | None = None,
+) -> Path:
+    """Write a minimal MP4. moov_last mirrors the firmware that writes it there."""
+    seconds = int((created_at - _QT_EPOCH).total_seconds()) if created_at else 0
+    timescale = 1000
+    ticks = int((duration_s or 0) * timescale)
+    mvhd = _atom(
+        b"mvhd",
+        bytes(4),
+        struct.pack(">IIII", seconds, seconds, timescale, ticks),
+        bytes(80),
+    )
+
+    visual = _atom(codec, bytes(6), struct.pack(">H", 1), bytes(16), struct.pack(">HH", width, height))
+    tracks = [_track(b"vide", visual)]
+
+    payload = _gpmf_payload(gravity=gravity, gps=gps) if telemetry else b""
+    if telemetry:
+        if uniform_sizes:
+            stsz = _atom(b"stsz", bytes(4), struct.pack(">II", len(payload), 1))
+        else:
+            stsz = _atom(
+                b"stsz", bytes(4), struct.pack(">II", 0, 1), struct.pack(">I", len(payload))
+            )
+
+        def build(offset: int) -> bytes:
+            stco = _atom(b"stco", bytes(4), struct.pack(">II", 1, offset))
+            meta = _track(b"meta", _atom(b"gpmd", bytes(6), struct.pack(">H", 1)), stsz, stco)
+            return _atom(b"moov", mvhd, *tracks, meta)
+    else:
+
+        def build(offset: int) -> bytes:
+            return _atom(b"moov", mvhd, *tracks)
+
+    ftyp = _atom(b"ftyp", b"isom", struct.pack(">I", 512), b"isomavc1")
+    mdat = _atom(b"mdat", payload)
+    if moov_last:
+        moov = build(len(ftyp) + 8)
+        blob = ftyp + mdat + moov
+    else:
+        # The chunk offset is absolute, and moov sits in front of the data it
+        # points at, so its own length has to be known first. Nothing about the
+        # offset changes that length, which is what makes two passes enough.
+        moov = build(len(ftyp) + len(build(0)) + 8)
+        blob = ftyp + moov + mdat
+
+    if truncate_to is not None:
+        blob = blob[:truncate_to]
+    path.write_bytes(blob)
+    return path
 
 
 # --- HuggingFace cache -------------------------------------------------------

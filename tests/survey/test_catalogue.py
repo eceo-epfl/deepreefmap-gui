@@ -12,7 +12,7 @@ from _factories import (
 
 from deepreefmap_gui.survey import catalogue
 from deepreefmap_gui.survey.catalogue import UNASSIGNED_TITLE
-from deepreefmap_gui.survey.models import RunRecord, TransectPass
+from deepreefmap_gui.survey.models import RunRecord
 from deepreefmap_gui.survey.models.convert import survey_manifest_block
 from deepreefmap_gui.survey.store import SurveyStore
 
@@ -185,91 +185,6 @@ def test_entry_status_lets_a_recorded_failure_override_the_manifest(
     write_run(out_root, "late")
     entry = scan(out_root, store)[0]
     assert catalogue.entry_status(entry) == shown
-
-
-def test_videos_facet_separates_windows_on_shared_video(out_root, store):
-    t1, t2 = make_transect("T1"), make_transect("T2")
-    seed_survey_run(store, out_root, "first_half", transect=t1)
-    store2_pass = TransectPass(
-        transect_id=t2.id,
-        video_id=store.list_videos()[0].id,
-        begin_s=60.0,
-        end_s=120.0,
-    )
-    store.add_transect(t2)
-    store.add_pass(store2_pass)
-    run = RunRecord(pass_id=store2_pass.id, run_dir_name="second_half", status="succeeded")
-    store.add_run(run)
-    write_run(out_root, "second_half", begin_s=60.0, end_s=120.0)
-    groups = catalogue.videos_facet(scan(out_root, store))
-    assert len(groups) == 1
-    assert len(groups[0].children) == 2
-    titles = {c.title for c in groups[0].children}
-    assert any("T1" in t for t in titles) and any("T2" in t for t in titles)
-
-
-def test_videos_facet_lists_a_section_that_never_ran(out_root, store):
-    """A section cut from a clip but never processed still gets a child node:
-    the section is the browsable unit, and the unprocessed half is what the
-    facet is asked about."""
-    transect, video, pass_ = seed_pass(store)
-    pass_.begin_s, pass_.end_s = 10.0, 50.0
-    store.update_pass(pass_)
-    library = catalogue.video_library(
-        store.list_videos(), store.list_passes(), store.list_runs()
-    )
-    groups = catalogue.videos_facet(
-        scan(out_root, store), library, store.list_transects()
-    )
-    assert [g.title for g in groups] == ["GX010001.MP4"]
-    children = groups[0].children
-    assert [c.title for c in children] == ["10–50 s · T1"]
-    assert children[0].key == ("pass", str(pass_.id))
-    assert children[0].all_entries() == []
-
-
-def test_an_unhashed_clip_and_its_runs_are_one_group(out_root, store):
-    """Scenario: a clip added while its file was unreadable has no checksum, so
-    both sides of the By video join fall back to a name.
-
-    Expected behaviour: one group. Both sides fall back to the file name, so a
-    clip and the runs cut from it still meet.
-    """
-    video = store.upsert_video(
-        make_video(content_hash=None, file_name="GX010001.MP4", path="/data/GX010001.MP4")
-    )
-    transect = make_transect()
-    store.add_transect(transect)
-    pass_ = TransectPass(
-        transect_id=transect.id, video_id=video.id, begin_s=0.0, end_s=60.0
-    )
-    store.add_pass(pass_)
-    run = RunRecord(pass_id=pass_.id, run_dir_name="a_run", status="succeeded")
-    store.add_run(run)
-    write_run(out_root, "a_run", video_hashes=[], input_videos=["/data/GX010001.MP4"])
-
-    library = catalogue.video_library(
-        store.list_videos(), store.list_passes(), store.list_runs()
-    )
-    groups = catalogue.videos_facet(scan(out_root, store), library)
-    assert [g.title for g in groups] == ["GX010001.MP4"]
-    assert len(groups[0].all_entries()) == 1
-
-
-def test_runs_naming_no_video_share_one_group(out_root):
-    """Scenario: several runs crashed before recording a video, so they carry
-    neither a checksum nor a file name.
-
-    Expected behaviour: one group holding all of them. Keying each on something
-    unique to itself turned a handful of crashes into a rail full of identically
-    titled groups of one.
-    """
-    for name in ("crashed_a", "crashed_b", "crashed_c"):
-        write_run(out_root, name, video_hashes=[], input_videos=[])
-
-    groups = catalogue.videos_facet(scan(out_root))
-    assert [g.title for g in groups] == [catalogue.NO_VIDEO_TITLE]
-    assert len(groups[0].all_entries()) == 3
 
 
 def test_reconcile_database_wins_and_records_move(out_root, store):

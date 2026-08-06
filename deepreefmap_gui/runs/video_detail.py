@@ -2,8 +2,10 @@
 
 Footage outlives the runs cut from it: a card copied off the camera is a fact of
 the day's diving whether or not anything has been processed from it yet. This is
-the pane that says so, shown in Browse when the grouping is by video and a clip
-is what is selected.
+the pane that says so, beside the list on the Videos page.
+
+It lists the sections cut from the clip; picking one fills the section card
+below with what became of that cut.
 """
 
 from __future__ import annotations
@@ -29,11 +31,11 @@ from deepreefmap_gui.core.widgets import (
 )
 from deepreefmap_gui.runs.run_detail import DetailCard
 from deepreefmap_gui.survey.catalogue import (
-    LINK_LINKED,
     LINK_MISSING,
     VideoLibraryEntry,
 )
 from deepreefmap_gui.survey.statuses import clip_spec
+from deepreefmap_gui.survey.video_groups import pass_status
 
 _PASS_PAGE, _NO_PASS_PAGE = 0, 1
 
@@ -85,17 +87,15 @@ class VideoDetailPanel(DetailCard):
     """A titled card describing the selected clip."""
 
     queue_requested = Signal()
-    show_in_folder_requested = Signal()
     pass_activated = Signal(str)
     add_to_cart_requested = Signal(str)
     relocate_requested = Signal()
-    preview_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         layout = self.body
 
-        heading = muted_label("Passes cut from this clip")
+        heading = muted_label("Sections cut from this clip")
         layout.addWidget(heading)
 
         self.pass_list = QListWidget()
@@ -104,7 +104,7 @@ class VideoDetailPanel(DetailCard):
         # grow a scrollbar that hides the outcome at the end of the line.
         self.pass_list.setTextElideMode(Qt.TextElideMode.ElideMiddle)
         self.pass_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.pass_list.itemDoubleClicked.connect(self._on_pass_activated)
+        self.pass_list.itemClicked.connect(self._on_pass_activated)
         self.pass_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.pass_list.customContextMenuRequested.connect(self._on_pass_menu)
         self._pass_stack = QStackedWidget()
@@ -114,16 +114,12 @@ class VideoDetailPanel(DetailCard):
         )
         layout.addWidget(self._pass_stack, 1)
 
-        # Relocating and previewing act on the file, so they sit above the row
-        # that acts on the survey. Relocate only appears when there is something
-        # to relocate; a permanently greyed button teaches nothing.
+        # Playing and revealing are on the clip's own row, where the clip is.
+        # Relocating stays here: it is rare, it needs the sentence next to it,
+        # and it only appears when there is something to relocate, since a
+        # permanently greyed button teaches nothing.
         file_row = QHBoxLayout()
         file_row.setSpacing(SPACE_SM)
-        self.preview_btn = QPushButton("Preview…")
-        self.preview_btn.setProperty("quiet", "true")
-        self.preview_btn.setToolTip("Scrub through the footage without queueing it.")
-        self.preview_btn.clicked.connect(self.preview_requested)
-        file_row.addWidget(self.preview_btn)
         self.relocate_btn = QPushButton("Relocate…")
         self.relocate_btn.setProperty("quiet", "true")
         self.relocate_btn.setToolTip(
@@ -142,9 +138,7 @@ class VideoDetailPanel(DetailCard):
             "transect or none, and add it to the cart."
         )
         self.queue_btn.clicked.connect(self.queue_requested)
-        self.show_btn = QPushButton("Show in folder")
-        self.show_btn.clicked.connect(self.show_in_folder_requested)
-        self.add_actions(self.queue_btn, self.show_btn)
+        self.add_actions(self.queue_btn)
 
         self._entry: VideoLibraryEntry | None = None
 
@@ -191,9 +185,6 @@ class VideoDetailPanel(DetailCard):
         self.facts.set_rows(rows)
 
         self.relocate_btn.setVisible(entry.link_state == LINK_MISSING)
-        # Previewing decodes the file, so it needs the file. Enabled only on a
-        # confirmed link, which also means it stays off until the scan answers.
-        self.preview_btn.setEnabled(entry.link_state == LINK_LINKED)
 
         self.pass_list.clear()
         runs_by_pass: dict = {}
@@ -202,12 +193,17 @@ class VideoDetailPanel(DetailCard):
         for pass_ in entry.passes:
             name = transect_name(pass_.transect_id) or "Unassigned"
             runs = runs_by_pass.get(pass_.id, [])
-            status = runs[-1].status if runs else "queued"
-            item = QListWidgetItem(
-                f"{name} · {pass_.direction} · {_window(pass_.begin_s, pass_.end_s)} · {status}"
-            )
+            status = pass_status(runs)
+            # The window first: it is what the section is, where the transect and
+            # the outcome are things it has. The pane is narrow enough that
+            # anything after the first two facts elides, so they go first.
+            line = f"{_window(pass_.begin_s, pass_.end_s)} · {name}"
+            if runs:
+                line += f" · {len(runs)} run{'' if len(runs) == 1 else 's'}"
+            item = QListWidgetItem(line)
             item.setIcon(status_dot_icon(STATUS_COLORS.get(status, TEXT_MUTED)))
             item.setData(PASS_ID_ROLE, str(pass_.id))
+            item.setToolTip(f"{pass_.direction} · {status}")
             self.pass_list.addItem(item)
         self._pass_stack.setCurrentIndex(_PASS_PAGE if entry.passes else _NO_PASS_PAGE)
         self._entry = entry

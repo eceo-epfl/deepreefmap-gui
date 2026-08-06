@@ -28,12 +28,12 @@ def ready_machine(window, monkeypatch):
 
     Every input to the verdict is faked so it belongs to the test rather than to
     the runner: a full disk, a missing card, an uncached model or a modest amount
-    of RAM would each otherwise decide it. Grading no frames is what leaves the
-    memory advisory off, since the grade reads the real machine's RAM.
+    of RAM would each otherwise decide it. Grading no pass is what leaves the
+    memory advisory off, since the grade probes the real machine's RAM.
     """
     monkeypatch.setattr(setup_mod, "probe_system", lambda *_a, **_k: _profile())
     monkeypatch.setattr(window, "_survey_missing_models", list)
-    monkeypatch.setattr(window, "_memory_grade_frames", lambda _fps: None)
+    monkeypatch.setattr(window, "_current_fit", lambda: None)
     window._update_memory_profile_warning()
     window._refresh_readiness_view()
     return window

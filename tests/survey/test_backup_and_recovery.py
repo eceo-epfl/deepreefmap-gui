@@ -11,6 +11,7 @@ import sqlite3
 import uuid
 
 import pytest
+from _factories import write_v0_2_0_database
 
 from deepreefmap_gui.survey import backup as bk
 from deepreefmap_gui.survey.health import SurveyDbState, inspect_survey_db
@@ -21,16 +22,11 @@ from deepreefmap_gui.survey.recovery import (
     rebuild_losses,
     recovery_options,
 )
-from deepreefmap_gui.survey.store import _MIGRATIONS, SurveyStore
+from deepreefmap_gui.survey.store import SurveyStore, latest_schema_version
 
-
-def _at_version(path, version: int) -> None:
-    conn = sqlite3.connect(path)
-    for script in _MIGRATIONS[:version]:
-        conn.executescript(script)
-    conn.execute(f"PRAGMA user_version = {version}")
-    conn.commit()
-    conn.close()
+# v0.2.0 is the only build whose database this one carries forward, so it is the
+# only state a backup can be taken from.
+V0_2_0_VERSION = 3
 
 
 def _insert_transect_directly(path, name: str) -> None:
@@ -48,7 +44,7 @@ def _insert_transect_directly(path, name: str) -> None:
 
 def _stamp_ahead(path, ahead: int = 1) -> None:
     conn = sqlite3.connect(path)
-    conn.execute(f"PRAGMA user_version = {len(_MIGRATIONS) + ahead}")
+    conn.execute(f"PRAGMA user_version = {latest_schema_version() + ahead}")
     conn.commit()
     conn.close()
 
@@ -93,13 +89,13 @@ def _write_run(out_root, name="run_001", transect_name="T1"):
 
 def test_migrating_leaves_the_previous_shape_behind(tmp_path):
     path = tmp_path / "survey.db"
-    _at_version(path, 1)
+    write_v0_2_0_database(path)
     SurveyStore(path).close()
 
     backups = bk.list_backups(path)
-    assert [b.version for b in backups] == [1]
-    assert inspect_survey_db(backups[0].path).db_version == 1
-    assert inspect_survey_db(path).db_version == len(_MIGRATIONS)
+    assert [b.version for b in backups] == [V0_2_0_VERSION]
+    assert inspect_survey_db(backups[0].path).db_version == V0_2_0_VERSION
+    assert inspect_survey_db(path).db_version == latest_schema_version()
 
 
 def test_creating_a_database_takes_no_backup(tmp_path):
@@ -120,12 +116,12 @@ def test_a_backup_that_cannot_be_written_does_not_block_opening(tmp_path, monkey
     """Expected behaviour: protecting the database is never a reason to refuse
     to open it."""
     path = tmp_path / "survey.db"
-    _at_version(path, 1)
+    write_v0_2_0_database(path)
     monkeypatch.setattr(bk.sqlite3, "connect", _raising_connect(bk.sqlite3.connect, path))
 
     store = SurveyStore(path)
     store.close()
-    assert inspect_survey_db(path).db_version == len(_MIGRATIONS)
+    assert inspect_survey_db(path).db_version == latest_schema_version()
 
 
 def _raising_connect(real, guarded):
@@ -143,7 +139,7 @@ def test_best_backup_ignores_ones_this_build_cannot_read(tmp_path):
     bk.write_backup(path, 2)
     bk.write_backup(path, 99)
 
-    assert bk.best_backup(path, len(_MIGRATIONS)).version == 2
+    assert bk.best_backup(path, latest_schema_version()).version == 2
     assert bk.best_backup(path, 1) is None
 
 
@@ -205,14 +201,14 @@ def test_unreadable_run_folders_are_counted_as_skipped(tmp_path):
 
 def test_restoring_a_backup_is_offered_first_and_recommended(tmp_path):
     path = tmp_path / "survey.db"
-    _at_version(path, 1)
+    write_v0_2_0_database(path)
     SurveyStore(path).close()
     _stamp_ahead(path)
 
     options = recovery_options(inspect_survey_db(path), tmp_path)
     assert options[0].kind is RecoveryKind.RESTORE_BACKUP
     assert options[0].recommended
-    assert "v1" in options[0].detail
+    assert f"v{V0_2_0_VERSION}" in options[0].detail
 
 
 def test_rebuilding_is_recommended_when_there_is_no_backup(tmp_path):
@@ -242,7 +238,7 @@ def test_restoring_brings_the_rows_back_and_keeps_the_newer_database(tmp_path):
     it, so restoring is exact rather than reconstructed.
     """
     path = tmp_path / "survey.db"
-    _at_version(path, 1)
+    write_v0_2_0_database(path)
     _insert_transect_directly(path, "Reef edge")
     # Migrating is what takes the backup, so it captures the row above.
     SurveyStore(path).close()
@@ -271,7 +267,7 @@ def test_rebuilding_sets_the_newer_database_aside_rather_than_deleting_it(tmp_pa
     option = next(o for o in recovery_options(health, tmp_path) if o.kind is RecoveryKind.REBUILD)
     apply_recovery(option, health, tmp_path)
 
-    displaced = tmp_path / f"survey.db.schema-v{len(_MIGRATIONS) + 2}"
+    displaced = tmp_path / f"survey.db.schema-v{latest_schema_version() + 2}"
     assert displaced.exists()
     store = SurveyStore(path)
     assert [t.name for t in store.list_transects()] == ["Reef edge"]
