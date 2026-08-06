@@ -15,10 +15,14 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QHeaderView,
     QTableWidget,
-    QTableWidgetItem,
 )
 
-from deepreefmap_gui.core.widgets import StatusPillDelegate, configure_table
+from deepreefmap_gui.core.widgets import (
+    SortableItem,
+    StatusPillDelegate,
+    configure_table,
+    enable_sorting,
+)
 from deepreefmap_gui.profiling.eta import format_duration
 from deepreefmap_gui.profiling.system_probe import format_bytes
 from deepreefmap_gui.runs.run_cards import (
@@ -129,42 +133,6 @@ def column_widths(available: int) -> dict[int, int]:
     return widths
 
 
-class SortableItem(QTableWidgetItem):
-    """A cell that sorts by a value rather than by its formatted text.
-
-    "1.2M pts" above "988k pts", "1.6 GB" above "1015 MB": the display strings
-    order wrongly under every string comparison, so the raw number rides along.
-
-    A cell with no value sinks to the bottom in *both* directions. Qt sorts with
-    ``__lt__`` and reverses for descending, so a plain comparison would float the
-    blanks to the top of a descending sort; the current sort order is read back
-    off the header and the answer inverted to cancel that out.
-    """
-
-    def __init__(self, text: str, value: object = None) -> None:
-        super().__init__(text)
-        self._value = value
-
-    def __lt__(self, other: QTableWidgetItem) -> bool:
-        if not isinstance(other, SortableItem):
-            return super().__lt__(other)
-        mine, theirs = self._value, other._value
-        if (mine is None) != (theirs is None):
-            table = self.tableWidget()
-            descending = (
-                table is not None
-                and table.horizontalHeader().sortIndicatorOrder()
-                == Qt.SortOrder.DescendingOrder
-            )
-            return descending if mine is None else not descending
-        if mine is None:
-            return False
-        try:
-            return mine < theirs  # type: ignore[operator]
-        except TypeError:
-            return str(mine) < str(theirs)
-
-
 def _sort_text(value: str | None) -> str | None:
     """Lowercased for a case-blind sort; None when absent, so it sinks."""
     return value.lower() if value else None
@@ -216,7 +184,6 @@ class RunTable(QTableWidget):
         # picked at once.
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setWordWrap(False)
-        self.setSortingEnabled(True)
         self.setItemDelegateForColumn(COL_STATUS, StatusPillDelegate(self))
 
         # A long value gives way to an ellipsis rather than to a scrollbar, and
@@ -239,7 +206,7 @@ class RunTable(QTableWidget):
                 item.setTextAlignment(
                     Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
                 )
-        self.sortByColumn(COL_CREATED, Qt.SortOrder.DescendingOrder)
+        enable_sorting(self, COL_CREATED, Qt.SortOrder.DescendingOrder)
 
     def _apply_column_widths(self) -> None:
         header = self.horizontalHeader()

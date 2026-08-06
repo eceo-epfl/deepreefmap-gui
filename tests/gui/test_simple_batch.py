@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 
 import pytest
-from _factories import make_transect
+from _factories import clip_pass, make_batch, make_transect, seed_pass
 from _qt_wait import wait_until
 from deepreefmap.pipeline.orchestrator import ReconstructionCancelled
 from PySide6.QtWidgets import QDialog, QMessageBox
@@ -58,6 +58,16 @@ def batch_window(window, tmp_path, monkeypatch):
     return window
 
 
+def test_cart_table_header_does_not_pretend_to_sort(batch_window):
+    """Cell widgets, spanned headings and a positional index rule sorting out,
+    so the header must not offer it."""
+    table = batch_window._survey_pass_table
+    header = table.horizontalHeader()
+    assert not table.isSortingEnabled()
+    assert not header.sectionsClickable()
+    assert header.property("sortable") is None
+
+
 def await_batch(window, qapp, timeout=10.0):
     """Wait for the batch worker, then drain the signals it queued.
 
@@ -78,34 +88,45 @@ def await_batch(window, qapp, timeout=10.0):
 
 
 def add_video(window, tmp_path, monkeypatch, name="GX010001.MP4", duration_s=60.0):
+    """One whole-clip pass in the cart, over a real file in tmp_path."""
     path = tmp_path / name
     path.write_bytes(name.encode() * 4096)
-    monkeypatch.setattr(
-        "deepreefmap_gui.simple.batch._probe_video", lambda _path: (duration_s, 30.0)
-    )
-    monkeypatch.setattr(
-        "deepreefmap_gui.simple.batch.QFileDialog.getOpenFileNames",
-        staticmethod(lambda *a, **k: ([str(path)], "")),
-    )
-    rows = len(window._survey_rows)
-    window._on_survey_add_videos()
-    assert wait_until(lambda: len(window._survey_rows) > rows), "probe never landed"
+    pass_ = clip_pass(window._survey_store(), path, duration_s=duration_s)
+    window._add_pass_to_cart(pass_.id)
     return path
 
 
 def add_videos(window, tmp_path, monkeypatch, names, duration_s=60.0):
-    """Add several clips in one action, as selecting a card's worth does."""
+    """Several separate recordings, one pass each."""
+    return [
+        str(add_video(window, tmp_path, monkeypatch, name=name, duration_s=duration_s))
+        for name in names
+    ]
+
+
+def add_chaptered_video(window, tmp_path, names, duration_s=60.0):
+    """One recording split into chapters, filed as a single pass."""
+    paths = []
+    for name in names:
+        path = tmp_path / name
+        path.write_bytes(name.encode() * 4096)
+        paths.append(str(path))
+    pass_ = clip_pass(window._survey_store(), *paths, duration_s=duration_s)
+    window._add_pass_to_cart(pass_.id)
+    return paths
+
+
+def import_clips(window, tmp_path, monkeypatch, names=("GX010001.MP4",)):
+    """Drop clips on the window, as the Browse import path does."""
     paths = []
     for name in names:
         path = tmp_path / name
         path.write_bytes(name.encode() * 4096)
         paths.append(str(path))
     monkeypatch.setattr(
-        "deepreefmap_gui.simple.batch._probe_video", lambda _path: (duration_s, 30.0)
+        "deepreefmap_gui.simple.batch._probe_video", lambda _path: (60.0, 30.0)
     )
-    rows = len(window._survey_rows)
     window._add_video_paths(paths)
-    assert wait_until(lambda: len(window._survey_rows) > rows), "probe never landed"
     return paths
 
 
@@ -145,7 +166,7 @@ def stored_directions(window):
     return [store.get_pass(row.pass_id).direction for row in window._survey_rows]
 
 
-def test_add_video_stays_unassigned_between_transects(batch_window, tmp_path, monkeypatch):
+def test_a_queued_pass_without_a_transect_is_runnable(batch_window, tmp_path, monkeypatch):
     add_second_transect(batch_window)
     add_video(batch_window, tmp_path, monkeypatch)
     assert len(batch_window._survey_rows) == 1
@@ -161,14 +182,19 @@ def test_add_video_stays_unassigned_between_transects(batch_window, tmp_path, mo
     assert batch_window._survey_store().list_passes()[0].transect_id is None
 
 
-def test_add_video_preselects_the_only_transect(batch_window, tmp_path, monkeypatch):
-    add_video(batch_window, tmp_path, monkeypatch)
-    assert batch_window._survey_rows[0].transect_id is not None
-    assert len(batch_window._survey_store().list_passes()) == 1
-    combo = batch_window._survey_pass_table.cellWidget(batch_window._table_row_of(0), _COL_TRANSECT)
-    assert combo.currentText() == "T1"
-    assert combo.styleSheet() == ""
-    assert batch_window._survey_start_btn.isEnabled()
+def test_importing_a_clip_never_mints_a_pass(batch_window, tmp_path, monkeypatch):
+    """Scenario: one clip dropped on the window, with exactly one transect planned.
+
+    Expected behaviour: the clip lands in the library and nothing else happens.
+    No pass, no row, and no assignment to the sole transect on the user's behalf.
+    """
+    store = batch_window._survey_store()
+    import_clips(batch_window, tmp_path, monkeypatch)
+    assert wait_until(lambda: len(store.list_videos()) == 1), "probe never landed"
+    assert store.list_videos()[0].duration_s == 60.0
+    assert store.list_passes() == []
+    assert batch_window._survey_rows == []
+    assert "Imported 1 clip" in batch_window._status_label.text()
 
 
 def test_assigning_transect_persists_pass(batch_window, tmp_path, monkeypatch):
@@ -629,7 +655,10 @@ def test_survey_progress_line_shows_transect_not_slug(batch_window, tmp_path, mo
     assert seen == ["T1"]
 
 
-def test_remove_pass_with_runs_is_blocked(batch_window, tmp_path, monkeypatch, qapp):
+def test_remove_after_processing_keeps_the_pass_and_its_run(
+    batch_window, tmp_path, monkeypatch, qapp
+):
+    """Removing un-carts membership only, so a processed pass keeps its run."""
     monkeypatch.setattr(
         "deepreefmap.pipeline.orchestrator.run_reconstruction", lambda **k: None
     )
@@ -639,8 +668,87 @@ def test_remove_pass_with_runs_is_blocked(batch_window, tmp_path, monkeypatch, q
     await_batch(batch_window, qapp)
     batch_window._survey_pass_table.setCurrentCell(batch_window._table_row_of(0), 0)
     batch_window._on_survey_remove_pass()
-    assert "cannot be removed" in batch_window._status_label.text()
+    store = batch_window._survey_store()
+    assert batch_window._survey_rows == []
+    assert len(store.list_passes()) == 1
+    assert [r.status for r in store.list_runs()] == ["succeeded"]
+
+
+def test_remove_from_session_honours_multi_selection(batch_window, tmp_path, monkeypatch):
+    add_videos(batch_window, tmp_path, monkeypatch, ["GX010001.MP4", "GX010002.MP4"])
+    session = batch_window._survey_batch
+    batch_window._survey_pass_table.selectAll()
+    batch_window._on_survey_remove_pass()
+    store = batch_window._survey_store()
+    assert batch_window._survey_rows == []
+    assert store.list_batch_items(session.id) == []
+    # The passes and the session survive; only the membership is gone.
+    assert len(store.list_passes()) == 2
+    assert store.get_batch(session.id) is not None
+
+
+def test_clear_cart_click_empties_the_cart_without_crashing(
+    batch_window, tmp_path, monkeypatch
+):
+    """Scenario: a filled cart is cleared from the header button.
+
+    Expected behaviour: the table, its row index and the row actions repaint
+    together, so nothing indexes a row that is gone.
+    """
+    add_video(batch_window, tmp_path, monkeypatch)
+    assign_transect(batch_window, 0)
+    session = batch_window._survey_batch
+    answer_question(monkeypatch, QMessageBox.StandardButton.Yes)
+    batch_window._survey_clear_cart_btn.click()
+    store = batch_window._survey_store()
+    assert batch_window._survey_rows == []
+    assert batch_window._survey_pass_table.rowCount() == 0
+    assert store.list_batch_items(session.id) == []
+    assert len(store.list_passes()) == 1
+    assert store.get_batch(session.id) is not None
+    assert not batch_window._survey_remove_btn.isEnabled()
+    assert not batch_window._survey_start_btn.isEnabled()
+
+
+def test_clear_cart_declined_leaves_the_cart_alone(batch_window, tmp_path, monkeypatch):
+    add_video(batch_window, tmp_path, monkeypatch)
+    session = batch_window._survey_batch
+    answer_question(monkeypatch, QMessageBox.StandardButton.No)
+    batch_window._survey_clear_cart_btn.click()
     assert len(batch_window._survey_rows) == 1
+    assert len(batch_window._survey_store().list_batch_items(session.id)) == 1
+
+
+def test_clear_cart_leaves_other_sessions_alone(batch_window, tmp_path, monkeypatch):
+    add_video(batch_window, tmp_path, monkeypatch)
+    session = batch_window._survey_batch
+    store = batch_window._survey_store()
+    other = make_batch(store, "other-day")
+    seed_pass(store, transect=store.list_transects()[0], batch=other)
+    answer_question(monkeypatch, QMessageBox.StandardButton.Yes)
+    batch_window._survey_clear_cart_btn.click()
+    assert store.list_batch_items(session.id) == []
+    assert len(store.list_batch_items(other.id)) == 1
+    assert len(store.list_passes()) == 2
+
+
+def test_remove_pass_in_a_cart_takes_its_cart_row_with_it(batch_window, tmp_path, monkeypatch):
+    """Scenario: a pass sits in the cart and has never run.
+
+    Expected behaviour: removing it un-carts the row rather than failing on
+    the batch_item foreign key, and the pass itself survives in the store.
+    """
+    add_video(batch_window, tmp_path, monkeypatch)
+    row = batch_window._survey_rows[0]
+    store = batch_window._survey_store()
+    assert [i.pass_id for i in store.list_all_batch_items()] == [row.pass_id]
+
+    batch_window._survey_pass_table.setCurrentCell(batch_window._table_row_of(0), 0)
+    batch_window._on_survey_remove_pass()
+
+    assert batch_window._survey_rows == []
+    assert store.get_pass(row.pass_id) is not None
+    assert store.list_all_batch_items() == []
 
 
 def test_refresh_restores_batch_from_store(batch_window, tmp_path, monkeypatch):
@@ -934,8 +1042,8 @@ def test_corrupt_user_preset_falls_back_and_does_not_block(make_window, tmp_path
     assert "could not be loaded" not in window._survey_preset_label.text()
 
     add_video(window, tmp_path, monkeypatch)
-    # One transect, so the video preselects it, the pass persists, and the only
-    # thing that could still block the button is a missing preset.
+    # The pass runs unassigned, so the only thing that could still block the
+    # button is a missing preset.
     assert window._survey_start_btn.isEnabled()
 
 
@@ -1020,6 +1128,8 @@ def test_one_way_transect_is_flagged(batch_window, tmp_path, monkeypatch):
     """Nothing downstream can tell a one-way survey from forgotten dropdowns."""
     for name in ("GX010001.MP4", "GX010002.MP4"):
         add_video(batch_window, tmp_path, monkeypatch, name=name)
+    assign_transect(batch_window, 0)
+    assign_transect(batch_window, 1)
     flagged = direction_combo(batch_window, 0)
     assert flagged.styleSheet() != ""
     assert "swum out and back" in flagged.toolTip()
@@ -1079,24 +1189,27 @@ def test_probing_a_clip_stays_off_the_gui_thread(batch_window, tmp_path, monkeyp
         threads.append(threading.current_thread())
         return (60.0, 30.0)
 
+    store = batch_window._survey_store()
     monkeypatch.setattr("deepreefmap_gui.simple.batch._probe_video", record)
     batch_window._add_video_paths([str(path)])
-    assert wait_until(lambda: len(batch_window._survey_rows) == 1)
+    assert wait_until(lambda: len(store.list_videos()) == 1)
     assert threads and threads[0] is not threading.main_thread()
-    assert batch_window._survey_rows[0].end_s == 60.0
+    assert store.list_videos()[0].duration_s == 60.0
 
 
-def test_unreadable_clips_are_counted_not_queued(batch_window, tmp_path, monkeypatch):
+def test_unreadable_clips_are_counted_not_imported(batch_window, tmp_path, monkeypatch):
+    store = batch_window._survey_store()
     good = tmp_path / "good.MP4"
     bad = tmp_path / "bad.MP4"
     for path in (good, bad):
-        path.write_bytes(b"x" * 4096)
+        path.write_bytes(path.name.encode() * 512)
     monkeypatch.setattr(
         "deepreefmap_gui.simple.batch._probe_video",
         lambda path: (60.0, 30.0) if path.endswith("good.MP4") else None,
     )
     batch_window._add_video_paths([str(good), str(bad)])
-    assert wait_until(lambda: len(batch_window._survey_rows) == 1)
+    assert wait_until(lambda: len(store.list_videos()) == 1)
+    assert store.list_videos()[0].file_name == "good.MP4"
     assert "Skipped 1 unreadable" in batch_window._status_label.text()
 
 
@@ -1107,6 +1220,8 @@ def test_trim_can_apply_to_every_pass_of_a_transect(batch_window, tmp_path, monk
     """One transect filmed several times takes the same tape-in and tape-out cuts."""
     for name in ("GX010001.MP4", "GX010002.MP4"):
         add_video(batch_window, tmp_path, monkeypatch, name=name)
+    assign_transect(batch_window, 0)
+    assign_transect(batch_window, 1)
     stub_trim_dialog(monkeypatch, 5.0, 40.0)
     answer_question(monkeypatch, QMessageBox.StandardButton.Yes)
     table = batch_window._survey_pass_table
@@ -1147,6 +1262,8 @@ def test_bulk_trim_keeps_a_short_clip_inside_its_own_length(
     """A shorter clip of the same transect runs to its own end rather than past it."""
     add_video(batch_window, tmp_path, monkeypatch, name="GX010001.MP4")
     add_video(batch_window, tmp_path, monkeypatch, name="GX010002.MP4", duration_s=20.0)
+    assign_transect(batch_window, 0)
+    assign_transect(batch_window, 1)
     stub_trim_dialog(monkeypatch, 5.0, 40.0)
     answer_question(monkeypatch, QMessageBox.StandardButton.Yes)
     batch_window._on_survey_row_trim(
@@ -1255,31 +1372,14 @@ def test_survey_worker_seeds_from_a_matching_run(
 # --- Chaptered recordings ---
 
 
-@pytest.mark.parametrize(
-    ("name", "expected"),
-    [
-        ("GX010012.MP4", ("0012", 1)),
-        ("GX020012.MP4", ("0012", 2)),
-        ("GP030012.MP4", ("0012", 3)),
-        ("GOPR0012.MP4", ("0012", 0)),
-        ("reef.mp4", None),
-        ("GX01001.MP4", None),
-    ],
-)
-def test_chapter_key_reads_gopro_file_names(name, expected):
-    from deepreefmap_gui.simple.batch import _chapter_key
-
-    assert _chapter_key(name) == expected
-
-
-def test_chapters_of_one_swim_become_one_pass(batch_window, tmp_path, monkeypatch):
+def test_a_chaptered_pass_reads_as_one_row(batch_window, tmp_path, monkeypatch):
     """Scenario: a swim long enough that the camera split it at 4 GB.
 
-    Expected behaviour: one pass covering both chapters played back to back,
-    not two passes of half a transect each.
+    Expected behaviour: one row covering both chapters played back to back,
+    not two rows of half a transect each.
     """
-    add_videos(
-        batch_window, tmp_path, monkeypatch, ["GX020012.MP4", "GX010012.MP4"], duration_s=300.0
+    add_chaptered_video(
+        batch_window, tmp_path, ["GX010012.MP4", "GX020012.MP4"], duration_s=300.0
     )
     assert len(batch_window._survey_rows) == 1
     row = batch_window._survey_rows[0]
@@ -1294,19 +1394,12 @@ def test_chapters_of_one_swim_become_one_pass(batch_window, tmp_path, monkeypatc
     assert pass_.video_ids() == [video.id for video in row.videos]
 
 
-def test_separate_recordings_stay_separate_passes(batch_window, tmp_path, monkeypatch):
-    add_videos(
-        batch_window, tmp_path, monkeypatch, ["GX010012.MP4", "GX010013.MP4", "reef.mp4"]
-    )
-    assert len(batch_window._survey_rows) == 3
-
-
 def test_a_chaptered_pass_runs_every_chapter(batch_window, tmp_path, monkeypatch, qapp):
     seen = {}
     monkeypatch.setattr(
         "deepreefmap.pipeline.orchestrator.run_reconstruction", lambda **kwargs: seen.update(kwargs)
     )
-    paths = add_videos(batch_window, tmp_path, monkeypatch, ["GX010012.MP4", "GX020012.MP4"])
+    paths = add_chaptered_video(batch_window, tmp_path, ["GX010012.MP4", "GX020012.MP4"])
     batch_window._on_survey_start()
     await_batch(batch_window, qapp)
 
@@ -1316,7 +1409,7 @@ def test_a_chaptered_pass_runs_every_chapter(batch_window, tmp_path, monkeypatch
 
 
 def test_reopening_a_batch_restores_the_chapters(batch_window, tmp_path, monkeypatch):
-    add_videos(batch_window, tmp_path, monkeypatch, ["GX010012.MP4", "GX020012.MP4"])
+    add_chaptered_video(batch_window, tmp_path, ["GX010012.MP4", "GX020012.MP4"])
     batch_window._survey_batch = None
     batch_window._survey_rows = []
     batch_window._survey_pass_table.setRowCount(0)
@@ -1329,7 +1422,7 @@ def test_reopening_a_batch_restores_the_chapters(batch_window, tmp_path, monkeyp
 
 
 def test_splitting_a_chaptered_pass_keeps_every_chapter(batch_window, tmp_path, monkeypatch):
-    add_videos(batch_window, tmp_path, monkeypatch, ["GX010012.MP4", "GX020012.MP4"])
+    add_chaptered_video(batch_window, tmp_path, ["GX010012.MP4", "GX020012.MP4"])
     batch_window._survey_pass_table.setCurrentCell(batch_window._table_row_of(0), 0)
     batch_window._on_survey_split_pass()
 
@@ -1340,14 +1433,9 @@ def test_splitting_a_chaptered_pass_keeps_every_chapter(batch_window, tmp_path, 
     ] == [2, 2]
 
 
-def test_queue_report_counts_passes_and_videos_apart(batch_window, tmp_path, monkeypatch):
-    """A chaptered recording is several files and one pass, so say both."""
-    add_videos(batch_window, tmp_path, monkeypatch, ["GX010012.MP4", "GX020012.MP4"])
-    assert "Queued 1 pass from 2 videos." in batch_window._status_label.text()
-
-
-def test_the_same_recording_picked_twice_is_one_chapter(batch_window, tmp_path, monkeypatch):
-    """Two folders holding one clip is still one file, so the pass names it once."""
+def test_the_same_clip_picked_twice_imports_once(batch_window, tmp_path, monkeypatch):
+    """Two folders holding one clip is still one file, so the library names it once."""
+    store = batch_window._survey_store()
     copy_dir = tmp_path / "backup"
     copy_dir.mkdir()
     original = tmp_path / "GX010012.MP4"
@@ -1358,11 +1446,9 @@ def test_the_same_recording_picked_twice_is_one_chapter(batch_window, tmp_path, 
         "deepreefmap_gui.simple.batch._probe_video", lambda _path: (60.0, 30.0)
     )
     batch_window._add_video_paths([str(original), str(duplicate)])
-    assert wait_until(lambda: len(batch_window._survey_rows) == 1)
-
-    row = batch_window._survey_rows[0]
-    assert len(row.videos) == 1
-    assert row.end_s == 60.0
+    assert wait_until(lambda: len(store.list_videos()) == 1)
+    assert "Imported 1 clip" in batch_window._status_label.text()
+    assert store.list_passes() == []
 
 
 def group_headings(window):
@@ -1687,8 +1773,8 @@ def test_a_running_order_freezes_but_keeps_hold_and_adding_open(
 
     Expected behaviour: what the order *is* can no longer change -- its
     transect, direction and trim are frozen and the header acts on nothing.
-    What stays open: Hold on a pass the worker has not reached, and adding
-    videos, which go to the next session's cart.
+    What stays open: Hold on a pass the worker has not reached, and queueing
+    more passes, which go to the next session's cart.
     """
     for name in ("GX010001.MP4", "GX010002.MP4"):
         add_video(batch_window, tmp_path, monkeypatch, name=name)
@@ -1700,12 +1786,12 @@ def test_a_running_order_freezes_but_keeps_hold_and_adding_open(
     ]
     frozen_controls = [
         batch_window._survey_batch_name,
-        batch_window._survey_new_batch_btn,
+        batch_window._survey_clear_cart_btn,
         batch_window._survey_settings_btn,
         batch_window._survey_audit_btn,
         batch_window._survey_sort_btn,
     ]
-    open_controls = [batch_window._survey_add_btn, batch_window._survey_import_btn]
+    open_controls = [batch_window._survey_import_btn]
     move = batch_window._survey_pass_table.cellWidget(table_row, _COL_ACTION)
     assert all(w.isEnabled() for w in frozen_controls + open_controls + editors + [move])
 
@@ -1731,12 +1817,12 @@ def test_a_running_order_freezes_but_keeps_hold_and_adding_open(
     assert all(w.isEnabled() for w in frozen_controls + open_controls + editors)
 
 
-def test_videos_added_mid_run_land_in_the_next_session(
+def test_passes_queued_mid_run_land_in_the_next_session(
     batch_window, tmp_path, monkeypatch
 ):
-    """Scenario: a batch is running and more footage comes off the card.
+    """Scenario: a batch is running and another section is cut from new footage.
 
-    Expected behaviour: the clips queue into a fresh session, shown under the
+    Expected behaviour: the pass queues into a fresh session, shown under the
     Next session divider, and the running order is untouched.
     """
     add_video(batch_window, tmp_path, monkeypatch)

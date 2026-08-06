@@ -156,3 +156,32 @@ def test_settings_history_with_no_runs_says_so(window, monkeypatch):
     shown = captured_audit_dialogs(monkeypatch)
     window._on_show_config_audit()
     assert shown[0]._rows == []
+
+
+def test_settings_history_table_sorts_by_column(window):
+    """Scenario: the dialog receives rows newest first, with no date column.
+
+    Expected behaviour: that order is shown untouched, because nothing in the
+    table can restore it once an alphabetical sort has run. Clicking a header
+    still sorts.
+    """
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QTableWidget
+
+    from deepreefmap_gui.simple.config_audit_dialog import ConfigAuditDialog
+    from deepreefmap_gui.survey.config_audit import STANDARD, ConfigAuditRow
+
+    org = window._active_preset.org
+    rows = [
+        ConfigAuditRow("run_b", None, org.label, None, {}, STANDARD, "Standard settings."),
+        ConfigAuditRow("run_a", None, org.label, None, {}, STANDARD, "Standard settings."),
+    ]
+    dialog = ConfigAuditDialog(window, rows, org)
+    table = dialog.findChild(QTableWidget)
+    header = table.horizontalHeader()
+    assert header.property("sortable") == "true"
+    assert [table.item(r, 0).text() for r in range(2)] == ["run_b", "run_a"]
+
+    table.sortByColumn(0, Qt.SortOrder.AscendingOrder)
+    assert [table.item(r, 0).text() for r in range(2)] == ["run_a", "run_b"]
+    dialog.deleteLater()

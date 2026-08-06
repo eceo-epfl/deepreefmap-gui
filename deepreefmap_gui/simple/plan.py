@@ -45,6 +45,8 @@ from deepreefmap_gui.core.widgets import (
     SCOPE_FILTERS,
     EmptyState,
     FilterChips,
+    SortableTreeItem,
+    enable_sorting,
     muted_label,
     secondary_label,
     section_card,
@@ -130,6 +132,26 @@ def transect_row_columns(transect: Transect, passes: int, runs: int) -> list[str
         str(runs) if runs else "—",
         "",
     ]
+
+
+def transect_row_values(transect: Transect, passes: int, runs: int) -> dict[int, object]:
+    """The sort value behind each cell of `transect_row_columns`.
+
+    "9 m" sorts above "12 m" as text, so the numeric columns carry their raw
+    numbers. An absent value is left out entirely, which sinks the cell under
+    SortableTreeItem's contract.
+    """
+    values: dict[int, object] = {
+        0: transect.name.lower(),
+        1: transect.length_m or transect.geodesic_length_m(),
+    }
+    if transect.depth_m:
+        values[2] = transect.depth_m
+    if passes:
+        values[3] = passes
+    if runs:
+        values[4] = runs
+    return values
 
 
 def transect_tooltip(transect: Transect, passes: int = 0, runs: int = 0) -> str:
@@ -312,6 +334,7 @@ class SimplePlanMixin(MixinBase):
         header_item.setToolTip(4, "Reconstructions produced from them")
         for column in range(1, PLAN_SPACER_COLUMN):
             header_item.setTextAlignment(column, Qt.AlignmentFlag.AlignRight)
+        enable_sorting(self._transect_list)
         self._transect_list.currentItemChanged.connect(lambda *_: self._on_transect_selected())
         # The empty state stands in for the list until there is something in it,
         # so a fresh install says how to get started instead of showing a void.
@@ -503,6 +526,9 @@ class SimplePlanMixin(MixinBase):
         # that reach the form would load a transect nobody picked over the one
         # being typed.
         self._transect_list.blockSignals(True)
+        # Sorting suspended for the rebuild: live, every inserted row is sorted
+        # into place before its data roles and fonts are set.
+        self._transect_list.setSortingEnabled(False)
         try:
             # Overlays first: which rows survive the In view scope is read back
             # off the map, so it has to be holding the current set already.
@@ -519,6 +545,7 @@ class SimplePlanMixin(MixinBase):
                 self._add_draft_row(draft)
             self._transect_stack.setCurrentIndex(0 if saved or draft else 1)
         finally:
+            self._transect_list.setSortingEnabled(True)
             self._transect_list.blockSignals(False)
             self._plan_list_rebuilding = False
         self._select_transect_row(str(select_id) if select_id is not None else DRAFT_ID)
@@ -592,7 +619,11 @@ class SimplePlanMixin(MixinBase):
         """
         for transect in transects:
             passes, runs = counts.get(transect.id, (0, 0))
-            item = QTreeWidgetItem(self._transect_list, transect_row_columns(transect, passes, runs))
+            item = SortableTreeItem(
+                self._transect_list,
+                transect_row_columns(transect, passes, runs),
+                transect_row_values(transect, passes, runs),
+            )
             item.setData(0, Qt.ItemDataRole.UserRole, str(transect.id))
             tooltip = transect_tooltip(transect, passes, runs)
             for column in range(len(PLAN_COLUMNS)):
@@ -601,8 +632,12 @@ class SimplePlanMixin(MixinBase):
                     item.setTextAlignment(column, Qt.AlignmentFlag.AlignRight)
 
     def _add_draft_row(self, columns: list[str]) -> QTreeWidgetItem:
-        """The transect being composed, italic, at the foot of the list."""
-        item = QTreeWidgetItem(self._transect_list, columns)
+        """The transect being composed, italic, at the foot of the list.
+
+        No sort values: a valueless SortableTreeItem sinks below every saved
+        row in either direction, which is what keeps it at the foot.
+        """
+        item = SortableTreeItem(self._transect_list, columns)
         item.setData(0, Qt.ItemDataRole.UserRole, DRAFT_ID)
         font = item.font(0)
         font.setItalic(True)
@@ -838,8 +873,8 @@ class SimplePlanMixin(MixinBase):
             return
         try:
             self._survey_store().delete_transect(transect_id)
-        except sqlite3.IntegrityError:
-            self._status_label.setText("Transect has recorded passes and cannot be deleted.")
+        except ValueError as exc:
+            self._status_label.setText(str(exc))
             return
         self._on_transect_new()
         self._refresh_transect_list()

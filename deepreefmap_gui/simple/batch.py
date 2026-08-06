@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-import sqlite3
 import threading
 import uuid
 from dataclasses import dataclass
@@ -115,13 +114,6 @@ _MOVE_HINTS = {
     DONE: "Reconstruct this pass again, as part of the next session.",
     NEXT: "Keep this pass in the next session but skip it when it starts.",
 }
-
-# File-name prefixes a GoPro uses for the second and later chapters of one
-# recording (GX/GH/GL on HERO6 and up, GP on the older models).
-_CHAPTER_PREFIXES = ("GX", "GH", "GL", "GP")
-
-# One probed clip: its path, and the (duration_s, fps) the decoder reported.
-_ProbedClip = tuple[str, tuple[float, float]]
 
 # Button text per fix destination, so the strip names the place it goes rather
 # than describing the journey. The header entry point uses the same words.
@@ -296,47 +288,6 @@ def _total_duration_s(videos: list[VideoAsset]) -> float | None:
     return sum(video.duration_s or 0.0 for video in videos)
 
 
-def _chapter_key(file_name: str) -> tuple[str, int] | None:
-    """(recording, chapter) for a chaptered GoPro file, else None.
-
-    A recording split at the camera's ~4 GB limit continues in GX02nnnn,
-    GX03nnnn and so on, where nnnn names the recording and the middle pair is
-    the chapter. Older HEROs open the same recording with GOPRnnnn and continue
-    in GPnnnn.
-    """
-    stem = Path(file_name).stem.upper()
-    if stem.startswith("GOPR") and stem[4:].isdigit():
-        return stem[4:], 0
-    if len(stem) != 8 or stem[:2] not in _CHAPTER_PREFIXES:
-        return None
-    chapter, recording = stem[2:4], stem[4:]
-    if not chapter.isdigit() or not recording.isdigit():
-        return None
-    return recording, int(chapter)
-
-
-def _group_chapters(probed: list[_ProbedClip]) -> list[list[_ProbedClip]]:
-    """Split one add into passes, gathering the chapters of a recording into one.
-
-    Grouping only spans the clips added together, which is how a card is read:
-    select the lot, and a swim that overran 4 GB stays one pass.
-    """
-    groups: list[list[_ProbedClip]] = []
-    by_recording: dict[str, int] = {}
-    for path, result in probed:
-        key = _chapter_key(Path(path).name)
-        recording = key[0] if key is not None else None
-        if recording is not None and recording in by_recording:
-            groups[by_recording[recording]].append((path, result))
-            continue
-        if recording is not None:
-            by_recording[recording] = len(groups)
-        groups.append([(path, result)])
-    for group in groups:
-        group.sort(key=lambda item: _chapter_key(Path(item[0]).name) or ("", 0))
-    return groups
-
-
 @dataclass
 class _PassRow:
     videos: list[VideoAsset]
@@ -426,12 +377,13 @@ class SimpleBatchMixin(MixinBase):
             "be traced back."
         )
         name_row.addWidget(self._survey_batch_name, 1)
-        self._survey_new_batch_btn = QPushButton("New")
-        self._survey_new_batch_btn.setToolTip(
-            "Start a new session. The current one is retained in the database."
+        self._survey_clear_cart_btn = QPushButton("Clear cart")
+        self._survey_clear_cart_btn.setToolTip(
+            "Take every pass out of this session's cart. The passes and their "
+            "video files are kept and can be added to a cart again."
         )
-        self._survey_new_batch_btn.clicked.connect(self._on_survey_new_batch)
-        name_row.addWidget(self._survey_new_batch_btn)
+        self._survey_clear_cart_btn.clicked.connect(self._on_survey_clear_cart)
+        name_row.addWidget(self._survey_clear_cart_btn)
         header_layout.addLayout(name_row)
         # Only while an order runs and a next cart exists: names where new
         # additions are going, since the table above belongs to the order.
@@ -497,6 +449,12 @@ class SimpleBatchMixin(MixinBase):
         self._survey_pass_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._survey_pass_table.customContextMenuRequested.connect(self._on_survey_pass_menu)
         h_header = self._survey_pass_table.horizontalHeader()
+        # This table cannot sort: four of its six columns are cell widgets Qt's
+        # sort will not move, the groups sit under spanned heading rows, and
+        # _survey_table_index maps table rows to model rows by position. The
+        # header says so by not reacting to clicks at all.
+        h_header.setSectionsClickable(False)
+        h_header.setHighlightSections(False)
         h_header.setDefaultAlignment(
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         )
@@ -522,7 +480,7 @@ class SimpleBatchMixin(MixinBase):
         self._survey_table_stack.addWidget(
             EmptyState(
                 "No videos in this session",
-                "Add videos… to queue the passes you want processed.",
+                "Cut sections from your clips in Browse to queue them here.",
             )
         )
         passes_card, passes_layout = section_card("Passes")
@@ -551,10 +509,6 @@ class SimpleBatchMixin(MixinBase):
         add_row = QHBoxLayout()
         add_row.setSpacing(SPACE_SM)
         add_row.addWidget(muted_label("Add to the cart"))
-        self._survey_add_btn = QPushButton("Add videos…")
-        self._survey_add_btn.setToolTip("Pick clips off the card to queue as passes.")
-        self._survey_add_btn.clicked.connect(self._on_survey_add_videos)
-        add_row.addWidget(self._survey_add_btn)
         self._survey_import_btn = QPushButton("Import queue from CSV…")
         self._survey_import_btn.setToolTip(
             "Queue passes from a spreadsheet. Columns: videos, timestamps "
@@ -598,7 +552,8 @@ class SimpleBatchMixin(MixinBase):
         self._survey_split_btn.clicked.connect(self._on_survey_split_pass)
         self._survey_remove_btn = QPushButton("Remove from session")
         self._survey_remove_btn.setToolTip(
-            "Take the selected pass out of this session. The video file is left alone."
+            "Take every selected pass out of this session's cart. The passes "
+            "and their video files are kept."
         )
         self._survey_remove_btn.clicked.connect(self._on_survey_remove_pass)
         selection_row.addWidget(self._survey_split_btn)
@@ -642,15 +597,18 @@ class SimpleBatchMixin(MixinBase):
         """
         for widget in (
             self._survey_batch_name,
-            self._survey_new_batch_btn,
+            self._survey_clear_cart_btn,
             self._survey_settings_btn,
             self._survey_audit_btn,
         ):
             widget.setEnabled(enabled)
-        self._survey_add_btn.setEnabled(True)
         self._survey_import_btn.setEnabled(True)
         states = self._survey_row_states()
-        for table_row, model_index in enumerate(self._survey_table_index):
+        # Through _model_index rather than the raw index list: a repaint arriving
+        # between a row mutation and the table rebuild must not index a row that
+        # is gone.
+        for table_row in range(self._survey_pass_table.rowCount()):
+            model_index = self._model_index(table_row)
             if model_index is None:
                 continue
             row = self._survey_rows[model_index]
@@ -668,13 +626,14 @@ class SimpleBatchMixin(MixinBase):
                 )
 
     def _recompute_row_actions(self) -> None:
-        """Split and remove act on a selected row, so they say when there isn't one."""
+        """Split acts on the current row, remove on the whole selection."""
         running = self._survey_worker_running
-        selected = self._model_index(self._survey_pass_table.currentRow()) is not None
-        for btn in (self._survey_split_btn, self._survey_remove_btn):
-            btn.setEnabled(selected and not running)
+        current = self._model_index(self._survey_pass_table.currentRow()) is not None
+        selection = self._selected_survey_rows()
+        self._survey_split_btn.setEnabled(current and not running)
+        self._survey_remove_btn.setEnabled(bool(selection) and not running)
         # Assigning needs both a selection and somewhere to assign it to.
-        can_assign = bool(self._selected_survey_rows()) and bool(self._survey_transects)
+        can_assign = bool(selection) and bool(self._survey_transects)
         self._survey_assign_btn.setEnabled(can_assign and not running)
         # Greyed out with Assign, so the two read as one control rather than as a
         # button and an unrelated checkbox beside it.
@@ -882,12 +841,35 @@ class SimpleBatchMixin(MixinBase):
         self._refresh_survey_batch_tab()
         self._status_label.setText("Added to the cart.")
 
-    def _on_survey_new_batch(self) -> None:
-        self._survey_batch = None
-        self._survey_rows = []
-        self._survey_pass_table.setRowCount(0)
-        self._survey_batch_name.setText(datetime.now().strftime("%Y-%m-%d"))  # noqa: DTZ005 (local time is intended: this is a user-facing default name)
-        self._recompute_survey_start()
+    def _on_survey_clear_cart(self) -> None:
+        """Empty the current session's cart in one action.
+
+        Un-carts membership only: the passes, their videos and the session all
+        stay in the store, so a cleared pass can be carted again from Transects
+        or Browse. Repainting goes through _refresh_survey_batch_tab, which is
+        the one place _survey_table_index is rebuilt in step with _survey_rows.
+        """
+        store = self._try_survey_store()
+        batch = self._survey_batch
+        if store is None or batch is None:
+            return
+        items = store.list_batch_items(batch.id)
+        if not items:
+            self._status_label.setText("The cart is already empty.")
+            return
+        if not confirm(
+            self,
+            "Clear the cart?",
+            f"Take {passes_phrase(len(items))} out of '{batch.name}'? The "
+            "passes are kept and can be added to a cart again.",
+        ):
+            return
+        for item in items:
+            store.remove_batch_item(batch.id, item.pass_id)
+        self._refresh_survey_batch_tab()
+        self._status_label.setText(
+            f"Cleared {passes_phrase(len(items))} from the cart."
+        )
 
     def _refresh_survey_batch_tab(self) -> None:
         """Rebuild the pass table from the store.
@@ -1032,10 +1014,17 @@ class SimpleBatchMixin(MixinBase):
         return states
 
     def _model_index(self, table_row: int) -> int | None:
-        """The pass behind a table row, or None for a group heading."""
+        """The pass behind a table row, or None for a group heading.
+
+        Bounds-checked on both sides: an index read between a row mutation and
+        the rebuild must never reach past _survey_rows.
+        """
         if not 0 <= table_row < len(self._survey_table_index):
             return None
-        return self._survey_table_index[table_row]
+        index = self._survey_table_index[table_row]
+        if index is not None and not 0 <= index < len(self._survey_rows):
+            return None
+        return index
 
     def _table_row_of(self, model_index: int) -> int:
         """Where a pass currently sits in the table; -1 if it is not shown."""
@@ -1165,26 +1154,13 @@ class SimpleBatchMixin(MixinBase):
 
     # --- Row actions ---
 
-    def _on_survey_add_videos(self) -> None:
-        paths, _ = QFileDialog.getOpenFileNames(
-            self,
-            "Add videos",
-            str(self._settings.value("last_video_dir", "")),
-            "Videos (*.mp4 *.mov *.avi *.mkv);;All files (*)",
-        )
-        if paths:
-            # Footage arrives a card at a time, so the next batch of clips is
-            # almost always in the folder the last one came from.
-            self._settings.setValue("last_video_dir", str(Path(paths[0]).parent))
-        self._add_video_paths(paths)
-
     def _add_video_paths(self, paths: list[str]) -> None:
-        """Queue clips as passes, decoding them off the GUI thread.
+        """Register clips in the library, decoding them off the GUI thread.
 
         One card of GoPro clips is dozens of multi-gigabyte files and cv2 has to
         open every one to learn its length, so probing on the GUI thread froze
-        the window for as long as the card took to read. The rows appear when the
-        worker reports back.
+        the window for as long as the card took to read. Importing only records
+        the clips: a pass is cut from a clip in Browse, never minted here.
         """
         if not paths:
             return
@@ -1199,24 +1175,23 @@ class SimpleBatchMixin(MixinBase):
         self._video_probe_thread.start()
 
     def _on_videos_probed(self, probed: list) -> None:
-        """Append one row per readable recording, then report the batch once."""
+        """Record every readable clip in the library, then report the import once."""
         readable = [(path, result) for path, result in probed if result is not None]
-        groups = _group_chapters(readable)
-        for group in groups:
-            self._add_pass_for_chapters(group)
-        # Mid-run the new passes belong to the next session's cart; re-derive
-        # the rows so they land under the right divider.
-        if self._survey_worker_running and groups:
-            self._refresh_survey_batch_tab()
-        self._recompute_survey_start()
+        store = self._survey_store()
+        imported: set[uuid.UUID] = set()
+        for path, (duration_s, fps) in readable:
+            asset = VideoAsset.from_path(Path(path))
+            asset.duration_s = duration_s
+            asset.fps = fps
+            # The library is keyed by content hash, so the same recording picked
+            # from two folders lands once.
+            imported.add(store.upsert_video(asset).id)
         parts = []
-        if groups:
+        if imported:
             self._refresh_data_manager()
-            # Passes and videos are counted separately: a chaptered recording is
-            # several files and one pass.
             parts.append(
-                f"Queued {len(groups)} pass{'' if len(groups) == 1 else 'es'}"
-                f" from {len(readable)} video{'' if len(readable) == 1 else 's'}."
+                f"Imported {len(imported)} clip{'' if len(imported) == 1 else 's'}. "
+                "Cut sections from them in Browse to process them."
             )
         skipped = len(probed) - len(readable)
         if skipped:
@@ -1227,8 +1202,8 @@ class SimpleBatchMixin(MixinBase):
     def _record_video(self, path: str) -> VideoAsset | None:
         """Probe a clip and record it in the store. None when it will not decode.
 
-        The CSV importer records one clip per row; the button and drag-and-drop go
-        through _add_pass_for_chapters, which groups a recording's chapters.
+        The CSV importer records one clip per row on the GUI thread; drag-and-drop
+        goes through _add_video_paths, which probes on a worker.
         """
         probed = _probe_video(path)
         if probed is None:
@@ -1238,61 +1213,6 @@ class SimpleBatchMixin(MixinBase):
         asset.duration_s = duration_s
         asset.fps = fps
         return self._survey_store().upsert_video(asset)
-
-    def _only_transect_id(self) -> uuid.UUID | None:
-        """With exactly one transect the choice is unambiguous, so preselect it.
-
-        Never copy the previous row's transect: a silently wrong assignment is
-        worse than a loud empty one.
-        """
-        return self._survey_transects[0].id if len(self._survey_transects) == 1 else None
-
-    def _add_video_path(self, path: str, probed: tuple[float, float] | None = None) -> bool:
-        """Queue one probed video as a fresh pass. False when it will not decode.
-
-        Shared by the Add videos button and the browser's drag-and-drop, so a
-        dropped clip and a picked one land the same row. ``probed`` is the worker
-        thread's measurement, so this only decodes when a caller has none.
-        """
-        if probed is None:
-            probed = _probe_video(path)
-        if probed is None:
-            return False
-        self._add_pass_for_chapters([(path, probed)])
-        return True
-
-    def _add_pass_for_chapters(self, group: list[_ProbedClip]) -> None:
-        """Queue one recording, however many chapters it arrived in, as one pass."""
-        store = self._survey_store()
-        videos: list[VideoAsset] = []
-        seen: set[uuid.UUID] = set()
-        for path, (duration_s, fps) in group:
-            asset = VideoAsset.from_path(Path(path))
-            asset.duration_s = duration_s
-            asset.fps = fps
-            asset = store.upsert_video(asset)
-            # The library is keyed by content hash, so the same recording picked
-            # from two folders is one chapter, not a chapter played twice.
-            if asset.id in seen:
-                continue
-            seen.add(asset.id)
-            videos.append(asset)
-        # With exactly one transect the choice is unambiguous, so preselect it.
-        # Never copy the previous row's transect: a silently wrong assignment is
-        # worse than a loud empty one.
-        only = self._survey_transects[0].id if len(self._survey_transects) == 1 else None
-        # The pass covers the chapters played back to back, which is how the
-        # pipeline reads a list of videos.
-        self._append_survey_row(_PassRow(
-            videos=videos,
-            begin_s=0.0,
-            end_s=sum(video.duration_s or 0.0 for video in videos),
-            transect_id=only,
-        ))
-        # Written whether or not a transect was picked. A queued pass is a real
-        # thing the moment the clip is added; waiting for a transect was what
-        # made "process this clip" impossible without one.
-        self._persist_survey_row(self._survey_rows[-1])
 
     def _on_survey_assign_selected(self) -> None:
         """Offer the transect list for every selected row at once."""
@@ -1344,8 +1264,8 @@ class SimpleBatchMixin(MixinBase):
         """Queue a CSV of passes, so a spreadsheet and this table are one queue.
 
         The columns are the batch CSV's, plus an optional `transect` naming a
-        planned transect: a row that names one lands assigned, and a row that does
-        not lands like a dropped video, waiting for one. Per-row transect_length
+        planned transect: a row that names one lands assigned, and a row that
+        does not lands unassigned, waiting for one. Per-row transect_length
         and crop_width are ignored here, because a pass takes its length from the
         transect it belongs to and its crop width from the run settings.
         """
@@ -1387,7 +1307,7 @@ class SimpleBatchMixin(MixinBase):
                 videos=[asset],
                 begin_s=begin_s,
                 end_s=max(end_s, begin_s),
-                transect_id=named or self._only_transect_id(),
+                transect_id=named,
             )
             self._append_survey_row(row)
             # Persisted whether or not a transect matched, the same rule the
@@ -1418,19 +1338,28 @@ class SimpleBatchMixin(MixinBase):
         self._persist_survey_row(row)
 
     def _on_survey_remove_pass(self) -> None:
-        index = self._model_index(self._survey_pass_table.currentRow())
-        if index is None:
+        """Take the selected passes out of the session.
+
+        Un-carts membership only, the same semantics as Clear cart: the passes,
+        their runs and their videos all stay in the store. Reads the whole
+        selection because removing is a bulk action like Assign.
+        """
+        indices = self._selected_survey_rows()
+        batch = self._survey_batch
+        if not indices or batch is None:
             return
-        row = self._survey_rows[index]
-        if row.pass_id is not None:
-            try:
-                self._survey_store().delete_pass(row.pass_id)
-            except sqlite3.IntegrityError:
-                self._status_label.setText("Pass has recorded runs and cannot be removed.")
-                return
-        self._survey_rows.pop(index)
-        self._rebuild_survey_table()
-        self._recompute_survey_start()
+        store = self._survey_store()
+        removed = 0
+        for index in indices:
+            pass_id = self._survey_rows[index].pass_id
+            if pass_id is None:
+                continue
+            store.remove_batch_item(batch.id, pass_id)
+            removed += 1
+        self._refresh_survey_batch_tab()
+        self._status_label.setText(
+            f"Took {passes_phrase(removed)} out of the session."
+        )
 
     # --- Holding a pass back ---
 

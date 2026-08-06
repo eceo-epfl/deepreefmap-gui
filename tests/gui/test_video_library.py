@@ -150,6 +150,77 @@ def test_the_grouping_period_is_remembered(window):
     assert window._settings.value("video_group_period") == "month"
 
 
+def _seed_shot(store, name: str, *, captured_at: str, size_bytes: int) -> VideoAsset:
+    return store.upsert_video(
+        VideoAsset(
+            file_name=name,
+            path=f"/data/{name}",
+            hash=name * 4,
+            duration_s=60.0,
+            size_bytes=size_bytes,
+            captured_at=captured_at,
+        )
+    )
+
+
+def test_a_header_click_sorts_clips_within_their_date_groups(window):
+    from deepreefmap_gui.survey.video_groups import SORT_NAME, SORT_SIZE
+
+    store = window._survey_store()
+    _seed_shot(store, "big.mp4", captured_at="2023-05-17T08:00:00+00:00", size_bytes=300)
+    _seed_shot(store, "small.mp4", captured_at="2023-05-17T09:00:00+00:00", size_bytes=100)
+    _seed_shot(store, "earlier.mp4", captured_at="2023-05-16T08:00:00+00:00", size_bytes=200)
+
+    show_videos(window)
+    window._on_video_period_changed("day")
+    window._video_header.set_sort(SORT_NAME, False)
+    window._video_header.sort_by(SORT_SIZE)
+
+    # earlier.mp4 sits between the two by size, and stays last: it belongs to
+    # the older group, and the sort works within the groups.
+    assert listed_names(window) == ["small.mp4", "big.mp4", "earlier.mp4"]
+
+    window._video_header.sort_by(SORT_SIZE)
+    assert listed_names(window) == ["big.mp4", "small.mp4", "earlier.mp4"]
+
+
+def test_the_sort_holds_through_a_library_refresh(window):
+    from deepreefmap_gui.survey.video_groups import SORT_NAME, SORT_SIZE
+
+    store = window._survey_store()
+    _seed_shot(store, "b.mp4", captured_at="2023-05-17T08:00:00+00:00", size_bytes=100)
+    _seed_shot(store, "a.mp4", captured_at="2023-05-17T09:00:00+00:00", size_bytes=300)
+    _seed_shot(store, "c.mp4", captured_at="2023-05-17T10:00:00+00:00", size_bytes=200)
+
+    show_videos(window)
+    window._video_header.set_sort(SORT_SIZE, False)
+    window._video_header.sort_by(SORT_NAME)
+    assert listed_names(window) == ["a.mp4", "b.mp4", "c.mp4"]
+
+    show_videos(window)
+    assert listed_names(window) == ["a.mp4", "b.mp4", "c.mp4"]
+
+
+def test_the_sort_choice_is_remembered(window, make_window):
+    from deepreefmap_gui.survey.video_groups import SORT_SIZE
+
+    show_videos(window)
+    window._video_header.set_sort(SORT_SIZE, False)
+    window._video_header.sort_by(SORT_SIZE)
+    try:
+        assert window._settings.value("video_sort_column") == "size"
+        assert window._settings.value("video_sort_order") == "descending"
+
+        second = make_window()
+        assert second._video_sort_column == SORT_SIZE
+        assert second._video_sort_descending is True
+        assert second._video_header.column == SORT_SIZE
+        assert second._video_header.descending is True
+    finally:
+        window._settings.remove("video_sort_column")
+        window._settings.remove("video_sort_order")
+
+
 def test_link_state_says_whether_the_footage_is_still_there(window, tmp_path):
     """Scenario: footage lives on a card that gets pulled between dives.
 
@@ -293,6 +364,65 @@ def test_a_new_section_is_cut_scrubbed_assigned_and_carted(window, tmp_path, mon
     assert window._pass_in_current_cart(passes[0].id)
 
 
+# A section is a window the user chose, so a clip that cannot be scrubbed
+# reports why instead of queueing itself whole.
+
+
+def test_an_unchecked_clip_cuts_nothing_and_says_why(window):
+    from types import SimpleNamespace
+
+    from deepreefmap_gui.survey.catalogue import LINK_UNKNOWN
+
+    store = window._survey_store()
+    video = store.upsert_video(
+        VideoAsset(
+            file_name="GX010001.MP4",
+            path="/data/GX010001.MP4",
+            hash="ab" * 16,
+            duration_s=120.0,
+        )
+    )
+    clip = SimpleNamespace(video=video, link_state=LINK_UNKNOWN)
+    window._new_section_from_clip(clip)
+    assert store.list_passes() == []
+    assert "not been checked" in window._status_label.text()
+
+
+def test_a_clip_of_unknown_length_cuts_nothing_and_says_why(window):
+    from types import SimpleNamespace
+
+    from deepreefmap_gui.survey.catalogue import LINK_LINKED
+
+    store = window._survey_store()
+    video = store.upsert_video(
+        VideoAsset(file_name="GX010001.MP4", path="/data/GX010001.MP4", hash="cd" * 16)
+    )
+    clip = SimpleNamespace(video=video, link_state=LINK_LINKED)
+    window._new_section_from_clip(clip)
+    assert store.list_passes() == []
+    assert "length is unknown" in window._status_label.text()
+
+
+def test_a_missing_clip_cuts_nothing_and_says_why(window):
+    from types import SimpleNamespace
+
+    from deepreefmap_gui.survey.catalogue import LINK_MISSING
+
+    store = window._survey_store()
+    video = store.upsert_video(
+        VideoAsset(
+            file_name="GX010001.MP4",
+            path="/gone/GX010001.MP4",
+            hash="cd" * 16,
+            duration_s=120.0,
+        )
+    )
+    clip = SimpleNamespace(video=video, link_state=LINK_MISSING)
+    window._new_section_from_clip(clip)
+    assert store.list_passes() == []
+    assert "file is missing" in window._status_label.text()
+
+
 def _seed_run(store, pass_, status: str = "succeeded", batch=None):
     from deepreefmap_gui.survey.models import RunRecord
 
@@ -341,6 +471,77 @@ def test_a_section_shows_the_sessions_it_has_run_in(window):
     assert window._section_detail.pass_ is not None
     assert window._section_detail.run_list.count() == 1
     assert "2026-07-21" in window._section_detail.run_list.item(0).text()
+
+
+def test_the_section_card_offers_one_button_and_a_menu(window):
+    """Scenario: four full-width buttons in a 260px pane truncated every label.
+
+    Expected behaviour: the card keeps Add to cart as its one button and files
+    the occasional actions under More…, the same shape as Browse.
+    """
+    store = window._survey_store()
+    video = _seed(store, "GX010060.MP4")
+    pass_ = _cut(store, video)
+
+    show_videos(window)
+    window._select_section(str(pass_.id))
+
+    panel = window._section_detail
+    assert panel.cart_btn.isEnabled()
+    labels = [a.text() for a in panel.more_btn.menu().actions() if not a.isSeparator()]
+    assert labels == ["Adjust trim…", "Change transect…", "Delete section"]
+
+
+def test_menu_actions_act_on_the_shown_section(window):
+    store = window._survey_store()
+    video = _seed(store, "GX010061.MP4")
+    pass_ = _cut(store, video)
+
+    show_videos(window)
+    window._select_section(str(pass_.id))
+
+    panel = window._section_detail
+    fired = []
+    panel.retrim_requested.connect(fired.append)
+    panel.menu_actions["retrim"].trigger()
+    assert fired == [str(pass_.id)]
+
+
+def test_the_delete_gate_survives_the_move_into_the_menu(window):
+    store = window._survey_store()
+    video = _seed(store, "GX010062.MP4")
+    kept = _cut(store, video, 0.0, 10.0)
+    _seed_run(store, kept)
+    free = _cut(store, video, 20.0, 30.0)
+
+    show_videos(window)
+    delete = window._section_detail.menu_actions["delete"]
+
+    window._select_section(str(kept.id))
+    assert not delete.isEnabled()
+    assert "Browse" in delete.toolTip()
+
+    window._select_section(str(free.id))
+    assert delete.isEnabled()
+    assert "Browse" not in delete.toolTip()
+
+
+def test_the_detail_pane_takes_its_share_of_the_page(window, qapp):
+    """Scenario: the pane sat at its 260px floor however wide the window got.
+
+    Expected behaviour: it gets its declared share of the splitter, floored at
+    the minimum width.
+    """
+    from deepreefmap_gui.runs.videos import _DETAIL_MIN_WIDTH, _DETAIL_SHARE
+
+    window._set_simple_section("videos")
+    window.resize(1400, 900)
+    window.show()
+    qapp.processEvents()
+
+    total = window._video_split.width()
+    expected = max(_DETAIL_MIN_WIDTH, int(total * _DETAIL_SHARE))
+    assert window._video_split.sizes()[1] == expected
 
 
 def test_picking_a_section_keeps_its_clip_on_screen(window):

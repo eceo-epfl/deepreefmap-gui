@@ -90,8 +90,9 @@ def test_pass_filters(store):
 
 def test_delete_transect_with_passes_is_blocked(store):
     transect, _, _ = seed_pass(store)
-    with pytest.raises(sqlite3.IntegrityError):
+    with pytest.raises(ValueError, match="cannot be deleted"):
         store.delete_transect(transect.id)
+    assert store.get_transect(transect.id) is not None
 
 
 def test_run_status_stamps_lifecycle(store):
@@ -356,6 +357,80 @@ def test_delete_pass_removes_it(store):
     store.delete_pass(pass_.id)
     assert store.list_passes() == []
     assert store.get_pass(pass_.id) is None
+
+
+def test_deleting_a_pass_takes_its_cart_rows_with_it(store):
+    """A cart row is a plan to process the pass, so it goes when the pass does."""
+    _transect, _video, pass_ = seed_pass(store)
+    first, second = SurveyBatch(name="Day 1"), SurveyBatch(name="Day 2")
+    for batch in (first, second):
+        store.add_batch(batch)
+        store.add_batch_item(BatchItem(batch_id=batch.id, pass_id=pass_.id))
+
+    store.delete_pass(pass_.id)
+
+    assert store.list_all_batch_items() == []
+    assert store.passes_in_batch(first.id) == []
+    assert store.get_batch(second.id) is not None
+
+
+def test_deleting_a_pass_with_a_run_says_why_it_cannot(store):
+    """A run is history: it holds the pass, and the refusal reads as a sentence."""
+    _transect, _video, pass_ = seed_pass(store)
+    batch = SurveyBatch(name="Day 1")
+    store.add_batch(batch)
+    store.add_batch_item(BatchItem(batch_id=batch.id, pass_id=pass_.id))
+    store.add_run(RunRecord(pass_id=pass_.id, run_dir_name="t1__p01"))
+
+    with pytest.raises(ValueError, match="recorded runs"):
+        store.delete_pass(pass_.id)
+
+    assert store.get_pass(pass_.id) is not None
+    assert [i.pass_id for i in store.list_batch_items(batch.id)] == [pass_.id]
+
+
+def test_a_carried_forward_survey_reaches_the_cart_cascade(tmp_path):
+    """Scenario: a v0.2.0 survey.db, whose cart rows would restrict on pass delete.
+
+    Expected behaviour: it opens at v7 with its cart membership intact, and
+    deleting a pass that sits in a cart succeeds instead of failing on the
+    foreign key.
+    """
+    from deepreefmap_gui.survey.store import latest_schema_version
+
+    transect_id, video_id, batch_id, pass_id = (uuid.uuid4() for _ in range(4))
+    now = "2026-08-01T00:00:00+00:00"
+    db_path = write_v0_2_0_database(tmp_path / "old.db")
+    conn = sqlite3.connect(db_path)
+    with conn:
+        conn.execute(
+            "INSERT INTO transect VALUES (?,?,'',?,?,?,?,?,?,?,?)",
+            (str(transect_id), "T1", -17.5, 177.1, -17.5005, 177.1005, 50.0, 8.0, now, now),
+        )
+        conn.execute(
+            "INSERT INTO video_asset VALUES (?,?,?,?,?,?,?,?,?)",
+            (str(video_id), "GX010001.MP4", "/data/GX010001.MP4", "ab" * 16, 1024, now, 90.0,
+             30.0, now),
+        )
+        conn.execute(
+            "INSERT INTO survey_batch VALUES (?,?,?,?)",
+            (str(batch_id), "Day 1", "survey_preset", now),
+        )
+        conn.execute(
+            "INSERT INTO transect_pass (id, transect_id, video_id, batch_id, direction,"
+            " begin_s, end_s, notes, created_at, extra_video_ids, held)"
+            " VALUES (?,?,?,?,'forward',0,90,'',?,'[]',0)",
+            (str(pass_id), str(transect_id), str(video_id), str(batch_id), now),
+        )
+    conn.close()
+
+    store = SurveyStore(db_path)
+    assert [i.pass_id for i in store.list_batch_items(batch_id)] == [pass_id]
+    version = sqlite3.connect(db_path).execute("PRAGMA user_version").fetchone()[0]
+    assert version == latest_schema_version() == 7
+
+    store.delete_pass(pass_id)
+    assert store.list_all_batch_items() == []
 
 
 def test_list_passes_combines_both_filters(store):

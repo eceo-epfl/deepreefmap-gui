@@ -196,13 +196,39 @@ _CARRY_FORWARD = {
 
 _OLDEST_CARRIED = min(_CARRY_FORWARD)
 
-# Steps taken after the baseline was cut. Appended to, never renumbered.
-_MIGRATIONS: list[Migration] = []
+# Steps taken after the baseline was cut. Appended to, never renumbered. Both
+# the fresh path and the carry-forward path land on SCHEMA_VERSION first, so
+# every step here runs on either kind of database.
+_MIGRATIONS: list[Migration] = [
+    # A cart row is a plan to process a pass, so it cannot outlive the pass.
+    # Without the cascade, deleting a pass that sits in any cart fails on the
+    # foreign key and the pass cannot be removed at all. SQLite cannot alter a
+    # foreign key in place, so batch_item is rebuilt; nothing references
+    # batch_item, so the rename repoints no other table. run_record.pass_id
+    # stays restricting: a run is history, and deleting the pass under it would
+    # leave a finished run naming nothing.
+    Migration(
+        7,
+        "batch_item cascades on pass delete",
+        """
+        CREATE TABLE batch_item_new (
+            id TEXT PRIMARY KEY,
+            batch_id TEXT NOT NULL REFERENCES survey_batch(id),
+            pass_id TEXT NOT NULL REFERENCES transect_pass(id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL,
+            UNIQUE (batch_id, pass_id)
+        );
+        INSERT INTO batch_item_new (id, batch_id, pass_id, created_at)
+            SELECT id, batch_id, pass_id, created_at FROM batch_item;
+        DROP TABLE batch_item;
+        ALTER TABLE batch_item_new RENAME TO batch_item;
+        """,
+    ),
+]
 
 
 def latest_schema_version() -> int:
     return max([SCHEMA_VERSION, *(m.version for m in _MIGRATIONS)])
-
 
 
 def resolved_path(path: str) -> str | None:
@@ -384,8 +410,19 @@ class SurveyStore:
         self._update("transect", transect)
 
     def delete_transect(self, transect_id: uuid.UUID) -> None:
-        with self._conn() as conn:
-            conn.execute("DELETE FROM transect WHERE id = ?", (str(transect_id),))
+        """Delete a transect that nothing was swum against.
+
+        transect_pass.transect_id restricts rather than cascading or nulling:
+        the passes are the record of what was swum here, and a run manifest
+        already written names this transect.
+        """
+        try:
+            with self._conn() as conn:
+                conn.execute("DELETE FROM transect WHERE id = ?", (str(transect_id),))
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(
+                "This transect has passes recorded against it and cannot be deleted."
+            ) from exc
 
     def get_transect(self, transect_id: uuid.UUID) -> Transect | None:
         return self._get("transect", Transect, transect_id)
@@ -601,8 +638,18 @@ class SurveyStore:
         self._update("transect_pass", pass_)
 
     def delete_pass(self, pass_id: uuid.UUID) -> None:
-        with self._conn() as conn:
-            conn.execute("DELETE FROM transect_pass WHERE id = ?", (str(pass_id),))
+        """Delete a pass and the cart rows that ordered it.
+
+        Only a run stops it: run_record.pass_id restricts, and the constraint
+        failure is turned into a sentence the caller can show.
+        """
+        try:
+            with self._conn() as conn:
+                conn.execute("DELETE FROM transect_pass WHERE id = ?", (str(pass_id),))
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(
+                "This pass has recorded runs and cannot be removed."
+            ) from exc
 
     def get_pass(self, pass_id: uuid.UUID) -> TransectPass | None:
         return self._get("transect_pass", TransectPass, pass_id)

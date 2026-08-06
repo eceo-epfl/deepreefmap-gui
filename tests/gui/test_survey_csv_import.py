@@ -4,8 +4,8 @@ Scenario: the batch CSV and the pass table were two separate queues over the sam
 videos, reached by two different buttons.
 
 Expected behaviour: importing queues passes in the one table, honouring each
-row's trim and the optional transect column, and blocking the same way a dropped
-video does when the transect is unknown.
+row's trim and the optional transect column, and landing a row unassigned when
+its transect is unknown rather than guessing one.
 """
 
 from __future__ import annotations
@@ -51,8 +51,9 @@ def test_import_queues_one_pass_per_row(import_window, tmp_path, monkeypatch):
 
     assert len(window._survey_rows) == 2
     assert "Queued 2 pass" in window._status_label.text()
-    # One planned transect, so both rows land assigned and the batch can run.
-    assert all(row.transect_id is not None for row in window._survey_rows)
+    # No transect column, so the rows land unassigned even with one planned
+    # transect: an assignment is a choice, never a guess made on import.
+    assert all(row.transect_id is None for row in window._survey_rows)
     assert window._survey_start_btn.isEnabled()
 
 

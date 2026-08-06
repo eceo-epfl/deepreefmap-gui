@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
+from typing import Any
 
 from deepreefmap_gui.survey.catalogue import VideoLibraryEntry
 from deepreefmap_gui.survey.models.run_record import RunRecord
@@ -29,6 +30,13 @@ PERIODS: tuple[tuple[str, str], ...] = (
 DEFAULT_PERIOD = "day"
 
 PERIOD_KEYS = tuple(key for key, _ in PERIODS)
+
+# The columns a clip can be ordered by, named for the header cells that ask.
+SORT_NAME, SORT_RECORDED, SORT_LENGTH, SORT_SIZE = "name", "recorded", "length", "size"
+SORT_COLUMNS = (SORT_NAME, SORT_RECORDED, SORT_LENGTH, SORT_SIZE)
+# Newest footage first, the order the date grouping itself reads in.
+DEFAULT_SORT_COLUMN = SORT_RECORDED
+DEFAULT_SORT_DESCENDING = True
 
 ALL_KEY, ALL_TITLE = "all", "All videos"
 
@@ -142,6 +150,54 @@ def group_by_period(
         undated.sort(key=lambda e: e.video.file_name)
         groups.append(DateGroup(key=UNDATED_KEY, title=UNDATED_TITLE, entries=undated))
     return groups
+
+
+def clip_sort_fact(entry: VideoLibraryEntry, column: str) -> str | float | None:
+    """The value a clip orders by under one column, or None when it has none."""
+    if column == SORT_NAME:
+        return entry.video.file_name.lower()
+    if column == SORT_RECORDED:
+        stamp = capture_moment(entry.video)
+        return None if stamp is None else stamp.timestamp()
+    if column == SORT_LENGTH:
+        duration = entry.video.duration_s
+        return duration if duration and duration > 0 else None
+    if column == SORT_SIZE:
+        return entry.video.size_bytes or None
+    raise ValueError(f"column must be one of {SORT_COLUMNS}, got {column!r}")
+
+
+def sort_clips(
+    entries: Iterable[VideoLibraryEntry], column: str, *, descending: bool = False
+) -> list[VideoLibraryEntry]:
+    """Clips reordered by one column, ties keeping the given order.
+
+    A clip missing the fact sinks to the end in both directions, as the run
+    table's blank cells do: an unknown length is not the shortest clip.
+    """
+    if column not in SORT_COLUMNS:
+        raise ValueError(f"column must be one of {SORT_COLUMNS}, got {column!r}")
+    keyed = [(entry, clip_sort_fact(entry, column)) for entry in entries]
+    # One column yields one fact type, so the str | float union never mixes.
+    present: list[tuple[VideoLibraryEntry, Any]] = [p for p in keyed if p[1] is not None]
+    present.sort(key=lambda pair: pair[1], reverse=descending)
+    return [entry for entry, _ in present] + [entry for entry, fact in keyed if fact is None]
+
+
+def sort_groups(
+    groups: Iterable[DateGroup], column: str, *, descending: bool = False
+) -> list[DateGroup]:
+    """Each group's clips reordered. The groups themselves hold their order:
+    the date grouping is the page's organising principle and the sort works
+    within it."""
+    return [
+        DateGroup(
+            key=group.key,
+            title=group.title,
+            entries=sort_clips(group.entries, column, descending=descending),
+        )
+        for group in groups
+    ]
 
 
 def timeline_spans(entry: VideoLibraryEntry) -> list[Span]:

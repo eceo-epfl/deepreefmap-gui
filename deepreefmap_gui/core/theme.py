@@ -241,6 +241,10 @@ def _arrow_qss() -> str:
     up = _chevron_file("up", TEXT_MUTED)
     down_off = _chevron_file("down", DISABLED_FG)
     up_off = _chevron_file("up", DISABLED_FG)
+    # Brighter than the TEXT_MUTED header text: the indicator names the one
+    # column the rows are ordered by, so it must not blend into the labels.
+    sort_up = _chevron_file("up", WINDOW_TEXT)
+    sort_down = _chevron_file("down", WINDOW_TEXT)
     return f"""
 QComboBox::drop-down {{
     subcontrol-origin: padding;
@@ -265,6 +269,22 @@ QAbstractSpinBox::up-arrow:disabled, QAbstractSpinBox::up-arrow:off {{
 }}
 QAbstractSpinBox::down-arrow:disabled, QAbstractSpinBox::down-arrow:off {{
     image: url("{down_off}");
+}}
+/* Styling ::section hands the whole header to the stylesheet engine, which
+   draws no native sort indicator, so a sorted column showed nothing at all. */
+QHeaderView::up-arrow {{
+    image: url("{sort_up}");
+    width: 10px;
+    height: 10px;
+    subcontrol-origin: padding;
+    subcontrol-position: center right;
+}}
+QHeaderView::down-arrow {{
+    image: url("{sort_down}");
+    width: 10px;
+    height: 10px;
+    subcontrol-origin: padding;
+    subcontrol-position: center right;
 }}
 """
 
@@ -446,7 +466,9 @@ QHeaderView::section {{
     border-bottom: 1px solid {BORDER};
     padding: {HEADER_PAD_V}px {ROW_PAD_H}px;
 }}
-QHeaderView::section:hover {{
+/* Hover brightening only where a click does something: `sortable` is set by
+   core/widgets.py::enable_sorting, so a header that cannot sort stays flat. */
+QHeaderView[sortable="true"]::section:hover {{
     color: {WINDOW_TEXT};
 }}
 QTableCornerButton::section {{

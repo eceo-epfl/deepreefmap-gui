@@ -34,6 +34,14 @@ def test_analysis_populates_chart_and_table(analysis_window):
     assert not hasattr(w, "_analysis_runs_list")
 
 
+def test_analysis_stats_table_declares_its_sort(analysis_window):
+    table = analysis_window._analysis_stats_table
+    header = table.horizontalHeader()
+    assert table.isSortingEnabled()
+    assert header.property("sortable") == "true"
+    assert header.isSortIndicatorShown()
+
+
 def test_analysis_export_csv(analysis_window, tmp_path, monkeypatch):
     out_path = tmp_path / "repeat.csv"
     monkeypatch.setattr(

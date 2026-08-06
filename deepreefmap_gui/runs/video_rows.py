@@ -1,10 +1,11 @@
 """The rows the Videos page is a list of: one clip each, and what was cut from it.
 
-Four widgets, innermost first: a strip painting a clip's sections along its
-length, a row describing one clip, a row describing one section, and the
-scrolling list of date groups those rows sit in. A clip's section rows sit
-directly under it and are shown by its disclosure chevron, so the three levels
-the app has (clip, section, run) read as the nesting they are.
+Five widgets, innermost first: a strip painting a clip's sections along its
+length, a row describing one clip, a row describing one section, the scrolling
+list of date groups those rows sit in, and the header row naming the clip
+columns and sorting them. A clip's section rows sit directly under it and are
+shown by its disclosure chevron, so the three levels the app has (clip,
+section, run) read as the nesting they are.
 
 The list builds a widget per clip, which suits a field season and would not suit
 tens of thousands of them. The escape hatch is a QListView over a model with a
@@ -49,8 +50,11 @@ from deepreefmap_gui.core.icons import (
 )
 from deepreefmap_gui.core.theme import (
     BAR_HEIGHT,
+    BORDER,
+    CARD_BG,
     CONTROL_HEIGHT,
     GROOVE,
+    HEADER_PAD_V,
     RADIUS_SM,
     SELECTION_BG,
     SPACE_SM,
@@ -58,6 +62,7 @@ from deepreefmap_gui.core.theme import (
     SUCCESS,
     TEXT_DIM,
     TEXT_MUTED,
+    WINDOW_TEXT,
 )
 from deepreefmap_gui.core.widgets import (
     PILL_PROGRESS_ALPHA,
@@ -74,6 +79,12 @@ from deepreefmap_gui.survey.models.run_record import RunRecord
 from deepreefmap_gui.survey.models.transect_pass import TransectPass
 from deepreefmap_gui.survey.models.video_asset import VideoAsset
 from deepreefmap_gui.survey.video_groups import (
+    DEFAULT_SORT_COLUMN,
+    DEFAULT_SORT_DESCENDING,
+    SORT_LENGTH,
+    SORT_NAME,
+    SORT_RECORDED,
+    SORT_SIZE,
     DateGroup,
     Span,
     capture_moment,
@@ -102,9 +113,12 @@ MIN_SPAN_WIDTH = SPACE_SM
 HATCH_PITCH = SPACE_SM
 
 # Column widths in characters rather than pixels, so a column follows the user's
-# font size instead of holding a measure that no longer fits it.
+# font size instead of holding a measure that no longer fits it. Each column is
+# wide enough for its header label and a sort arrow as well as its values.
 NAME_CHARS = 30  # a GoPro file name, with room for the ones that are not
-FACTS_CHARS = 26  # "~14:32 · 12m 03s · 3.4 GB"
+RECORDED_CHARS = 10  # "~14:32", "Recorded ▼"
+LENGTH_CHARS = 9  # "12m 03s", "Length ▼"
+SIZE_CHARS = 9  # "1015 MB", "Size ▼"
 GRAVITY_CHARS = 10  # "Gravity", plus its dot
 WINDOW_CHARS = 14  # "0:00–11:51"
 TRANSECT_CHARS = 22  # a transect name, or "Unassigned"
@@ -182,12 +196,9 @@ def capture_label(video: VideoAsset) -> str:
     return shown if video.captured_source == SOURCE_CONTAINER else f"~{shown}"
 
 
-def clip_line(video: VideoAsset) -> str:
-    """The facts under a clip's name: when, how long, how big."""
-    parts = [capture_label(video), length_label(video.duration_s)]
-    if video.size_bytes:
-        parts.append(format_bytes(video.size_bytes))
-    return "  ·  ".join(part for part in parts if part)
+def size_label(size_bytes: int | None) -> str:
+    """A clip's size on disk, or nothing when it was never read."""
+    return format_bytes(size_bytes) if size_bytes else ""
 
 
 def window_label(pass_: TransectPass) -> str:
@@ -451,9 +462,21 @@ class VideoRow(QWidget):
         _fixed_width(self._name, NAME_CHARS)
         row.addWidget(self._name)
 
-        self._facts = muted_label()
-        _fixed_width(self._facts, FACTS_CHARS)
-        row.addWidget(self._facts)
+        self._recorded = muted_label()
+        _fixed_width(self._recorded, RECORDED_CHARS)
+        row.addWidget(self._recorded)
+
+        # Length and size are figures, so they right-align under their header
+        # cells and their digits line up down the list.
+        self._length = muted_label()
+        self._length.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        _fixed_width(self._length, LENGTH_CHARS)
+        row.addWidget(self._length)
+
+        self._size = muted_label()
+        self._size.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        _fixed_width(self._size, SIZE_CHARS)
+        row.addWidget(self._size)
 
         gravity = QWidget()
         gravity_row = QHBoxLayout(gravity)
@@ -557,7 +580,9 @@ class VideoRow(QWidget):
                 video.file_name, Qt.TextElideMode.ElideMiddle, self._name.width()
             )
         )
-        self._facts.setText(clip_line(video))
+        self._recorded.setText(capture_label(video))
+        self._length.setText(length_label(video.duration_s))
+        self._size.setText(size_label(video.size_bytes))
         self._set_gravity(video)
         self.strip.set_spans(
             timeline_spans(entry),
@@ -761,6 +786,127 @@ class SectionRow(QWidget):
         if event.button() == Qt.MouseButton.LeftButton and self._pass is not None:
             self.activated.emit(self.pass_id)
         super().mousePressEvent(event)
+
+
+# The direction arrows the legend's hand-rolled sort headers already show.
+SORT_ASC_GLYPH, SORT_DESC_GLYPH = "▲", "▼"
+
+
+class _HeaderCell(QLabel):
+    """One column heading. A sortable one takes a click and shows the hand."""
+
+    clicked = Signal()
+
+    def __init__(self, title: str, *, sortable: bool, parent: QWidget | None = None) -> None:
+        super().__init__(title, parent)
+        self._sortable = sortable
+        if sortable:
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.setProperty("sortable", "true")
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and self._sortable:
+            self.clicked.emit()
+        super().mousePressEvent(event)
+
+
+class VideoListHeader(QWidget):
+    """The clip columns over the list, sorting whichever one is clicked.
+
+    Not a QHeaderView: the rows under it are widgets in a scroll area rather
+    than cells of a view, so this restates ``QHeaderView::section`` from
+    ``core/theme.py`` out of the same tokens and must stay in step with it.
+    Its cells hold the widths the rows do, which is what lines a heading up
+    over its column. Sections keep their own grid and are not sorted from
+    here: the columns describe clips only.
+    """
+
+    sort_changed = Signal(str, bool)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("videoListHeader")
+        # A bare QWidget ignores stylesheet backgrounds without this.
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(
+            f"QWidget#videoListHeader {{ background-color: {CARD_BG};"
+            f" border-bottom: 1px solid {BORDER}; }}"
+            f" QWidget#videoListHeader QLabel {{ color: {TEXT_MUTED}; font-weight: 600; }}"
+            f' QWidget#videoListHeader QLabel[sortable="true"]:hover'
+            f" {{ color: {WINDOW_TEXT}; }}"
+        )
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(SPACE_SM, HEADER_PAD_V, SPACE_SM, HEADER_PAD_V)
+        row.setSpacing(SPACE_SM)
+
+        # Two blank spacers holding the disclosure and link columns, so Name
+        # starts exactly where a row's file name does.
+        for width in (DISCLOSURE_WIDTH, ICON_SM):
+            spacer = QLabel()
+            spacer.setFixedWidth(width)
+            row.addWidget(spacer)
+
+        self._cells: dict[str, _HeaderCell] = {}
+        self._titles: dict[str, str] = {}
+        self._add_cell(row, "Name", SORT_NAME, NAME_CHARS)
+        self._add_cell(row, "Recorded", SORT_RECORDED, RECORDED_CHARS)
+        self._add_cell(row, "Length", SORT_LENGTH, LENGTH_CHARS, right=True)
+        self._add_cell(row, "Size", SORT_SIZE, SIZE_CHARS, right=True)
+
+        gravity = _HeaderCell("Gravity", sortable=False)
+        # The row's gravity block is a dot, a gap, then its text.
+        gravity.setFixedWidth(
+            ICON_SM + SPACE_XS + gravity.fontMetrics().averageCharWidth() * GRAVITY_CHARS
+        )
+        row.addWidget(gravity)
+        row.addWidget(_HeaderCell("Sections", sortable=False), 1)
+
+        self._column = DEFAULT_SORT_COLUMN
+        self._descending = DEFAULT_SORT_DESCENDING
+        self._relabel()
+
+    def _add_cell(
+        self, row: QHBoxLayout, title: str, column: str, chars: int, *, right: bool = False
+    ) -> None:
+        cell = _HeaderCell(title, sortable=True)
+        _fixed_width(cell, chars)
+        if right:
+            cell.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        cell.setToolTip(f"Sort by {title.lower()} (click again to reverse)")
+        cell.clicked.connect(lambda column=column: self.sort_by(column))
+        row.addWidget(cell)
+        self._cells[column] = cell
+        self._titles[column] = title
+
+    @property
+    def column(self) -> str:
+        return self._column
+
+    @property
+    def descending(self) -> bool:
+        return self._descending
+
+    def cell(self, column: str) -> QLabel:
+        return self._cells[column]
+
+    def sort_by(self, column: str) -> None:
+        """What a click does: a new column sorts ascending, the current one reverses."""
+        descending = not self._descending if column == self._column else False
+        self.set_sort(column, descending)
+        self.sort_changed.emit(column, descending)
+
+    def set_sort(self, column: str, descending: bool) -> None:
+        """Show a sort chosen elsewhere, without reporting it back as a click."""
+        self._column = column
+        self._descending = descending
+        self._relabel()
+
+    def _relabel(self) -> None:
+        arrow = SORT_DESC_GLYPH if self._descending else SORT_ASC_GLYPH
+        for column, cell in self._cells.items():
+            title = self._titles[column]
+            cell.setText(f"{title} {arrow}" if column == self._column else title)
 
 
 # What a refresh compares to decide whether the list has to be rebuilt: each

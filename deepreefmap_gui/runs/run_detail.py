@@ -16,6 +16,7 @@ from pathlib import Path
 from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QFont, QGuiApplication, QImageReader, QPixmap
 from PySide6.QtWidgets import (
+    QAbstractButton,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -159,13 +160,15 @@ class DetailCard(QWidget):
         """The outcome under the name, as the chip the tables paint it as."""
         self.status.set_status(text, colour)
 
-    def add_actions(self, primary: QPushButton, *secondary: QPushButton) -> None:
+    def add_actions(self, primary: QPushButton, *secondary: QAbstractButton) -> None:
         """Close the card with what it is for, and quiet actions pushed right.
 
         Added at the point the pane calls this, so it lands under whatever the
         pane put between the facts and here. The quiet actions are optional: not
         every pane has a second thing worth offering, and an invented one is
-        worse than a row with a single button in it.
+        worse than a row with a single button in it. A pane with more than one
+        occasional action collapses them into a More… QToolButton instead of
+        widening this row past what the pane can hold.
         """
         actions = QHBoxLayout()
         actions.setSpacing(SPACE_SM)

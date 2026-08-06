@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
@@ -22,7 +22,10 @@ from PySide6.QtWidgets import (
     QStyledItemDelegate,
     QStyleOptionViewItem,
     QTableWidget,
+    QTableWidgetItem,
     QToolButton,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -601,6 +604,107 @@ def configure_table(
     table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
     table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
     table.setAlternatingRowColors(alternating)
+
+
+def _sorts_before(mine: object, theirs: object, descending: bool) -> bool:
+    """The one ordering both sortable item classes share.
+
+    A row with no value sinks to the bottom in *both* directions. Qt sorts with
+    ``__lt__`` and reverses for descending, so a plain comparison would float
+    the blanks to the top of a descending sort; the caller reads the current
+    order off its header and passes it in to cancel that out.
+    """
+    if (mine is None) != (theirs is None):
+        return descending if mine is None else not descending
+    if mine is None:
+        return False
+    try:
+        return mine < theirs  # type: ignore[operator]
+    except TypeError:
+        return str(mine) < str(theirs)
+
+
+class SortableItem(QTableWidgetItem):
+    """A cell that sorts by a value rather than by its formatted text.
+
+    "1.2M pts" above "988k pts", "1.6 GB" above "1015 MB": the display strings
+    order wrongly under every string comparison, so the raw number rides along.
+    """
+
+    def __init__(self, text: str, value: object = None) -> None:
+        super().__init__(text)
+        self._value = value
+
+    def __lt__(self, other: QTableWidgetItem) -> bool:
+        if not isinstance(other, SortableItem):
+            return super().__lt__(other)
+        table = self.tableWidget()
+        descending = (
+            table is not None
+            and table.horizontalHeader().sortIndicatorOrder()
+            == Qt.SortOrder.DescendingOrder
+        )
+        return _sorts_before(self._value, other._value, descending)
+
+
+class SortableTreeItem(QTreeWidgetItem):
+    """A row that sorts by per-column values, under SortableItem's contract.
+
+    ``values`` maps column index to sort value. A column with no entry sinks in
+    both directions, which is also how a whole valueless row stays pinned to
+    the foot of its tree whatever the sort.
+    """
+
+    def __init__(
+        self,
+        tree: QTreeWidget,
+        columns: Sequence[str],
+        values: Mapping[int, object] | None = None,
+    ) -> None:
+        super().__init__(tree, list(columns))
+        self._values = dict(values or {})
+
+    def __lt__(self, other: QTreeWidgetItem) -> bool:
+        if not isinstance(other, SortableTreeItem):
+            return super().__lt__(other)
+        tree = self.treeWidget()
+        column = tree.sortColumn() if tree is not None else 0
+        descending = (
+            tree is not None
+            and tree.header().sortIndicatorOrder() == Qt.SortOrder.DescendingOrder
+        )
+        return _sorts_before(self._values.get(column), other._values.get(column), descending)
+
+
+def enable_sorting(
+    view: QTableWidget | QTreeWidget,
+    column: int | None = 0,
+    order: Qt.SortOrder = Qt.SortOrder.AscendingOrder,
+) -> None:
+    """Turn on click-to-sort, with the indicator shown from the start.
+
+    The ``sortable`` property is what the theme keys the header hover affordance
+    on, so only headers that really sort light up under the pointer. Call this
+    after the rows are in place: enabling sorting sorts there and then, and
+    cells landing in a live sort scatter across half-built rows.
+
+    Pass ``column=None`` to keep the rows in the order the caller built them.
+    Headers still sort on click, but nothing sorts until then.
+    """
+    header = view.header() if isinstance(view, QTreeWidget) else view.horizontalHeader()
+    header.setProperty("sortable", "true")
+    # Re-polish so the property is read even on a header styled before this ran.
+    header.style().unpolish(header)
+    header.style().polish(header)
+    header.setSortIndicatorShown(True)
+    if column is None:
+        # Parking the indicator on no section makes the enable below a no-op
+        # sort, so a caller-built order (say newest first) survives it.
+        header.setSortIndicator(-1, order)
+        view.setSortingEnabled(True)
+    else:
+        view.setSortingEnabled(True)
+        view.sortByColumn(column, order)
 
 
 # The palette for survey/statuses.py's colour roles. That table is Qt-free; this

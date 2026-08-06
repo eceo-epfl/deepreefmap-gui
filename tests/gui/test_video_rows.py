@@ -17,17 +17,26 @@ from deepreefmap_gui.runs.video_rows import (
     MENU_DELETE,
     MENU_REASSIGN,
     MENU_RETRIM,
+    SORT_ASC_GLYPH,
+    SORT_DESC_GLYPH,
     UNKNOWN_LENGTH_TOOLTIP,
     SectionRow,
     SectionStrip,
     VideoLibraryList,
+    VideoListHeader,
     VideoRow,
     capture_label,
 )
 from deepreefmap_gui.survey.catalogue import LINK_LINKED, VideoLibraryEntry
 from deepreefmap_gui.survey.models.run_record import RunRecord
 from deepreefmap_gui.survey.models.transect_pass import TransectPass
-from deepreefmap_gui.survey.video_groups import DateGroup, timeline_spans
+from deepreefmap_gui.survey.video_groups import (
+    SORT_NAME,
+    SORT_SIZE,
+    DateGroup,
+    sort_groups,
+    timeline_spans,
+)
 from deepreefmap_gui.survey.video_probe import NO, SOURCE_CONTAINER, SOURCE_MTIME, UNKNOWN, YES
 
 STRIP_WIDTH = 400
@@ -472,3 +481,94 @@ def test_a_section_of_a_clip_of_unknown_length_still_gets_a_row() -> None:
 
 def test_a_bare_section_row_paints_before_it_has_been_told_anything() -> None:
     SectionRow().grab()
+
+
+# --- the header row ----------------------------------------------------------
+
+
+def click_cell(cell) -> None:
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    centre = QPointF(cell.width() / 2, cell.height() / 2)
+    cell.mousePressEvent(
+        QMouseEvent(
+            QMouseEvent.Type.MouseButtonPress,
+            centre,
+            centre,
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+    )
+
+
+def test_the_clip_facts_sit_in_their_own_columns() -> None:
+    """Expected behaviour: recorded, length and size are aligned columns under
+    the header cells that name them, not one composite line."""
+    entry = make_entry(
+        duration_s=723.0,
+        size_bytes=int(3.4 * 1024**3),
+        captured_at="2026-07-01T14:32:00+00:00",
+        captured_source=SOURCE_CONTAINER,
+    )
+    row = VideoRow()
+    row.set_entry(entry, no_name)
+
+    texts = label_texts(row)
+    assert capture_label(entry.video) in texts
+    assert "12m 03s" in texts
+    assert "3.4 GB" in texts
+    assert not any("·" in text for text in texts)
+    row.grab()
+
+
+def test_a_header_click_sorts_and_a_second_click_reverses() -> None:
+    header = VideoListHeader()
+    seen: list[tuple[str, bool]] = []
+    header.sort_changed.connect(lambda column, descending: seen.append((column, descending)))
+
+    click_cell(header.cell(SORT_NAME))
+    click_cell(header.cell(SORT_NAME))
+    click_cell(header.cell(SORT_SIZE))
+
+    assert seen == [(SORT_NAME, False), (SORT_NAME, True), (SORT_SIZE, False)]
+
+
+def test_the_header_marks_the_active_column_and_its_direction() -> None:
+    header = VideoListHeader()
+    header.set_sort(SORT_SIZE, True)
+
+    assert header.cell(SORT_SIZE).text() == f"Size {SORT_DESC_GLYPH}"
+    assert header.cell(SORT_NAME).text() == "Name"
+
+    header.sort_by(SORT_SIZE)
+    assert header.cell(SORT_SIZE).text() == f"Size {SORT_ASC_GLYPH}"
+    header.grab()
+
+
+def test_sorted_groups_rebuild_the_list_in_their_order() -> None:
+    """Expected behaviour: the sort reorders clips within their date groups,
+    and a group's clips never cross into another group."""
+    big = make_entry(file_name="big.mp4", size_bytes=300)
+    small = make_entry(file_name="small.mp4", size_bytes=100)
+    late = make_entry(file_name="late.mp4", size_bytes=200)
+    groups = [
+        DateGroup(key="new", title="Today", entries=[big, small]),
+        DateGroup(key="old", title="Yesterday", entries=[late]),
+    ]
+    listing = VideoLibraryList()
+
+    listing.set_groups(sort_groups(groups, SORT_SIZE), no_name)
+    assert [row.entry.video.file_name for row in listing.rows().values()] == [
+        "small.mp4",
+        "big.mp4",
+        "late.mp4",
+    ]
+
+    listing.set_groups(sort_groups(groups, SORT_SIZE, descending=True), no_name)
+    assert [row.entry.video.file_name for row in listing.rows().values()] == [
+        "big.mp4",
+        "small.mp4",
+        "late.mp4",
+    ]

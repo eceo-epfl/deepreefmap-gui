@@ -9,11 +9,14 @@ of one piece of it.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QPushButton,
     QStackedWidget,
+    QToolButton,
     QWidget,
 )
 
@@ -76,20 +79,43 @@ class SectionDetailPanel(DetailCard):
         )
         layout.addWidget(self._run_stack, 1)
 
+        # One primary and a menu, rather than four buttons sharing a row the
+        # detail pane cannot hold without truncating every label. The menu is
+        # built from one spec, the same shape as Browse's More… button.
         self.cart_btn = QPushButton("Add to cart")
         self.cart_btn.clicked.connect(self._emit_cart)
-        self.trim_btn = QPushButton("Adjust trim…")
-        self.trim_btn.setProperty("quiet", "true")
-        self.trim_btn.clicked.connect(self._emit_retrim)
-        self.transect_btn = QPushButton("Change transect…")
-        self.transect_btn.setProperty("quiet", "true")
-        self.transect_btn.clicked.connect(self._emit_reassign)
-        self.delete_btn = QPushButton("Delete section")
-        self.delete_btn.setProperty("quiet", "true")
-        self.delete_btn.clicked.connect(self._emit_delete)
-        self.add_actions(self.cart_btn, self.trim_btn, self.transect_btn, self.delete_btn)
+        self.more_btn = QToolButton()
+        self.more_btn.setText("More…")
+        self.more_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu = QMenu(self.more_btn)
+        # The delete gate explains itself in a tooltip, so tooltips must show.
+        menu.setToolTipsVisible(True)
+        self.menu_actions = self._fill_section_actions(menu)
+        self.more_btn.setMenu(menu)
+        self.add_actions(self.cart_btn, self.more_btn)
 
         self._pass: TransectPass | None = None
+
+    def _section_action_specs(self) -> tuple[tuple[str | None, str, object], ...]:
+        """Everything the menu offers on this section, in one list.
+
+        A None key is a separator.
+        """
+        return (
+            ("retrim", "Adjust trim…", self._emit_retrim),
+            ("reassign", "Change transect…", self._emit_reassign),
+            (None, "", None),
+            ("delete", "Delete section", self._emit_delete),
+        )
+
+    def _fill_section_actions(self, menu: QMenu) -> dict[str, QAction]:
+        actions = {}
+        for key, label, slot in self._section_action_specs():
+            if key is None:
+                menu.addSeparator()
+                continue
+            actions[key] = menu.addAction(label, slot)
+        return actions
 
     @property
     def pass_(self) -> TransectPass | None:
@@ -159,8 +185,9 @@ class SectionDetailPanel(DetailCard):
         self.cart_btn.setText("In the cart" if in_cart else "Add to cart")
         # A section with runs is the record of what they processed, so it cannot
         # go while they are still there.
-        self.delete_btn.setEnabled(not runs)
-        self.delete_btn.setToolTip(
+        delete = self.menu_actions["delete"]
+        delete.setEnabled(not runs)
+        delete.setToolTip(
             "This section has runs. Delete them in Browse first."
             if runs
             else "Remove this cut. The clip itself is left alone."

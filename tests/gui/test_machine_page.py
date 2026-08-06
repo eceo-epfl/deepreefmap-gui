@@ -9,8 +9,7 @@ module exists to prevent.
 from __future__ import annotations
 
 import pytest
-from _factories import make_profile, make_transect
-from _qt_wait import wait_until
+from _factories import clip_pass, make_profile, make_transect
 
 from deepreefmap_gui.simple import setup as setup_mod
 from deepreefmap_gui.simple.machine import MACHINE_VIEWS
@@ -52,15 +51,8 @@ def queued_machine(ready_machine, tmp_path, monkeypatch):
 
     video = tmp_path / "GX010001.MP4"
     video.write_bytes(b"x" * 4096)
-    monkeypatch.setattr("deepreefmap_gui.simple.batch._probe_video", lambda _p: (60.0, 30.0))
-    monkeypatch.setattr(
-        "deepreefmap_gui.simple.batch.QFileDialog.getOpenFileNames",
-        staticmethod(lambda *a, **k: ([str(video)], "")),
-    )
-    window._on_survey_add_videos()
-    # The clip is probed on a worker thread and its row arrives from a queued
-    # signal, so wait for it rather than racing the worker.
-    wait_until(lambda: len(window._survey_rows) == 1)
+    window._add_pass_to_cart(clip_pass(window._survey_store(), video).id)
+    assert len(window._survey_rows) == 1
     return window
 
 

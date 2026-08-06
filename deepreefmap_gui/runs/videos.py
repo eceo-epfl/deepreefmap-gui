@@ -18,7 +18,7 @@ import threading
 import uuid
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, Qt
 from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
@@ -45,16 +45,20 @@ from deepreefmap_gui.core.widgets import (
 from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.runs.section_detail import SectionDetailPanel, section_window
 from deepreefmap_gui.runs.video_detail import VideoDetailPanel
-from deepreefmap_gui.runs.video_rows import VideoLibraryList
+from deepreefmap_gui.runs.video_rows import VideoLibraryList, VideoListHeader
 from deepreefmap_gui.survey import catalogue, statuses
-from deepreefmap_gui.survey.catalogue import LINK_LINKED, VideoLibraryEntry
+from deepreefmap_gui.survey.catalogue import LINK_LINKED, LINK_MISSING, VideoLibraryEntry
 from deepreefmap_gui.survey.models import TransectPass
 from deepreefmap_gui.survey.models.video_asset import VideoAsset
 from deepreefmap_gui.survey.video_groups import (
     DEFAULT_PERIOD,
+    DEFAULT_SORT_COLUMN,
+    DEFAULT_SORT_DESCENDING,
     PERIODS,
+    SORT_COLUMNS,
     group_by_period,
     pass_status,
+    sort_groups,
 )
 
 logger = logging.getLogger(__name__)
@@ -72,10 +76,18 @@ _SEARCH_WIDTH = 240
 _DETAIL_SHARE = 0.30
 _DETAIL_MIN_WIDTH = 260
 
+# Below this the splitter has not been laid out yet and its width is a
+# placeholder, so the share is computed from the sizes instead.
+_SPLIT_MIN_TOTAL = 400
+
 _PERIOD_TOOLTIP = (
     "How far apart two clips have to be shot to be filed separately. A card off "
     "one dive day reads as one group by day."
 )
+
+# The sort order lands in QSettings as one of these words rather than a bool:
+# some backends hand a stored bool back as the string "false", which is truthy.
+_ORDER_ASCENDING, _ORDER_DESCENDING = "ascending", "descending"
 
 
 class VideoLibraryMixin(MixinBase):
@@ -83,7 +95,11 @@ class VideoLibraryMixin(MixinBase):
 
     _video_clip_filter: str = "all"
     _video_period: str = DEFAULT_PERIOD
+    _video_sort_column: str = DEFAULT_SORT_COLUMN
+    _video_sort_descending: bool = DEFAULT_SORT_DESCENDING
     _selected_pass_id: str | None = None
+    _video_split_user_sized: bool = False
+    _video_split_applying: bool = False
 
     def _build_video_library(self) -> QWidget:
         self._video_entries: list[VideoLibraryEntry] = []
@@ -94,6 +110,13 @@ class VideoLibraryMixin(MixinBase):
         self._video_period = str(
             self._settings.value("video_group_period", DEFAULT_PERIOD) or DEFAULT_PERIOD
         )
+        stored_column = str(self._settings.value("video_sort_column", DEFAULT_SORT_COLUMN) or "")
+        self._video_sort_column = (
+            stored_column if stored_column in SORT_COLUMNS else DEFAULT_SORT_COLUMN
+        )
+        stored_order = str(self._settings.value("video_sort_order", "") or "")
+        if stored_order in (_ORDER_ASCENDING, _ORDER_DESCENDING):
+            self._video_sort_descending = stored_order == _ORDER_DESCENDING
 
         page = QWidget()
         layout = QVBoxLayout(page)
@@ -131,6 +154,10 @@ class VideoLibraryMixin(MixinBase):
         split.setHandleWidth(SPACE_SM)
 
         column, column_layout = section_column("Footage")
+        self._video_header = VideoListHeader()
+        self._video_header.set_sort(self._video_sort_column, self._video_sort_descending)
+        self._video_header.sort_changed.connect(self._on_video_sort_changed)
+        column_layout.addWidget(self._video_header)
         self._video_list = VideoLibraryList()
         self._video_list.activated.connect(self._on_video_activated)
         self._video_list.play_requested.connect(self._on_video_play)
@@ -182,9 +209,47 @@ class VideoLibraryMixin(MixinBase):
 
         split.setStretchFactor(0, 1)
         split.setStretchFactor(1, 0)
+        split.splitterMoved.connect(self._on_video_split_moved)
+        # The window's eventFilter delegates resizes to
+        # _video_split_event_filter, the same route Browse's splitter takes.
+        split.installEventFilter(self)
         self._video_split = split
         layout.addWidget(split, 1)
         return page
+
+    def _apply_video_split_sizes(self) -> None:
+        """Divide the page between the clip list and the detail pane.
+
+        Set outright rather than left to stretch factors: a splitter only
+        shares out the space above each pane's minimum, so the detail pane sat
+        at its 260px floor however wide the window got, and the section card's
+        buttons truncated to fit it.
+        """
+        if getattr(self, "_video_split_user_sized", False):
+            return
+        total = self._video_split.width()
+        if total < _SPLIT_MIN_TOTAL:
+            total = sum(self._video_split.sizes()) or 1200
+        detail = max(_DETAIL_MIN_WIDTH, int(total * _DETAIL_SHARE))
+        self._video_split_applying = True
+        try:
+            self._video_split.setSizes([max(1, total - detail), detail])
+        finally:
+            self._video_split_applying = False
+
+    def _video_split_event_filter(self, obj, event) -> None:
+        """Re-divide the page when its splitter is resized.
+
+        Guarded on the splitter existing: the filter is installed on the
+        window, which receives events while the page is still being built.
+        """
+        if obj is getattr(self, "_video_split", None) and event.type() == QEvent.Type.Resize:
+            self._apply_video_split_sizes()
+
+    def _on_video_split_moved(self, *_args) -> None:
+        """A dragged handle is a decision; stop overriding it on every resize."""
+        if not getattr(self, "_video_split_applying", False):
+            self._video_split_user_sized = True
 
     # --- the library ---------------------------------------------------------
 
@@ -224,11 +289,17 @@ class VideoLibraryMixin(MixinBase):
         if getattr(self, "_video_list", None) is None:
             return
         clips = self._visible_clips()
-        groups = group_by_period(clips, self._video_period)
+        groups = sort_groups(
+            group_by_period(clips, self._video_period),
+            self._video_sort_column,
+            descending=self._video_sort_descending,
+        )
         self._video_list.set_groups(
             groups, self._transect_name_for, in_cart=self._pass_in_current_cart
         )
         self._video_stack.setCurrentIndex(0 if clips else 1)
+        # Columns over an empty state describe nothing.
+        self._video_header.setVisible(bool(clips))
         self._refresh_video_chips()
         self._refresh_video_detail()
         self._refresh_section_state()
@@ -350,6 +421,16 @@ class VideoLibraryMixin(MixinBase):
         self._video_clip_filter = key
         self._rebuild_video_list()
 
+    def _on_video_sort_changed(self, column: str, descending: bool) -> None:
+        self._video_sort_column = column
+        self._video_sort_descending = descending
+        # A reader's preference on this machine, beside the grouping period.
+        self._settings.setValue("video_sort_column", column)
+        self._settings.setValue(
+            "video_sort_order", _ORDER_DESCENDING if descending else _ORDER_ASCENDING
+        )
+        self._rebuild_video_list()
+
     # --- one clip ------------------------------------------------------------
 
     def _on_video_activated(self, video_id: str) -> None:
@@ -413,7 +494,17 @@ class VideoLibraryMixin(MixinBase):
         return batch.name if batch is not None else None
 
     def _on_video_add_clicked(self) -> None:
-        self._on_survey_add_videos()
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Add videos",
+            str(self._settings.value("last_video_dir", "")),
+            "Videos (*.mp4 *.mov *.avi *.mkv);;All files (*)",
+        )
+        if paths:
+            # Footage arrives a card at a time, so the next batch of clips is
+            # almost always in the folder the last one came from.
+            self._settings.setValue("last_video_dir", str(Path(paths[0]).parent))
+        self._add_video_paths(paths)
 
     def _on_video_new_section(self) -> None:
         clip = self._video_detail.entry
@@ -429,16 +520,28 @@ class VideoLibraryMixin(MixinBase):
         """Cut a section from a clip, file it, and drop it in the cart.
 
         Scrub first (the window is the section's identity), then the assign step,
-        where a transect is a choice rather than a requirement. A clip with a
-        missing file or unknown duration cannot be scrubbed and falls back to
-        queueing the whole clip.
+        where a transect is a choice rather than a requirement. A clip that
+        cannot be scrubbed cuts nothing: a section is a window the user chose,
+        never a whole clip queued on their behalf.
         """
         from deepreefmap_gui.form.video_scrub import VideoScrubDialog
         from deepreefmap_gui.simple.section_dialog import SectionAssignDialog
 
         duration = clip.video.duration_s or 0.0
-        if clip.link_state != LINK_LINKED or duration <= 0.0:
-            self._queue_video_path(clip.video.path)
+        if clip.link_state == LINK_MISSING:
+            self._status_label.setText(
+                "Cannot cut a section: the video file is missing. Relocate it first."
+            )
+            return
+        if clip.link_state != LINK_LINKED:
+            self._status_label.setText(
+                "Cannot cut a section: the video file has not been checked yet."
+            )
+            return
+        if duration <= 0.0:
+            self._status_label.setText(
+                "Cannot cut a section: the clip's length is unknown."
+            )
             return
         store = self._try_survey_store()
         if store is None:
@@ -579,7 +682,11 @@ class VideoLibraryMixin(MixinBase):
             f"{self._video_detail.entry.video.file_name if self._video_detail.entry else 'this clip'}?",
         ):
             return
-        store.delete_pass(pass_.id)
+        try:
+            store.delete_pass(pass_.id)
+        except ValueError as exc:
+            self._status_label.setText(str(exc))
+            return
         self._selected_pass_id = None
         self._section_detail.setVisible(False)
         self._refresh_video_library()
@@ -684,7 +791,3 @@ class VideoLibraryMixin(MixinBase):
         self._clip_link_cache.pop(str(chosen), None)
         self._status_label.setText(f"{video.file_name} now points at {chosen}.")
         self._refresh_video_library()
-
-    def _queue_video_path(self, path: str) -> None:
-        """Import a whole clip as one section, for footage that cannot be scrubbed."""
-        self._add_video_paths([path])

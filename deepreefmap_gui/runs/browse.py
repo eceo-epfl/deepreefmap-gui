@@ -1327,8 +1327,8 @@ class BrowseMixin(MixinBase):
             return
         videos, truncated = find_videos(paths)
         if videos:
-            # Probing happens off the GUI thread, so the rows and the count both
-            # land in _on_videos_probed rather than here.
+            # Probing happens off the GUI thread, so the library entries and the
+            # count both land in _on_videos_probed rather than here.
             self._add_video_paths([str(p) for p in videos])
             if any(p.is_dir() for p in paths):
                 count = f"{len(videos)} clip{'' if len(videos) == 1 else 's'}"

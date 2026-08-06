@@ -65,6 +65,34 @@ def make_video(content_hash: str | None = VIDEO_HASH, **overrides) -> VideoAsset
     })
 
 
+def clip_pass(
+    store: SurveyStore,
+    *paths: Path | str,
+    duration_s: float = 60.0,
+    fps: float = 30.0,
+) -> TransectPass:
+    """Register clips on disk and file one unassigned pass over the lot.
+
+    The shape a cut section leaves behind: importing only registers clips, so
+    tests build the pass themselves. Extra paths become chapters, in order.
+    """
+    videos = []
+    for path in paths:
+        asset = VideoAsset.from_path(Path(path))
+        asset.duration_s = duration_s
+        asset.fps = fps
+        videos.append(store.upsert_video(asset))
+    pass_ = TransectPass(
+        transect_id=None,
+        video_id=videos[0].id,
+        extra_video_ids=[video.id for video in videos[1:]],
+        begin_s=0.0,
+        end_s=duration_s * len(videos),
+    )
+    store.add_pass(pass_)
+    return pass_
+
+
 def write_run(root: Path, dir_name: str, **overrides) -> Path:
     """Write a run directory with a manifest, as the pipeline leaves one."""
     manifest = {

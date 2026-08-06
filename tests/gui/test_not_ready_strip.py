@@ -11,8 +11,7 @@ diver to find the place it happens.
 from __future__ import annotations
 
 import pytest
-from _factories import make_transect
-from _qt_wait import wait_until
+from _factories import clip_pass, make_transect
 
 from deepreefmap_gui.simple.section_state import BLOCKED, OK
 
@@ -26,16 +25,8 @@ def queued_window(window, tmp_path, monkeypatch):
 
     video = tmp_path / "GX010001.MP4"
     video.write_bytes(b"x" * 4096)
-    monkeypatch.setattr("deepreefmap_gui.simple.batch._probe_video", lambda _p: (60.0, 30.0))
-    monkeypatch.setattr(
-        "deepreefmap_gui.simple.batch.QFileDialog.getOpenFileNames",
-        staticmethod(lambda *a, **k: ([str(video)], "")),
-    )
-    window._on_survey_add_videos()
-    # Adding videos probes them on a worker thread and appends the row from a
-    # queued signal, so wait for it rather than racing the worker (and so the
-    # signal lands while the window is still alive).
-    wait_until(lambda: len(window._survey_rows) == 1)
+    window._add_pass_to_cart(clip_pass(window._survey_store(), video).id)
+    assert len(window._survey_rows) == 1
     return window
 
 

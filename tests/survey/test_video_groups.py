@@ -12,10 +12,17 @@ from deepreefmap_gui.survey.video_groups import (
     ALL_KEY,
     DEFAULT_PERIOD,
     PERIOD_KEYS,
+    SORT_LENGTH,
+    SORT_NAME,
+    SORT_RECORDED,
+    SORT_SIZE,
     UNDATED_KEY,
     UNDATED_TITLE,
+    DateGroup,
     group_by_period,
     pass_status,
+    sort_clips,
+    sort_groups,
     timeline_spans,
 )
 
@@ -28,11 +35,16 @@ def clip(
     captured_at: str | None = None,
     mtime: str | None = None,
     duration_s: float | None = None,
+    size_bytes: int | None = None,
     passes: list[TransectPass] | None = None,
     runs: list[RunRecord] | None = None,
 ) -> VideoLibraryEntry:
     video = make_video(
-        file_name=name, captured_at=captured_at, mtime=mtime, duration_s=duration_s
+        file_name=name,
+        captured_at=captured_at,
+        mtime=mtime,
+        duration_s=duration_s,
+        size_bytes=size_bytes,
     )
     passes = passes or []
     runs = runs or []
@@ -209,3 +221,45 @@ def test_pass_status_matches_the_latest_run_regardless_of_order():
     early = make_run(pass_, "failed", "2026-08-01T10:00:00+00:00")
     assert pass_status([late, early]) == "succeeded"
     assert pass_status([]) == "queued"
+
+
+def names(entries) -> list[str]:
+    return [e.video.file_name for e in entries]
+
+
+def test_clips_sort_by_the_asked_column():
+    shorter = clip("b.MP4", duration_s=30.0, size_bytes=200, captured_at="2026-08-06T09:00:00+00:00")
+    longer = clip("a.MP4", duration_s=60.0, size_bytes=100, captured_at="2026-08-05T09:00:00+00:00")
+
+    assert names(sort_clips([shorter, longer], SORT_NAME)) == ["a.MP4", "b.MP4"]
+    assert names(sort_clips([shorter, longer], SORT_LENGTH)) == ["b.MP4", "a.MP4"]
+    assert names(sort_clips([shorter, longer], SORT_SIZE)) == ["a.MP4", "b.MP4"]
+    assert names(sort_clips([longer, shorter], SORT_RECORDED, descending=True)) == [
+        "b.MP4",
+        "a.MP4",
+    ]
+
+
+def test_a_clip_missing_the_fact_sinks_to_the_end_both_ways():
+    known = clip("known.MP4", size_bytes=100)
+    unknown = clip("unknown.MP4")
+
+    for descending in (False, True):
+        ordered = sort_clips([unknown, known], SORT_SIZE, descending=descending)
+        assert names(ordered) == ["known.MP4", "unknown.MP4"]
+
+
+def test_sorting_stays_within_the_groups():
+    newer = DateGroup(key="new", title="Today", entries=[clip("z.MP4"), clip("a.MP4")])
+    older = DateGroup(key="old", title="Yesterday", entries=[clip("m.MP4")])
+
+    by_name = sort_groups([newer, older], SORT_NAME)
+
+    assert [g.key for g in by_name] == ["new", "old"]
+    assert names(by_name[0].entries) == ["a.MP4", "z.MP4"]
+    assert names(by_name[1].entries) == ["m.MP4"]
+
+
+def test_an_unknown_sort_column_is_refused():
+    with pytest.raises(ValueError):
+        sort_clips([clip()], "colour")

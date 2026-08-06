@@ -15,7 +15,6 @@ from PySide6.QtWidgets import (
     QPushButton,
     QStackedWidget,
     QTableWidget,
-    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -23,7 +22,9 @@ from PySide6.QtWidgets import (
 from deepreefmap_gui.core.theme import GUTTER, TEXT_MUTED
 from deepreefmap_gui.core.widgets import (
     EmptyState,
+    SortableItem,
     configure_table,
+    enable_sorting,
     muted_label,
     section_card,
 )
@@ -119,6 +120,8 @@ class SimpleAnalysisMixin(MixinBase):
             self._analysis_stats_table,
             ["Class", "Cover", "Mean of passes", "Std", "CV", "Range"],
         )
+        # Largest cover first, matching how the chart ranks its bars.
+        enable_sorting(self._analysis_stats_table, 1, Qt.SortOrder.DescendingOrder)
         self._analysis_stats_stack = QStackedWidget()
         self._analysis_stats_stack.addWidget(self._analysis_stats_table)
         self._analysis_stats_stack.addWidget(
@@ -290,24 +293,28 @@ class SimpleAnalysisMixin(MixinBase):
         stats = repeatability_stats(covers)
         labels = cover_labels(covers)
         table = self._analysis_stats_table
+        # Sorting is suspended while rows are filled: with it live, each new row
+        # is re-sorted into place and the cells of a half-built row scatter.
+        table.setSortingEnabled(False)
         table.setRowCount(len(labels))
         for row, label in enumerate(labels):
             entry = stats[label]
             cells = [
-                label,
-                f"{pooled.cover.get(label, 0.0) * 100:.1f}%",
-                f"{entry['mean'] * 100:.1f}%",
-                f"{entry['std'] * 100:.1f}%",
-                f"{entry['cv']:.2f}",
-                f"{entry['range'] * 100:.1f}%",
+                (label, label.lower()),
+                (f"{pooled.cover.get(label, 0.0) * 100:.1f}%", pooled.cover.get(label, 0.0)),
+                (f"{entry['mean'] * 100:.1f}%", entry["mean"]),
+                (f"{entry['std'] * 100:.1f}%", entry["std"]),
+                (f"{entry['cv']:.2f}", entry["cv"]),
+                (f"{entry['range'] * 100:.1f}%", entry["range"]),
             ]
-            for column, text in enumerate(cells):
-                item = QTableWidgetItem(text)
+            for column, (text, value) in enumerate(cells):
+                item = SortableItem(text, value)
                 if column > 0:
                     item.setTextAlignment(
                         Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
                     )
                 table.setItem(row, column, item)
+        table.setSortingEnabled(True)
 
     def _fill_analysis_repro(self, covers: list) -> None:
         groups = reproducibility_groups(covers)

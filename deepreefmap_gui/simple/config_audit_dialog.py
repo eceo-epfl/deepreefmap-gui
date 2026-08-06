@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from deepreefmap_gui.core.theme import TEXT_MUTED
-from deepreefmap_gui.core.widgets import EmptyState, configure_table
+from deepreefmap_gui.core.widgets import EmptyState, configure_table, enable_sorting
 from deepreefmap_gui.survey.config_audit import STANDARD, ConfigAuditRow, audit_summary
 from deepreefmap_gui.survey.preset import OrgPreset
 
@@ -86,4 +86,7 @@ class ConfigAuditDialog(QDialog):
                     # rather than competing with the rows worth reading.
                     item.setForeground(QColor(TEXT_MUTED))
                 table.setItem(index, column, item)
+        # No initial sort: the rows arrive newest first, and no column here
+        # carries a date to get that order back once it is lost.
+        enable_sorting(table, column=None)
         return table

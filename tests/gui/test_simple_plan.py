@@ -578,3 +578,35 @@ def test_browse_routes_a_transect_through_to_transects(out_root, window):
     assert window._data_detail_stack.currentWidget() is window._transect_detail
     window._transect_detail.open_btn.click()
     assert window._simple_stack.currentIndex() == SIMPLE_SECTIONS.index("transects")
+
+
+def test_transect_list_sorts_lengths_as_numbers(window):
+    """A length sort puts "9 m" before "12 m", which text order gets backwards."""
+    from PySide6.QtCore import Qt
+
+    w = window
+    store = w._survey_store()
+    store.add_transect(make_transect(name="Short", length_m=9.0))
+    store.add_transect(make_transect(name="Long", length_m=12.0))
+    w._refresh_transect_list()
+
+    tree = w._transect_list
+    assert tree.header().property("sortable") == "true"
+    assert tree.header().isSortIndicatorShown()
+
+    tree.sortByColumn(1, Qt.SortOrder.AscendingOrder)
+    assert row_names(w) == ["Short", "Long"]
+    tree.sortByColumn(1, Qt.SortOrder.DescendingOrder)
+    assert row_names(w) == ["Long", "Short"]
+
+
+def test_draft_row_stays_at_the_foot_under_a_sort(window):
+    from PySide6.QtCore import Qt
+
+    w = window
+    w._survey_store().add_transect(make_transect(name="Zeta"))
+    w._refresh_transect_list()
+    w._tr_name_input.setText("Alpha draft")
+
+    w._transect_list.sortByColumn(0, Qt.SortOrder.AscendingOrder)
+    assert row_names(w) == ["Zeta", "Alpha draft"]

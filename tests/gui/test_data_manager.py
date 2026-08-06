@@ -364,18 +364,20 @@ def test_drag_enter_with_urls_is_accepted(make_window):
     assert event.accepted
 
 
-def test_dropped_video_queues_a_pass(tmp_path, make_window, monkeypatch):
+def test_dropped_video_registers_a_clip_without_a_pass(tmp_path, make_window, monkeypatch):
     clip = tmp_path / "reef.mp4"
     clip.write_bytes(b"x" * 4096)
     window = make_window()
     monkeypatch.setattr(
         "deepreefmap_gui.simple.batch._probe_video", lambda _p: (60.0, 30.0)
     )
-    before = len(window._survey_rows)
+    store = window._survey_store()
     window._handle_data_drop([clip])
-    # Probing runs on a worker thread, so the row arrives with a queued signal.
-    assert wait_until(lambda: len(window._survey_rows) == before + 1)
-    assert "Queued 1 pass from 1 video." in window._status_label.text()
+    # Probing runs on a worker thread, so the clip arrives with a queued signal.
+    assert wait_until(lambda: len(store.list_videos()) == 1)
+    assert "Imported 1 clip" in window._status_label.text()
+    assert store.list_passes() == []
+    assert window._survey_rows == []
 
 
 def test_dropped_run_folder_opens_it(out_root, make_window, monkeypatch):

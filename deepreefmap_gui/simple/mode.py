@@ -243,7 +243,10 @@ class InterfaceShellMixin(MixinBase):
         self._set_machine_view("readiness")
 
     def _idle_status_text(self) -> str:
-        return "Ready. Add videos under Videos, and mark out transects to compare them against."
+        return (
+            "Ready. Add videos under Videos, cut sections to process, and mark "
+            "out transects to compare them against."
+        )
 
     def _refresh_browse_state(self) -> None:
         """Cache Browse's count from entries the data manager already scanned."""

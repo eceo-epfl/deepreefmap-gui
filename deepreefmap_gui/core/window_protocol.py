@@ -324,13 +324,11 @@ if TYPE_CHECKING:
         def _build_video_library(self) -> QWidget: ...  # VideoLibraryMixin
         def _refresh_video_library(self, store=None) -> None: ...  # VideoLibraryMixin
         def _repair_video_identity(self, store) -> None: ...  # VideoLibraryMixin
-        def _queue_video_path(self, path: str) -> None: ...  # VideoLibraryMixin
         def _pass_in_current_cart(self, pass_id_str: object) -> bool: ...  # VideoLibraryMixin
         def _apply_clip_link_states(self, states: dict) -> None: ...  # VideoLibraryMixin
         def _refresh_storage_bars(self) -> None: ...  # FormPanelMixin
         def _apply_storage_usage(self, volumes: object) -> None: ...  # FormPanelMixin
         def _set_storage_compact(self, running: bool) -> None: ...  # RunLoadingMixin
-        def _on_survey_add_videos(self) -> None: ...  # SimpleBatchMixin
         def _request_data_refresh(self) -> None: ...  # BrowseMixin
         def _apply_run_sizes(self, sizes: dict) -> None: ...  # BrowseMixin
         def _hide_run_meta_banner(self) -> None: ...  # PastRunsMixin

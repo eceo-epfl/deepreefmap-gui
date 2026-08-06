@@ -306,6 +306,7 @@ class DeepReefMapWindow(
         # Observes rather than consumes: the splitter still has to lay itself
         # out, this only re-divides it afterwards.
         self._data_split_event_filter(obj, event)
+        self._video_split_event_filter(obj, event)
         return super().eventFilter(obj, event)
 
     # --- teardown -----------------------------------------------------------
