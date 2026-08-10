@@ -1,14 +1,25 @@
 # Tests
 
 ```bash
-uv run pytest                      # everything (~45 s; most of it is tests/gui)
+uv run pytest                      # everything (~30 s across a desktop's cores)
+uv run pytest -n0                  # one process, ~2 min, readable on a crash
 uv run pytest --ignore=tests/gui   # everything that needs no main window, ~2 s
 uv run pytest --cov=deepreefmap_gui --cov-report=term-missing:skip-covered
 ```
 
-The viewer tests need a real OpenGL context. If they crash under the `offscreen`
-Qt platform, use `xvfb-run -a uv run pytest`. VTK logs shader errors there
-without failing; the picking tests only read back geometry, not pixels.
+`-n auto` is in `addopts`, and CI passes `-n 2` over it. Use `-n0` to read a
+worker crash, or to bisect an ordering bug.
+
+Nothing appears on screen. `tests/conftest.py` starts a private `Xvfb` and points
+`DISPLAY` at it, falling back to the `offscreen` platform where there is neither
+Xvfb nor a display, which is the CI path. Xvfb first because the viewer tests
+need a real OpenGL context and segfault under `offscreen` on a machine with no
+software GL. `QT_QPA_PLATFORM=xcb uv run pytest` puts the windows back on the
+real screen to watch a run.
+
+The conftest also stubs the file-manager reveal helpers, so no click opens a real
+file manager on `tmp_path`. `tests/core/test_reveal.py` opts back in with the
+`real_reveal` marker.
 
 ## Layout
 

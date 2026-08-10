@@ -13,6 +13,9 @@ import pytest
 from deepreefmap_gui.core import reveal
 from deepreefmap_gui.core.reveal import reveal_in_file_manager
 
+# The real helpers are the subject here, so keep the conftest stub off them.
+pytestmark = pytest.mark.real_reveal
+
 
 class _FakeRun:
     """Stands in for `subprocess.run`, answering per command name."""
