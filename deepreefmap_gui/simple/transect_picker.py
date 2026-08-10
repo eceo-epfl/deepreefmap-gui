@@ -92,7 +92,7 @@ class TransectPickerDialog(QDialog):
         *,
         transect_id: uuid.UUID | None = None,
         direction: str | None = None,
-        ok_label: str = "Add to cart",
+        ok_label: str = "Save",
     ) -> None:
         super().__init__(parent)
         self._store = store

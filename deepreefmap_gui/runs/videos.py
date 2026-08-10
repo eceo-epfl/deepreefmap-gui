@@ -45,7 +45,11 @@ from deepreefmap_gui.core.widgets import (
 from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.runs.section_detail import SectionDetailPanel, section_window
 from deepreefmap_gui.runs.video_detail import VideoDetailPanel
-from deepreefmap_gui.runs.video_rows import VideoLibraryList, VideoListHeader
+from deepreefmap_gui.runs.video_rows import (
+    KEEPS_FILE_NOTE,
+    VideoLibraryList,
+    VideoListHeader,
+)
 from deepreefmap_gui.survey import catalogue, statuses
 from deepreefmap_gui.survey.catalogue import LINK_LINKED, LINK_MISSING, VideoLibraryEntry
 from deepreefmap_gui.survey.models import TransectPass
@@ -185,6 +189,7 @@ class VideoLibraryMixin(MixinBase):
         self._video_list.span_clicked.connect(self._select_section)
         self._video_list.hide_requested.connect(self._on_video_hide)
         self._video_list.delete_unused_requested.connect(self._on_video_delete_unused)
+        self._video_list.delete_requested.connect(self._on_video_delete)
         self._video_list.section_activated.connect(self._select_section)
         self._video_list.section_add_to_cart.connect(self._on_video_pass_to_cart)
         self._video_list.section_retrim.connect(self._on_section_retrim)
@@ -661,7 +666,10 @@ class VideoLibraryMixin(MixinBase):
             self._new_section_from_clip(clip)
 
     def _new_section_from_clip(self, clip: VideoLibraryEntry) -> None:
-        """Cut a section from a clip, file it, and drop it in the cart.
+        """Cut a section from a clip and file it against a transect.
+
+        The cart is not touched: making a section and choosing to run it are two
+        decisions, and the cart control on the row is where the second is made.
 
         Scrub first (the window is the section's identity), then the assign step,
         where a transect is a choice rather than a requirement. A clip that
@@ -689,7 +697,9 @@ class VideoLibraryMixin(MixinBase):
             return
         store = self._try_survey_store()
         if store is None:
-            self._status_label.setText("Survey database unavailable; cannot queue.")
+            self._status_label.setText(
+                "Cannot cut a section: the survey database is unavailable."
+            )
             return
         scrub = VideoScrubDialog(
             clip.video.path, duration, 0.0, duration, parent=self, fps=clip.video.fps
@@ -719,8 +729,8 @@ class VideoLibraryMixin(MixinBase):
             direction=direction,
         )
         store.add_pass(pass_)
-        self._add_pass_to_cart(pass_.id)
         self._refresh_video_library()
+        self._select_section(str(pass_.id))
 
     def _cart_pass_ids(self) -> set[str]:
         """The current cart's passes, read once per repaint.
@@ -956,6 +966,51 @@ class VideoLibraryMixin(MixinBase):
         self._refresh_video_library()
         self._refresh_survey_batch_tab()
         self._status_label.setText(f"Deleted {_sections_phrase(removed)}.")
+
+    def _on_video_delete(self, video_id: str) -> None:
+        """Take a clip out of the library, with the sections cut from it.
+
+        The record only: the footage stays where it is, and adding the file
+        again brings the clip back. A run is the record of what it processed,
+        so a clip anything was made from stays until Browse has taken those
+        runs, the same rule ``_on_section_delete`` applies one level down.
+
+        No dialog. The row's button asks by arming itself, which is what makes
+        clearing a dozen bad imports a dozen clicks.
+        """
+        store = self._try_survey_store()
+        clip = self._clip_by_id(video_id)
+        if store is None or clip is None:
+            return
+        if clip.runs:
+            count = f"{len(clip.runs)} run{'' if len(clip.runs) == 1 else 's'}"
+            self._status_label.setText(
+                f"This clip has {count}. Delete them in Browse first."
+            )
+            return
+        sections = (
+            f" and {_sections_phrase(len(clip.passes))}" if clip.passes else ""
+        )
+        try:
+            store.delete_video(clip.video.id)
+        except ValueError as exc:
+            self._status_label.setText(str(exc))
+            return
+        # A hidden clip that no longer exists would keep counting towards
+        # "Show hidden (n)" forever, since nothing else ever prunes that list.
+        if video_id in self._hidden_clip_ids:
+            self._hidden_clip_ids.discard(video_id)
+            self._save_hidden_clips()
+        if self._video_list.selected == video_id:
+            self._video_list.set_selected(None)
+        self._selected_pass_id = None
+        self._section_detail.setVisible(False)
+        self._refresh_video_library()
+        self._refresh_survey_batch_tab()
+        self._status_label.setText(
+            f"{clip.video.file_name}{sections} removed from the library. "
+            f"{KEEPS_FILE_NOTE}"
+        )
 
     def _on_video_reveal(self, video_id: str) -> None:
         """Show the clip itself in the file manager, selected rather than merely near.

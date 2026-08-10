@@ -212,6 +212,25 @@ MENU_HIDE_TOOLTIP = "Take this clip out of the list. Show hidden brings it back.
 MENU_UNHIDE_TOOLTIP = "Put this clip back in the list."
 MENU_DELETE_UNUSED = "Delete sections with no runs"
 NO_UNUSED_TOOLTIP = "Every section of this clip has been processed, or there are none."
+MENU_DELETE_CLIP = "Delete clip"
+
+# A trash can beside a video reads as deleting the footage, and this does not.
+# Every place the action is named says so, since which one the user is looking
+# at when the doubt arrives is not something the row gets to choose.
+KEEPS_FILE_NOTE = "The video file itself is not deleted."
+DELETE_CLIP_TOOLTIP = f"Take this clip out of the library. {KEEPS_FILE_NOTE}"
+DELETE_CLIP_BLOCKED_TOOLTIP = (
+    f"This clip has runs. Delete those in Browse first, and the clip can go with "
+    f"them. {KEEPS_FILE_NOTE}"
+)
+
+# The clip delete asks in the button rather than in a dialog: one click arms it,
+# the second does it, and it disarms itself. Clearing a library of bad imports
+# is a dozen deletes in a row, and a dozen modal dialogs is the whole cost of
+# the job. Long enough to read the changed icon, short enough that a click on
+# the next row is never the one that lands.
+DELETE_ARM_MS = 3000
+DELETE_CLIP_ARMED_TOOLTIP = f"Click again to remove it. {KEEPS_FILE_NOTE}"
 
 # The clip row's "cut a new section": a single glyph rather than an icon, since
 # the meaning is the character and drawing it would leave the icon layer with a
@@ -597,6 +616,7 @@ class VideoRow(QWidget):
     span_clicked = Signal(str)
     hide_requested = Signal(str)
     delete_unused_requested = Signal(str)
+    delete_requested = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -672,6 +692,18 @@ class VideoRow(QWidget):
         self.new_section_btn.clicked.connect(lambda: self._emit(self.new_section_requested))
         row.addWidget(self.new_section_btn)
 
+        # Live whatever the clip's state: the handler is what refuses, and the
+        # tooltip carries the reason. A disabled button shows no tooltip.
+        self.delete_btn = _icon_button(trash_icon(), MENU_DELETE_CLIP, DELETE_CLIP_TOOLTIP)
+        self.delete_btn.clicked.connect(self._on_delete_clicked)
+        row.addWidget(self.delete_btn)
+        # Owned by the row, so a list rebuilt under an armed button takes the
+        # timer down with the row rather than firing into a deleted widget.
+        self._delete_arm = QTimer(self)
+        self._delete_arm.setSingleShot(True)
+        self._delete_arm.setInterval(DELETE_ARM_MS)
+        self._delete_arm.timeout.connect(self._apply_delete_icon)
+
         self._entry: VideoLibraryEntry | None = None
         self._hidden = False
         self._selected = False
@@ -714,6 +746,7 @@ class VideoRow(QWidget):
             self._set_link(self._entry)
         ink = self._ink()
         self.play_btn.setIcon(play_icon(color=ink) if ink is not None else play_icon())
+        self._apply_delete_icon()
 
     def _ink(self) -> QColor | None:
         """White while the row is selected, and each glyph's own colour otherwise.
@@ -747,6 +780,33 @@ class VideoRow(QWidget):
         if self._entry is not None:
             signal.emit(self.video_id)
 
+    def _on_delete_clicked(self) -> None:
+        """Arm on the first click, delete on the second.
+
+        The question a confirmation dialog asks is asked by the button itself,
+        so a run of deletes is a run of clicks rather than a run of dialogs.
+        """
+        if self._delete_arm.isActive():
+            self._delete_arm.stop()
+            self._apply_delete_icon()
+            self._emit(self.delete_requested)
+            return
+        self._delete_arm.start()
+        self._apply_delete_icon()
+
+    def _apply_delete_icon(self) -> None:
+        """A trash can, or a tick asking whether that is really meant."""
+        if self._delete_arm.isActive():
+            self.delete_btn.setIcon(check_icon(color=QColor(ERROR)))
+            self.delete_btn.setToolTip(DELETE_CLIP_ARMED_TOOLTIP)
+            return
+        ink = self._ink()
+        self.delete_btn.setIcon(trash_icon(color=ink) if ink is not None else trash_icon())
+        runs = 0 if self._entry is None else self._entry.run_count
+        self.delete_btn.setToolTip(
+            DELETE_CLIP_BLOCKED_TOOLTIP if runs else DELETE_CLIP_TOOLTIP
+        )
+
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton and self._entry is not None:
             self.activated.emit(self.video_id)
@@ -776,6 +836,12 @@ class VideoRow(QWidget):
             else NO_UNUSED_TOOLTIP
         )
         delete.triggered.connect(lambda *_: self.delete_unused_requested.emit(self.video_id))
+        runs = 0 if self._entry is None else self._entry.run_count
+        delete_clip = menu.addAction(MENU_DELETE_CLIP)
+        delete_clip.setToolTip(
+            DELETE_CLIP_BLOCKED_TOOLTIP if runs else DELETE_CLIP_TOOLTIP
+        )
+        delete_clip.triggered.connect(lambda *_: self.delete_requested.emit(self.video_id))
         return menu
 
     def contextMenuEvent(self, event: QContextMenuEvent) -> None:  # noqa: N802
@@ -816,6 +882,10 @@ class VideoRow(QWidget):
         # folder is where you go to find out what became of a missing clip.
         self.play_btn.setEnabled(entry.link_state == LINK_LINKED)
         self.new_section_btn.setEnabled(entry.link_state == LINK_LINKED)
+        # A row refilled under an armed button describes some other clip by the
+        # time the second click lands, so the arming does not survive the fill.
+        self._delete_arm.stop()
+        self._apply_delete_icon()
         self.set_expanded(self.expanded)
         self.setToolTip(self._row_tooltip(entry))
 
@@ -1435,6 +1505,7 @@ class VideoLibraryList(QScrollArea):
     span_clicked = Signal(str)
     hide_requested = Signal(str)
     delete_unused_requested = Signal(str)
+    delete_requested = Signal(str)
     section_activated = Signal(str)
     section_add_to_cart = Signal(str)
     section_retrim = Signal(str)
@@ -1605,6 +1676,7 @@ class VideoLibraryList(QScrollArea):
         row.span_clicked.connect(self.span_clicked)
         row.hide_requested.connect(self.hide_requested)
         row.delete_unused_requested.connect(self.delete_unused_requested)
+        row.delete_requested.connect(self.delete_requested)
         row.activated.connect(self._on_activated)
         row.expand_toggled.connect(self._set_expanded)
         self._body_layout.addWidget(row)

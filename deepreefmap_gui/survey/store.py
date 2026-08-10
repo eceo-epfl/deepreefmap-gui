@@ -646,6 +646,34 @@ class SurveyStore:
             )
         return moved
 
+    def delete_video(self, video_id: uuid.UUID) -> int:
+        """Drop a clip from the library, with the sections cut from it.
+
+        Only the record goes: the file on disk is never touched. A run is the
+        record of what it processed, so a clip any run reaches is refused
+        whole, the way ``delete_pass`` refuses a section with runs.
+
+        A chaptered pass the clip is only one chapter of keeps its other
+        chapters and merely loses this one, since the rest of the swim is still
+        there to play. Returns the number of passes deleted.
+        """
+        passes = [p for p in self.list_passes() if video_id in p.video_ids()]
+        if any(self.runs_for_pass(p.id) for p in passes):
+            raise ValueError("This clip has recorded runs and cannot be removed.")
+        deleted = 0
+        for pass_ in passes:
+            remaining = [vid for vid in pass_.video_ids() if vid != video_id]
+            if not remaining:
+                self.delete_pass(pass_.id)
+                deleted += 1
+                continue
+            pass_.video_id = remaining[0]
+            pass_.extra_video_ids = remaining[1:]
+            self.update_pass(pass_)
+        with self._conn() as conn:
+            conn.execute("DELETE FROM video_asset WHERE id = ?", (str(video_id),))
+        return deleted
+
     # --- Batches ---
 
     def add_batch(self, batch: SurveyBatch) -> None:

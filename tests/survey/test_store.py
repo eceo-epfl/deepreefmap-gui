@@ -390,6 +390,47 @@ def test_deleting_a_pass_with_a_run_says_why_it_cannot(store):
     assert [i.pass_id for i in store.list_batch_items(batch.id)] == [pass_.id]
 
 
+def test_deleting_a_video_takes_the_sections_cut_from_it(store):
+    _transect, video, pass_ = seed_pass(store)
+
+    assert store.delete_video(video.id) == 1
+
+    assert store.get_video(video.id) is None
+    assert store.get_pass(pass_.id) is None
+
+
+def test_deleting_a_video_with_a_run_says_why_it_cannot(store):
+    _transect, video, pass_ = seed_pass(store)
+    store.add_run(RunRecord(pass_id=pass_.id, run_dir_name="t1__p01"))
+
+    with pytest.raises(ValueError, match="recorded runs"):
+        store.delete_video(video.id)
+
+    assert store.get_video(video.id) is not None
+    assert store.get_pass(pass_.id) is not None
+
+
+def test_deleting_one_chapter_leaves_the_rest_of_the_swim(store):
+    """A pass spanning two clips is still a pass over the clip that remains."""
+    transect, video, _ = seed_pass(store)
+    second = store.upsert_video(
+        make_video("cd" * 16, file_name="GX020001.MP4", path="/data/GX020001.MP4")
+    )
+    chaptered = TransectPass(
+        transect_id=transect.id,
+        video_id=video.id,
+        extra_video_ids=[second.id],
+        begin_s=0.0,
+        end_s=600.0,
+    )
+    store.add_pass(chaptered)
+
+    assert store.delete_video(video.id) == 1
+
+    stored = store.get_pass(chaptered.id)
+    assert stored.video_ids() == [second.id]
+
+
 def test_a_carried_forward_cart_keeps_the_order_it_was_filled_in(tmp_path):
     """Scenario: a v0.2.0 survey.db, whose cart rows carry no processing order.
 

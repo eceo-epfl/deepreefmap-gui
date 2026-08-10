@@ -12,11 +12,16 @@ from deepreefmap_gui.core.theme import PRIMARY, SPACE_SM
 from deepreefmap_gui.runs.video_rows import (
     CART_UNLINKED_TOOLTIP,
     DELETE_BLOCKED_TOOLTIP,
+    DELETE_CLIP_ARMED_TOOLTIP,
+    DELETE_CLIP_BLOCKED_TOOLTIP,
+    DELETE_CLIP_TOOLTIP,
     DROP_HINT,
     GRAVITY_UNKNOWN_TOOLTIP,
     IN_CART_TOOLTIP,
+    KEEPS_FILE_NOTE,
     MENU_ADD_TO_CART,
     MENU_DELETE,
+    MENU_DELETE_CLIP,
     MENU_DELETE_UNUSED,
     MENU_HIDE,
     MENU_OPEN_TRANSECT,
@@ -715,6 +720,68 @@ def test_only_the_sections_nothing_was_made_from_can_be_swept_up() -> None:
     assert row.unused_sections() == 2
     swept = next(a for a in row.menu().actions() if a.text() == MENU_DELETE_UNUSED)
     assert swept.isEnabled()
+
+
+def test_deleting_a_clip_asks_in_the_button_rather_than_in_a_dialog() -> None:
+    """Scenario: a library full of imports that should never have been made.
+
+    Expected behaviour: the first click arms the button, the second deletes.
+    Nothing leaves on one click, and clearing a run of clips costs no dialogs.
+    """
+    row = VideoRow()
+    row.set_entry(make_entry(), no_name)
+    asked = []
+    row.delete_requested.connect(asked.append)
+
+    row.delete_btn.click()
+    assert asked == []
+    assert row.delete_btn.toolTip() == DELETE_CLIP_ARMED_TOOLTIP
+
+    row.delete_btn.click()
+    assert asked == [row.video_id]
+    assert row.delete_btn.toolTip() == DELETE_CLIP_TOOLTIP
+
+
+def test_an_armed_delete_stands_down_once_it_times_out() -> None:
+    row = VideoRow()
+    row.set_entry(make_entry(), no_name)
+    asked = []
+    row.delete_requested.connect(asked.append)
+
+    row.delete_btn.click()
+    row._delete_arm.stop()
+    row._apply_delete_icon()
+    row.delete_btn.click()
+
+    assert asked == []
+    assert row.delete_btn.toolTip() == DELETE_CLIP_ARMED_TOOLTIP
+
+
+def test_an_armed_delete_stands_down_when_the_row_is_refilled() -> None:
+    """A rebuilt list may put another clip here, and it is not the one aimed at."""
+    row = VideoRow()
+    row.set_entry(make_entry(), no_name)
+    asked = []
+    row.delete_requested.connect(asked.append)
+
+    row.delete_btn.click()
+    row.set_entry(make_entry(), no_name)
+    row.delete_btn.click()
+
+    assert asked == []
+
+
+def test_a_clip_says_its_runs_go_first_and_that_the_file_stays() -> None:
+    row = VideoRow()
+
+    row.set_entry(make_entry(windows=((0.0, 30.0),), runs_per_pass=(("succeeded",),)), no_name)
+    assert row.delete_btn.isEnabled()
+    assert row.delete_btn.toolTip() == DELETE_CLIP_BLOCKED_TOOLTIP
+    assert KEEPS_FILE_NOTE in row.delete_btn.toolTip()
+
+    row.set_entry(make_entry(), no_name)
+    assert KEEPS_FILE_NOTE in row.delete_btn.toolTip()
+    assert KEEPS_FILE_NOTE in action(row.menu(), MENU_DELETE_CLIP).toolTip()
 
 
 def test_the_list_says_it_takes_a_drop() -> None:

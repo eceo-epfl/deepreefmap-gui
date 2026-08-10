@@ -370,8 +370,54 @@ def test_sections_nothing_was_made_from_can_be_swept_off_a_clip(window, monkeypa
     assert store.runs_for_pass(kept[0].id)
 
 
-def test_a_new_section_is_cut_scrubbed_assigned_and_carted(window, tmp_path, monkeypatch):
-    """The whole reason the page exists: footage in, a queued section out."""
+def test_a_clip_with_runs_refuses_to_leave_the_library(window):
+    """The runs record what this footage was, so the clip stays until they go."""
+    store = window._survey_store()
+    video = _seed(store, "kept.mp4", passes=1, statuses=("succeeded",))
+    show_videos(window)
+
+    window._on_video_delete(str(video.id))
+
+    assert store.get_video(video.id) is not None
+    assert "Browse" in window._status_label.text()
+
+
+def test_a_clip_nothing_was_made_from_goes_with_its_sections(window):
+    store = window._survey_store()
+    video = _seed(store, "dropped.mp4", passes=2)
+    _seed(store, "kept.mp4")
+    show_videos(window)
+
+    window._on_video_delete(str(video.id))
+
+    assert store.get_video(video.id) is None
+    assert store.list_passes(video_id=video.id) == []
+    assert listed_names(window) == ["kept.mp4"]
+    assert "video file" in window._status_label.text()
+
+
+def test_a_deleted_clip_stops_counting_as_hidden(window):
+    """Expected behaviour: nothing else prunes the hidden list, so the delete does."""
+    store = window._survey_store()
+    video = _seed(store, "hidden.mp4")
+    show_videos(window)
+    window._on_video_hide(str(video.id))
+
+    window._on_video_delete(str(video.id))
+
+    assert str(video.id) not in window._hidden_clip_ids
+    assert window._video_hidden_check.isHidden()
+
+
+def test_a_new_section_is_cut_scrubbed_and_filed_but_not_carted(
+    window, tmp_path, monkeypatch
+):
+    """The whole reason the page exists: footage in, a filed section out.
+
+    Expected behaviour: the cart stays as the user left it. Cutting a section
+    and choosing to run it are two decisions, and only the row's cart control
+    makes the second.
+    """
     from PySide6.QtWidgets import QDialog
 
     store = window._survey_store()
@@ -404,7 +450,8 @@ def test_a_new_section_is_cut_scrubbed_assigned_and_carted(window, tmp_path, mon
 
     passes = store.list_passes()
     assert [(p.begin_s, p.end_s, p.transect_id) for p in passes] == [(5.0, 25.0, transect.id)]
-    assert window._pass_in_current_cart(passes[0].id)
+    assert not window._pass_in_current_cart(passes[0].id)
+    assert window._selected_pass_id == str(passes[0].id)
 
     # Cutting the same window again is how a clip ends up with two sections
     # over one swim, so it is refused and the existing one is shown instead.
