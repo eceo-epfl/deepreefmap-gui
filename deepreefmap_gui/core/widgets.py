@@ -40,6 +40,7 @@ from deepreefmap_gui.core.theme import (
     ERROR,
     FONT_SM,
     GROOVE,
+    IDLE,
     ON_ACCENT,
     PRIMARY,
     RADIUS,
@@ -713,7 +714,7 @@ TONE_COLORS = {
     statuses.TONE_GOOD: SUCCESS,
     statuses.TONE_BAD: ERROR,
     statuses.TONE_BUSY: WARNING,
-    statuses.TONE_IDLE: TEXT_MUTED,
+    statuses.TONE_IDLE: IDLE,
     statuses.TONE_QUIET: TEXT_DIM,
 }
 

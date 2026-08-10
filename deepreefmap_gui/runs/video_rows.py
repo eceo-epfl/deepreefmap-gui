@@ -22,6 +22,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt, Signal, SignalInstance
 from PySide6.QtGui import (
     QColor,
     QContextMenuEvent,
+    QIcon,
     QMouseEvent,
     QPainter,
     QPainterPath,
@@ -43,7 +44,8 @@ from PySide6.QtWidgets import (
 from deepreefmap_gui.core.icons import (
     ICON_SM,
     broken_link_icon,
-    folder_icon,
+    chevron_down_icon,
+    chevron_right_icon,
     link_icon,
     play_icon,
     status_dot_icon,
@@ -53,6 +55,7 @@ from deepreefmap_gui.core.theme import (
     BORDER,
     CARD_BG,
     CONTROL_HEIGHT,
+    ERROR,
     GROOVE,
     HEADER_PAD_V,
     RADIUS_SM,
@@ -81,6 +84,7 @@ from deepreefmap_gui.survey.models.video_asset import VideoAsset
 from deepreefmap_gui.survey.video_groups import (
     DEFAULT_SORT_COLUMN,
     DEFAULT_SORT_DESCENDING,
+    SORT_GRAVITY,
     SORT_LENGTH,
     SORT_NAME,
     SORT_RECORDED,
@@ -119,14 +123,16 @@ NAME_CHARS = 30  # a GoPro file name, with room for the ones that are not
 RECORDED_CHARS = 10  # "~14:32", "Recorded ▼"
 LENGTH_CHARS = 9  # "12m 03s", "Length ▼"
 SIZE_CHARS = 9  # "1015 MB", "Size ▼"
-GRAVITY_CHARS = 10  # "Gravity", plus its dot
+GRAVITY_CHARS = 9  # "Gravity ▼", over a cell holding only a dot
 WINDOW_CHARS = 14  # "0:00–11:51"
 TRANSECT_CHARS = 22  # a transect name, or "Unassigned"
 DIRECTION_CHARS = 9  # "Forward"
 RUNS_CHARS = 9  # "12 runs"
 
-# One row: the play button plus a hair, so a card of footage fits on a screen.
-ROW_HEIGHT = CONTROL_HEIGHT + SPACE_XS
+# One row: the smallest comfortable click target and not a pixel more. The list
+# is a whole field season of clips, so every pixel of padding costs one less on
+# screen, and the row's own buttons are told to fit rather than to pad.
+ROW_HEIGHT = CONTROL_HEIGHT
 
 # The disclosure column keeps its width on a clip with nothing to disclose, so
 # the file names stay in one column all the way down the list.
@@ -153,6 +159,15 @@ DELETE_BLOCKED_TOOLTIP = (
     "This section has runs. Delete those in Browse first, and the section can go with them."
 )
 
+# A clip row's own menu. Hiding is a view of the library rather than a fact
+# about it, so it sits beside the destructive item rather than looking like one.
+MENU_HIDE = "Hide clip"
+MENU_UNHIDE = "Unhide clip"
+MENU_HIDE_TOOLTIP = "Take this clip out of the list. Show hidden brings it back."
+MENU_UNHIDE_TOOLTIP = "Put this clip back in the list."
+MENU_DELETE_UNUSED = "Delete sections with no runs"
+NO_UNUSED_TOOLTIP = "Every section of this clip has been processed, or there are none."
+
 # A row's overflow menu, and the clip row's "cut a new section". Both are single
 # glyphs rather than icons: the meaning is the character, and drawing either one
 # would leave the icon layer with a shape it has no other use for.
@@ -162,12 +177,14 @@ NEW_SECTION_GLYPH = "+"
 UNKNOWN_LENGTH_TOOLTIP = (
     "Length unknown, so there is nowhere to draw this clip's sections along it."
 )
+NO_SECTIONS_TOOLTIP = "Nothing has been cut from this clip yet. Use + to cut a section."
 GRAVITY_UNKNOWN_TOOLTIP = "Gravity not read yet."
 ESTIMATED_DATE_NOTE = (
     "The recording date is the file's own timestamp: the clip carries none of "
     "its own, which is what re-encoding or trimming leaves behind."
 )
 MISSING_FILE_NOTE = "Not found. Relocate… points the clip at the file's new home."
+HIDDEN_NOTE = "Hidden on this machine, and shown only because Show hidden is on."
 
 
 def _clock(seconds: float) -> str:
@@ -270,6 +287,7 @@ def _quiet_button(glyph: str, name: str, tooltip: str) -> QToolButton:
     button.setAccessibleName(name)
     button.setToolTip(tooltip)
     button.setProperty("quiet", "true")
+    button.setProperty("pad", "none")
     return button
 
 
@@ -301,8 +319,14 @@ class SectionStrip(QWidget):
         self._duration = float(duration_s or 0.0)
         self._spans = list(spans) if self._duration > 0 else []
         self._names = dict(names or {})
-        self.setToolTip(UNKNOWN_LENGTH_TOOLTIP if self._duration <= 0 else "")
+        self.setToolTip(self._resting_tooltip())
         self.update()
+
+    def _resting_tooltip(self) -> str:
+        """What the strip says when the pointer is not over a section."""
+        if self._duration <= 0:
+            return UNKNOWN_LENGTH_TOOLTIP
+        return "" if self._spans else NO_SECTIONS_TOOLTIP
 
     @property
     def spans(self) -> list[Span]:
@@ -339,10 +363,7 @@ class SectionStrip(QWidget):
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         pass_id = self.span_at(event.position().x())
         span = next((s for s in self._spans if s.pass_id == pass_id), None)
-        if span is not None:
-            self.setToolTip(self._span_tooltip(span))
-        elif self._duration > 0:
-            self.setToolTip("")
+        self.setToolTip(self._span_tooltip(span) if span else self._resting_tooltip())
         super().mouseMoveEvent(event)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
@@ -362,11 +383,27 @@ class SectionStrip(QWidget):
         painter.fillPath(groove, QColor(GROOVE))
         if self._duration <= 0:
             self._paint_unknown(painter, groove, track)
-            painter.end()
-            return
+        elif not self._spans:
+            self._paint_uncut(painter, track, radius)
         for span, rect in self._span_rects():
             self._paint_span(painter, span, rect, radius)
         painter.end()
+
+    def _paint_uncut(self, painter: QPainter, track: QRectF, radius: float) -> None:
+        """A dashed red edge round a clip nothing has been cut from.
+
+        A clip with its sections scrolled off screen and a clip with none at all
+        painted the same bare groove, and the second is the one holding up a
+        day's processing. The dashes say the outline is where a section would go
+        rather than a section itself.
+        """
+        pen = QPen(QColor(ERROR))
+        pen.setWidthF(LINE_WIDTH)
+        pen.setStyle(Qt.PenStyle.DashLine)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        # Inset by half the pen, or the stroke is clipped by the widget's edge.
+        painter.drawRoundedRect(track.adjusted(1.0, 1.0, -1.0, -1.0), radius, radius)
 
     def _paint_span(
         self, painter: QPainter, span: Span, rect: QRectF, radius: float
@@ -434,6 +471,8 @@ class VideoRow(QWidget):
     expand_toggled = Signal(str, bool)
     activated = Signal(str)
     span_clicked = Signal(str)
+    hide_requested = Signal(str)
+    delete_unused_requested = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -449,14 +488,19 @@ class VideoRow(QWidget):
         self.chevron.setFixedWidth(DISCLOSURE_WIDTH)
         self.chevron.setAccessibleName("Sections")
         self.chevron.setToolTip("Show the sections cut from this clip.")
-        self.chevron.setProperty("quiet", "true")
-        self.chevron.setProperty("pad", "none")
+        self.chevron.setProperty("bare", "true")
         self.chevron.toggled.connect(self._on_chevron)
         row.addWidget(self.chevron)
 
-        self._link = QLabel()
-        self._link.setFixedWidth(ICON_SM)
-        row.addWidget(self._link)
+        # The link state and the way to the file are one control: the question a
+        # broken link raises is "where did it go", and the answer is the folder.
+        self.link_btn = QToolButton()
+        self.link_btn.setFixedWidth(ICON_SM)
+        self.link_btn.setAccessibleName("Show in folder")
+        self.link_btn.setProperty("quiet", "true")
+        self.link_btn.setProperty("pad", "none")
+        self.link_btn.clicked.connect(lambda: self._emit(self.reveal_requested))
+        row.addWidget(self.link_btn)
 
         self._name = secondary_label()
         _fixed_width(self._name, NAME_CHARS)
@@ -478,19 +522,12 @@ class VideoRow(QWidget):
         _fixed_width(self._size, SIZE_CHARS)
         row.addWidget(self._size)
 
-        gravity = QWidget()
-        gravity_row = QHBoxLayout(gravity)
-        gravity_row.setContentsMargins(0, 0, 0, 0)
-        gravity_row.setSpacing(SPACE_XS)
-        self._gravity_dot = QLabel()
-        self._gravity_dot.setFixedWidth(ICON_SM)
-        gravity_row.addWidget(self._gravity_dot)
-        self._gravity_text = muted_label()
-        gravity_row.addWidget(self._gravity_text)
-        gravity_row.addStretch(1)
-        _fixed_width(self._gravity_text, GRAVITY_CHARS)
-        self._gravity = gravity
-        row.addWidget(gravity)
+        # A dot and nothing else. The word "Gravity" beside a green dot in a
+        # column headed Gravity was the same fact three times over.
+        self._gravity = QLabel()
+        self._gravity.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        _fixed_width(self._gravity, GRAVITY_CHARS)
+        row.addWidget(self._gravity)
 
         self.strip = SectionStrip()
         self.strip.span_clicked.connect(self.span_clicked)
@@ -501,16 +538,9 @@ class VideoRow(QWidget):
         self.play_btn.setAccessibleName("Play")
         self.play_btn.setToolTip("Play")
         self.play_btn.setProperty("quiet", "true")
+        self.play_btn.setProperty("pad", "none")
         self.play_btn.clicked.connect(lambda: self._emit(self.play_requested))
         row.addWidget(self.play_btn)
-
-        self.reveal_btn = QToolButton()
-        self.reveal_btn.setIcon(folder_icon())
-        self.reveal_btn.setAccessibleName("Show in folder")
-        self.reveal_btn.setToolTip("Show in folder")
-        self.reveal_btn.setProperty("quiet", "true")
-        self.reveal_btn.clicked.connect(lambda: self._emit(self.reveal_requested))
-        row.addWidget(self.reveal_btn)
 
         self.new_section_btn = _quiet_button(
             NEW_SECTION_GLYPH, "Cut a new section", "Cut a new section"
@@ -519,6 +549,7 @@ class VideoRow(QWidget):
         row.addWidget(self.new_section_btn)
 
         self._entry: VideoLibraryEntry | None = None
+        self._hidden = False
         self._sync_chevron()
 
     @property
@@ -548,11 +579,11 @@ class VideoRow(QWidget):
         has_sections = self._has_sections()
         self.chevron.setEnabled(has_sections)
         if not has_sections:
-            self.chevron.setArrowType(Qt.ArrowType.NoArrow)
+            self.chevron.setIcon(QIcon())
         elif self.chevron.isChecked():
-            self.chevron.setArrowType(Qt.ArrowType.DownArrow)
+            self.chevron.setIcon(chevron_down_icon())
         else:
-            self.chevron.setArrowType(Qt.ArrowType.RightArrow)
+            self.chevron.setIcon(chevron_right_icon())
 
     def _on_chevron(self, expanded: bool) -> None:
         self._sync_chevron()
@@ -568,11 +599,46 @@ class VideoRow(QWidget):
             self.activated.emit(self.video_id)
         super().mousePressEvent(event)
 
+    def unused_sections(self) -> int:
+        """Sections of this clip nothing was ever made from, so nothing needs them."""
+        if self._entry is None:
+            return 0
+        used = {str(run.pass_id) for run in self._entry.runs}
+        return sum(1 for pass_ in self._entry.passes if str(pass_.id) not in used)
+
+    def menu(self) -> QMenu:
+        """What can be done with the clip itself, as the section rows offer too."""
+        menu = QMenu(self)
+        menu.setToolTipsVisible(True)
+        hide = menu.addAction(MENU_UNHIDE if self._hidden else MENU_HIDE)
+        hide.setToolTip(MENU_UNHIDE_TOOLTIP if self._hidden else MENU_HIDE_TOOLTIP)
+        hide.triggered.connect(lambda *_: self.hide_requested.emit(self.video_id))
+        menu.addSeparator()
+        unused = self.unused_sections()
+        delete = menu.addAction(MENU_DELETE_UNUSED)
+        delete.setEnabled(unused > 0)
+        delete.setToolTip(
+            f"{unused} section{'' if unused == 1 else 's'} of this clip have produced nothing."
+            if unused
+            else NO_UNUSED_TOOLTIP
+        )
+        delete.triggered.connect(lambda *_: self.delete_unused_requested.emit(self.video_id))
+        return menu
+
+    def contextMenuEvent(self, event: QContextMenuEvent) -> None:  # noqa: N802
+        if self._entry is not None:
+            self.menu().exec(event.globalPos())
+
     def set_entry(
-        self, entry: VideoLibraryEntry, transect_name: Callable[[Any], str | None]
+        self,
+        entry: VideoLibraryEntry,
+        transect_name: Callable[[Any], str | None],
+        *,
+        hidden: bool = False,
     ) -> None:
         """Describe one clip. ``transect_name`` resolves a pass's transect id."""
         self._entry = entry
+        self._hidden = hidden
         video = entry.video
         self._set_link(entry)
         self._name.setText(
@@ -602,6 +668,8 @@ class VideoRow(QWidget):
 
     def _row_tooltip(self, entry: VideoLibraryEntry) -> str:
         lines = [entry.video.path]
+        if self._hidden:
+            lines.append(HIDDEN_NOTE)
         if entry.link_state == LINK_MISSING:
             lines.append(MISSING_FILE_NOTE)
         if capture_label(entry.video).startswith("~"):
@@ -609,13 +677,21 @@ class VideoRow(QWidget):
         return "\n".join(lines)
 
     def _set_link(self, entry: VideoLibraryEntry) -> None:
-        """The link icon, and nothing at all while the state is unknown."""
+        """The link icon, and nothing at all while the state is unknown.
+
+        Clickable in every state, including unknown: revealing is how you find
+        out what became of a clip, and a state nobody has read yet is no reason
+        to withhold the folder.
+        """
         if entry.link_state == LINK_LINKED:
-            self._link.setPixmap(link_icon().pixmap(ICON_SM))
+            self.link_btn.setIcon(link_icon())
+            self.link_btn.setToolTip("Show in folder")
         elif entry.link_state == LINK_MISSING:
-            self._link.setPixmap(broken_link_icon().pixmap(ICON_SM))
+            self.link_btn.setIcon(broken_link_icon())
+            self.link_btn.setToolTip(f"{MISSING_FILE_NOTE}\nShow the folder it was in.")
         else:
-            self._link.clear()
+            self.link_btn.setIcon(QIcon())
+            self.link_btn.setToolTip("Show in folder")
 
     def _set_gravity(self, video: VideoAsset) -> None:
         """Whether the camera recorded a gravity vector, and silence when unread.
@@ -624,25 +700,26 @@ class VideoRow(QWidget):
         because "no gravity" is a fact about the footage and this is not it.
         """
         if video.gravity == YES:
-            self._gravity_dot.setPixmap(_dot(SUCCESS))
-            self._gravity_text.setText("Gravity")
+            self._gravity.setPixmap(_dot(SUCCESS))
             self._gravity.setToolTip("The camera recorded a gravity vector.")
         elif video.gravity == NO:
-            self._gravity_dot.setPixmap(_dot(TEXT_MUTED))
-            self._gravity_text.setText("None")
+            self._gravity.setPixmap(_dot(ERROR))
             self._gravity.setToolTip("No gravity vector in this clip's telemetry.")
         else:
-            self._gravity_dot.clear()
-            self._gravity_text.setText("")
+            self._gravity.clear()
             self._gravity.setToolTip(GRAVITY_UNKNOWN_TOOLTIP)
 
     @property
-    def gravity_text(self) -> str:
-        return self._gravity_text.text()
+    def gravity_dot(self) -> QPixmap | None:
+        return self._gravity.pixmap() or None
 
     @property
     def gravity_tooltip(self) -> str:
         return self._gravity.toolTip()
+
+    @property
+    def link_tooltip(self) -> str:
+        return self.link_btn.toolTip()
 
 
 def _dot(colour: str) -> QPixmap:
@@ -791,6 +868,12 @@ class SectionRow(QWidget):
 # The direction arrows the legend's hand-rolled sort headers already show.
 SORT_ASC_GLYPH, SORT_DESC_GLYPH = "▲", "▼"
 
+# Gravity's column is dots rather than values, so its heading has to say which
+# way round the sort goes; the rest read plainly enough from their own titles.
+_SORT_TOOLTIPS = {
+    SORT_GRAVITY: "Sort by gravity: ascending brings the clips without one to the top."
+}
+
 
 class _HeaderCell(QLabel):
     """One column heading. A sortable one takes a click and shows the hand."""
@@ -854,12 +937,7 @@ class VideoListHeader(QWidget):
         self._add_cell(row, "Length", SORT_LENGTH, LENGTH_CHARS, right=True)
         self._add_cell(row, "Size", SORT_SIZE, SIZE_CHARS, right=True)
 
-        gravity = _HeaderCell("Gravity", sortable=False)
-        # The row's gravity block is a dot, a gap, then its text.
-        gravity.setFixedWidth(
-            ICON_SM + SPACE_XS + gravity.fontMetrics().averageCharWidth() * GRAVITY_CHARS
-        )
-        row.addWidget(gravity)
+        self._add_cell(row, "Gravity", SORT_GRAVITY, GRAVITY_CHARS)
         row.addWidget(_HeaderCell("Sections", sortable=False), 1)
 
         self._column = DEFAULT_SORT_COLUMN
@@ -873,7 +951,7 @@ class VideoListHeader(QWidget):
         _fixed_width(cell, chars)
         if right:
             cell.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        cell.setToolTip(f"Sort by {title.lower()} (click again to reverse)")
+        cell.setToolTip(_SORT_TOOLTIPS.get(column, f"Sort by {title.lower()} (click again to reverse)"))
         cell.clicked.connect(lambda column=column: self.sort_by(column))
         row.addWidget(cell)
         self._cells[column] = cell
@@ -922,6 +1000,8 @@ class VideoLibraryList(QScrollArea):
     new_section_requested = Signal(str)
     activated = Signal(str)
     span_clicked = Signal(str)
+    hide_requested = Signal(str)
+    delete_unused_requested = Signal(str)
     section_activated = Signal(str)
     section_add_to_cart = Signal(str)
     section_retrim = Signal(str)
@@ -935,7 +1015,10 @@ class VideoLibraryList(QScrollArea):
         body = QWidget()
         self._body_layout = QVBoxLayout(body)
         self._body_layout.setContentsMargins(0, 0, 0, 0)
-        self._body_layout.setSpacing(SPACE_XS)
+        # Rows touch. A day's clips read as one block, and the date headers are
+        # what separates them; a gap between every row bought nothing and cost a
+        # row's worth of footage every eight rows.
+        self._body_layout.setSpacing(0)
         self.setWidget(body)
         self._body = body
         self._shape: list[_GroupShape] = []
@@ -972,6 +1055,7 @@ class VideoLibraryList(QScrollArea):
         transect_name: Callable[[Any], str | None] = lambda _id: None,
         *,
         in_cart: Callable[[str], bool] = lambda _pass_id: False,
+        hidden: Callable[[str], bool] = lambda _video_id: False,
     ) -> None:
         """Fill the list. Rebuilt only when its shape changes.
 
@@ -989,7 +1073,7 @@ class VideoLibraryList(QScrollArea):
             for entry in group.entries:
                 video_id = str(entry.video.id)
                 row = self._rows[video_id]
-                row.set_entry(entry, transect_name)
+                row.set_entry(entry, transect_name, hidden=bool(hidden(video_id)))
                 row.set_expanded(video_id in self._expanded)
                 for pass_, status, run_count in section_facts(entry):
                     self._sections[str(pass_.id)].set_section(
@@ -1060,6 +1144,8 @@ class VideoLibraryList(QScrollArea):
         row.reveal_requested.connect(self.reveal_requested)
         row.new_section_requested.connect(self.new_section_requested)
         row.span_clicked.connect(self.span_clicked)
+        row.hide_requested.connect(self.hide_requested)
+        row.delete_unused_requested.connect(self.delete_unused_requested)
         row.activated.connect(self._on_activated)
         row.expand_toggled.connect(self._set_expanded)
         self._body_layout.addWidget(row)

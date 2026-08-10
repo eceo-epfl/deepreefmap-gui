@@ -20,6 +20,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QFileDialog,
     QHBoxLayout,
@@ -89,6 +90,15 @@ _PERIOD_TOOLTIP = (
 # some backends hand a stored bool back as the string "false", which is truthy.
 _ORDER_ASCENDING, _ORDER_DESCENDING = "ascending", "descending"
 
+_HIDDEN_TOOLTIP = (
+    "Clips hidden on this machine. Hiding is a view of the library rather than a "
+    "fact about it, so nothing is removed and nobody else sees the difference."
+)
+
+
+def _sections_phrase(count: int) -> str:
+    return f"{count} section" if count == 1 else f"{count} sections"
+
 
 class VideoLibraryMixin(MixinBase):
     """DeepReefMapWindow methods that build and drive the Videos destination."""
@@ -107,6 +117,9 @@ class VideoLibraryMixin(MixinBase):
         # being rebuilt on the next scan.
         self._clip_link_cache: dict[str, str] = {}
         self._clip_link_scan_running = False
+        # Paths a single-clip recheck is already asking about, so a double click
+        # on a sleeping drive queues one stat rather than two.
+        self._clip_link_rechecking: set[str] = set()
         self._video_period = str(
             self._settings.value("video_group_period", DEFAULT_PERIOD) or DEFAULT_PERIOD
         )
@@ -117,6 +130,7 @@ class VideoLibraryMixin(MixinBase):
         stored_order = str(self._settings.value("video_sort_order", "") or "")
         if stored_order in (_ORDER_ASCENDING, _ORDER_DESCENDING):
             self._video_sort_descending = stored_order == _ORDER_DESCENDING
+        self._hidden_clip_ids = self._load_hidden_clips()
 
         page = QWidget()
         layout = QVBoxLayout(page)
@@ -144,6 +158,13 @@ class VideoLibraryMixin(MixinBase):
         )
         self._video_chips.changed.connect(self._on_video_filter_changed)
         top_row.addWidget(self._video_chips)
+        # Only there when something is hidden: a checkbox offering to reveal
+        # nothing is a control that has to be read to be dismissed.
+        self._video_hidden_check = QCheckBox()
+        self._video_hidden_check.setToolTip(_HIDDEN_TOOLTIP)
+        self._video_hidden_check.toggled.connect(lambda *_: self._rebuild_video_list())
+        self._video_hidden_check.setVisible(False)
+        top_row.addWidget(self._video_hidden_check)
         top_row.addStretch(1)
         self._video_add_btn = QPushButton("Add videos…")
         self._video_add_btn.clicked.connect(self._on_video_add_clicked)
@@ -164,6 +185,8 @@ class VideoLibraryMixin(MixinBase):
         self._video_list.reveal_requested.connect(self._on_video_reveal)
         self._video_list.new_section_requested.connect(self._on_video_new_section_for)
         self._video_list.span_clicked.connect(self._select_section)
+        self._video_list.hide_requested.connect(self._on_video_hide)
+        self._video_list.delete_unused_requested.connect(self._on_video_delete_unused)
         self._video_list.section_activated.connect(self._select_section)
         self._video_list.section_add_to_cart.connect(self._on_video_pass_to_cart)
         self._video_list.section_retrim.connect(self._on_section_retrim)
@@ -276,8 +299,55 @@ class VideoLibraryMixin(MixinBase):
             logger.exception("Could not list the video library")
             return []
 
+    # --- hidden clips --------------------------------------------------------
+
+    def _load_hidden_clips(self) -> set[str]:
+        """Which clips this machine keeps out of the list.
+
+        QSettings rather than the database: hiding a clip says nothing about the
+        survey, only about which of it one reader wants to look at today, and a
+        colleague opening the same root should see every clip in it.
+        """
+        stored = self._settings.value("video_hidden_ids", [])
+        if isinstance(stored, str):
+            # Some backends hand a one-element list back as a bare string.
+            stored = [stored] if stored else []
+        if not isinstance(stored, (list, tuple)):
+            return set()
+        return {str(value) for value in stored}
+
+    def _save_hidden_clips(self) -> None:
+        self._settings.setValue("video_hidden_ids", sorted(self._hidden_clip_ids))
+
+    def _on_video_hide(self, video_id: str) -> None:
+        """Hide the clip, or put it back when it is already hidden."""
+        clip = self._clip_by_id(video_id)
+        if clip is None:
+            return
+        if video_id in self._hidden_clip_ids:
+            self._hidden_clip_ids.discard(video_id)
+            note = f"{clip.video.file_name} is back in the list."
+        else:
+            self._hidden_clip_ids.add(video_id)
+            note = f"{clip.video.file_name} hidden. Show hidden brings it back."
+            if self._video_list.selected == video_id:
+                self._video_list.set_selected(None)
+        self._save_hidden_clips()
+        self._rebuild_video_list()
+        self._refresh_video_detail()
+        self._status_label.setText(note)
+
+    def _refresh_hidden_control(self) -> None:
+        hidden = len(self._hidden_clip_ids)
+        self._video_hidden_check.setVisible(bool(hidden))
+        self._video_hidden_check.setText(f"Show hidden ({hidden})")
+        if not hidden and self._video_hidden_check.isChecked():
+            self._video_hidden_check.setChecked(False)
+
     def _visible_clips(self) -> list[VideoLibraryEntry]:
         clips = getattr(self, "_video_entries", [])
+        if self._hidden_clip_ids and not self._video_hidden_check.isChecked():
+            clips = [c for c in clips if str(c.video.id) not in self._hidden_clip_ids]
         if self._video_clip_filter != "all":
             clips = [c for c in clips if c.outcome == self._video_clip_filter]
         needle = self._video_search.text().strip().lower()
@@ -288,6 +358,7 @@ class VideoLibraryMixin(MixinBase):
     def _rebuild_video_list(self) -> None:
         if getattr(self, "_video_list", None) is None:
             return
+        self._refresh_hidden_control()
         clips = self._visible_clips()
         groups = sort_groups(
             group_by_period(clips, self._video_period),
@@ -295,7 +366,10 @@ class VideoLibraryMixin(MixinBase):
             descending=self._video_sort_descending,
         )
         self._video_list.set_groups(
-            groups, self._transect_name_for, in_cart=self._pass_in_current_cart
+            groups,
+            self._transect_name_for,
+            in_cart=self._pass_in_current_cart,
+            hidden=self._hidden_clip_ids.__contains__,
         )
         self._video_stack.setCurrentIndex(0 if clips else 1)
         # Columns over an empty state describe nothing.
@@ -373,14 +447,47 @@ class VideoLibraryMixin(MixinBase):
         entries = list(self._video_entries)
 
         def worker() -> None:
-            states = catalogue.resolve_link_states(entries)
+            try:
+                states = catalogue.resolve_link_states(entries)
+            finally:
+                # Cleared here rather than where the states are applied, so a
+                # single-clip recheck arriving through the same signal cannot
+                # report a scan finished that is still walking the list.
+                self._clip_link_scan_running = False
             # Widgets are off limits here; the Signal hands over to the GUI thread.
             self._sig_clip_links_done.emit(states)
 
         threading.Thread(target=worker, daemon=True, name="clip-link-scan").start()
 
+    def _recheck_clip_link(self, video_id: str) -> None:
+        """Ask again, now, whether one clip's file is where the library says.
+
+        The scan above answers a path once and keeps the answer for the session,
+        which is right for a list of hundreds and wrong for the clip in front of
+        you: drives are unplugged and plugged back in all day in the field, and
+        the row a user just picked is exactly the one whose answer should be
+        current. One stat, off the GUI thread like the rest.
+        """
+        clip = self._clip_by_id(video_id)
+        if clip is None:
+            return
+        path = clip.video.path
+        in_flight = self._clip_link_rechecking
+        if path in in_flight:
+            return
+        in_flight.add(path)
+
+        def worker() -> None:
+            try:
+                states = catalogue.resolve_link_states([clip])
+            finally:
+                in_flight.discard(path)
+            # Widgets are off limits here; the Signal hands over to the GUI thread.
+            self._sig_clip_links_done.emit(states)
+
+        threading.Thread(target=worker, daemon=True, name="clip-link-recheck").start()
+
     def _apply_clip_link_states(self, states: dict) -> None:
-        self._clip_link_scan_running = False
         self._clip_link_cache.update(states)
         for clip in getattr(self, "_video_entries", []):
             clip.link_state = self._clip_link_cache.get(clip.video.path, catalogue.LINK_UNKNOWN)
@@ -438,6 +545,9 @@ class VideoLibraryMixin(MixinBase):
         self._selected_pass_id = None
         self._section_detail.setVisible(False)
         self._refresh_video_detail()
+        # The clip a user just picked is the one they are about to play, cut or
+        # relocate, so its link state is worth a fresh stat.
+        self._recheck_clip_link(video_id)
 
     def _select_section(self, pass_id: str) -> None:
         """Show one cut, wherever it was picked: the tree, the clip card, the strip.
@@ -553,6 +663,16 @@ class VideoLibraryMixin(MixinBase):
         if scrub.exec() != QDialog.DialogCode.Accepted:
             return
         begin_s, end_s = scrub.time_range()
+        # Two sections over the same footage would produce two runs of one swim
+        # that nothing tells apart, and it is how a clip ends up with a spurious
+        # whole-length section beside the real one.
+        already = store.pass_with_window(clip.video.id, begin_s, end_s)
+        if already is not None:
+            self._status_label.setText(
+                f"{clip.video.file_name} already has a section over that window."
+            )
+            self._select_section(str(already.id))
+            return
         assign = SectionAssignDialog(self, store)
         if assign.exec() != QDialog.DialogCode.Accepted:
             return
@@ -698,11 +818,53 @@ class VideoLibraryMixin(MixinBase):
         root = Path(self._out_root_input.text()).expanduser()
         self._load_run_from_dir(root / run_dir_name)
 
+    def _on_video_delete_unused(self, video_id: str) -> None:
+        """Drop every section of a clip that nothing was ever made from.
+
+        The same rule ``_on_section_delete`` applies one at a time: a section
+        with runs is the record of what those runs processed and stays. What
+        this is for is a clip carrying sections nobody cut on purpose, where
+        deleting them one by one is the only thing standing in the way.
+        """
+        store = self._try_survey_store()
+        clip = self._clip_by_id(video_id)
+        if store is None or clip is None:
+            return
+        doomed = [p for p in clip.passes if not store.runs_for_pass(p.id)]
+        if not doomed:
+            self._status_label.setText("Every section of this clip has runs.")
+            return
+        if not confirm(
+            self,
+            "Delete sections",
+            f"Remove {_sections_phrase(len(doomed))} from {clip.video.file_name}? "
+            "Nothing has been made from them.",
+        ):
+            return
+        removed = 0
+        for pass_ in doomed:
+            try:
+                store.delete_pass(pass_.id)
+            except ValueError as exc:
+                logger.warning("Could not delete section %s: %s", pass_.id, exc)
+                continue
+            removed += 1
+        self._selected_pass_id = None
+        self._section_detail.setVisible(False)
+        self._refresh_video_library()
+        self._refresh_survey_batch_tab()
+        self._status_label.setText(f"Deleted {_sections_phrase(removed)}.")
+
     def _on_video_reveal(self, video_id: str) -> None:
-        """Show the clip itself in the file manager, selected rather than merely near."""
+        """Show the clip itself in the file manager, selected rather than merely near.
+
+        Rechecks the link on the way: the folder is where you look when a clip
+        has gone missing, and the answer is often that it is back.
+        """
         clip = self._clip_by_id(video_id)
         if clip is None:
             return
+        self._recheck_clip_link(video_id)
         if not reveal_in_file_manager(Path(clip.video.path)):
             self._status_label.setText("The file manager could not be opened.")
 
@@ -774,6 +936,7 @@ class VideoLibraryMixin(MixinBase):
 
     def _apply_clip_relocation(self, clip, chosen: Path, described: VideoAsset) -> None:
         video = clip.video
+        was = video.path
         video.overlay_from(described)
         video.path = str(chosen)
         video.file_name = chosen.name
@@ -787,7 +950,10 @@ class VideoLibraryMixin(MixinBase):
             logger.exception("Could not relocate %s", video.id)
             self._status_label.setText("The clip could not be relocated.")
             return
-        # The cache is keyed by the old path, which now describes nothing.
+        # The cache is keyed by path: the old one now describes nothing, and the
+        # new one has to be asked afresh rather than inherit the "missing" the
+        # clip was carrying.
+        self._clip_link_cache.pop(was, None)
         self._clip_link_cache.pop(str(chosen), None)
         self._status_label.setText(f"{video.file_name} now points at {chosen}.")
         self._refresh_video_library()

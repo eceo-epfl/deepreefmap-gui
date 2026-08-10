@@ -15,8 +15,12 @@ from deepreefmap_gui.runs.video_rows import (
     GRAVITY_UNKNOWN_TOOLTIP,
     MENU_ADD_TO_CART,
     MENU_DELETE,
+    MENU_DELETE_UNUSED,
+    MENU_HIDE,
     MENU_REASSIGN,
     MENU_RETRIM,
+    MENU_UNHIDE,
+    NO_SECTIONS_TOOLTIP,
     SORT_ASC_GLYPH,
     SORT_DESC_GLYPH,
     UNKNOWN_LENGTH_TOOLTIP,
@@ -31,9 +35,11 @@ from deepreefmap_gui.survey.catalogue import LINK_LINKED, VideoLibraryEntry
 from deepreefmap_gui.survey.models.run_record import RunRecord
 from deepreefmap_gui.survey.models.transect_pass import TransectPass
 from deepreefmap_gui.survey.video_groups import (
+    SORT_GRAVITY,
     SORT_NAME,
     SORT_SIZE,
     DateGroup,
+    sort_clips,
     sort_groups,
     timeline_spans,
 )
@@ -105,6 +111,15 @@ def test_span_at_answers_with_the_pass_under_that_point() -> None:
     assert strip.span_at(STRIP_WIDTH * 0.45) is None
 
 
+def test_a_clip_nothing_has_been_cut_from_says_so_rather_than_sitting_empty() -> None:
+    entry = make_entry(windows=())
+    strip = make_strip(entry)
+
+    assert strip.spans == []
+    assert strip.toolTip() == NO_SECTIONS_TOOLTIP
+    strip.grab()
+
+
 def test_a_clip_of_unknown_length_gets_no_spans_and_says_so() -> None:
     """Expected behaviour: no section is invented from a length nobody read."""
     entry = make_entry(duration_s=None)
@@ -160,17 +175,33 @@ def test_a_very_short_section_is_still_wide_enough_to_hit() -> None:
 
 
 def test_gravity_reads_as_a_fact_only_once_it_has_been_read() -> None:
+    """A dot for each of the two answers, and no dot at all for no answer."""
     row = VideoRow()
 
     row.set_entry(make_entry(gravity=YES), no_name)
-    assert row.gravity_text == "Gravity"
+    recorded = row.gravity_tooltip
+    assert row.gravity_dot is not None
 
     row.set_entry(make_entry(gravity=NO), no_name)
-    assert row.gravity_text == "None"
+    assert row.gravity_dot is not None
+    assert row.gravity_tooltip != recorded
 
     row.set_entry(make_entry(gravity=UNKNOWN), no_name)
-    assert row.gravity_text == ""
+    assert row.gravity_dot is None
     assert row.gravity_tooltip == GRAVITY_UNKNOWN_TOOLTIP
+
+
+def test_gravity_sorts_the_clips_without_one_to_the_top() -> None:
+    without = make_entry(gravity=NO)
+    with_ = make_entry(gravity=YES)
+    unread = make_entry(gravity=UNKNOWN)
+
+    ordered = sort_clips([with_, unread, without], SORT_GRAVITY)
+    assert [e.video.gravity for e in ordered] == [NO, YES, UNKNOWN]
+
+    # A clip nobody has read has no answer to sort on, so it sinks either way.
+    reversed_ = sort_clips([with_, unread, without], SORT_GRAVITY, descending=True)
+    assert [e.video.gravity for e in reversed_] == [YES, NO, UNKNOWN]
 
 
 def test_a_capture_time_standing_in_for_a_missing_one_is_marked() -> None:
@@ -337,14 +368,15 @@ def test_a_section_cut_a_moment_ago_gets_a_row_on_the_next_scan() -> None:
 def test_a_clip_with_nothing_cut_from_it_keeps_the_space_but_not_the_chevron() -> None:
     """Expected behaviour: the disclosure column holds its width, so the file
     names stay in one column down the list."""
-    from PySide6.QtCore import Qt
-
     row = VideoRow()
     row.set_entry(make_entry(windows=()), no_name)
 
     assert not row.chevron.isEnabled()
-    assert row.chevron.arrowType() == Qt.ArrowType.NoArrow
+    assert row.chevron.icon().isNull()
     assert row.chevron.width() > 0
+
+    row.set_entry(make_entry(windows=((0.0, 30.0),)), no_name)
+    assert not row.chevron.icon().isNull()
 
 
 def test_a_section_row_leads_with_its_window_then_says_where_it_stands() -> None:
@@ -454,11 +486,37 @@ def test_a_clip_row_names_itself_in_the_buttons_beside_it() -> None:
     listing.reveal_requested.connect(revealed.append)
     listing.new_section_requested.connect(cut.append)
 
-    row.reveal_btn.click()
+    row.link_btn.click()
     row.new_section_btn.click()
 
     assert revealed == [video_id]
     assert cut == [video_id]
+
+
+def test_the_clip_menu_offers_to_put_back_a_clip_that_is_already_hidden() -> None:
+    row = VideoRow()
+    entry = make_entry()
+
+    row.set_entry(entry, no_name)
+    assert [action.text() for action in row.menu().actions()][0] == MENU_HIDE
+
+    row.set_entry(entry, no_name, hidden=True)
+    assert [action.text() for action in row.menu().actions()][0] == MENU_UNHIDE
+
+
+def test_only_the_sections_nothing_was_made_from_can_be_swept_up() -> None:
+    """Expected behaviour: a section standing for a run that happened stays."""
+    row = VideoRow()
+
+    row.set_entry(make_entry(windows=((0.0, 30.0),), runs_per_pass=(("succeeded",),)), no_name)
+    assert row.unused_sections() == 0
+    swept = next(a for a in row.menu().actions() if a.text() == MENU_DELETE_UNUSED)
+    assert not swept.isEnabled()
+
+    row.set_entry(make_entry(windows=((0.0, 30.0), (40.0, 60.0))), no_name)
+    assert row.unused_sections() == 2
+    swept = next(a for a in row.menu().actions() if a.text() == MENU_DELETE_UNUSED)
+    assert swept.isEnabled()
 
 
 def test_the_list_says_it_takes_a_drop() -> None:

@@ -249,6 +249,7 @@ def test_focus_is_visible_on_more_than_text_fields() -> None:
         "WARNING",
         "ERROR",
         "PRIMARY",
+        "IDLE",
         "LINK",
         "UPDATE",
         "BLOCK",

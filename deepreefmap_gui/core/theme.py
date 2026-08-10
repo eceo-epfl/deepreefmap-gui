@@ -77,6 +77,10 @@ SUCCESS = "#5cbf5c"
 WARNING = "#e8a04a"
 ERROR = "#ff6b5e"  # brighter than the old #c0392b/#c84 for contrast on dark
 PRIMARY = "#4aa3ff"
+# Work that is planned and has not started. A cool slate rather than the plain
+# grey of TEXT_MUTED: a queued section is waiting, not unavailable, and the two
+# read the same when both are drawn as grey beside a disabled control.
+IDLE = "#8aa0b8"
 PRIMARY_DARK = "#2a78c8"  # PRIMARY's outline/handle-border shade
 LINK = "#9ecbff"
 UPDATE = "#e0a030"
@@ -413,6 +417,18 @@ QPushButton[quiet="true"]:disabled, QToolButton[quiet="true"]:disabled {{
 /* Fixed-size icon buttons have no room for the padding above. */
 QPushButton[pad="none"], QToolButton[pad="none"] {{
     padding: 0;
+}}
+
+/* A mark you click rather than a button: a row's disclosure chevron. Even the
+   quiet border above makes one read as a control of the same standing as the
+   row's real actions, which a chevron is not. */
+QToolButton[bare="true"] {{
+    background-color: transparent;
+    border: none;
+    padding: 0;
+}}
+QToolButton[bare="true"]:hover {{
+    background-color: transparent;
 }}
 
 QLineEdit, QPlainTextEdit, QTextEdit, QComboBox, QSpinBox, QDoubleSpinBox,

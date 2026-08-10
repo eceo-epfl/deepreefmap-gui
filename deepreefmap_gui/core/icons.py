@@ -110,6 +110,30 @@ def refresh_icon(p: QPainter, size: int, c: QColor) -> None:
     p.drawLine(QPointF(ax, ay), QPointF(ax - a * 0.3, ay + a))
 
 
+def _chevron(p: QPainter, size: int, down: bool) -> None:
+    """A two-stroke V, the mark every disclosure control in the app uses."""
+    mid, arm = size / 2, size * 0.20
+    if down:
+        p.drawLine(QPointF(mid - arm, mid - arm / 2), QPointF(mid, mid + arm / 2))
+        p.drawLine(QPointF(mid, mid + arm / 2), QPointF(mid + arm, mid - arm / 2))
+    else:
+        p.drawLine(QPointF(mid - arm / 2, mid - arm), QPointF(mid + arm / 2, mid))
+        p.drawLine(QPointF(mid + arm / 2, mid), QPointF(mid - arm / 2, mid + arm))
+
+
+@_drawn(size=ICON_SM, ink=TEXT_MUTED, cap=True, join=True)
+def chevron_right_icon(p: QPainter, size: int, c: QColor) -> None:
+    """Closed disclosure. A stroked V rather than Qt's filled arrow, which is
+    the play triangle at a different angle and read as a second play button."""
+    _chevron(p, size, down=False)
+
+
+@_drawn(size=ICON_SM, ink=TEXT_MUTED, cap=True, join=True)
+def chevron_down_icon(p: QPainter, size: int, c: QColor) -> None:
+    """Open disclosure, the same V turned a quarter."""
+    _chevron(p, size, down=True)
+
+
 @_drawn(size=ICON_MD, pen=False)
 def play_icon(p: QPainter, size: int, c: QColor) -> None:
     m = size * 0.3
@@ -264,11 +288,17 @@ def link_icon(p: QPainter, size: int, c: QColor) -> None:
     p.drawLine(QPointF(size * 0.42, size / 2), QPointF(size * 0.58, size / 2))
 
 
-@_drawn(size=ICON_SM, ink=WARNING, cap=True, join=True)
+@_drawn(size=ICON_SM, ink=ERROR, cap=True, join=True)
 def broken_link_icon(p: QPainter, size: int, c: QColor) -> None:
-    """The same two links, pulled apart. A warning rather than an error: the
-    footage is somewhere, and everything already made from it still stands."""
-    _chain_links(p, size, size * 0.34)
+    """The link with a line struck through it, the way every "not" glyph reads.
+
+    Pulled-apart links needed the joined ones beside them to be legible, and a
+    clip whose file is gone can do nothing at all until it is found, so it is
+    drawn as the refusal it is rather than as a warning.
+    """
+    _chain_links(p, size, size * 0.10)
+    p.drawLine(QPointF(size * 0.42, size / 2), QPointF(size * 0.58, size / 2))
+    p.drawLine(QPointF(size * 0.16, size * 0.82), QPointF(size * 0.84, size * 0.18))
 
 
 @_drawn(size=ICON_SM, join=True)

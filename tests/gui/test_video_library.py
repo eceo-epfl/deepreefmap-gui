@@ -327,6 +327,76 @@ def test_revealing_a_clip_selects_the_file_itself(window, tmp_path, monkeypatch)
     assert revealed == [clip]
 
 
+def test_picking_a_clip_asks_again_whether_its_file_is_there(window, tmp_path, monkeypatch):
+    """Scenario: a clip's drive was unplugged when the app opened, then plugged back in.
+
+    Expected behaviour: the session-long cached answer is not the last word.
+    Picking the row re-stats that one file, so the row stops claiming a clip is
+    missing once it is not.
+    """
+    from deepreefmap_gui.survey import catalogue
+
+    store = window._survey_store()
+    clip = tmp_path / "back.mp4"
+    _seed_at(store, "back.mp4", clip)
+    show_videos(window)
+    resolve_links(window)
+    entry = next(c for c in window._video_entries if c.video.file_name == "back.mp4")
+    assert entry.link_state == catalogue.LINK_MISSING
+
+    clip.write_bytes(b"x" * 32)
+    # Off the worker: the recheck's own thread reports through the same slot.
+    monkeypatch.setattr(
+        "deepreefmap_gui.runs.videos.threading.Thread",
+        lambda target, **kwargs: type("Now", (), {"start": staticmethod(target)})(),
+    )
+    select_clip(window, "back.mp4")
+
+    refreshed = next(c for c in window._video_entries if c.video.file_name == "back.mp4")
+    assert refreshed.link_state == catalogue.LINK_LINKED
+
+
+def test_hiding_a_clip_takes_it_out_of_the_list_without_touching_the_survey(window):
+    """Scenario: a season's footage, and only today's dive matters.
+
+    Expected behaviour: hiding is this machine's view of the library. The clip
+    leaves the list, the database still has it, and Show hidden brings it back.
+    """
+    store = window._survey_store()
+    _seed(store, "keep.mp4")
+    hidden = _seed(store, "gone.mp4")
+    show_videos(window)
+
+    window._on_video_hide(str(hidden.id))
+
+    assert listed_names(window) == ["keep.mp4"]
+    assert store.get_video(hidden.id) is not None
+    assert window._video_hidden_check.text() == "Show hidden (1)"
+    assert not window._video_hidden_check.isHidden()
+
+    window._video_hidden_check.setChecked(True)
+    assert sorted(listed_names(window)) == ["gone.mp4", "keep.mp4"]
+
+    # The same menu entry puts it back, so hiding is never a one-way door.
+    window._on_video_hide(str(hidden.id))
+    window._video_hidden_check.setChecked(False)
+    assert sorted(listed_names(window)) == ["gone.mp4", "keep.mp4"]
+
+
+def test_sections_nothing_was_made_from_can_be_swept_off_a_clip(window, monkeypatch):
+    """Expected behaviour: the sweep spares any section a run stands on."""
+    monkeypatch.setattr("deepreefmap_gui.runs.videos.confirm", lambda *a, **k: True)
+    store = window._survey_store()
+    video = _seed(store, "swept.mp4", passes=3, statuses=("succeeded",))
+    show_videos(window)
+
+    window._on_video_delete_unused(str(video.id))
+
+    kept = store.list_passes(video_id=video.id)
+    assert len(kept) == 1
+    assert store.runs_for_pass(kept[0].id)
+
+
 def test_a_new_section_is_cut_scrubbed_assigned_and_carted(window, tmp_path, monkeypatch):
     """The whole reason the page exists: footage in, a queued section out."""
     from PySide6.QtWidgets import QDialog
@@ -362,6 +432,13 @@ def test_a_new_section_is_cut_scrubbed_assigned_and_carted(window, tmp_path, mon
     passes = store.list_passes()
     assert [(p.begin_s, p.end_s, p.transect_id) for p in passes] == [(5.0, 25.0, transect.id)]
     assert window._pass_in_current_cart(passes[0].id)
+
+    # Cutting the same window again is how a clip ends up with two sections
+    # over one swim, so it is refused and the existing one is shown instead.
+    window._on_video_new_section()
+    assert len(store.list_passes()) == 1
+    assert "already has a section" in window._status_label.text()
+    assert window._selected_pass_id == str(passes[0].id)
 
 
 # A section is a window the user chose, so a clip that cannot be scrubbed

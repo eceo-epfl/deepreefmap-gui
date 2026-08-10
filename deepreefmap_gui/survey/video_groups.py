@@ -17,6 +17,7 @@ from deepreefmap_gui.survey.catalogue import VideoLibraryEntry
 from deepreefmap_gui.survey.models.run_record import RunRecord
 from deepreefmap_gui.survey.models.transect_pass import TransectPass
 from deepreefmap_gui.survey.models.video_asset import VideoAsset
+from deepreefmap_gui.survey.video_probe import NO, YES
 
 # The periods the page can group by, key first then what the control shows.
 PERIODS: tuple[tuple[str, str], ...] = (
@@ -33,7 +34,8 @@ PERIOD_KEYS = tuple(key for key, _ in PERIODS)
 
 # The columns a clip can be ordered by, named for the header cells that ask.
 SORT_NAME, SORT_RECORDED, SORT_LENGTH, SORT_SIZE = "name", "recorded", "length", "size"
-SORT_COLUMNS = (SORT_NAME, SORT_RECORDED, SORT_LENGTH, SORT_SIZE)
+SORT_GRAVITY = "gravity"
+SORT_COLUMNS = (SORT_NAME, SORT_RECORDED, SORT_LENGTH, SORT_SIZE, SORT_GRAVITY)
 # Newest footage first, the order the date grouping itself reads in.
 DEFAULT_SORT_COLUMN = SORT_RECORDED
 DEFAULT_SORT_DESCENDING = True
@@ -164,6 +166,11 @@ def clip_sort_fact(entry: VideoLibraryEntry, column: str) -> str | float | None:
         return duration if duration and duration > 0 else None
     if column == SORT_SIZE:
         return entry.video.size_bytes or None
+    if column == SORT_GRAVITY:
+        # Ascending puts the clips without a gravity vector first, which is the
+        # question this column is sorted to answer. A clip nobody has read yet
+        # has no answer and sinks to the end, as a missing length does.
+        return {NO: 0.0, YES: 1.0}.get(entry.video.gravity)
     raise ValueError(f"column must be one of {SORT_COLUMNS}, got {column!r}")
 
 

@@ -674,6 +674,27 @@ class SurveyStore:
     def add_pass(self, pass_: TransectPass) -> None:
         self._add("transect_pass", pass_)
 
+    def pass_with_window(
+        self, video_id: uuid.UUID, begin_s: float, end_s: float | None
+    ) -> TransectPass | None:
+        """An existing section of this clip covering the same window, if there is one.
+
+        A guard for the cut, not for ``add_pass``: restoring a run's pass from a
+        manifest has to insert whatever window that run processed, duplicate or
+        not, or the run is left describing a section nothing records. Windows are
+        compared to a tenth of a second, well under a frame at any usable fps.
+        """
+        for stored in self.list_passes(video_id=video_id):
+            if abs(stored.begin_s - begin_s) > 0.1:
+                continue
+            if stored.end_s is None or end_s is None:
+                if stored.end_s is end_s:
+                    return stored
+                continue
+            if abs(stored.end_s - end_s) <= 0.1:
+                return stored
+        return None
+
     def update_pass(self, pass_: TransectPass) -> None:
         self._update("transect_pass", pass_)
 
@@ -698,6 +719,7 @@ class SurveyStore:
         self,
         transect_id: uuid.UUID | None = None,
         batch_id: uuid.UUID | None = None,
+        video_id: uuid.UUID | None = None,
     ) -> list[TransectPass]:
         clauses, params = [], []
         if transect_id is not None:
@@ -706,6 +728,9 @@ class SurveyStore:
         if batch_id is not None:
             clauses.append("batch_id = ?")
             params.append(str(batch_id))
+        if video_id is not None:
+            clauses.append("video_id = ?")
+            params.append(str(video_id))
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
         # created_at is second-precision, so passes queued in one action share it.
         # rowid breaks the tie by insertion order, which is the order the user
