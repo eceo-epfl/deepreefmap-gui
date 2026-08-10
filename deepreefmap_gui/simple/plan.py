@@ -679,6 +679,21 @@ class SimplePlanMixin(MixinBase):
                     self._transect_list.blockSignals(False)
                 return
 
+    def _open_transect_page(self, transect_id: object = None) -> None:
+        """Go to a transect on the Transects page, from wherever it was named.
+
+        The list is refreshed asking for that row rather than merely selected:
+        the scope chips there may be filtering it out, and ``_scoped_transects``
+        keeps a transect that was asked for by id.
+        """
+        self._go_to_section("transects")
+        try:
+            wanted = uuid.UUID(str(transect_id))
+        except (ValueError, TypeError, AttributeError):
+            return
+        self._refresh_transect_list(select_id=wanted)
+        self._on_transect_selected()
+
     def _transect_rows(self) -> list[QTreeWidgetItem]:
         """Every transect row, in display order."""
         return [

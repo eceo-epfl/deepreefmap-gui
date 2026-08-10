@@ -4,6 +4,7 @@ from pathlib import Path
 
 from _factories import make_transect, write_test_mp4
 
+from deepreefmap_gui.core.theme import ERROR, PRIMARY
 from deepreefmap_gui.simple.mode import SIMPLE_SECTIONS
 from deepreefmap_gui.survey.catalogue import (
     VIDEO_FAILED,
@@ -250,62 +251,34 @@ def test_missing_footage_is_reported_in_the_header(window, tmp_path):
     assert "1 clip" in verdict.reason
 
 
-def test_a_missing_clip_offers_to_be_relocated(window, tmp_path):
+def test_a_clip_added_from_its_new_home_keeps_its_sections(window, tmp_path):
+    """Scenario: a card is copied to a second disk and the first one is gone.
+
+    Expected behaviour: adding the file again matches it by checksum and
+    repoints the clip already in the library, which is why the pane offers no
+    relocate button of its own.
+    """
     store = window._survey_store()
-    _seed_at(store, "gone.mp4", tmp_path / "gone.mp4")
-    show_videos(window)
-    resolve_links(window)
-
-    select_clip(window, "gone.mp4")
-    assert window._video_detail.relocate_btn.isVisibleTo(window._video_detail)
-
-
-def test_relocating_refuses_footage_that_is_not_the_same_recording(window, tmp_path, monkeypatch):
-    """A GoPro names every card's first clip GX010001.MP4, so the name proves
-    nothing and the checksum has to be what decides."""
-    from PySide6.QtWidgets import QMessageBox
-
-    store = window._survey_store()
-    original = _seed_at(store, "gone.mp4", tmp_path / "gone.mp4")
-    other = tmp_path / "different.mp4"
-    other.write_bytes(b"different footage" * 64)
-
-    monkeypatch.setattr(
-        "deepreefmap_gui.runs.videos.QFileDialog.getOpenFileName",
-        staticmethod(lambda *a, **k: (str(other), "")),
-    )
-    warned = []
-    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: warned.append(a)))
-
-    show_videos(window)
-    resolve_links(window)
-    select_clip(window, "gone.mp4")
-    window._on_video_relocate()
-
-    assert warned, "the mismatch has to be reported, not silently ignored"
-    assert store.get_video(original.id).path == str(tmp_path / "gone.mp4")
-
-
-def test_relocating_repoints_the_clip_when_the_checksum_agrees(window, tmp_path, monkeypatch):
-    store = window._survey_store()
+    was = tmp_path / "gone" / "GX010001.MP4"
+    was.parent.mkdir()
     moved = tmp_path / "new_home" / "GX010001.MP4"
     moved.parent.mkdir()
     moved.write_bytes(b"the same footage" * 64)
-    real_hash = VideoAsset.from_path(moved).hash
     original = store.upsert_video(
-        VideoAsset(file_name="GX010001.MP4", path=str(tmp_path / "gone.mp4"), hash=real_hash)
+        VideoAsset(
+            file_name="GX010001.MP4",
+            path=str(was),
+            hash=VideoAsset.from_path(moved).hash,
+            duration_s=60.0,
+        )
     )
+    pass_ = TransectPass(transect_id=None, video_id=original.id, begin_s=0.0, end_s=10.0)
+    store.add_pass(pass_)
 
-    monkeypatch.setattr(
-        "deepreefmap_gui.runs.videos.QFileDialog.getOpenFileName",
-        staticmethod(lambda *a, **k: (str(moved), "")),
-    )
-    show_videos(window)
-    resolve_links(window)
-    select_clip(window, "GX010001.MP4")
-    window._on_video_relocate()
+    window._on_videos_probed([(str(moved), (60.0, 30.0))])
 
     assert store.get_video(original.id).path == str(moved)
+    assert [p.id for p in store.list_passes(video_id=original.id)] == [pass_.id]
 
 
 def test_revealing_a_clip_selects_the_file_itself(window, tmp_path, monkeypatch):
@@ -416,11 +389,11 @@ def test_a_new_section_is_cut_scrubbed_assigned_and_carted(window, tmp_path, mon
         lambda self: (5.0, 25.0),
     )
     monkeypatch.setattr(
-        "deepreefmap_gui.simple.section_dialog.SectionAssignDialog.exec",
+        "deepreefmap_gui.simple.transect_picker.TransectPickerDialog.exec",
         lambda self: QDialog.DialogCode.Accepted,
     )
     monkeypatch.setattr(
-        "deepreefmap_gui.simple.section_dialog.SectionAssignDialog.choice",
+        "deepreefmap_gui.simple.transect_picker.TransectPickerDialog.choice",
         lambda self: (transect.id, "forward"),
     )
 
@@ -696,11 +669,11 @@ def test_reassigning_moves_the_section_to_another_transect(window, monkeypatch):
     store.add_transect(other)
 
     monkeypatch.setattr(
-        "deepreefmap_gui.simple.section_dialog.SectionAssignDialog.exec",
+        "deepreefmap_gui.simple.transect_picker.TransectPickerDialog.exec",
         lambda self: QDialog.DialogCode.Accepted,
     )
     monkeypatch.setattr(
-        "deepreefmap_gui.simple.section_dialog.SectionAssignDialog.choice",
+        "deepreefmap_gui.simple.transect_picker.TransectPickerDialog.choice",
         lambda self: (other.id, "reverse"),
     )
     show_videos(window)
@@ -709,6 +682,212 @@ def test_reassigning_moves_the_section_to_another_transect(window, monkeypatch):
     moved = store.get_pass(pass_.id)
     assert moved.transect_id == other.id
     assert moved.direction == "reverse"
+
+
+def test_a_clip_that_is_there_offers_to_be_cut(window, tmp_path):
+    store = window._survey_store()
+    _seed_at(store, "here.mp4", write_test_mp4(tmp_path / "here.mp4"))
+
+    show_videos(window)
+    resolve_links(window)
+    select_clip(window, "here.mp4")
+
+    panel = window._video_detail
+    assert not panel.unavailable.isVisibleTo(panel)
+    assert PRIMARY in panel.queue_btn.styleSheet()
+
+
+def test_the_clip_pane_lists_sections_as_rows_that_act(window):
+    """Scenario: the pane's sections were text in a list, actionable only by
+    right click.
+
+    Expected behaviour: one row per section, each carrying the transect chip and
+    the three buttons the wide list's rows carry.
+    """
+    store = window._survey_store()
+    video = _seed(store, "GX010070.MP4")
+    first = _cut(store, video, 0.0, 10.0)
+    second = _cut(store, video, 20.0, 30.0)
+
+    show_videos(window)
+    select_clip(window, "GX010070.MP4")
+
+    rows = window._video_detail.pass_list.rows()
+    assert set(rows) == {str(first.id), str(second.id)}
+    row = rows[str(first.id)]
+    assert row.transect_chip.full_text == "Set transect"
+    assert row.cart_btn.isEnabled() and row.trim_btn.isEnabled() and row.delete_btn.isEnabled()
+
+
+def test_the_pane_rows_reach_the_pages_handlers(window, monkeypatch):
+    store = window._survey_store()
+    video = _seed(store, "GX010071.MP4")
+    pass_ = _cut(store, video)
+
+    show_videos(window)
+    select_clip(window, "GX010071.MP4")
+    row = window._video_detail.pass_list.rows()[str(pass_.id)]
+
+    seen = []
+    for name in ("_on_section_retrim", "_on_section_reassign", "_on_section_delete"):
+        monkeypatch.setattr(
+            window, name, lambda pass_id, name=name: seen.append((name, pass_id))
+        )
+    # Bound after the connection was made, so the row is re-wired to the patches.
+    panel = window._video_detail
+    panel.retrim_requested.disconnect()
+    panel.reassign_requested.disconnect()
+    panel.delete_requested.disconnect()
+    panel.retrim_requested.connect(window._on_section_retrim)
+    panel.reassign_requested.connect(window._on_section_reassign)
+    panel.delete_requested.connect(window._on_section_delete)
+
+    row.trim_btn.click()
+    row.transect_chip.click()
+    row.delete_btn.click()
+    assert seen == [
+        ("_on_section_retrim", str(pass_.id)),
+        ("_on_section_reassign", str(pass_.id)),
+        ("_on_section_delete", str(pass_.id)),
+    ]
+
+    row.cart_btn.click()
+    assert window._pass_in_current_cart(pass_.id)
+
+
+def test_the_card_shows_a_missing_file_and_offers_its_folder(window, tmp_path):
+    """Scenario: the pane said "(not found)" in a path that elides, and the trim
+    button looked live until the status bar refused it.
+
+    Expected behaviour: the broken link is beside the clip's name, clickable,
+    and the section's trim button is marked in the meantime.
+    """
+    store = window._survey_store()
+    video = _seed_at(store, "gone.mp4", tmp_path / "gone.mp4")
+    pass_ = _cut(store, video)
+    revealed = []
+    show_videos(window)
+    resolve_links(window)
+    select_clip(window, "gone.mp4")
+
+    panel = window._video_detail
+    assert not panel.link_btn.icon().isNull()
+    assert "Not found" in panel.link_btn.toolTip()
+    assert panel.unavailable.isVisibleTo(panel)
+    # Cutting and trimming both decode the file, so both are marked in red
+    # rather than greyed out, which would hide the reason with the tooltip.
+    assert ERROR in panel.queue_btn.styleSheet()
+    row = panel.pass_list.rows()[str(pass_.id)]
+    assert "cannot be found" in row.trim_btn.toolTip()
+
+    panel.reveal_requested.connect(revealed.append)
+    panel.link_btn.click()
+    assert revealed == [str(video.id)]
+
+
+def test_a_section_with_no_footage_cannot_be_carted_or_run(window, tmp_path):
+    """Scenario: a section whose clip is on an unplugged drive went into the
+    cart, and the session stopped on it after everything before it had run.
+
+    Expected behaviour: the cart refuses it, and a cart that already holds one
+    blocks the run rather than failing partway through it.
+    """
+    store = window._survey_store()
+    video = _seed_at(store, "gone.mp4", tmp_path / "gone.mp4")
+    pass_ = _cut(store, video)
+
+    show_videos(window)
+    resolve_links(window)
+    window._on_video_pass_to_cart(str(pass_.id))
+
+    assert not window._pass_in_current_cart(pass_.id)
+    assert "cannot be found" in window._status_label.text()
+
+    # Carted while the drive was plugged in, then unplugged: the gate is what
+    # stops the session, since the cart cannot un-add itself.
+    window._add_pass_to_cart(pass_.id)
+    assert window._survey_gate.state == "blocked"
+    assert "cannot be found" in window._survey_gate.reason
+    assert not window._survey_start_btn.isEnabled()
+
+
+def _cart_marks(window, pass_id: str) -> tuple[bool, bool]:
+    """Whether the wide row and the pane's row each say this is in the cart."""
+    wide = window._video_list.sections()[pass_id]
+    pane = window._video_detail.pass_list.rows()[pass_id]
+    from deepreefmap_gui.runs.video_rows import IN_CART_TOOLTIP
+
+    return wide.cart_btn.toolTip() == IN_CART_TOOLTIP, pane.cart_btn.toolTip() == IN_CART_TOOLTIP
+
+
+def test_both_lists_say_the_same_thing_about_the_cart(window):
+    """Scenario: a row went on reading "In cart" after the cart was cleared on
+    the Process page, and the two lists disagreed with each other.
+
+    Expected behaviour: cart membership is a live view in both, because every
+    cart change repaints the page.
+    """
+    store = window._survey_store()
+    video = _seed(store, "GX010080.MP4")
+    pass_ = _cut(store, video)
+
+    show_videos(window)
+    select_clip(window, "GX010080.MP4")
+    window._video_list.expand(str(video.id))
+    assert _cart_marks(window, str(pass_.id)) == (False, False)
+
+    window._on_video_pass_to_cart(str(pass_.id))
+    assert _cart_marks(window, str(pass_.id)) == (True, True)
+    assert "Added" in window._status_label.text()
+
+    # Asking again is not a second add, and it says so rather than claiming one.
+    window._on_video_pass_to_cart(str(pass_.id))
+    assert "already in the cart" in window._status_label.text()
+
+    cart = store.current_cart()
+    store.remove_batch_item(cart.id, pass_.id)
+    window._refresh_survey_batch_tab()
+    assert _cart_marks(window, str(pass_.id)) == (False, False)
+
+
+def test_picking_a_section_highlights_it_in_both_lists(window):
+    """Scenario: the pane filled itself down a second path that neither
+    highlighted the row nor read the cart, so picking a section lit it in the
+    list and left the pane's copy of it looking untouched.
+
+    Expected behaviour: one filler, so the two cannot disagree.
+    """
+    store = window._survey_store()
+    video = _seed(store, "GX010090.MP4")
+    first = _cut(store, video, 0.0, 10.0)
+    second = _cut(store, video, 20.0, 30.0)
+    window._add_pass_to_cart(first.id)
+
+    show_videos(window)
+    window._select_section(str(first.id))
+
+    pane = window._video_detail.pass_list.rows()
+    assert pane[str(first.id)].property("selected") is True
+    assert pane[str(second.id)].property("selected") is False
+    assert window._video_list.selected_section == str(first.id)
+    assert _cart_marks(window, str(first.id)) == (True, True)
+
+
+def test_a_sections_transect_can_be_opened_on_the_transects_page(window):
+    store = window._survey_store()
+    video = _seed(store, "GX010072.MP4")
+    transect = make_transect("Reef C")
+    store.add_transect(transect)
+    pass_ = _cut(store, video, transect=transect)
+
+    show_videos(window)
+    select_clip(window, "GX010072.MP4")
+    row = window._video_detail.pass_list.rows()[str(pass_.id)]
+    action = next(a for a in row.menu().actions() if a.text() == "Show on the Transects page")
+    action.trigger()
+
+    assert window._simple_stack.currentIndex() == SIMPLE_SECTIONS.index("transects")
+    assert window._selected_transect_id() == transect.id
 
 
 def test_dropping_a_clip_on_the_list_imports_it(window, tmp_path, monkeypatch):

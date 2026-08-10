@@ -715,11 +715,7 @@ class BrowseMixin(MixinBase):
         The tree selection already set the scope, so Transects opens on the same
         line rather than on whatever was last picked there.
         """
-        transect_id = _key_transect_id(self._data_selected_key)
-        self._go_to_section("transects")
-        if transect_id is not None:
-            self._select_transect_row(str(transect_id))
-            self._on_transect_selected()
+        self._open_transect_page(_key_transect_id(self._data_selected_key))
 
     def _data_facet_groups(self) -> list[FacetGroup]:
         if self._data_facet == "sessions":

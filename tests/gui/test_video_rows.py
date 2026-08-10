@@ -8,22 +8,29 @@ import uuid
 import pytest
 from _factories import make_video
 
-from deepreefmap_gui.core.theme import SPACE_SM
+from deepreefmap_gui.core.theme import PRIMARY, SPACE_SM
 from deepreefmap_gui.runs.video_rows import (
+    CART_UNLINKED_TOOLTIP,
     DELETE_BLOCKED_TOOLTIP,
     DROP_HINT,
     GRAVITY_UNKNOWN_TOOLTIP,
+    IN_CART_TOOLTIP,
     MENU_ADD_TO_CART,
     MENU_DELETE,
     MENU_DELETE_UNUSED,
     MENU_HIDE,
+    MENU_OPEN_TRANSECT,
     MENU_REASSIGN,
     MENU_RETRIM,
     MENU_UNHIDE,
     NO_SECTIONS_TOOLTIP,
+    RETRIM_TOOLTIP,
+    SET_TRANSECT,
     SORT_ASC_GLYPH,
     SORT_DESC_GLYPH,
+    TRIM_UNLINKED_TOOLTIP,
     UNKNOWN_LENGTH_TOOLTIP,
+    SectionList,
     SectionRow,
     SectionStrip,
     VideoLibraryList,
@@ -387,17 +394,24 @@ def test_a_section_row_leads_with_its_window_then_says_where_it_stands() -> None
 
     texts = label_texts(row)
     assert "0:00–0:30" in texts
-    assert "North reef" in texts
-    assert "2 runs" in texts
     assert "Forward" in texts
+    assert "2 runs" in texts
+    # The chip is the name and nothing else: an arrow on it read as a link to
+    # somewhere, which it was not.
+    assert row.transect_chip.full_text == "North reef"
+    assert "forward" in row.transect_chip.toolTip()
     row.grab()
 
 
-def test_an_unfiled_section_says_so_rather_than_showing_a_blank() -> None:
+def test_an_unfiled_section_invites_a_transect_rather_than_showing_a_blank() -> None:
+    """Expected behaviour: not an error. A section processes unfiled, so the
+    chip is an invitation in the accent colour."""
     entry = make_entry(windows=((0.0, 30.0),))
     listing = make_list(entry)
+    chip = listing.sections()[str(entry.passes[0].id)].transect_chip
 
-    assert "Unassigned" in label_texts(listing.sections()[str(entry.passes[0].id)])
+    assert chip.full_text == SET_TRANSECT
+    assert PRIMARY in chip.styleSheet()
 
 
 def test_a_section_already_in_the_cart_cannot_be_added_twice() -> None:
@@ -449,6 +463,180 @@ def test_a_section_action_names_the_section_it_was_chosen_on(label, signal_name)
     action(listing.sections()[wanted].menu(), label).trigger()
 
     assert seen == [wanted]
+
+
+@pytest.mark.parametrize(
+    ("button", "signal_name"),
+    [
+        ("cart_btn", "section_add_to_cart"),
+        ("trim_btn", "section_retrim"),
+        ("delete_btn", "section_delete"),
+        ("transect_chip", "section_reassign"),
+    ],
+)
+def test_a_sections_own_buttons_name_the_section_they_sit_on(button, signal_name) -> None:
+    entry = make_entry(windows=((0.0, 30.0), (60.0, 90.0)))
+    listing = make_list(entry)
+    wanted = str(entry.passes[1].id)
+    seen: list[str] = []
+    getattr(listing, signal_name).connect(seen.append)
+
+    getattr(listing.sections()[wanted], button).click()
+
+    assert seen == [wanted]
+
+
+def test_a_carted_or_run_section_says_so_in_the_button_it_would_use() -> None:
+    """Expected behaviour: the button stays enabled and explains itself. A
+    disabled QToolButton takes no mouse events, so its tooltip never shows."""
+    entry = make_entry(windows=((0.0, 30.0),), runs_per_pass=(("succeeded",),))
+    pass_id = str(entry.passes[0].id)
+    listing = make_list(entry, in_cart=lambda pid: pid == pass_id)
+    row = listing.sections()[pass_id]
+
+    assert row.cart_btn.isEnabled()
+    assert row.cart_btn.toolTip() == IN_CART_TOOLTIP
+    assert row.delete_btn.isEnabled()
+    assert row.delete_btn.toolTip() == DELETE_BLOCKED_TOOLTIP
+
+
+def test_only_a_filed_section_can_be_shown_on_the_transects_page() -> None:
+    entry = make_entry(windows=((0.0, 30.0),))
+    listing = make_list(entry)
+    row = listing.sections()[str(entry.passes[0].id)]
+
+    assert not action(row.menu(), MENU_OPEN_TRANSECT).isEnabled()
+
+    row.section.transect_id = uuid.uuid4()
+    seen: list[str] = []
+    listing.section_open_transect.connect(seen.append)
+    action(row.menu(), MENU_OPEN_TRANSECT).trigger()
+
+    assert seen == [str(row.section.transect_id)]
+
+
+def test_the_pane_list_holds_one_compact_row_per_section() -> None:
+    entry = make_entry(windows=((0.0, 30.0), (60.0, 90.0)))
+    listing = SectionList()
+    listing.set_sections(entry, lambda _id: "North reef")
+
+    rows = listing.rows()
+    assert list(rows) == [str(p.id) for p in entry.passes]
+    first = rows[str(entry.passes[0].id)]
+    assert first.transect_chip.full_text == "North reef"
+    # The runs cell is one of the two a third of a page has no room for.
+    assert not first._runs.isVisibleTo(listing)
+
+
+def test_a_section_spanning_two_clips_is_filled_under_both() -> None:
+    """Scenario: a swim the camera split at 4 GB is one section over two clips,
+    so it gets a row under each. Keyed by pass id alone, only the last row
+    answered to the id and the first was left blank, with no section to act on.
+
+    Expected behaviour: both rows describe the section, and neither emits an
+    empty id at the page.
+    """
+    from deepreefmap_gui.survey.models.video_asset import VideoAsset
+
+    second_clip = VideoAsset(file_name="GX020001.MP4", path="/data/GX020001.MP4", hash="ef" * 16)
+    first = make_entry(windows=((0.0, 30.0),))
+    shared = first.passes[0]
+    shared.extra_video_ids = [second_clip.id]
+    second = VideoLibraryEntry(
+        video=second_clip,
+        pass_count=1,
+        run_count=0,
+        passes=[shared],
+        runs=[],
+        link_state=LINK_LINKED,
+    )
+    listing = make_list(first, second)
+
+    rows = listing.findChildren(SectionRow)
+    assert len(rows) == 2
+    assert all(row.pass_id == str(shared.id) for row in rows)
+    assert all(row.section is not None for row in rows)
+
+    seen: list[str] = []
+    listing.section_reassign.connect(seen.append)
+    for row in rows:
+        row.transect_chip.click()
+    assert seen == [str(shared.id), str(shared.id)]
+
+
+def test_an_unfilled_row_asks_the_page_for_nothing() -> None:
+    """A row the list has built and not filled knows no section, and an empty
+    id reaching the page is an unhandled error in front of the user."""
+    row = SectionRow()
+    seen: list[str] = []
+    row.reassign_requested.connect(seen.append)
+    row.delete_requested.connect(seen.append)
+    row.retrim_requested.connect(seen.append)
+    row.add_to_cart_requested.connect(seen.append)
+
+    row.transect_chip.click()
+    row.delete_btn.click()
+    row.trim_btn.click()
+    row.cart_btn.click()
+
+    assert seen == []
+
+
+def test_a_missing_file_is_marked_on_the_button_that_needs_it() -> None:
+    """Trimming decodes the file, so a clip that is gone cannot be trimmed. The
+    button says so before the click does."""
+    from deepreefmap_gui.survey.catalogue import LINK_MISSING
+
+    entry = make_entry(windows=((0.0, 30.0),))
+    entry.link_state = LINK_MISSING
+    listing = make_list(entry)
+    row = listing.sections()[str(entry.passes[0].id)]
+
+    assert row.trim_btn.toolTip() == TRIM_UNLINKED_TOOLTIP
+    # Nothing can be processed from footage that is not there, so the cart is
+    # marked too rather than taking it and failing at the run.
+    assert row.cart_btn.toolTip() == CART_UNLINKED_TOOLTIP
+
+
+def test_a_link_nobody_has_checked_yet_is_not_a_missing_one() -> None:
+    """Not knowing is not knowing it is gone, and marking every unchecked clip
+    in red says the library is broken every time the app opens."""
+    from deepreefmap_gui.survey.catalogue import LINK_UNKNOWN
+
+    entry = make_entry(windows=((0.0, 30.0),))
+    entry.link_state = LINK_UNKNOWN
+    listing = make_list(entry)
+    row = listing.sections()[str(entry.passes[0].id)]
+
+    assert row.trim_btn.toolTip() == RETRIM_TOOLTIP
+    assert row.cart_btn.toolTip() == MENU_ADD_TO_CART
+
+
+def test_an_empty_pane_list_keeps_its_well_and_says_it_is_empty() -> None:
+    """Expected behaviour: the dark panel is what says a list belongs here, so
+    it stays when there is nothing in it."""
+    listing = SectionList()
+    listing.set_sections(make_entry(windows=()))
+
+    assert listing.rows() == {}
+    assert listing.empty.isVisibleTo(listing)
+
+    listing.set_sections(make_entry(windows=((0.0, 30.0),)))
+    assert not listing.empty.isVisibleTo(listing)
+
+
+def test_the_pane_list_rebuilds_only_when_the_sections_change() -> None:
+    entry = make_entry(windows=((0.0, 30.0),))
+    listing = SectionList()
+    listing.set_sections(entry)
+    was = listing.rows()[str(entry.passes[0].id)]
+
+    listing.set_sections(entry)
+    assert listing.rows()[str(entry.passes[0].id)] is was
+
+    grown = make_entry(windows=((0.0, 30.0), (60.0, 90.0)), asset=entry.video)
+    listing.set_sections(grown)
+    assert len(listing.rows()) == 2
 
 
 def test_clicking_a_section_selects_it_and_lets_go_of_the_clip() -> None:

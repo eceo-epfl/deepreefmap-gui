@@ -137,7 +137,14 @@ class DetailCard(QWidget):
         title_font.setWeight(QFont.Weight.DemiBold)
         title_font.setPointSize(FONT_LG_PT)
         self.title.setFont(title_font)
-        self.body.addWidget(self.title)
+        # A row rather than a bare label, so a card with a state worth acting on
+        # can put the action beside the name instead of inventing a place for it
+        # further down.
+        self.title_row = QHBoxLayout()
+        self.title_row.setContentsMargins(0, 0, 0, 0)
+        self.title_row.setSpacing(SPACE_SM)
+        self.title_row.addWidget(self.title, 1)
+        self.body.addLayout(self.title_row)
 
         # In a row of its own so the chip is only as wide as its word; stretched
         # to the pane it would read as a banner.
@@ -159,6 +166,12 @@ class DetailCard(QWidget):
     def set_status(self, text: str, colour: str) -> None:
         """The outcome under the name, as the chip the tables paint it as."""
         self.status.set_status(text, colour)
+
+    def add_title_button(self, button: QAbstractButton) -> None:
+        """A single-glyph action in the card's top right, beside the name."""
+        button.setProperty("quiet", "true")
+        button.setProperty("pad", "none")
+        self.title_row.addWidget(button)
 
     def add_actions(self, primary: QPushButton, *secondary: QAbstractButton) -> None:
         """Close the card with what it is for, and quiet actions pushed right.

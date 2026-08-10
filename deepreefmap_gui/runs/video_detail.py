@@ -10,36 +10,40 @@ below with what became of that cut.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from typing import Any, Callable
+
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QHBoxLayout,
-    QListWidget,
-    QListWidgetItem,
-    QMenu,
-    QPushButton,
-    QStackedWidget,
+    QLabel,
+    QToolButton,
     QWidget,
 )
 
-from deepreefmap_gui.core.icons import status_dot_icon
-from deepreefmap_gui.core.theme import SPACE_SM, TEXT_MUTED
+from deepreefmap_gui.core.theme import ERROR, PRIMARY, SPACE_SM
 from deepreefmap_gui.core.widgets import (
-    STATUS_COLORS,
-    EmptyState,
     clip_outcome_color,
     muted_label,
 )
 from deepreefmap_gui.runs.run_detail import DetailCard
+from deepreefmap_gui.runs.video_rows import NEW_SECTION_GLYPH, SectionList, apply_link_state
 from deepreefmap_gui.survey.catalogue import (
+    LINK_LINKED,
     LINK_MISSING,
     VideoLibraryEntry,
 )
 from deepreefmap_gui.survey.statuses import clip_spec
-from deepreefmap_gui.survey.video_groups import pass_status
 
-_PASS_PAGE, _NO_PASS_PAGE = 0, 1
+UNAVAILABLE = "Video unavailable"
 
-PASS_ID_ROLE = Qt.ItemDataRole.UserRole
+NEW_SECTION_TOOLTIP = (
+    "Cut out the part of this clip worth processing, file it against a transect "
+    "or none, and add it to the cart."
+)
+NO_FILE_TOOLTIP = (
+    "The video file cannot be found, so there is nothing to cut. Add it again "
+    "from where it lives now."
+)
 
 
 def clip_facts(entry: VideoLibraryEntry) -> str:
@@ -60,13 +64,6 @@ def clip_facts(entry: VideoLibraryEntry) -> str:
     return "  ·  ".join(bits)
 
 
-def _window(begin_s: float, end_s: float) -> str:
-    return (
-        f"{int(begin_s) // 60}:{int(begin_s) % 60:02d}"
-        f"–{int(end_s) // 60}:{int(end_s) % 60:02d}"
-    )
-
-
 def _short_date(stamp: str | None) -> str:
     """The date out of an ISO timestamp. The time of day says nothing here."""
     return (stamp or "").split("T")[0] or "unknown"
@@ -75,8 +72,8 @@ def _short_date(stamp: str | None) -> str:
 def _link_line(entry: VideoLibraryEntry) -> str:
     """The path, and whether the file is still at the end of it.
 
-    Said in the row rather than only in an icon: the pane is where the decision
-    to relocate gets made, and an icon in the rail is not next to the button.
+    Said in words rather than only in an icon: a clip whose file has moved is
+    read here, and an icon in the rail is not a sentence.
     """
     if entry.link_state == LINK_MISSING:
         return f"{entry.video.path}  (not found)"
@@ -87,72 +84,79 @@ class VideoDetailPanel(DetailCard):
     """A titled card describing the selected clip."""
 
     queue_requested = Signal()
+    reveal_requested = Signal(str)
     pass_activated = Signal(str)
     add_to_cart_requested = Signal(str)
-    relocate_requested = Signal()
+    retrim_requested = Signal(str)
+    reassign_requested = Signal(str)
+    delete_requested = Signal(str)
+    open_transect_requested = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         layout = self.body
 
-        heading = muted_label("Sections cut from this clip")
-        layout.addWidget(heading)
+        # A clip whose file is gone can do nothing at all, so it is said in
+        # words at the top of the card rather than left to an icon and a path
+        # that elides in a narrow pane.
+        self.unavailable = QLabel(UNAVAILABLE)
+        self.unavailable.setStyleSheet(f"color: {ERROR};")
+        self.unavailable.setVisible(False)
+        self.title_row.addWidget(self.unavailable)
 
-        self.pass_list = QListWidget()
-        self.pass_list.setAlternatingRowColors(True)
-        # The pane is narrow and a row is four facts joined; elide rather than
-        # grow a scrollbar that hides the outcome at the end of the line.
-        self.pass_list.setTextElideMode(Qt.TextElideMode.ElideMiddle)
-        self.pass_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.pass_list.itemClicked.connect(self._on_pass_activated)
-        self.pass_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.pass_list.customContextMenuRequested.connect(self._on_pass_menu)
-        self._pass_stack = QStackedWidget()
-        self._pass_stack.addWidget(self.pass_list)
-        self._pass_stack.addWidget(
-            EmptyState("Not cut into sections yet", "New section… to process part or all of it.")
-        )
-        layout.addWidget(self._pass_stack, 1)
+        # Whether the file is still there, said where the clip is named. It is
+        # live in every state: the folder is where you go to find out what
+        # became of a clip that has gone missing.
+        self.link_btn = QToolButton()
+        self.link_btn.setAccessibleName("Show in folder")
+        self.link_btn.clicked.connect(self._emit_reveal)
+        self.add_title_button(self.link_btn)
 
-        # Playing and revealing are on the clip's own row, where the clip is.
-        # Relocating stays here: it is rare, it needs the sentence next to it,
-        # and it only appears when there is something to relocate, since a
-        # permanently greyed button teaches nothing.
-        file_row = QHBoxLayout()
-        file_row.setSpacing(SPACE_SM)
-        self.relocate_btn = QPushButton("Relocate…")
-        self.relocate_btn.setProperty("quiet", "true")
-        self.relocate_btn.setToolTip(
-            "Point this clip at the file's new home. The replacement has to be "
-            "the same footage, checked against this clip's checksum."
-        )
-        self.relocate_btn.setVisible(False)
-        self.relocate_btn.clicked.connect(self.relocate_requested)
-        file_row.addWidget(self.relocate_btn)
-        file_row.addStretch(1)
-        layout.addLayout(file_row)
-
-        self.queue_btn = QPushButton("New section…")
-        self.queue_btn.setToolTip(
-            "Cut out the part of this clip worth processing, file it against a "
-            "transect or none, and add it to the cart."
-        )
+        heading_row = QHBoxLayout()
+        heading_row.setContentsMargins(0, 0, 0, 0)
+        heading_row.setSpacing(SPACE_SM)
+        heading_row.addWidget(muted_label("Sections cut from this clip"))
+        heading_row.addStretch(1)
+        # Cutting a section belongs to the list it adds to, not to the bottom of
+        # the card: the same + the clip's own row carries, in the same blue.
+        self.queue_btn = QToolButton()
+        self.queue_btn.setText(NEW_SECTION_GLYPH)
+        self.queue_btn.setAccessibleName("New section")
+        self.queue_btn.setProperty("quiet", "true")
+        self.queue_btn.setProperty("pad", "none")
         self.queue_btn.clicked.connect(self.queue_requested)
-        self.add_actions(self.queue_btn)
+        self._set_queue_available(True)
+        heading_row.addWidget(self.queue_btn)
+        layout.addLayout(heading_row)
+
+        # The same rows the list nests under each clip, so a section offers the
+        # same four things wherever it is read. It says its own emptiness, so
+        # the dark well stays on screen when there is nothing in it.
+        self.pass_list = SectionList()
+        self.pass_list.activated.connect(self.pass_activated)
+        self.pass_list.add_to_cart_requested.connect(self.add_to_cart_requested)
+        self.pass_list.retrim_requested.connect(self.retrim_requested)
+        self.pass_list.reassign_requested.connect(self.reassign_requested)
+        self.pass_list.delete_requested.connect(self.delete_requested)
+        self.pass_list.open_transect_requested.connect(self.open_transect_requested)
+        layout.addWidget(self.pass_list, 1)
 
         self._entry: VideoLibraryEntry | None = None
 
-    def _on_pass_activated(self, item: QListWidgetItem) -> None:
-        self.pass_activated.emit(str(item.data(PASS_ID_ROLE) or ""))
+    def _set_queue_available(self, available: bool) -> None:
+        """Cutting decodes the file, so a clip that is gone cuts nothing.
 
-    def _on_pass_menu(self, pos) -> None:
-        item = self.pass_list.itemAt(pos)
-        if item is None:
-            return
-        pass_id = str(item.data(PASS_ID_ROLE) or "")
-        menu = QMenu(self.pass_list)
-        menu.addAction("Add to cart", lambda: self.add_to_cart_requested.emit(pass_id))
-        menu.exec(self.pass_list.viewport().mapToGlobal(pos))
+        Red rather than greyed: a disabled button shows no tooltip, and the
+        reason is the whole of what the user needs at that point.
+        """
+        self.queue_btn.setStyleSheet(
+            f"QToolButton {{ color: {PRIMARY if available else ERROR}; }}"
+        )
+        self.queue_btn.setToolTip(NEW_SECTION_TOOLTIP if available else NO_FILE_TOOLTIP)
+
+    def _emit_reveal(self) -> None:
+        if self._entry is not None:
+            self.reveal_requested.emit(str(self._entry.video.id))
 
     @property
     def entry(self) -> VideoLibraryEntry | None:
@@ -161,7 +165,13 @@ class VideoDetailPanel(DetailCard):
     def set_queue_enabled(self, enabled: bool) -> None:
         self.queue_btn.setEnabled(enabled)
 
-    def show_entry(self, entry: VideoLibraryEntry, transect_name) -> None:
+    def show_entry(
+        self,
+        entry: VideoLibraryEntry,
+        transect_name: Callable[[Any], str | None],
+        *,
+        in_cart: Callable[[str], bool] = lambda _pass_id: False,
+    ) -> None:
         """Describe one clip. ``transect_name`` resolves a pass's transect id."""
         self.title.setText(entry.video.file_name)
         self.set_status(
@@ -184,32 +194,17 @@ class VideoDetailPanel(DetailCard):
         )
         self.facts.set_rows(rows)
 
-        self.relocate_btn.setVisible(entry.link_state == LINK_MISSING)
-
-        self.pass_list.clear()
-        runs_by_pass: dict = {}
-        for run in entry.runs:
-            runs_by_pass.setdefault(run.pass_id, []).append(run)
-        for pass_ in entry.passes:
-            name = transect_name(pass_.transect_id) or "Unassigned"
-            runs = runs_by_pass.get(pass_.id, [])
-            status = pass_status(runs)
-            # The window first: it is what the section is, where the transect and
-            # the outcome are things it has. The pane is narrow enough that
-            # anything after the first two facts elides, so they go first.
-            line = f"{_window(pass_.begin_s, pass_.end_s)} · {name}"
-            if runs:
-                line += f" · {len(runs)} run{'' if len(runs) == 1 else 's'}"
-            item = QListWidgetItem(line)
-            item.setIcon(status_dot_icon(STATUS_COLORS.get(status, TEXT_MUTED)))
-            item.setData(PASS_ID_ROLE, str(pass_.id))
-            item.setToolTip(f"{pass_.direction} · {status}")
-            self.pass_list.addItem(item)
-        self._pass_stack.setCurrentIndex(_PASS_PAGE if entry.passes else _NO_PASS_PAGE)
+        apply_link_state(self.link_btn, entry.link_state)
+        self.unavailable.setVisible(entry.link_state == LINK_MISSING)
+        self._set_queue_available(entry.link_state == LINK_LINKED)
+        self.pass_list.set_sections(entry, transect_name, in_cart=in_cart)
         self._entry = entry
+
+    def select_section(self, pass_id: str | None) -> None:
+        """Highlight the section the page is showing below, or none."""
+        self.pass_list.set_selected(pass_id)
 
     def clear(self) -> None:
         super().clear()
-        self.pass_list.clear()
-        self._pass_stack.setCurrentIndex(_NO_PASS_PAGE)
+        self.pass_list.set_selected(None)
         self._entry = None

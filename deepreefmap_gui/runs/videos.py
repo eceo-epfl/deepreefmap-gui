@@ -26,7 +26,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QPushButton,
     QSplitter,
     QStackedWidget,
@@ -50,7 +49,6 @@ from deepreefmap_gui.runs.video_rows import VideoLibraryList, VideoListHeader
 from deepreefmap_gui.survey import catalogue, statuses
 from deepreefmap_gui.survey.catalogue import LINK_LINKED, LINK_MISSING, VideoLibraryEntry
 from deepreefmap_gui.survey.models import TransectPass
-from deepreefmap_gui.survey.models.video_asset import VideoAsset
 from deepreefmap_gui.survey.video_groups import (
     DEFAULT_PERIOD,
     DEFAULT_SORT_COLUMN,
@@ -192,6 +190,7 @@ class VideoLibraryMixin(MixinBase):
         self._video_list.section_retrim.connect(self._on_section_retrim)
         self._video_list.section_reassign.connect(self._on_section_reassign)
         self._video_list.section_delete.connect(self._on_section_delete)
+        self._video_list.section_open_transect.connect(self._open_transect_page)
         # Dropping footage in is the fastest way to fill a library, and the one
         # feature nothing else on the page advertises, so the list says so.
         self._video_list.setAcceptDrops(True)
@@ -217,7 +216,11 @@ class VideoLibraryMixin(MixinBase):
         self._video_detail.queue_requested.connect(self._on_video_new_section)
         self._video_detail.pass_activated.connect(self._select_section)
         self._video_detail.add_to_cart_requested.connect(self._on_video_pass_to_cart)
-        self._video_detail.relocate_requested.connect(self._on_video_relocate)
+        self._video_detail.retrim_requested.connect(self._on_section_retrim)
+        self._video_detail.reassign_requested.connect(self._on_section_reassign)
+        self._video_detail.delete_requested.connect(self._on_section_delete)
+        self._video_detail.open_transect_requested.connect(self._open_transect_page)
+        self._video_detail.reveal_requested.connect(self._on_video_reveal)
         detail.addWidget(self._video_detail)
 
         self._section_detail = SectionDetailPanel()
@@ -368,7 +371,7 @@ class VideoLibraryMixin(MixinBase):
         self._video_list.set_groups(
             groups,
             self._transect_name_for,
-            in_cart=self._pass_in_current_cart,
+            in_cart=self._cart_pass_ids().__contains__,
             hidden=self._hidden_clip_ids.__contains__,
         )
         self._video_stack.setCurrentIndex(0 if clips else 1)
@@ -390,8 +393,8 @@ class VideoLibraryMixin(MixinBase):
         if self._selected_pass_id:
             clip = self._clip_for_pass(self._selected_pass_id)
             if clip is not None:
-                self._video_detail.setVisible(True)
-                self._video_detail.show_entry(clip, self._transect_name_for)
+                self._show_clip_detail(clip)
+                self._video_detail.select_section(self._selected_pass_id)
                 self._fill_section_detail(clip, self._selected_pass_id)
                 return
             # The cut it was showing is gone, so nothing below the clip stands.
@@ -402,8 +405,14 @@ class VideoLibraryMixin(MixinBase):
             self._video_detail.clear()
             self._video_detail.setVisible(False)
             return
+        self._show_clip_detail(clip)
+        self._video_detail.select_section(None)
+
+    def _show_clip_detail(self, clip: VideoLibraryEntry) -> None:
         self._video_detail.setVisible(True)
-        self._video_detail.show_entry(clip, self._transect_name_for)
+        self._video_detail.show_entry(
+            clip, self._transect_name_for, in_cart=self._cart_pass_ids().__contains__
+        )
 
     def _selected_clip(self) -> VideoLibraryEntry | None:
         return self._clip_by_id(self._video_list.selected)
@@ -561,9 +570,24 @@ class VideoLibraryMixin(MixinBase):
         self._selected_pass_id = pass_id
         self._video_list.expand(str(clip.video.id))
         self._video_list.set_selected_section(pass_id)
-        self._video_detail.setVisible(True)
-        self._video_detail.show_entry(clip, self._transect_name_for)
+        # Through the one filler, so the pane highlights the same row the list
+        # does and reads the cart the same way it does.
+        self._show_clip_detail(clip)
+        self._video_detail.select_section(pass_id)
         self._fill_section_detail(clip, pass_id)
+
+    def _pass_by_id(self, store, pass_id: str):
+        """The section an id names, and None when the id names nothing.
+
+        The ids come off row widgets, which is a wide enough door that a
+        malformed one has to be an answer of None rather than an exception in
+        front of the user.
+        """
+        try:
+            wanted = uuid.UUID(str(pass_id))
+        except (ValueError, TypeError, AttributeError):
+            return None
+        return store.get_pass(wanted)
 
     def _clip_for_pass(self, pass_id: str) -> VideoLibraryEntry | None:
         for clip in getattr(self, "_video_entries", []):
@@ -635,12 +659,12 @@ class VideoLibraryMixin(MixinBase):
         never a whole clip queued on their behalf.
         """
         from deepreefmap_gui.form.video_scrub import VideoScrubDialog
-        from deepreefmap_gui.simple.section_dialog import SectionAssignDialog
 
         duration = clip.video.duration_s or 0.0
         if clip.link_state == LINK_MISSING:
             self._status_label.setText(
-                "Cannot cut a section: the video file is missing. Relocate it first."
+                "Cannot cut a section: the video file is missing. Add it again "
+                "from where it lives now."
             )
             return
         if clip.link_state != LINK_LINKED:
@@ -673,7 +697,7 @@ class VideoLibraryMixin(MixinBase):
             )
             self._select_section(str(already.id))
             return
-        assign = SectionAssignDialog(self, store)
+        assign = self._transect_picker(store)
         if assign.exec() != QDialog.DialogCode.Accepted:
             return
         transect_id, direction = assign.choice()
@@ -688,21 +712,54 @@ class VideoLibraryMixin(MixinBase):
         self._add_pass_to_cart(pass_.id)
         self._refresh_video_library()
 
-    def _pass_in_current_cart(self, pass_id_str: object) -> bool:
+    def _cart_pass_ids(self) -> set[str]:
+        """The current cart's passes, read once per repaint.
+
+        Asked per row it was two queries a section, which is a query per section
+        of the whole library every time the page repaints.
+        """
         store = self._try_survey_store()
         if store is None:
-            return False
+            return set()
         try:
-            pass_id = uuid.UUID(str(pass_id_str))
-        except (ValueError, TypeError):
-            return False
-        cart = store.current_cart()
-        if cart is None:
-            return False
-        return any(item.pass_id == pass_id for item in store.list_batch_items(cart.id))
+            cart = store.current_cart()
+            if cart is None:
+                return set()
+            return {str(item.pass_id) for item in store.list_batch_items(cart.id)}
+        except Exception:
+            logger.exception("Could not read the cart")
+            return set()
+
+    def _pass_in_current_cart(self, pass_id_str: object) -> bool:
+        return str(pass_id_str) in self._cart_pass_ids()
+
+    def _missing_clips_for(self, pass_) -> list[str]:
+        """The chapters of a section whose files the last scan could not find.
+
+        Read off the library's cached link states rather than by stat'ing here:
+        the answer is already known, and a drive that has gone to sleep must not
+        be woken on the thread that paints the window.
+        """
+        names = []
+        for video_id in pass_.video_ids():
+            clip = self._clip_by_id(str(video_id))
+            if clip is not None and clip.link_state == LINK_MISSING:
+                names.append(clip.video.file_name)
+        return names
+
+    def _refresh_cart_marks(self) -> None:
+        """Repaint the Videos page after the cart changed somewhere else.
+
+        The cart is shown on every section row, so a pass taken out of it on the
+        Process page has to stop claiming to be in it here. Cheap: the library
+        itself is not re-read, only the rows re-filled from what is cached.
+        """
+        if getattr(self, "_video_list", None) is None:
+            return
+        self._rebuild_video_list()
 
     def _on_video_pass_to_cart(self, pass_id_str: str) -> None:
-        """A section asked for the cart, from the detail pane's list."""
+        """A section asked for the cart, from a row or the pane's list."""
         try:
             pass_id = uuid.UUID(pass_id_str)
         except (ValueError, AttributeError, TypeError):
@@ -711,7 +768,25 @@ class VideoLibraryMixin(MixinBase):
         if store is None:
             self._status_label.setText("Survey database unavailable; cannot queue.")
             return
-        if store.get_pass(pass_id) is None:
+        pass_ = store.get_pass(pass_id)
+        if pass_ is None:
+            return
+        # A section whose footage is not on disk would fail the moment the cart
+        # was checked out, so it never gets in. Refused here rather than at the
+        # run, where a whole session stops for one clip on an unplugged drive.
+        missing = self._missing_clips_for(pass_)
+        if missing:
+            self._status_label.setText(
+                f"{', '.join(missing)} cannot be found, so this section cannot be "
+                "processed. Add the footage again from where it lives now."
+            )
+            return
+        # Adding twice is harmless, and saying "Added" twice is how a user comes
+        # to think the first click did not land.
+        if pass_id_str in self._cart_pass_ids():
+            self._status_label.setText(
+                f"The {section_window(pass_)} section is already in the cart."
+            )
             return
         self._add_pass_to_cart(pass_id)
 
@@ -728,7 +803,7 @@ class VideoLibraryMixin(MixinBase):
         store = self._try_survey_store()
         if clip is None or store is None:
             return
-        pass_ = store.get_pass(uuid.UUID(pass_id))
+        pass_ = self._pass_by_id(store, pass_id)
         if pass_ is None:
             return
         duration = clip.video.duration_s or 0.0
@@ -750,18 +825,28 @@ class VideoLibraryMixin(MixinBase):
         self._refresh_video_library()
         self._select_section(pass_id)
 
+    def _transect_picker(self, store, **kwargs):
+        """The map-and-list dialog both filing steps use, wired to the page.
+
+        Its arrow leaves for the Transects page, which means abandoning the
+        section being filed: the dialog rejects itself, so nothing is half
+        applied on the way out.
+        """
+        from deepreefmap_gui.simple.transect_picker import TransectPickerDialog
+
+        dialog = TransectPickerDialog(self, store, **kwargs)
+        dialog.open_transect_requested.connect(self._open_transect_page)
+        return dialog
+
     def _on_section_reassign(self, pass_id: str) -> None:
         """Change which transect a section belongs to, or its direction."""
-        from deepreefmap_gui.simple.section_dialog import SectionAssignDialog
-
         store = self._try_survey_store()
         if store is None:
             return
-        pass_ = store.get_pass(uuid.UUID(pass_id))
+        pass_ = self._pass_by_id(store, pass_id)
         if pass_ is None:
             return
-        dialog = SectionAssignDialog(
-            self,
+        dialog = self._transect_picker(
             store,
             transect_id=pass_.transect_id,
             direction=pass_.direction,
@@ -785,7 +870,7 @@ class VideoLibraryMixin(MixinBase):
         store = self._try_survey_store()
         if store is None:
             return
-        pass_ = store.get_pass(uuid.UUID(pass_id))
+        pass_ = self._pass_by_id(store, pass_id)
         if pass_ is None:
             return
         runs = store.runs_for_pass(pass_.id)
@@ -892,68 +977,7 @@ class VideoLibraryMixin(MixinBase):
         )
         dialog.exec()
 
-    def _on_video_relocate(self) -> None:
-        """Point a clip at the file's new home, once it is shown to be the same one.
-
-        Verified against the checksum rather than the name: a GoPro names every
-        card's first clip GX010001.MP4, so a filename match is close to no
-        evidence at all, and repointing a clip at different footage would leave
-        every run made from it describing a video it did not come from.
-
-        A clip with no checksum cannot be verified, so the user is asked to
-        confirm rather than being refused: some libraries predate hashing, and
-        refusing outright would leave those clips permanently broken.
-        """
-        clip = self._video_detail.entry
-        if clip is None:
-            return
-        path_str, _ = QFileDialog.getOpenFileName(
-            self,
-            f"Locate {clip.video.file_name}",
-            str(Path(clip.video.path).parent),
-            "Video files (*.mp4 *.mov *.avi *.mkv);;All files (*)",
-        )
-        if not path_str:
-            return
-        chosen = Path(path_str)
-        described = VideoAsset.from_path(chosen)
-        if clip.video.hash and described.hash and described.hash != clip.video.hash:
-            QMessageBox.warning(
-                self,
-                "Different footage",
-                f"{chosen.name} is not the same recording as {clip.video.file_name}. "
-                "The clip has been left pointing where it was.",
-            )
-            return
-        if not clip.video.hash and not confirm(
-            self,
-            "Relocate clip",
-            f"{clip.video.file_name} has no checksum, so this cannot be checked to "
-            f"be the same footage. Point it at {chosen.name} anyway?",
-        ):
-            return
-        self._apply_clip_relocation(clip, chosen, described)
-
-    def _apply_clip_relocation(self, clip, chosen: Path, described: VideoAsset) -> None:
-        video = clip.video
-        was = video.path
-        video.overlay_from(described)
-        video.path = str(chosen)
-        video.file_name = chosen.name
-        store = self._try_survey_store()
-        if store is None:
-            self._status_label.setText("The clip could not be relocated.")
-            return
-        try:
-            store.update_video(video)
-        except Exception:
-            logger.exception("Could not relocate %s", video.id)
-            self._status_label.setText("The clip could not be relocated.")
-            return
-        # The cache is keyed by path: the old one now describes nothing, and the
-        # new one has to be asked afresh rather than inherit the "missing" the
-        # clip was carrying.
-        self._clip_link_cache.pop(was, None)
-        self._clip_link_cache.pop(str(chosen), None)
-        self._status_label.setText(f"{video.file_name} now points at {chosen}.")
-        self._refresh_video_library()
+    # A clip whose file has moved is not relocated from here: Add videos… on the
+    # file's new home matches it by checksum and repoints the clip it already
+    # has, sections and runs included. One way in for footage, and no second
+    # flow whose only job is to check the two files are the same one.

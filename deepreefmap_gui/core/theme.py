@@ -67,6 +67,14 @@ SLIDER_HANDLE = "#f0f0f0"  # near-white grab handle on trim/timeline sliders
 # strong palette Highlight, where a hard selection colour is what you want.
 SELECTION_BG = "#2f5478"
 
+# A control that sits on a selected row. A quiet button is drawn on nothing,
+# and on nothing it disappears into the selection fill, so it keeps a dark
+# ground under itself. The outline is off white rather than off the border
+# ramp: every grey in that ramp is close enough to the selection blue that the
+# edge it draws cannot be found.
+SELECTION_CONTROL_BG = "rgba(0, 0, 0, 90)"
+SELECTION_CONTROL_BORDER = "rgba(255, 255, 255, 120)"
+
 # Named semantic accents. These consolidate several inconsistent spellings that
 # were scattered across the GUI (e.g. success was both "#4a4" and
 # QColor(74, 170, 74)); migrate call sites onto these so there's one value each.

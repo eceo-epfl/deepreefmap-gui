@@ -272,6 +272,36 @@ def copy_icon(p: QPainter, size: int, c: QColor) -> None:
     p.drawRoundedRect(QRectF(size * 0.38, size * 0.32, w, h), 1.5, 1.5)
 
 
+@_drawn(size=ICON_SM, cap=True, join=True)
+def pencil_icon(p: QPainter, size: int, c: QColor) -> None:
+    """A pencil laid diagonally: the row's edit, wherever a row can be edited."""
+    w = size
+    body = QPainterPath(QPointF(0.20 * w, 0.80 * w))
+    body.lineTo(QPointF(0.28 * w, 0.58 * w))
+    body.lineTo(QPointF(0.66 * w, 0.20 * w))
+    body.lineTo(QPointF(0.80 * w, 0.34 * w))
+    body.lineTo(QPointF(0.42 * w, 0.72 * w))
+    body.closeSubpath()
+    p.drawPath(body)
+    # The ferrule, which is what tells the shape from a plain arrowhead.
+    p.drawLine(QPointF(0.56 * w, 0.30 * w), QPointF(0.70 * w, 0.44 * w))
+
+
+@_drawn(size=ICON_SM, cap=True, join=True)
+def trash_icon(p: QPainter, size: int, c: QColor) -> None:
+    """A bin with its lid off: delete, drawn no louder than the rest of the row."""
+    w = size
+    p.drawLine(QPointF(0.16 * w, 0.28 * w), QPointF(0.84 * w, 0.28 * w))
+    p.drawLine(QPointF(0.40 * w, 0.28 * w), QPointF(0.40 * w, 0.16 * w))
+    p.drawLine(QPointF(0.40 * w, 0.16 * w), QPointF(0.60 * w, 0.16 * w))
+    p.drawLine(QPointF(0.60 * w, 0.16 * w), QPointF(0.60 * w, 0.28 * w))
+    can = QPainterPath(QPointF(0.24 * w, 0.28 * w))
+    can.lineTo(QPointF(0.30 * w, 0.86 * w))
+    can.lineTo(QPointF(0.70 * w, 0.86 * w))
+    can.lineTo(QPointF(0.76 * w, 0.28 * w))
+    p.drawPath(can)
+
+
 def _chain_links(p: QPainter, size: int, gap: float) -> None:
     """Two rounded links reaching for each other across ``gap``."""
     w = size * 0.34

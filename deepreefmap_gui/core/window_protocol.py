@@ -383,6 +383,8 @@ if TYPE_CHECKING:
         def _refresh_transect_list(self, select_id: uuid.UUID | None = None) -> None: ...  # SimplePlanMixin
         def _select_transect_row(self, id_str: str) -> None: ...  # SimplePlanMixin
         def _on_transect_selected(self) -> None: ...  # SimplePlanMixin
+        def _open_transect_page(self, transect_id: object = None) -> None: ...  # SimplePlanMixin
+        def _refresh_cart_marks(self) -> None: ...  # VideoLibraryMixin
         def _refresh_survey_analysis(self) -> None: ...  # SimpleAnalysisMixin
         def _refresh_survey_batch_tab(self) -> None: ...  # SimpleBatchMixin
         def _add_pass_to_cart(self, pass_id: uuid.UUID) -> None: ...  # SimpleBatchMixin

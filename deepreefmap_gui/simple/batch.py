@@ -66,6 +66,7 @@ from deepreefmap_gui.simple.section_state import (
     passes_phrase,
     run_gate,
 )
+from deepreefmap_gui.survey.catalogue import LINK_MISSING
 from deepreefmap_gui.survey.models import (
     PASS_DIRECTIONS,
     BatchItem,
@@ -911,6 +912,10 @@ class SimpleBatchMixin(MixinBase):
         self._refresh_next_cart_label(cart)
         self._rebuild_survey_table()
         self._recompute_survey_start()
+        # Every cart change comes through here, and the Videos page marks each
+        # section that is in it. Without this a pass taken out of the cart here
+        # goes on claiming to be in it there until the page is rebuilt.
+        self._refresh_cart_marks()
 
     def _rows_for_batch(self, store: SurveyStore, batch: SurveyBatch) -> list[_PassRow]:
         """The session's worklist as table rows, in the order it was filled."""
@@ -1675,6 +1680,28 @@ class SimpleBatchMixin(MixinBase):
                 failed += any(run.status == "failed" for run in runs)
         return failed
 
+    def _rows_without_footage(self) -> int:
+        """Queued passes naming a video the Videos page could not find.
+
+        Read off the library's cached link states rather than by stat'ing here:
+        this runs on every repaint of the table, and a drive that has gone to
+        sleep must not be woken on the thread that paints the window. A path
+        nobody has asked about yet counts as present, since "not checked" is not
+        evidence of absence.
+        """
+        missing = {
+            clip.video.path
+            for clip in getattr(self, "_video_entries", [])
+            if clip.link_state == LINK_MISSING
+        }
+        if not missing:
+            return 0
+        return sum(
+            1
+            for row in self._survey_rows
+            if any(video.path in missing for video in row.videos)
+        )
+
     def _recompute_survey_start(self) -> None:
         """The Run step's one verdict, applied through a single exit.
 
@@ -1718,6 +1745,7 @@ class SimpleBatchMixin(MixinBase):
         missing = self._survey_missing_models() if self._survey_preset is not None else []
         gate = run_gate(
             pass_count=len(self._survey_rows),
+            missing_files=self._rows_without_footage(),
             unassigned=unassigned,
             remaining=len(remaining),
             failed=self._survey_failed_count() if self._survey_rows else 0,

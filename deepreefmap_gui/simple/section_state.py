@@ -134,7 +134,7 @@ def videos_state(clip_count: int, missing: int) -> SectionState:
             ATTENTION,
             f"{counts} · {missing} missing",
             f"{_plural(missing, 'clip')} cannot be found. "
-            "Relocate them, or plug the drive back in.",
+            "Plug the drive back in, or add them again from where they live now.",
         )
     return SectionState(OK, counts)
 
@@ -149,6 +149,7 @@ def run_gate(
     missing_models: list[str],
     gpu_only_mapper: str = "",
     unscaled: int = 0,
+    missing_files: int = 0,
 ) -> SectionState:
     """Process's verdict, and by construction the Start processing button's.
 
@@ -161,6 +162,17 @@ def run_gate(
         return SectionState(TODO, "no videos yet", "Add the videos you want processed.")
 
     counts = passes_phrase(pass_count)
+    # First of all the blockers: footage that is not there is the one thing a
+    # user can fix in seconds, and the run would fail on it anyway, mid-session
+    # and after everything before it had already been processed.
+    if missing_files:
+        return SectionState(
+            BLOCKED,
+            f"{counts} · {missing_files} without footage",
+            f"{passes_phrase(missing_files)} name a video file that cannot be "
+            "found. Plug the drive back in, or add the footage again from where "
+            "it lives now.",
+        )
     if not has_preset:
         return SectionState(
             BLOCKED,
