@@ -428,7 +428,7 @@ def test_a_carried_forward_survey_reaches_the_cart_cascade(tmp_path):
     store = SurveyStore(db_path)
     assert [i.pass_id for i in store.list_batch_items(batch_id)] == [pass_id]
     version = sqlite3.connect(db_path).execute("PRAGMA user_version").fetchone()[0]
-    assert version == latest_schema_version() == 7
+    assert version == latest_schema_version()
 
     store.delete_pass(pass_id)
     assert store.list_all_batch_items() == []

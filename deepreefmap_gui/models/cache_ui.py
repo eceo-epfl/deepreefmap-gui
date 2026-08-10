@@ -34,6 +34,9 @@ from deepreefmap_gui.core.theme import (
 )
 from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.models.hf_dialog import HfLoginDialog
+from deepreefmap_gui.survey.models.notification import INFO as NOTIFY_INFO
+from deepreefmap_gui.survey.models.notification import MACHINE as NOTIFY_MACHINE
+from deepreefmap_gui.survey.models.notification import WARNING as NOTIFY_WARNING
 
 if TYPE_CHECKING:
     from deepreefmap_gui.models.cache import ModelInfo
@@ -673,12 +676,34 @@ class ModelManagementMixin(MixinBase):
             try:
                 prefetch_model(info, progress_cb=_progress)
                 self._sig_status_text.emit(f"Model {model_name} downloaded.")
+                # A download is walked away from, and the status bar is gone by
+                # the time anybody looks. Whether a model arrived is exactly what
+                # a laptop about to lose its connection needs to be able to check.
+                self._sig_notify.emit(
+                    {
+                        "fingerprint": "models.downloaded",
+                        "title": f"{model_name} is installed",
+                        "severity": NOTIFY_INFO,
+                        "scope": NOTIFY_MACHINE,
+                        "section": "machine",
+                    }
+                )
             except DownloadCancelled:
                 self._sig_status_text.emit(f"Download of {model_name} cancelled.")
             except Exception as exc:
                 msg = str(exc)[:200]
                 self._download_errors[model_name] = msg
                 self._sig_status_text.emit(f"Download failed: {msg}")
+                self._sig_notify.emit(
+                    {
+                        "fingerprint": "models.download_failed",
+                        "title": f"{model_name} could not be downloaded",
+                        "body": msg,
+                        "severity": NOTIFY_WARNING,
+                        "scope": NOTIFY_MACHINE,
+                        "section": "machine",
+                    }
+                )
             finally:
                 self._downloading.discard(model_name)
                 self._download_cancel_requested.discard(model_name)

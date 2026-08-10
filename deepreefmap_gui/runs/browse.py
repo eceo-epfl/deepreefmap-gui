@@ -444,7 +444,7 @@ class BrowseMixin(MixinBase):
         root = self._data_out_root()
         entries = catalogue.scan_out_root(root)
         # _try_survey_store records why it could not open in _survey_health,
-        # which is what the readiness row and the header alert read. The except
+        # which is what the readiness row and the notification centre read. The except
         # below stays for what can go wrong after a successful open.
         store = self._try_survey_store() if root.is_dir() else None
         if store is not None:
@@ -485,7 +485,7 @@ class BrowseMixin(MixinBase):
         self._start_data_size_scan()
         # Guarded: this runs during form construction, before the simple shell
         # that owns the header exists.
-        if hasattr(self, "_section_alert"):
+        if hasattr(self, "_simple_nav_buttons"):
             self._refresh_browse_state()
 
     def _on_data_watch_refresh(self) -> None:

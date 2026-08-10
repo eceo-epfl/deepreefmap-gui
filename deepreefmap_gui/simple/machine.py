@@ -52,19 +52,23 @@ from deepreefmap_gui.core.widgets import (
     utility_button_qss,
 )
 from deepreefmap_gui.core.window_protocol import MixinBase
+from deepreefmap_gui.notify.history_ui import NotificationHistoryPanel
 from deepreefmap_gui.simple.section_state import ATTENTION, BLOCKED, SectionState, machine_state
+from deepreefmap_gui.survey.models.common import utc_now_iso
 
 logger = logging.getLogger(__name__)
 
 # Left to right in the order they matter: what stops a run, what a run needs
-# installed, what the machine does while it runs, and the software itself.
-MACHINE_VIEWS = ("readiness", "models", "performance", "updates")
+# installed, what the machine does while it runs, the software itself, and the
+# record of everything the app has had to say.
+MACHINE_VIEWS = ("readiness", "models", "performance", "updates", "activity")
 
 _VIEW_LABELS = {
     "readiness": "Readiness",
     "models": "Models",
     "performance": "Performance",
     "updates": "Updates",
+    "activity": "Activity",
 }
 
 _VIEW_TIPS = {
@@ -72,6 +76,7 @@ _VIEW_TIPS = {
     "models": "The models installed here, and how to add or remove them.",
     "performance": "Live usage of this machine, and what past runs cost it.",
     "updates": "The version installed here, and any newer one available.",
+    "activity": "Everything this survey has reported, and anything you silenced.",
 }
 
 # The header button's badge size, and the gap between two of them.
@@ -194,6 +199,7 @@ class SimpleMachineMixin(MixinBase):
             "models": self._build_machine_host("_machine_models_host"),
             "performance": self._build_machine_host("_machine_system_host"),
             "updates": self._build_machine_updates_view(),
+            "activity": self._build_activity_view(),
         }
         for view in MACHINE_VIEWS:
             self._machine_stack.addWidget(views[view])
@@ -296,6 +302,30 @@ class SimpleMachineMixin(MixinBase):
             button.blockSignals(False)
         self._machine_stack.setCurrentIndex(MACHINE_VIEWS.index(view))
         self._sync_system_gauges_running()
+        # Read on opening rather than kept live: the log is a record, and a table
+        # that repainted under the cursor as conditions came and went would be
+        # the one surface here that will not hold still.
+        if view == "activity":
+            self._refresh_activity_view()
+
+    def _build_activity_view(self) -> QWidget:
+        self._activity_panel = NotificationHistoryPanel()
+        self._activity_panel.filters_changed.connect(self._refresh_activity_view)
+        self._activity_panel.unmuted.connect(self._on_activity_unmuted)
+        return self._activity_panel
+
+    def _refresh_activity_view(self) -> None:
+        panel = getattr(self, "_activity_panel", None)
+        if panel is None:
+            return
+        severity, scope = panel.filters()
+        panel.set_history(self._notify.history(severity=severity, scope=scope), utc_now_iso())
+        panel.set_muted(self._notify.muted())
+
+    def _on_activity_unmuted(self, fingerprint: str) -> None:
+        self._notify.unmute(fingerprint)
+        self._refresh_activity_view()
+        self._refresh_notification_bell()
 
     def _sync_system_gauges_running(self) -> None:
         """The 1 Hz gauge poll runs only while the gauges are on screen."""
@@ -330,3 +360,6 @@ class SimpleMachineMixin(MixinBase):
         if button is None:
             return
         button.set_verdict(self._machine_verdict(), getattr(self, "_update_available", ""))
+        # The machine's verdict is one of the conditions the bell carries, and
+        # this is the only place it changes. The cache key makes the call cheap.
+        self._refresh_section_state()

@@ -26,6 +26,7 @@ from deepreefmap_gui.survey.models.convert import (
     to_row,
 )
 from deepreefmap_gui.survey.models.exporters import load_survey_json, save_survey_json
+from deepreefmap_gui.survey.models.notification import Notification
 from deepreefmap_gui.survey.models.run_record import RUN_STATUSES, TERMINAL_STATUSES, RunRecord
 from deepreefmap_gui.survey.models.survey_batch import SurveyBatch
 from deepreefmap_gui.survey.models.transect import Transect
@@ -224,6 +225,39 @@ _MIGRATIONS: list[Migration] = [
         ALTER TABLE batch_item_new RENAME TO batch_item;
         """,
     ),
+    # Everything that has asked for attention, and what became of it. No foreign
+    # keys: a notification outlives whatever provoked it, and a log that
+    # disappeared when the pass it complained about was deleted would lose
+    # exactly the entry somebody went looking for.
+    Migration(
+        8,
+        "notification log",
+        """
+        CREATE TABLE notification (
+            id TEXT PRIMARY KEY,
+            fingerprint TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('condition', 'event')),
+            severity TEXT NOT NULL CHECK (severity IN ('info', 'warning', 'blocker')),
+            scope TEXT NOT NULL CHECK (scope IN ('survey', 'machine')),
+            title TEXT NOT NULL,
+            body TEXT NOT NULL DEFAULT '',
+            section TEXT NOT NULL DEFAULT '',
+            subject_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            resolved_at TEXT,
+            read_at TEXT,
+            dismissed_at TEXT
+        );
+        -- One open episode per condition. The centre keeps the open set in
+        -- memory, so a store reopened under a second window would otherwise
+        -- leave two rows for one fault and resolve only one of them.
+        CREATE UNIQUE INDEX notification_open_condition
+            ON notification(fingerprint)
+            WHERE resolved_at IS NULL AND kind = 'condition';
+        CREATE INDEX notification_created ON notification(created_at);
+        """,
+    ),
 ]
 
 
@@ -281,8 +315,11 @@ class SurveyStore:
         self._migrate()
         # A store is opened once per output root, on the GUI thread, before any
         # batch touches it, so opening is the one moment where every non-terminal
-        # row is certain to be a leftover rather than live work.
-        self.reconcile_interrupted_runs()
+        # row is certain to be a leftover rather than live work. The count is
+        # kept because the window reports it, and this is the only moment it can
+        # be told apart from a run that is genuinely under way.
+        self.interrupted_at_open = self.reconcile_interrupted_runs()
+        self.prune_notifications()
 
     @property
     def path(self) -> Path:
@@ -834,6 +871,64 @@ class SurveyStore:
     def list_runs(self) -> list[RunRecord]:
         return self._list("run_record", RunRecord, "created_at")
 
+    # --- Notifications ---
+
+    def add_notification(self, note: Notification) -> None:
+        self._add("notification", note)
+
+    def update_notification(self, note: Notification) -> None:
+        self._update("notification", note)
+
+    def open_notifications(self) -> list[Notification]:
+        """Every episode still running, oldest first, so the centre can adopt them."""
+        rows = self._conn().execute(
+            "SELECT * FROM notification WHERE resolved_at IS NULL ORDER BY created_at"
+        ).fetchall()
+        return [from_row(Notification, r) for r in rows]
+
+    def list_notifications(
+        self, limit: int = 500, severity: str = "", scope: str = ""
+    ) -> list[Notification]:
+        """The log, newest first."""
+        sql = "SELECT * FROM notification WHERE 1 = 1"
+        params: list[Any] = []
+        if severity:
+            sql += " AND severity = ?"
+            params.append(severity)
+        if scope:
+            sql += " AND scope = ?"
+            params.append(scope)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        rows = self._conn().execute(sql, params).fetchall()
+        return [from_row(Notification, r) for r in rows]
+
+    def resolve_notification(self, note_id: uuid.UUID, at: str) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE notification SET resolved_at = ?, updated_at = ? WHERE id = ?",
+                (at, at, str(note_id)),
+            )
+
+    def prune_notifications(self, keep: int = 2000) -> int:
+        """Drop all but the newest ``keep`` resolved rows, and return how many went.
+
+        The only table here that grows without anybody asking it to: a condition
+        that flickers over a long field season writes an episode each time. Open
+        rows are never pruned, however old, because they are still true.
+        """
+        with self._conn() as conn:
+            cursor = conn.execute(
+                """
+                DELETE FROM notification WHERE id IN (
+                    SELECT id FROM notification WHERE resolved_at IS NOT NULL
+                    ORDER BY created_at DESC LIMIT -1 OFFSET ?
+                )
+                """,
+                (keep,),
+            )
+        return cursor.rowcount
+
     # --- Documents ---
 
     def export_json(self, path: Path) -> None:
@@ -868,7 +963,12 @@ class SurveyStore:
     # --- Rebuild from manifests ---
 
     def rebuild_from_scan(self, out_root: Path) -> RebuildReport:
-        """Recreate survey rows from run manifests; existing rows are kept as-is."""
+        """Recreate survey rows from run manifests; existing rows are kept as-is.
+
+        The notification log is not among them: manifests do not carry it, so a
+        rebuilt database starts with an empty history. It is a record of what the
+        app said, not of what the survey is.
+        """
         report = RebuildReport()
         for manifest_path in sorted(out_root.glob("*/run_manifest.json")):
             run_dir_name = manifest_path.parent.name

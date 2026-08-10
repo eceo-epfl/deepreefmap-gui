@@ -382,6 +382,80 @@ def browse_icon(p: QPainter, size: int, c: QColor) -> None:
     p.drawRect(QRectF(m, size * 0.50, size - 2 * m, size * 0.34))
 
 
+def _bell_body(w: float) -> QPainterPath:
+    """The bell silhouette both bell glyphs are cut from.
+
+    One closed path from the rim up: a flare at the foot, near-straight sides, a
+    dome, and the handle riding on top of it. One path rather than a body plus
+    two circles, because at 16px a detached handle reads as a separate mark
+    floating above a mushroom.
+    """
+    body = QPainterPath(QPointF(0.08 * w, 0.74 * w))
+    body.cubicTo(
+        QPointF(0.22 * w, 0.68 * w), QPointF(0.24 * w, 0.56 * w), QPointF(0.24 * w, 0.42 * w)
+    )
+    body.cubicTo(
+        QPointF(0.24 * w, 0.18 * w), QPointF(0.76 * w, 0.18 * w), QPointF(0.76 * w, 0.42 * w)
+    )
+    body.cubicTo(
+        QPointF(0.76 * w, 0.56 * w), QPointF(0.78 * w, 0.68 * w), QPointF(0.92 * w, 0.74 * w)
+    )
+    body.closeSubpath()
+    handle = QPainterPath()
+    handle.addEllipse(QPointF(0.50 * w, 0.16 * w), 0.10 * w, 0.10 * w)
+    return body.united(handle)
+
+
+def _bell_clapper(w: float) -> QPainterPath:
+    """The tongue under the rim, clear of the body so the rim stays a rim."""
+    clapper = QPainterPath()
+    clapper.addEllipse(QPointF(0.50 * w, 0.86 * w), 0.11 * w, 0.11 * w)
+    return clapper
+
+
+@_drawn(size=ICON_MD, pen=False)
+def bell_icon(p: QPainter, size: int, c: QColor) -> None:
+    """A bell, filled.
+
+    Solid rather than outlined, and drawn to the full box. An outline this small
+    reads as a smudge at the far end of the header, which is the one place it
+    has to be recognisable from.
+    """
+    p.drawPath(_bell_body(size))
+    p.drawPath(_bell_clapper(size))
+
+
+def silence_icon(size: int = ICON_SM, color: QColor | None = None) -> QIcon:
+    """The same bell with a stroke taken out of it: never say this again.
+
+    Not drawn through the shared wrapper. The stroke has to be cut from the
+    pixmap rather than painted over it, or it is invisible against the fill and
+    wrong against every background the glyph is used on.
+    """
+    c = color or QColor(TEXT_MUTED)
+    pm, p = _px(size)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(c)
+    p.drawPath(_bell_body(size))
+    p.drawPath(_bell_clapper(size))
+    p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
+    p.setPen(QPen(Qt.GlobalColor.transparent, _stroke(size) * 1.8))
+    p.drawLine(QPointF(0.10 * size, 0.90 * size), QPointF(0.90 * size, 0.10 * size))
+    p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+    p.setPen(QPen(c, _stroke(size) * 0.9))
+    p.drawLine(QPointF(0.12 * size, 0.88 * size), QPointF(0.88 * size, 0.12 * size))
+    p.end()
+    return QIcon(pm)
+
+
+@_drawn(size=ICON_SM, ink=TEXT_MUTED, cap=True)
+def close_icon(p: QPainter, size: int, c: QColor) -> None:
+    """A cross: put this away."""
+    m = size * 0.28
+    p.drawLine(QPointF(m, m), QPointF(size - m, size - m))
+    p.drawLine(QPointF(size - m, m), QPointF(m, size - m))
+
+
 @_drawn(size=ICON_SM, cap=True, join=True)
 def cart_icon(p: QPainter, size: int, c: QColor) -> None:
     """A shopping trolley: handle, tilted basket, two wheels."""

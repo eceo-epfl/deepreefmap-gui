@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
@@ -501,56 +501,6 @@ class NotReadyStrip(QWidget):
     def clear(self) -> None:
         self._reason.setText("")
         self.setVisible(False)
-
-
-class HeaderAlert(QWidget):
-    """The one destination that wants attention, named in the header.
-
-    Hidden whenever nothing is wrong. ``NotReadyStrip`` is the page-level
-    equivalent: it names what stops one page working, this says which page.
-    """
-
-    clicked = Signal()
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setObjectName("headerAlert")
-        # A bare QWidget takes its background from the palette and ignores the
-        # stylesheet's, which leaves the box invisible.
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        row = QHBoxLayout(self)
-        row.setContentsMargins(SPACE_SM, SPACE_XS, SPACE_SM, SPACE_XS)
-        row.setSpacing(SPACE_SM)
-
-        self._glyph = QLabel()
-        row.addWidget(self._glyph)
-        self._text = QLabel("")
-        row.addWidget(self._text)
-
-        # One tint for both states it can carry; severity is the glyph's job.
-        self.setStyleSheet(
-            f"QWidget#headerAlert {{ background-color: {WARN_BG};"
-            f" border: 1px solid {WARN_BORDER}; border-radius: {RADIUS_SM}px; }}"
-            f" QLabel {{ color: {WARN_TEXT}; background: transparent; }}"
-        )
-        self.setVisible(False)
-
-    def show_alert(self, text: str, tooltip: str = "", pixmap: QPixmap | None = None) -> None:
-        self._text.setText(text)
-        self.setToolTip(tooltip or text)
-        self._glyph.setVisible(pixmap is not None)
-        self._glyph.setPixmap(pixmap if pixmap is not None else QPixmap())
-        self.setVisible(bool(text))
-
-    def clear(self) -> None:
-        self._text.setText("")
-        self.setVisible(False)
-
-    def mousePressEvent(self, event) -> None:
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.clicked.emit()
-        super().mousePressEvent(event)
 
 
 def ok_cancel_row(dialog: QDialog) -> QDialogButtonBox:

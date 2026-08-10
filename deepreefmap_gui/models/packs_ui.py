@@ -32,6 +32,9 @@ from PySide6.QtWidgets import (
 from deepreefmap_gui.core.theme import TEXT_SECONDARY
 from deepreefmap_gui.core.widgets import muted_label, ok_cancel_row, secondary_label
 from deepreefmap_gui.core.window_protocol import MixinBase
+from deepreefmap_gui.survey.models.notification import INFO as NOTIFY_INFO
+from deepreefmap_gui.survey.models.notification import MACHINE as NOTIFY_MACHINE
+from deepreefmap_gui.survey.models.notification import WARNING as NOTIFY_WARNING
 
 if TYPE_CHECKING:
     from deepreefmap_gui.models.packs import ProgressCallback
@@ -446,6 +449,15 @@ class ModelLibraryMixin(MixinBase):
             dlg.close()
             self._pack_progress_dialog = None
         self._status_label.setText(message)
+        self._notify_post(
+            {
+                "fingerprint": "models.pack_imported" if ok else "models.pack_failed",
+                "title": message,
+                "severity": NOTIFY_INFO if ok else NOTIFY_WARNING,
+                "scope": NOTIFY_MACHINE,
+                "section": "machine",
+            }
+        )
         if ok:
             # Reflow the model rows so freshly imported models show as cached.
             threading.Thread(target=self._refresh_model_status, daemon=True).start()

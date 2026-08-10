@@ -1,5 +1,12 @@
+import pytest
+
+from deepreefmap_gui.notify.center_ui import MUTED_KEY
 from deepreefmap_gui.simple.mode import DESTINATIONS, SIMPLE_SECTIONS
-from deepreefmap_gui.simple.section_state import browse_state, transects_state
+from deepreefmap_gui.simple.section_state import (
+    CAUSE_UNFILED_RUNS,
+    browse_state,
+    transects_state,
+)
 
 
 def _index(name: str) -> int:
@@ -187,32 +194,110 @@ def test_navigation_locks_while_a_run_is_in_flight(window):
     assert window._simple_nav_buttons["transects"].isEnabled()
 
 
-def test_a_quiet_header_shows_nothing_but_its_destinations(window):
-    """A count belongs to the destination that owns it; the header's box appears
+def test_a_quiet_header_leaves_the_bell_dark(window):
+    """A count belongs to the destination that owns it; the bell carries a badge
     only when something is wrong."""
     window._plan_state = transects_state(2, False)
     window._browse_state = browse_state(19, 0)
     window._survey_gate = None
     window._section_state_cache = None
     window._refresh_section_state()
-    assert not window._section_alert.isVisibleTo(window)
+
+    assert window._notify.active() == []
+    assert window._notify_bell._unread == 0
     assert "2 transects" in window._simple_nav_buttons["transects"].toolTip()
 
 
-def test_the_header_names_one_problem_and_goes_there(window):
-    window._set_simple_section("transects")
-    window._plan_state = transects_state(2, False)
+def test_every_problem_reaches_the_bell_at_once(window):
+    """Scenario: two destinations have something to report.
+
+    Expected behaviour: both are listed. The old header alert could name only
+    the more urgent one, which is what this replaces.
+    """
+    window._plan_state = transects_state(1, True)
     window._browse_state = browse_state(19, 17)
     window._survey_gate = None
     window._section_state_cache = None
     window._refresh_section_state()
 
-    assert window._section_alert.isVisibleTo(window)
-    assert window._section_alert._text.text() == "Browse: 17 runs belong to no transect"
-    assert "Assign them" in window._section_alert.toolTip()
+    titles = [n.title for n in window._notify.active()]
+    assert "17 runs belong to no transect" in titles
+    assert any(t.startswith("A transect is half-entered") for t in titles)
+    assert window._notify_bell._unread == len(titles)
 
-    window._section_alert.clicked.emit()
+
+def test_opening_a_message_goes_where_it_is_fixed(window):
+    window._set_simple_section("transects")
+    window._browse_state = browse_state(19, 17)
+    window._section_state_cache = None
+    window._refresh_section_state()
+
+    window._on_notification_activated("browse")
+
     assert window._simple_nav_buttons["browse"].isChecked()
+
+
+def test_reading_the_list_clears_the_badge_but_not_the_list(window):
+    window._browse_state = browse_state(19, 17)
+    window._section_state_cache = None
+    window._refresh_section_state()
+    assert window._notify_bell._unread == 1
+
+    window._toggle_notification_popover()
+
+    assert window._notify_bell._unread == 0
+    assert len(window._notify.active()) == 1
+    window._notify_popover.hide()
+
+
+@pytest.fixture
+def no_mutes(window):
+    """A mute is per reader, not per window, so it would outlive this test."""
+    yield
+    window._settings.remove(MUTED_KEY)
+
+
+def test_never_show_this_again_survives_in_the_settings(window, no_mutes):
+    window._browse_state = browse_state(19, 17)
+    window._section_state_cache = None
+    window._refresh_section_state()
+
+    window._on_notification_muted(CAUSE_UNFILED_RUNS)
+
+    assert window._notify.active() == []
+    assert CAUSE_UNFILED_RUNS in window._settings.value(MUTED_KEY, [])
+    assert window._notify.muted() == [(CAUSE_UNFILED_RUNS, "17 runs belong to no transect")]
+
+    window._notify.unmute(CAUSE_UNFILED_RUNS)
+    assert len(window._notify.active()) == 1
+
+
+def test_clearing_one_message_leaves_the_episode_open(window):
+    window._browse_state = browse_state(19, 17)
+    window._section_state_cache = None
+    window._refresh_section_state()
+
+    window._on_notification_dismissed(window._notify.active()[0].id)
+
+    assert window._notify.active() == []
+    assert window._notify.history()[0].resolved_at is None
+
+
+def test_a_settled_header_does_not_write_to_the_survey(window):
+    """_refresh_section_state runs on nearly every keystroke, so an unchanged
+    set of verdicts has to cost a tuple comparison and nothing else."""
+    window._browse_state = browse_state(19, 17)
+    window._section_state_cache = None
+    window._refresh_section_state()
+    writes = []
+    window._notify._log.insert = writes.append
+    window._notify._log.update = writes.append
+
+    for _ in range(100):
+        window._section_state_cache = None
+        window._refresh_section_state()
+
+    assert writes == []
 
 
 def test_every_header_control_is_drawn_as_a_button(window):

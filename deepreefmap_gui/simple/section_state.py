@@ -1,7 +1,7 @@
 """What each destination has and still needs.
 
-Pure and Qt-free: the header alert and the Start processing button read their
-verdict from the same function, so the header cannot call a destination fine
+Pure and Qt-free: the notification centre and the Start processing button read
+their verdict from the same function, so the bell cannot call a destination fine
 while the button that acts on it is disabled.
 """
 
@@ -27,10 +27,39 @@ FIX_SETTINGS = "settings"  # the run settings are at fault, and the dialog holds
 
 FIX_DESTINATIONS = (FIX_HERE, FIX_MACHINE, FIX_SETTINGS)
 
+# Why a verdict says what it says, in a form code can match on. It becomes the
+# fingerprint of the notification the verdict raises, so a reworded sentence
+# does not read as a different problem and does not void somebody's decision to
+# never hear about this one again. Treat these strings as a public interface.
+CAUSE_NONE = ""
+CAUSE_DRAFT_TRANSECT = "transects.draft"
+CAUSE_MISSING_CLIPS = "videos.missing_clips"
+CAUSE_UNFILED_RUNS = "browse.unfiled_runs"
+CAUSE_MISSING_FOOTAGE = "process.missing_footage"
+CAUSE_NO_PRESET = "process.no_preset"
+CAUSE_NO_GPU = "process.no_gpu"
+CAUSE_MISSING_MODELS = "process.missing_models"
+CAUSE_FAILED_PASSES = "process.failed_passes"
+CAUSE_UNASSIGNED_PASSES = "process.unassigned_passes"
+CAUSE_UNSCALED_PASSES = "process.unscaled_passes"
+CAUSE_UNMET_REQUIREMENTS = "machine.unmet_requirements"
+CAUSE_MACHINE_ADVISORY = "machine.advisory"
 
-# How loudly a verdict asks to be heard. Only the two states worth acting on
-# rank; the others have nothing to interrupt with.
-_URGENCY = {BLOCKED: 2, ATTENTION: 1}
+CAUSES = (
+    CAUSE_NONE,
+    CAUSE_DRAFT_TRANSECT,
+    CAUSE_MISSING_CLIPS,
+    CAUSE_UNFILED_RUNS,
+    CAUSE_MISSING_FOOTAGE,
+    CAUSE_NO_PRESET,
+    CAUSE_NO_GPU,
+    CAUSE_MISSING_MODELS,
+    CAUSE_FAILED_PASSES,
+    CAUSE_UNASSIGNED_PASSES,
+    CAUSE_UNSCALED_PASSES,
+    CAUSE_UNMET_REQUIREMENTS,
+    CAUSE_MACHINE_ADVISORY,
+)
 
 
 @dataclass(frozen=True)
@@ -41,12 +70,18 @@ class SectionState:
     count: str
     reason: str = ""
     fix: str = FIX_HERE
+    cause: str = CAUSE_NONE
+    # The number behind ``count``, so a log can say the clips went from ten to
+    # nine without parsing the sentence that said so.
+    n: int = 0
 
     def __post_init__(self) -> None:
         if self.state not in SECTION_STATES:
             raise ValueError(f"Unknown section state: {self.state!r}")
         if self.fix not in FIX_DESTINATIONS:
             raise ValueError(f"Unknown fix destination: {self.fix!r}")
+        if self.cause not in CAUSES:
+            raise ValueError(f"Unknown cause: {self.cause!r}")
 
 
 def _plural(count: int, singular: str, plural: str = "") -> str:
@@ -66,21 +101,14 @@ def headline(reason: str) -> str:
     return head.rstrip(".")
 
 
-def most_urgent(states: dict[str, SectionState]) -> tuple[str, SectionState] | None:
-    """The one destination worth interrupting for, or None if none is.
+def advice(reason: str) -> str:
+    """What is left after the headline: what to do about it, or nothing.
 
-    Ties go to whichever was given first, which the caller orders as the header
-    shows them.
+    The pair is exhaustive, so a surface showing both shows the reason once.
+    Showing ``reason`` under ``headline`` repeats the first sentence.
     """
-    ranked = [
-        (rank, index, name, state)
-        for index, (name, state) in enumerate(states.items())
-        if (rank := _URGENCY.get(state.state)) is not None
-    ]
-    if not ranked:
-        return None
-    _, _, name, state = max(ranked, key=lambda row: (row[0], -row[1]))
-    return name, state
+    _, _, tail = reason.strip().partition(". ")
+    return tail.strip()
 
 
 def transects_state(transect_count: int, has_draft: bool) -> SectionState:
@@ -94,6 +122,8 @@ def transects_state(transect_count: int, has_draft: bool) -> SectionState:
             ATTENTION,
             _plural(transect_count, "transect"),
             "A transect is half-entered: it needs a name and both endpoints to save.",
+            cause=CAUSE_DRAFT_TRANSECT,
+            n=1,
         )
     if transect_count == 0:
         return SectionState(TODO, "none yet", "Add a transect, or import a CSV or GPX file.")
@@ -115,6 +145,8 @@ def browse_state(run_count: int, unfiled: int) -> SectionState:
             f"{counts} · {unfiled} unfiled",
             f"{_plural(unfiled, 'run')} belong to no transect. "
             "Assign them to compare passes of the same transect.",
+            cause=CAUSE_UNFILED_RUNS,
+            n=unfiled,
         )
     return SectionState(OK, counts)
 
@@ -135,6 +167,8 @@ def videos_state(clip_count: int, missing: int) -> SectionState:
             f"{counts} · {missing} missing",
             f"{_plural(missing, 'clip')} cannot be found. "
             "Plug the drive back in, or add them again from where they live now.",
+            cause=CAUSE_MISSING_CLIPS,
+            n=missing,
         )
     return SectionState(OK, counts)
 
@@ -172,6 +206,8 @@ def run_gate(
             f"{passes_phrase(missing_files)} name a video file that cannot be "
             "found. Plug the drive back in, or add the footage again from where "
             "it lives now.",
+            cause=CAUSE_MISSING_FOOTAGE,
+            n=missing_files,
         )
     if not has_preset:
         return SectionState(
@@ -179,6 +215,7 @@ def run_gate(
             counts,
             "The run settings could not be loaded, so nothing here can be processed.",
             fix=FIX_SETTINGS,
+            cause=CAUSE_NO_PRESET,
         )
     if gpu_only_mapper:
         return SectionState(
@@ -187,6 +224,7 @@ def run_gate(
             f"The {gpu_only_mapper} processing method requires a graphics card, "
             "and none was detected.",
             fix=FIX_MACHINE,
+            cause=CAUSE_NO_GPU,
         )
     if missing_models:
         return SectionState(
@@ -195,12 +233,16 @@ def run_gate(
             f"{_plural(len(missing_models), 'required model')} not installed "
             f"({', '.join(missing_models)}).",
             fix=FIX_MACHINE,
+            cause=CAUSE_MISSING_MODELS,
+            n=len(missing_models),
         )
     if failed:
         return SectionState(
             ATTENTION,
             f"{counts} · {failed} failed",
             f"{passes_phrase(failed)} failed. The log holds the error; processing can be started again.",
+            cause=CAUSE_FAILED_PASSES,
+            n=failed,
         )
     # Not a blocker, and deliberately below the ones that are. A pass with no
     # transect processes perfectly well; it just cannot be compared against
@@ -212,6 +254,8 @@ def run_gate(
             f"{counts} · {unassigned} without a transect",
             f"{passes_phrase(unassigned)} will run without a transect, so they will not be "
             "compared against repeat passes.",
+            cause=CAUSE_UNASSIGNED_PASSES,
+            n=unassigned,
         )
     # Below unassigned: a missing transect swallows a missing tape length.
     if unscaled:
@@ -220,6 +264,8 @@ def run_gate(
             f"{counts} · {unscaled} unscaled",
             f"{passes_phrase(unscaled)} are on a transect with no tape length, so they "
             "will run unscaled. Set the length under Transects.",
+            cause=CAUSE_UNSCALED_PASSES,
+            n=unscaled,
         )
     if remaining:
         return SectionState(OK, f"{counts} · {remaining} to process")
@@ -258,6 +304,8 @@ def machine_state(
                     ],
                 )
             ),
+            cause=CAUSE_UNMET_REQUIREMENTS,
+            n=unmet,
         )
     if advisory:
         # Not a bare "Ready": the button paints a warning glyph in this state,
@@ -267,6 +315,7 @@ def machine_state(
             ATTENTION,
             "Ready, with a warning",
             " ".join(filter(None, [advisory, version_note])),
+            cause=CAUSE_MACHINE_ADVISORY,
         )
     if update_version:
         return SectionState(OK, "Ready", version_note)

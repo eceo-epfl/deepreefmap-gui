@@ -44,7 +44,6 @@ from PySide6.QtWidgets import (
 from deepreefmap_gui.core.icons import (
     browse_icon,
     cart_icon,
-    section_state_icon,
     transects_icon,
     videos_icon,
 )
@@ -55,26 +54,25 @@ from deepreefmap_gui.core.theme import (
     GUTTER,
     ON_ACCENT,
     PAGE_MARGIN,
-    SPACE_MD,
     SPACE_SM,
     SPACE_XS,
     WINDOW_TEXT,
 )
-from deepreefmap_gui.core.widgets import HeaderAlert, muted_label, utility_button_qss
+from deepreefmap_gui.core.widgets import muted_label, utility_button_qss
 from deepreefmap_gui.core.window_protocol import MixinBase
+from deepreefmap_gui.notify.conditions import conditions_from_state
 from deepreefmap_gui.runs.run_detail import RunDetailPanel
 from deepreefmap_gui.simple.cart import CartButton
 from deepreefmap_gui.simple.section_state import (
     SectionState,
     browse_state,
-    headline,
-    most_urgent,
     run_gate,
     transects_state,
     videos_state,
 )
 from deepreefmap_gui.survey.catalogue import LINK_MISSING
 from deepreefmap_gui.survey.health import SurveyDbHealth, SurveyDbState, inspect_survey_db
+from deepreefmap_gui.survey.models.notification import WARNING as NOTIFY_WARNING
 from deepreefmap_gui.survey.preset import (
     ActivePreset,
     OrgPreset,
@@ -230,10 +228,10 @@ class InterfaceShellMixin(MixinBase):
     _form_defaults: dict[str, Any]
     _simple_nav_buttons: dict[str, QToolButton]
     _destination_group: QButtonGroup
-    # The header's one alert, and the destination it opens.
-    _section_alert: HeaderAlert
-    _section_alert_target: str
     _section_state_cache: tuple | None = None
+    # False until the video library and the run archive have been read once.
+    # Until then an empty verdict means "not looked yet", not "nothing wrong".
+    _survey_loaded: bool = False
     _work_area_state: tuple[bool, str, bool] | None = None
 
     def _reveal_memory_detail(self) -> None:
@@ -398,6 +396,10 @@ class InterfaceShellMixin(MixinBase):
         self._refresh_readiness_view()
         self._sync_system_gauges_running()
         self._update_work_area()
+        # Everything the verdicts read has now been read at least once, so an
+        # empty verdict from here on means "nothing wrong", not "not looked yet".
+        self._survey_loaded = True
+        self._refresh_section_state()
 
     def _build_simple_shell(self) -> QWidget:
         """Three destinations over one page stack.
@@ -471,16 +473,12 @@ class InterfaceShellMixin(MixinBase):
             self._simple_nav_buttons[name] = btn
 
         nav.addStretch(1)
-        # What a destination holds is shown on it. What is wrong with one is
-        # here, in a box that is empty unless something is.
-        self._section_alert = HeaderAlert()
-        self._section_alert.clicked.connect(self._on_section_alert_clicked)
-        self._section_alert_target = ""
-        nav.addWidget(self._section_alert)
-        nav.addSpacing(SPACE_MD)
         # Utilities, at the far end from the work. Bordered rather than filled
         # (see utility_button_qss): these are places you visit and leave, not
-        # where you are working.
+        # where you are working. What a destination holds is shown on the
+        # destination; everything that is wrong with any of them is behind the
+        # bell, which is empty unless something is.
+        nav.addWidget(self._build_notification_bell())
         nav.addWidget(self._log_toggle_btn)
         nav.addWidget(self._build_machine_nav_button())
         # The cart last, split from the utilities: it is a destination, badged
@@ -692,7 +690,12 @@ class InterfaceShellMixin(MixinBase):
             ),
             "browse": getattr(self, "_browse_state", None) or browse_state(0, 0),
         }
-        key = tuple((name, s.state, s.count, s.reason) for name, s in states.items())
+        machine = self._machine_verdict() if hasattr(self, "_machine_button") else None
+        # The cause and the number behind the count, not the sentence: a reworded
+        # reason is the same fault, and repainting for it would churn the log.
+        key = tuple((name, s.state, s.count, s.cause, s.n) for name, s in states.items()) + (
+            (machine.state, machine.cause, machine.n) if machine is not None else (),
+        )
         if self._section_state_cache == key:
             return
         self._section_state_cache = key
@@ -700,27 +703,9 @@ class InterfaceShellMixin(MixinBase):
             self._simple_nav_buttons[name].setToolTip(
                 "\n".join(filter(None, [_DESTINATION_TIPS[name], verdict.count, verdict.reason]))
             )
-        urgent = most_urgent(states)
-        if urgent is None:
-            self._section_alert_target = ""
-            self._section_alert.clear()
-            return
-        name, verdict = urgent
-        self._section_alert_target = name
-        icon = section_state_icon(verdict.state)
-        self._section_alert.show_alert(
-            f"{_DESTINATION_LABELS[name]}: {headline(verdict.reason)}",
-            tooltip=f"{verdict.reason}\nGo to {_DESTINATION_LABELS[name]}.",
-            pixmap=(
-                icon.pixmap(_DESTINATION_ICON_PX, _DESTINATION_ICON_PX)
-                if icon is not None
-                else None
-            ),
-        )
-
-    def _on_section_alert_clicked(self) -> None:
-        if self._section_alert_target:
-            self._go_to_section(self._section_alert_target)
+        conditions = conditions_from_state(states, machine, getattr(self, "_survey_health", None))
+        if self._notify.reconcile(conditions, authoritative=self._survey_loaded):
+            self._refresh_notification_bell()
 
     def _go_to_section(self, name: str) -> None:
         self._set_simple_section(name)
@@ -849,6 +834,21 @@ class InterfaceShellMixin(MixinBase):
                 store.close()
             store = SurveyStore(db_path)
             self._survey_store_obj = store
+            # Episodes belong to the survey they were about, and nothing in the
+            # new root has been read yet, so the next reconcile must not clear
+            # what it cannot see.
+            self._survey_loaded = False
+            self._rebind_notification_log(store)
+            if store.interrupted_at_open:
+                self._notify_post(
+                    {
+                        "fingerprint": "runs.interrupted",
+                        "title": f"{store.interrupted_at_open} run(s) were left unfinished",
+                        "body": "The app closed before they finished. They can be started again.",
+                        "severity": NOTIFY_WARNING,
+                        "section": "browse",
+                    }
+                )
         self._survey_health = SurveyDbHealth(SurveyDbState.OK, db_path, latest_schema_version())
         return store
 

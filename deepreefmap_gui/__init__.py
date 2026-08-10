@@ -11,7 +11,7 @@ transect they belong to, whether this laptop can run another one.
 
 ## Where the code for a feature is
 
-The window is a single class fused from 18 mixins, so a feature is a file rather than a widget
+The window is a single class fused from 19 mixins, so a feature is a file rather than a widget
 subtree. `class <Mixin>` is the only grep you need after this table:
 
 | What you see                                          | Mixin                  | File                   |
@@ -23,6 +23,7 @@ subtree. `class <Mixin>` is the only grep you need after this table:
 | Browse: the run archive, its rail, table and detail   | `BrowseMixin`          | `runs/browse.py`       |
 | The shell: destinations, settings dialog, the store   | `InterfaceShellMixin`  | `simple/mode.py`       |
 | Setup: the destination and its header button          | `SimpleMachineMixin`   | `simple/machine.py`    |
+| The notification bell, its list and the mute book     | `NotificationCenterMixin` | `notify/center_ui.py` |
 | Readiness rows: graphics card, models, disk           | `SimpleSetupMixin`     | `simple/setup.py`      |
 | System gauges and the no-video benchmark              | `SystemPanelMixin`     | `system/system_tab.py` |
 | Model status, download, delete, HuggingFace login     | `ModelManagementMixin` | `models/cache_ui.py`   |
@@ -63,6 +64,9 @@ for what connects to what. `QTimer.singleShot` from a worker thread does nothing
 literally: `packs.py` is the model-pack format and the file copying, `packs_ui.py` the dialogs
 and the mixin that drive them. Prefer the suffix for new splits.
 
+`notify/` follows it too: `model.py`, `conditions.py`, `center.py` and `log.py` are pure, and the
+`_ui` modules are the bell, the popover and the Activity view.
+
 The same split exists under older names, and those stay: `survey/` is the Qt-free domain layer
 under `simple/`'s UI, `simple/section_state.py` the pure verdict behind the header badges,
 `models/cache.py` the pure side of `models/cache_ui.py`. `io/`, `packaging/`, `profiling/`,
@@ -97,6 +101,13 @@ Several features answer to two or three names. Prefer the first in prose, commen
   load-bearing for `rebuild_from_scan`, so only the UI says session.
 - **Run** is only ever a finished output. The destination that produces one is the Cart, so the
   word never names a queue.
+- **Condition** and **event**, for the two things the notification centre carries. A condition is
+  derived from live state and resolves itself, so it is reconciled and gets one row per episode;
+  an event happened once and is appended. **Fingerprint** is what joins an episode to itself and
+  what a reader silences: it comes from `SectionState.cause`, never from the sentence, so
+  rewording a message does not reopen it or void anybody's mute. **Clearing** puts one occurrence
+  away, **silencing** ("never show this again") puts the whole class away and lives in QSettings
+  rather than the survey.
 
 ## Things that would otherwise bite
 

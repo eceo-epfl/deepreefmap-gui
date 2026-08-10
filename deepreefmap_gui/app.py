@@ -1,6 +1,6 @@
 """The window, and the process it runs in.
 
-`DeepReefMapWindow` builds no feature of its own. It fuses the 18 mixins listed in its bases
+`DeepReefMapWindow` builds no feature of its own. It fuses the 19 mixins listed in its bases
 (the feature-to-file table is in `deepreefmap_gui/__init__.py`), owns the frame they fill in
 (splitters, the run banner, the central layout, the shortcuts), and shuts everything down in
 `closeEvent`. Read `__init__` in order, not in parts: the form widgets are built first because
@@ -64,6 +64,7 @@ from deepreefmap_gui.core.widgets import confirm
 from deepreefmap_gui.form.panel import FormPanelMixin
 from deepreefmap_gui.models.cache_ui import ModelManagementMixin
 from deepreefmap_gui.models.packs_ui import ModelLibraryMixin
+from deepreefmap_gui.notify.center_ui import NotificationCenterMixin
 from deepreefmap_gui.runs.browse import BrowseMixin
 from deepreefmap_gui.runs.loading import RunLoadingMixin
 from deepreefmap_gui.runs.past_runs import PastRunsMixin
@@ -91,6 +92,7 @@ class DeepReefMapWindow(
     InterfaceShellMixin,
     ModelLibraryMixin,
     ModelManagementMixin,
+    NotificationCenterMixin,
     PastRunsMixin,
     ProgressBarsMixin,
     ResultsMixin,
@@ -126,6 +128,9 @@ class DeepReefMapWindow(
     _sig_videos_probed = Signal(object)
     _sig_storage_usage = Signal(object)
     _sig_shortcut_done = Signal(object)
+    # What a worker thread has to say, as data: a new kind of message should not
+    # need a new signal here.
+    _sig_notify = Signal(object)
 
     def __init__(self, classes_config: ClassConfig, classes_path: Path | None) -> None:
         super().__init__()
@@ -156,6 +161,7 @@ class DeepReefMapWindow(
         self._sig_clip_links_done.connect(self._apply_clip_link_states)
         self._sig_videos_probed.connect(self._on_videos_probed)
         self._sig_storage_usage.connect(self._apply_storage_usage)
+        self._sig_notify.connect(self._notify_post)
 
         self.setWindowTitle("DeepReefMap")
         # Open at ~90% of the available screen, capped at the comfortable

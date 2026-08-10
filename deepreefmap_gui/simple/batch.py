@@ -68,6 +68,7 @@ from deepreefmap_gui.simple.section_state import (
 )
 from deepreefmap_gui.survey.catalogue import LINK_MISSING
 from deepreefmap_gui.survey.models import (
+    INFO,
     PASS_DIRECTIONS,
     BatchItem,
     RunRecord,
@@ -77,6 +78,7 @@ from deepreefmap_gui.survey.models import (
     VideoAsset,
 )
 from deepreefmap_gui.survey.models.convert import survey_manifest_block
+from deepreefmap_gui.survey.models.notification import WARNING as NOTIFY_WARNING
 from deepreefmap_gui.survey.preset import (
     MACHINE_OVERRIDABLE_KEYS,
     describe_keys,
@@ -2214,6 +2216,18 @@ class SimpleBatchMixin(MixinBase):
             )
         else:
             self._status_label.setText(f"Session finished: {ok}/{total} succeeded.")
+        # The same sentence the page carries, kept where it survives the next
+        # thing that happens. A batch is walked away from, and the page it
+        # finished on is not necessarily the one it is found on.
+        self._notify_post(
+            {
+                "fingerprint": "batch.finished" if ok == total else "batch.failed",
+                "title": self._status_label.text(),
+                "body": summary if summary != self._status_label.text() else "",
+                "severity": INFO if ok == total else NOTIFY_WARNING,
+                "section": "browse" if ok else "process",
+            }
+        )
         # The order + next-cart view gives way to the cart when one was
         # assembled mid-run, else to the finished order.
         self._refresh_survey_batch_tab()

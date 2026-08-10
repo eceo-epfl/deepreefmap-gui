@@ -39,14 +39,17 @@ if TYPE_CHECKING:
     from deepreefmap_gui.io.lazy_frames import FrameAccessor
     from deepreefmap_gui.map.slippy_map import SlippyMapWidget
     from deepreefmap_gui.models.packs_ui import PackProgressDialog
+    from deepreefmap_gui.notify.center import NotificationCenter
+    from deepreefmap_gui.notify.widgets import BellButton, NotificationPopover
     from deepreefmap_gui.profiling.eta import RunEtaEstimator
     from deepreefmap_gui.runs.progress import ProgressModel
     from deepreefmap_gui.runs.run_table import RunTable
     from deepreefmap_gui.runs.sunburst import SunburstWidget
     from deepreefmap_gui.runs.timing_popup import HoverColumn, TimingPopup
     from deepreefmap_gui.simple.cart import CartButton
+    from deepreefmap_gui.simple.section_state import SectionState
     from deepreefmap_gui.survey.health import SurveyDbHealth
-    from deepreefmap_gui.survey.models import SurveyBatch
+    from deepreefmap_gui.survey.models import Notification, SurveyBatch
     from deepreefmap_gui.survey.preset import ActivePreset
     from deepreefmap_gui.survey.store import SurveyStore
     from deepreefmap_gui.system.log_view import LogView
@@ -78,6 +81,9 @@ if TYPE_CHECKING:
         _results_output_dir: Path | None
         _app_mode: str
         _survey_store_obj: SurveyStore | None
+        _notify: NotificationCenter
+        _notify_bell: BellButton
+        _notify_popover: NotificationPopover | None
         _survey_rows: list
         _survey_preset: dict | None
         _active_preset: ActivePreset | None
@@ -280,6 +286,7 @@ if TYPE_CHECKING:
         _sig_videos_probed = Signal(object)
         _sig_storage_usage = Signal(object)
         _sig_shortcut_done = Signal(object)
+        _sig_notify = Signal(object)
 
         # --- cross-mixin methods -----------------------------------------
         # Each is tagged with the mixin that defines it. The list is flat, and
@@ -358,7 +365,15 @@ if TYPE_CHECKING:
         def _build_machine_page(self) -> QWidget: ...  # SimpleMachineMixin
         def _build_machine_nav_button(self) -> QToolButton: ...  # SimpleMachineMixin
         def _host_machine_panels(self) -> None: ...  # SimpleMachineMixin
+        def _machine_verdict(self) -> SectionState: ...  # SimpleMachineMixin
+        def _refresh_activity_view(self) -> None: ...  # SimpleMachineMixin
         def _set_machine_view(self, view: str) -> None: ...  # SimpleMachineMixin
+        def _build_notification_bell(self) -> BellButton: ...  # NotificationCenterMixin
+        def _notify_post(self, payload: dict) -> Notification: ...  # NotificationCenterMixin
+        def _refresh_notification_bell(self) -> None: ...  # NotificationCenterMixin
+        def _rebind_notification_log(  # NotificationCenterMixin
+            self, store: SurveyStore | None
+        ) -> None: ...
         def _sync_system_gauges_running(self) -> None: ...  # SimpleMachineMixin
         def _refresh_machine_button(self) -> None: ...  # SimpleMachineMixin
         def _refresh_readiness_view(self) -> None: ...  # SimpleSetupMixin

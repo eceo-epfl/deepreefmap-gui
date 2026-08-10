@@ -16,9 +16,9 @@ from deepreefmap_gui.simple.section_state import (
     browse_state,
     headline,
     machine_state,
-    most_urgent,
     run_gate,
     transects_state,
+    videos_state,
 )
 
 
@@ -228,6 +228,49 @@ def test_unknown_state_is_rejected():
         SectionState("nearly", "1 transect")
 
 
+def test_unknown_cause_is_rejected():
+    with pytest.raises(ValueError):
+        SectionState(ATTENTION, "1 clip", cause="videos.eaten_by_a_shark")
+
+
+def _speaking_verdicts():
+    """Every verdict any of the five functions can return with something to say."""
+    return [
+        transects_state(1, True),
+        browse_state(19, 17),
+        videos_state(10, 10),
+        gate(missing_files=2),
+        gate(has_preset=False),
+        gate(gpu_only_mapper="loger"),
+        gate(missing_models=["dinov3"]),
+        gate(failed=3),
+        gate(unassigned=3),
+        gate(unscaled=3),
+        machine_state(unmet=2),
+        machine_state(unmet=0, advisory="low memory"),
+    ]
+
+
+def test_every_verdict_worth_raising_names_its_cause():
+    """The notification centre fingerprints on the cause, so a verdict with
+    advice and no cause would be a message it could never track or silence."""
+    for verdict in _speaking_verdicts():
+        assert verdict.cause, verdict.reason
+
+
+def test_a_cause_survives_a_reworded_reason():
+    """Rewording must not read as a different problem, or every reader's
+    decision to never hear this one again is silently voided."""
+    assert videos_state(10, 10).cause == videos_state(10, 4).cause
+
+
+def test_a_count_verdict_carries_the_number_behind_its_words():
+    assert browse_state(19, 17).n == 17
+    assert videos_state(10, 4).n == 4
+    assert gate(failed=3).n == 3
+    assert gate(missing_models=["a", "b"]).n == 2
+
+
 def test_badge_vocabulary_matches_the_verdicts():
     """core/icons.py spells the states out rather than importing upwards, so
     the two lists have to be checked against each other."""
@@ -235,35 +278,6 @@ def test_badge_vocabulary_matches_the_verdicts():
     from deepreefmap_gui.simple.section_state import SECTION_STATES
 
     assert set(STEP_STATES) == set(SECTION_STATES)
-
-
-def test_only_a_verdict_worth_acting_on_reaches_the_header():
-    quiet = {
-        "transects": transects_state(2, False),
-        "process": gate(),
-        "browse": browse_state(19, 0),
-    }
-    assert most_urgent(quiet) is None
-
-
-def test_a_blocker_outranks_a_warning():
-    states = {
-        "transects": transects_state(0, True),
-        "process": gate(has_preset=False),
-        "browse": browse_state(19, 17),
-    }
-    name, verdict = most_urgent(states)
-    assert name == "process"
-    assert verdict.state == BLOCKED
-
-
-def test_two_equal_verdicts_are_settled_by_the_order_they_are_given_in():
-    """The caller passes them in header order, so the leftmost wins."""
-    states = {
-        "transects": transects_state(1, True),
-        "browse": browse_state(19, 17),
-    }
-    assert most_urgent(states)[0] == "transects"
 
 
 def test_a_headline_drops_the_advice_and_keeps_the_fault():
