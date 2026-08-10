@@ -162,6 +162,8 @@ def _row_tooltip(entry: RunEntry, related: int) -> str:
     tooltip = format_run_metadata(entry)
     if entry.incomplete:
         tooltip += "<br><br><i>No run manifest: this run did not finish.</i>"
+    if entry.data_missing:
+        tooltip += "<br><br><i>Output data removed: only the record remains.</i>"
     if entry.moved_from:
         tooltip += f"<br><i>Recorded at run time as: {entry.moved_from}</i>"
     if related:
@@ -276,8 +278,12 @@ class RunTable(QTableWidget):
             ),
             (
                 COL_SIZE,
-                format_bytes(entry.size_bytes) if entry.size_bytes is not None else "",
-                entry.size_bytes,
+                "removed"
+                if entry.data_missing
+                else format_bytes(entry.size_bytes)
+                if entry.size_bytes is not None
+                else "",
+                0 if entry.data_missing else entry.size_bytes,
             ),
             (COL_TRANSECT, entry.transect_name or "", _sort_text(entry.transect_name)),
             (COL_VIDEO, entry.video_name or "", _sort_text(entry.video_name)),

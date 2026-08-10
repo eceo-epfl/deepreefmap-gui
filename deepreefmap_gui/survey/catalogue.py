@@ -66,7 +66,7 @@ def entry_status(entry: RunEntry) -> str:
     a failure can be recorded after the manifest is written. ``interrupted``
     does not override, because reconcile-on-open stamps complete runs too.
     """
-    if entry.incomplete:
+    if entry.incomplete or entry.data_missing:
         return entry.status_label
     run = entry.db_run
     if run is not None and run.status in ("failed", "cancelled"):
@@ -110,6 +110,10 @@ class RunEntry:
     # A run directory that never wrote a manifest: crashed, cancelled, or still
     # in flight. Carries an empty manifest, so the fields above stay at defaults.
     incomplete: bool = False
+    # A run record whose directory is gone: the outputs were deleted, here or
+    # in a file manager, and only the history remains. run_dir points at where
+    # the directory would be, so nothing may read through it.
+    data_missing: bool = False
 
     @property
     def status_label(self) -> str:
@@ -293,6 +297,51 @@ def scan_incomplete_runs(
             mtime = 0.0
         entries.append(_incomplete_entry(child, mtime))
     return entries
+
+
+def missing_run_entries(
+    out_root: Path, store: SurveyStore, known: set[str]
+) -> list[RunEntry]:
+    """Run records whose directory is gone.
+
+    The record is the run's history and outlives its outputs, so a folder
+    deleted here or in a file manager still leaves a row to show. ``known``
+    names the folders already surfaced, complete or incomplete.
+    """
+    entries: list[RunEntry] = []
+    for run in store.list_runs():
+        if run.run_dir_name in known:
+            continue
+        try:
+            if (out_root / run.run_dir_name).is_dir():
+                continue
+        except OSError:
+            continue
+        entries.append(_missing_entry(out_root, run))
+    return entries
+
+
+def _missing_entry(out_root: Path, run: RunRecord) -> RunEntry:
+    stamp = parse_run_timestamp(run.started_at) or parse_run_timestamp(run.created_at)
+    return RunEntry(
+        run_dir=out_root / run.run_dir_name,
+        dir_name=run.run_dir_name,
+        manifest={},
+        display_name=run.run_dir_name,
+        sort_key=stamp.timestamp() if stamp is not None else 0.0,
+        video_hashes=[],
+        video_name=None,
+        begin_s=None,
+        end_s=None,
+        duration_s=None,
+        points=None,
+        manifest_run_id=None,
+        manifest_pass_id=None,
+        manifest_transect_id=None,
+        manifest_transect_name=None,
+        manifest_direction=None,
+        data_missing=True,
+    )
 
 
 def _incomplete_entry(run_dir: Path, mtime: float) -> RunEntry:
@@ -671,14 +720,21 @@ def delete_run_dir(out_root: Path, run_dir: Path, store: SurveyStore | None) -> 
     """Remove a run directory that may have no manifest (a crashed run) plus any
     database row. The direct-child guard still holds: only folders sitting
     directly under the output root are ever removed."""
+    delete_run_data(out_root, run_dir)
+    if store is not None:
+        run = store.run_by_dir_name(run_dir.resolve().name)
+        if run is not None:
+            store.delete_run(run.id)
+
+
+def delete_run_data(out_root: Path, run_dir: Path) -> None:
+    """Remove a run directory and nothing else: the database row stays, so the
+    run lives on as a data-removed record. Only direct children of the output
+    root are ever removed."""
     resolved = run_dir.resolve()
     if resolved.parent != out_root.resolve():
         raise ValueError(f"{run_dir} is not directly under {out_root}")
     shutil.rmtree(resolved)
-    if store is not None:
-        run = store.run_by_dir_name(resolved.name)
-        if run is not None:
-            store.delete_run(run.id)
 
 
 def assign_to_transect(

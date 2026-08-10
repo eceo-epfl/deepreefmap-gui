@@ -230,7 +230,11 @@ def run_fact_rows(entry: RunEntry, related: int = 0) -> list[tuple[str, str]]:
         # place from the start rather than appearing under the cursor.
         (
             "On disk",
-            format_bytes(entry.size_bytes) if entry.size_bytes is not None else "counting…",
+            "removed"
+            if entry.data_missing
+            else format_bytes(entry.size_bytes)
+            if entry.size_bytes is not None
+            else "counting…",
         ),
         ("Geometry", geometry_label(manifest) or _MISSING),
         ("Camera", str(manifest.get("camera_profile") or _MISSING)),
@@ -312,7 +316,11 @@ class RunDetailPanel(DetailCard):
     def set_open_action_visible(self, visible: bool) -> None:
         """Hide the opener where opening means nothing: View mode is already in it."""
         self._open_action_allowed = visible
-        self.open_btn.setVisible(visible and self._entry is not None and not self._entry.incomplete)
+        self.open_btn.setVisible(
+            visible
+            and self._entry is not None
+            and not (self._entry.incomplete or self._entry.data_missing)
+        )
 
     def _copy_command(self) -> None:
         from deepreefmap_gui.runs.run_command import command_from_manifest
@@ -347,12 +355,17 @@ class RunDetailPanel(DetailCard):
                 if error
                 else "This run did not finish and wrote no manifest."
             )
-        self.error.setVisible(bool(entry.incomplete))
+        elif entry.data_missing:
+            self.error.setText("The output data was removed. Only this record remains.")
+        self.error.setVisible(bool(entry.incomplete or entry.data_missing))
         self._entry = entry
         # An incomplete run still has a command worth copying: the run_command.sh
-        # it wrote before it failed is exactly what a diagnosis starts from.
-        self.copy_command_btn.setVisible(True)
-        self.open_btn.setVisible(self._open_action_allowed and not entry.incomplete)
+        # it wrote before it failed is exactly what a diagnosis starts from. A
+        # data-removed run kept no manifest to build one from.
+        self.copy_command_btn.setVisible(not entry.data_missing)
+        self.open_btn.setVisible(
+            self._open_action_allowed and not (entry.incomplete or entry.data_missing)
+        )
         self._show_ortho(entry.run_dir, entry.display_name)
 
     def _show_ortho(self, run_dir: Path, title: str) -> None:

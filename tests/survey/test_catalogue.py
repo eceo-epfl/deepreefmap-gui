@@ -373,3 +373,34 @@ def test_library_counts_a_pass_against_every_chapter(store):
     )}
     assert entries["GX020001.MP4"].pass_count == 1
     assert not entries["GX020001.MP4"].orphan
+
+
+def test_a_run_record_without_a_folder_surfaces_as_data_removed(out_root, store):
+    _transect, _video, pass_ = seed_pass(store)
+    store.add_run(RunRecord(pass_id=pass_.id, run_dir_name="gone", status="succeeded"))
+    write_run(out_root, "still_here")
+    entries = catalogue.scan_out_root(out_root)
+    entries += catalogue.missing_run_entries(
+        out_root, store, {e.dir_name for e in entries}
+    )
+    catalogue.reconcile(entries, store)
+    removed = [e for e in entries if e.data_missing]
+    assert [e.dir_name for e in removed] == ["gone"]
+    assert removed[0].db_run is not None
+    assert catalogue.entry_status(removed[0]) == "succeeded"
+
+
+def test_deleting_run_data_keeps_the_record(out_root, store):
+    _transect, _video, pass_ = seed_pass(store)
+    run_dir = write_run(out_root, "r1")
+    store.add_run(RunRecord(pass_id=pass_.id, run_dir_name="r1", status="succeeded"))
+    catalogue.delete_run_data(out_root, run_dir)
+    assert not run_dir.exists()
+    assert store.run_by_dir_name("r1") is not None
+
+
+def test_run_data_outside_the_output_root_is_refused(out_root, tmp_path):
+    stray = tmp_path / "elsewhere"
+    stray.mkdir()
+    with pytest.raises(ValueError):
+        catalogue.delete_run_data(out_root, stray)

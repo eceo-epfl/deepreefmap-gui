@@ -9,6 +9,7 @@ from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QSizePolicy
 
 from deepreefmap_gui.runs.browse import _DETAIL_SHARE
+from deepreefmap_gui.runs.delete_data_dialog import DeleteChoice
 from deepreefmap_gui.runs.run_detail import OrthoDialog
 from deepreefmap_gui.runs.run_table import COL_NAME, COL_POINTS, COL_SIZE, COL_STATUS
 from deepreefmap_gui.simple.mode import DESTINATIONS
@@ -33,6 +34,13 @@ def select_run(window, row: int) -> None:
 
 def row_of(window, name: str) -> int:
     return listed_runs(window).index(name)
+
+
+def choose_delete(monkeypatch, choice) -> None:
+    monkeypatch.setattr(
+        "deepreefmap_gui.runs.browse.DeleteDataDialog.ask",
+        staticmethod(lambda scope, parent=None: choice),
+    )
 
 
 class _FakeMime:
@@ -186,18 +194,54 @@ def test_rename_updates_manifest_and_card(out_root, make_window, monkeypatch):
 
 
 def test_delete_removes_run_after_confirmation(out_root, make_window, monkeypatch):
-    from PySide6.QtWidgets import QMessageBox
-
     run_dir = write_run(out_root, "doomed")
     window = make_window()
     select_run(window, 0)
-    monkeypatch.setattr(
-        "deepreefmap_gui.runs.browse.QMessageBox.question",
-        staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes),
-    )
+    choose_delete(monkeypatch, DeleteChoice.BOTH)
     window._on_data_delete_clicked()
     assert not run_dir.exists()
     assert listed_runs(window) == []
+
+
+def test_deleting_only_the_data_keeps_the_run_listed(out_root, make_window, monkeypatch):
+    """The record is the run's history, so the row survives the folder."""
+    write_survey_run(out_root, "kept_record")
+    run_dir = out_root / "kept_record"
+    window = make_window()
+    select_run(window, 0)
+    choose_delete(monkeypatch, DeleteChoice.DATA)
+    window._on_data_delete_clicked()
+    assert not run_dir.exists()
+    assert listed_runs(window) == ["kept_record"]
+    entry = window._data_entries[0]
+    assert entry.data_missing
+    assert cell(window, 0, COL_SIZE) == "removed"
+
+
+def test_a_record_only_delete_forgets_a_data_removed_run(out_root, make_window, monkeypatch):
+    write_survey_run(out_root, "fading")
+    window = make_window()
+    select_run(window, 0)
+    choose_delete(monkeypatch, DeleteChoice.DATA)
+    window._on_data_delete_clicked()
+    select_run(window, 0)
+    choose_delete(monkeypatch, DeleteChoice.METADATA)
+    window._on_data_delete_clicked()
+    assert listed_runs(window) == []
+    store = SurveyStore(out_root / "survey.db")
+    assert store.run_by_dir_name("fading") is None
+
+
+def test_a_data_removed_run_refuses_to_open(out_root, make_window, monkeypatch):
+    write_survey_run(out_root, "gone")
+    window = make_window()
+    select_run(window, 0)
+    choose_delete(monkeypatch, DeleteChoice.DATA)
+    window._on_data_delete_clicked()
+    select_run(window, 0)
+    window._on_data_open_clicked()
+    assert "removed" in window._status_label.text()
+    assert window._active_run_dir is None
 
 
 def test_delete_refuses_open_run(out_root, make_window, monkeypatch):
@@ -401,8 +445,6 @@ def test_dropped_unsupported_file_reports(tmp_path, make_window):
 
 
 def test_incomplete_run_is_listed_distinctly_and_deletable(out_root, make_window, monkeypatch):
-    from PySide6.QtWidgets import QMessageBox
-
     write_run(out_root, "done")
     crashed = out_root / "crashed"
     crashed.mkdir(parents=True)
@@ -416,10 +458,7 @@ def test_incomplete_run_is_listed_distinctly_and_deletable(out_root, make_window
     assert cell(window, row, COL_STATUS) == "Incomplete"
 
     select_run(window, row)
-    monkeypatch.setattr(
-        "deepreefmap_gui.runs.browse.QMessageBox.question",
-        staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes),
-    )
+    choose_delete(monkeypatch, DeleteChoice.BOTH)
     window._on_data_delete_clicked()
     assert not crashed.exists()
 
@@ -435,17 +474,12 @@ def _select_rows(window, names):
 
 
 def test_multi_select_delete_removes_every_selected_run(out_root, make_window, monkeypatch):
-    from PySide6.QtWidgets import QMessageBox
-
     write_run(out_root, "a")
     write_run(out_root, "b")
     write_run(out_root, "c")
     window = make_window()
     window._data_run_table.selectAll()
-    monkeypatch.setattr(
-        "deepreefmap_gui.runs.browse.QMessageBox.question",
-        staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes),
-    )
+    choose_delete(monkeypatch, DeleteChoice.BOTH)
     window._on_data_delete_clicked()
     assert listed_runs(window) == []
 
@@ -1298,3 +1332,20 @@ def test_an_outcome_is_the_same_chip_wherever_it_is_read(out_root, make_window):
     # The filter that finds a failed run is drawn in a failed run's colour.
     filter_chip = window._data_status_chips._buttons["failed"]
     assert STATUS_COLORS["failed"] in filter_chip.styleSheet()
+
+
+def test_session_delete_takes_runs_and_record_together(out_root, make_window, monkeypatch):
+    store = SurveyStore(out_root / "survey.db")
+    batch = make_batch(store)
+    seed_survey_run(store, out_root, "day1_run", batch=batch)
+    store.close()
+    window = make_window()
+    window._data_facet_buttons["sessions"].click()
+    window._data_selected_key = ("session", str(batch.id))
+    choose_delete(monkeypatch, DeleteChoice.BOTH)
+    window._on_data_session_delete()
+    assert not (out_root / "day1_run").exists()
+    fresh = window._survey_store()
+    assert fresh.get_batch(batch.id) is None
+    assert fresh.list_runs() == []
+    assert fresh.list_passes() != []

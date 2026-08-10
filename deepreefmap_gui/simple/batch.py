@@ -1179,20 +1179,34 @@ class SimpleBatchMixin(MixinBase):
         readable = [(path, result) for path, result in probed if result is not None]
         store = self._survey_store()
         imported: set[uuid.UUID] = set()
+        relinked = 0
         for path, (duration_s, fps) in readable:
             asset = VideoAsset.from_path(Path(path))
             asset.duration_s = duration_s
             asset.fps = fps
             # The library is keyed by content hash, so the same recording picked
-            # from two folders lands once.
-            imported.add(store.upsert_video(asset).id)
+            # from two folders lands once -- and a known clip added from a new
+            # place is the same clip moved, so upsert repoints its path. Sections
+            # and runs reference the clip by id and notice nothing.
+            prior = store.find_video_by_hash(asset.hash)
+            stored = store.upsert_video(asset)
+            if prior is not None and prior.path != asset.path:
+                relinked += 1
+            else:
+                imported.add(stored.id)
         parts = []
         if imported:
-            self._refresh_data_manager()
             parts.append(
                 f"Imported {len(imported)} clip{'' if len(imported) == 1 else 's'}. "
                 "Cut sections from them in Browse to process them."
             )
+        if relinked:
+            parts.append(
+                f"Relinked {relinked} known clip{'' if relinked == 1 else 's'} "
+                "to where they live now."
+            )
+        if imported or relinked:
+            self._refresh_data_manager()
         skipped = len(probed) - len(readable)
         if skipped:
             parts.append(f"Skipped {skipped} unreadable video(s).")

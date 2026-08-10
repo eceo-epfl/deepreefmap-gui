@@ -42,6 +42,7 @@ class SessionDetailPanel(DetailCard):
     """A titled card describing the selected session."""
 
     audit_requested = Signal()
+    delete_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -63,7 +64,12 @@ class SessionDetailPanel(DetailCard):
             "from the standard settings."
         )
         self.audit_btn.clicked.connect(self.audit_requested)
-        self.add_actions(self.audit_btn)
+        self.delete_btn = QPushButton("Delete…")
+        self.delete_btn.setToolTip(
+            "Remove this session's output data, its records, or both"
+        )
+        self.delete_btn.clicked.connect(self.delete_requested)
+        self.add_actions(self.audit_btn, self.delete_btn)
 
         self._entries: list = []
 
@@ -74,6 +80,9 @@ class SessionDetailPanel(DetailCard):
     def show_group(self, group: FacetGroup) -> None:
         entries = group.all_entries()
         self._entries = entries
+        # Unfiled runs have no session row to delete; the group is a shelf,
+        # not a thing.
+        self.delete_btn.setEnabled(group.key[0] == "session")
         label, status_key = _outcome(entries)
         self.title.setText(group.title)
         self.set_status(label, STATUS_COLORS.get(status_key, TEXT_MUTED))

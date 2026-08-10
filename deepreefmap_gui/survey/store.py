@@ -574,6 +574,46 @@ class SurveyStore:
         ).fetchone()
         return row["n"]
 
+    def runs_in_batch(self, batch_id: uuid.UUID) -> list[RunRecord]:
+        """Every run the session placed, including ones recorded on the pass only.
+
+        The fallback matches RunEntry.session_id: an early run row carries no
+        batch_id of its own and belongs to the session its pass was catalogued
+        in. delete_batch removes the same set, so what this lists is what goes.
+        """
+        rows = self._conn().execute(
+            """
+            SELECT * FROM run_record
+            WHERE batch_id = ?
+               OR (batch_id IS NULL AND pass_id IN
+                   (SELECT id FROM transect_pass WHERE batch_id = ?))
+            ORDER BY created_at
+            """,
+            (str(batch_id), str(batch_id)),
+        ).fetchall()
+        return [from_row(RunRecord, r) for r in rows]
+
+    def delete_batch(self, batch_id: uuid.UUID) -> None:
+        """Forget a session: its cart rows and run records go, everything shared
+        stays. Passes catalogued in it survive with no session of their own, and
+        clips and transects are never touched here."""
+        key = str(batch_id)
+        with self._conn() as conn:
+            conn.execute("DELETE FROM batch_item WHERE batch_id = ?", (key,))
+            conn.execute(
+                """
+                DELETE FROM run_record
+                WHERE batch_id = ?
+                   OR (batch_id IS NULL AND pass_id IN
+                       (SELECT id FROM transect_pass WHERE batch_id = ?))
+                """,
+                (key, key),
+            )
+            conn.execute(
+                "UPDATE transect_pass SET batch_id = NULL WHERE batch_id = ?", (key,)
+            )
+            conn.execute("DELETE FROM survey_batch WHERE id = ?", (key,))
+
     def current_cart(self) -> SurveyBatch | None:
         """The newest session, only while it has run nothing.
 

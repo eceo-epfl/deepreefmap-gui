@@ -43,7 +43,6 @@ from deepreefmap_gui.core.widgets import (
     STATUS_COLORS,
     EmptyState,
     FilterChips,
-    confirm,
     secondary_label,
     section_column,
     segmented_qss,
@@ -54,6 +53,11 @@ from deepreefmap_gui.map.overlays import transect_overlays
 from deepreefmap_gui.map.slippy_map import SlippyMapWidget
 from deepreefmap_gui.profiling.eta import format_duration
 from deepreefmap_gui.profiling.system_probe import format_bytes
+from deepreefmap_gui.runs.delete_data_dialog import (
+    DeleteChoice,
+    DeleteDataDialog,
+    DeleteScope,
+)
 from deepreefmap_gui.runs.run_cards import points_label, related_run_counts
 from deepreefmap_gui.runs.run_detail import RunDetailPanel
 from deepreefmap_gui.runs.run_table import COL_NAME, RunTable
@@ -150,6 +154,15 @@ _DETAIL_SHARE = 0.28
 # Narrow enough that the proportion still holds on a laptop screen, where
 # the rail and the table have already taken their share.
 _DETAIL_MIN_WIDTH = 260
+
+
+def _deleted_summary(data_gone: int, records_gone: int) -> str:
+    parts = []
+    if data_gone:
+        parts.append(f"the data of {data_gone} run{'s' if data_gone != 1 else ''}")
+    if records_gone:
+        parts.append(f"{records_gone} record{'s' if records_gone != 1 else ''}")
+    return f"Deleted {' and '.join(parts)}."
 
 
 def _key_transect_id(key: tuple | None) -> uuid.UUID | None:
@@ -392,6 +405,7 @@ class BrowseMixin(MixinBase):
         self._data_detail_stack.addWidget(self._transect_detail)
         self._session_detail = SessionDetailPanel()
         self._session_detail.audit_requested.connect(self._on_data_session_audit)
+        self._session_detail.delete_requested.connect(self._on_data_session_delete)
         self._data_detail_stack.addWidget(self._session_detail)
         self._data_detail_stack.setMinimumWidth(_DETAIL_MIN_WIDTH)
         self._data_split.addWidget(self._data_detail_stack)
@@ -445,6 +459,11 @@ class BrowseMixin(MixinBase):
                 # Crashed runs never wrote a manifest, so scan_out_root skips
                 # them; surface them here so they can be seen and cleared.
                 entries += catalogue.scan_incomplete_runs(
+                    root, store, {e.dir_name for e in entries}
+                )
+                # And the inverse: records whose folder is gone. The history
+                # outlives the outputs, so these still earn a row.
+                entries += catalogue.missing_run_entries(
                     root, store, {e.dir_name for e in entries}
                 )
                 entries.sort(key=lambda e: e.sort_key, reverse=True)
@@ -1181,6 +1200,9 @@ class BrowseMixin(MixinBase):
         if self._run_in_flight():
             self._status_label.setText("Wait for processing to finish before opening a run.")
             return
+        if not path.is_dir():
+            self._status_label.setText("The output data for this run was removed.")
+            return
         # Banner first, straight from the manifest, so the click lands
         # instantly even when the load itself takes a while.
         manifest_path = path / "run_manifest.json"
@@ -1261,14 +1283,15 @@ class BrowseMixin(MixinBase):
         """
         current = self._data_selected_entry()
         selected = self._data_selected_entries()
-        complete = current is not None and not current.incomplete
+        on_disk = current is not None and not current.data_missing
+        complete = current is not None and on_disk and not current.incomplete
         for key, enabled in (
             ("open", complete),
             ("rename", complete),
             # A crashed run still wrote the command that made it, and that is
             # exactly what a diagnosis starts from.
-            ("copy", current is not None),
-            ("show", current is not None),
+            ("copy", on_disk),
+            ("show", on_disk),
             # Assign works from a table selection or from the selected tree
             # group, so it asks the same source the handler will act on.
             ("assign", bool(self._data_assign_targets())),
@@ -1375,6 +1398,105 @@ class BrowseMixin(MixinBase):
         self._status_label.setText(f"Renamed run to '{new_name.strip()}'.")
         self._refresh_data_manager()
 
+    def _on_data_session_delete(self) -> None:
+        """Remove a session's output data, its records, or both.
+
+        The dialog counts exactly what would go. What is shared stays
+        untouched: sections keep their trims, clips stay in the library, and
+        transects keep their tape. Records can only be forgotten once the data
+        is gone, because a rescan rebuilds them from the manifests otherwise.
+        """
+        group = self._selected_session_group()
+        if group is None or group.key[0] != "session":
+            return
+        store = self._survey_store() if getattr(self, "_data_store_ok", False) else None
+        if store is None:
+            return
+        batch_id = uuid.UUID(str(group.key[1]))
+        batch = store.get_batch(batch_id)
+        if batch is None:
+            self._status_label.setText("This session has no record to act on.")
+            return
+        runs = store.runs_in_batch(batch_id)
+        cart = store.list_batch_items(batch_id)
+        root = self._data_out_root()
+        with_data = [r for r in runs if (root / r.run_dir_name).is_dir()]
+        if self._active_run_dir is not None and any(
+            root / r.run_dir_name == self._active_run_dir for r in with_data
+        ):
+            QMessageBox.information(
+                self,
+                "Delete session",
+                "One of this session's runs is open. Close it first with the + button.",
+            )
+            return
+        if self._pipeline_thread is not None and self._pipeline_thread.is_alive():
+            QMessageBox.information(
+                self, "Delete session", "Wait for the current run to finish."
+            )
+            return
+        sizes = [self._run_size_cache.get(r.run_dir_name) for r in with_data]
+        known = [s for s in sizes if s is not None]
+        size_txt = format_bytes(sum(known)) if known else "size still counting"
+        if len(known) not in (0, len(with_data)):
+            size_txt = f"at least {size_txt}"
+        counts = (
+            f"{len(runs)} run{'s' if len(runs) != 1 else ''} and "
+            f"{len(cart)} cart item{'s' if len(cart) != 1 else ''}"
+        )
+        choice = DeleteDataDialog.ask(
+            DeleteScope(
+                title="Delete session",
+                subject=f"Delete from session '{batch.name}' ({counts})?",
+                data_detail=(
+                    f"The output folders of its {len(with_data)} "
+                    f"run{'s' if len(with_data) != 1 else ''} on disk, {size_txt}. "
+                    "The records stay, so the session still shows here."
+                ),
+                metadata_detail=(
+                    f"The session, its cart items and its {len(runs)} run "
+                    f"record{'s' if len(runs) != 1 else ''}, a few kilobytes. "
+                    "Removing records forgets the session ever ran; it frees no "
+                    "disk space worth naming."
+                    if not with_data
+                    else "Available once the output data is removed: while the "
+                    "data exists, a rescan would rebuild the records from their "
+                    "manifests."
+                ),
+                keeps=(
+                    "Sections and their trims",
+                    "Clips in the library",
+                    "Transects",
+                ),
+                data_present=bool(with_data),
+                metadata_present=not with_data,
+                extra_notes=("This cannot be undone.",),
+            ),
+            self,
+        )
+        if choice is None:
+            return
+        data_gone = 0
+        if choice is not DeleteChoice.METADATA:
+            for run in with_data:
+                try:
+                    catalogue.delete_run_data(root, root / run.run_dir_name)
+                except Exception as exc:
+                    self._status_label.setText(f"Delete failed: {exc}")
+                    logger.exception("Failed to delete run data")
+                    continue
+                self._run_size_cache.pop(run.run_dir_name, None)
+                data_gone += 1
+        if choice is not DeleteChoice.DATA:
+            store.delete_batch(batch_id)
+            self._status_label.setText(f"Deleted session '{batch.name}'.")
+        elif data_gone:
+            self._status_label.setText(
+                f"Deleted the data of {data_gone} run{'s' if data_gone != 1 else ''} "
+                f"from '{batch.name}'."
+            )
+        self._refresh_data_manager()
+
     def _on_data_delete_clicked(self) -> None:
         entries = self._data_selected_entries()
         if not entries:
@@ -1391,35 +1513,67 @@ class BrowseMixin(MixinBase):
                 self, "Delete run", "Wait for the current run to finish."
             )
             return
-        if not confirm(self, "Delete run", self._delete_prompt(entries)):
+        choice = DeleteDataDialog.ask(self._delete_scope(entries), self)
+        if choice is None:
             return
         store = self._survey_store() if getattr(self, "_data_store_ok", False) else None
-        deleted = 0
+        data_gone = records_gone = 0
         for entry in entries:
             try:
-                # A crashed run has no manifest, so it needs the manifest-free
-                # remover; both keep delete_run_dir's direct-child guard.
-                if entry.incomplete:
-                    catalogue.delete_run_dir(self._data_out_root(), entry.run_dir, store)
-                else:
-                    catalogue.delete_run(self._data_out_root(), entry.run_dir, store)
+                if choice is not DeleteChoice.METADATA and not entry.data_missing:
+                    catalogue.delete_run_data(self._data_out_root(), entry.run_dir)
+                    self._run_size_cache.pop(entry.dir_name, None)
+                    data_gone += 1
+                if choice is not DeleteChoice.DATA and store is not None:
+                    run = entry.db_run or store.run_by_dir_name(entry.dir_name)
+                    if run is not None:
+                        store.delete_run(run.id)
+                        records_gone += 1
             except Exception as exc:
                 self._status_label.setText(f"Delete failed: {exc}")
                 logger.exception("Failed to delete run")
                 continue
-            self._run_size_cache.pop(entry.dir_name, None)
-            deleted += 1
-        if deleted:
-            self._status_label.setText(f"Deleted {deleted} run{'s' if deleted != 1 else ''}.")
+        if data_gone or records_gone:
+            self._status_label.setText(_deleted_summary(data_gone, records_gone))
         self._refresh_data_manager()
 
-    def _delete_prompt(self, entries: list[RunEntry]) -> str:
+    def _delete_scope(self, entries: list[RunEntry]) -> DeleteScope:
+        """One dialog scope for the selection, sizes said where they are known.
+
+        Removing only the record while the data stays is not offered: the next
+        rescan rebuilds the row from the run's manifest, so the choice would
+        silently undo itself.
+        """
+        with_data = [e for e in entries if not e.data_missing]
+        sizes = [self._run_size_cache.get(e.dir_name) for e in with_data]
+        known = [s for s in sizes if s is not None]
+        size_txt = format_bytes(sum(known)) if known else "size still counting"
+        if len(known) not in (0, len(with_data)):
+            size_txt = f"at least {size_txt}"
         if len(entries) == 1:
-            entry = entries[0]
-            size = self._run_size_cache.get(entry.dir_name)
-            size_txt = f" ({format_bytes(size)})" if size is not None else ""
-            return f"Delete '{entry.display_name}'{size_txt}?\nThis cannot be undone."
-        return f"Delete {len(entries)} runs?\nThis cannot be undone."
+            subject = f"Delete from '{entries[0].display_name}'?"
+        else:
+            subject = f"Delete from {len(entries)} runs?"
+        records = sum(1 for e in entries if e.db_run is not None)
+        return DeleteScope(
+            title="Delete run",
+            subject=subject,
+            data_detail=(
+                f"The output folder{'s' if len(with_data) != 1 else ''} on disk, "
+                f"{size_txt}. The record stays, so the run still shows here."
+            ),
+            metadata_detail=(
+                f"{records} record{'s' if records != 1 else ''} in the survey "
+                "database, a few kilobytes. Removing a record forgets the run "
+                "ever happened; it frees no disk space worth naming."
+                if not with_data
+                else "Available once the output data is removed: while the data "
+                "exists, a rescan would rebuild the record from its manifest."
+            ),
+            data_present=bool(with_data),
+            metadata_present=bool(records) and not with_data,
+            extra_notes=("This cannot be undone.",),
+        )
 
     def _data_assign_targets(self) -> list[RunEntry]:
         """The whole footage group of every selected run, or the selected tree
@@ -1500,7 +1654,8 @@ class BrowseMixin(MixinBase):
         todo = [
             (e.dir_name, e.run_dir)
             for e in self._data_entries
-            if e.dir_name not in self._run_size_cache or e.dir_name in self._run_size_stale
+            if not e.data_missing
+            and (e.dir_name not in self._run_size_cache or e.dir_name in self._run_size_stale)
         ]
         if not todo:
             return

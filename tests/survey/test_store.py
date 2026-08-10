@@ -6,6 +6,7 @@ import uuid
 
 import pytest
 from _factories import (
+    make_batch,
     make_transect,
     make_video,
     seed_pass,
@@ -830,3 +831,40 @@ def test_rebuild_restores_every_chapter_of_a_pass(store, tmp_path):
     assert [fresh.get_video(v).file_name for v in restored.video_ids()] == [
         "GX010001.MP4", "GX020001.MP4"
     ]
+
+
+def test_deleting_a_session_takes_its_records_and_leaves_the_shared(store):
+    """The session's cart rows and run records go; footage and transects stay."""
+    batch = make_batch(store)
+    transect, video, pass_ = seed_pass(store, batch=batch)
+    store.add_run(
+        RunRecord(pass_id=pass_.id, run_dir_name="t1__p01", batch_id=batch.id)
+    )
+    store.add_run(RunRecord(pass_id=pass_.id, run_dir_name="t1__p02"))
+    assert {r.run_dir_name for r in store.runs_in_batch(batch.id)} == {
+        "t1__p01",
+        "t1__p02",
+    }
+
+    store.delete_batch(batch.id)
+
+    assert store.get_batch(batch.id) is None
+    assert store.list_all_batch_items() == []
+    assert store.list_runs() == []
+    surviving = store.get_pass(pass_.id)
+    assert surviving is not None
+    assert surviving.batch_id is None
+    assert store.get_transect(transect.id) is not None
+    assert store.get_video(video.id) is not None
+
+
+def test_deleting_a_session_leaves_other_sessions_runs(store):
+    first, second = make_batch(store, "Day 1"), make_batch(store, "Day 2")
+    _t, _v, pass_ = seed_pass(store, batch=first)
+    store.add_run(RunRecord(pass_id=pass_.id, run_dir_name="one", batch_id=first.id))
+    store.add_run(RunRecord(pass_id=pass_.id, run_dir_name="two", batch_id=second.id))
+
+    store.delete_batch(second.id)
+
+    assert [r.run_dir_name for r in store.list_runs()] == ["one"]
+    assert store.get_batch(first.id) is not None

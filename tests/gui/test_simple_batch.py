@@ -1862,3 +1862,29 @@ def test_no_row_action_label_is_clipped(batch_window):
     # Padding either side of a push button's text; generous rather than exact,
     # because the point is that the column is not sized to the text alone.
     assert table.columnWidth(_COL_ACTION) >= widest + 24
+
+
+def test_a_moved_clip_relinks_on_readd(batch_window, tmp_path, monkeypatch):
+    """A known clip added from a new folder is the same clip moved: its path
+    follows, its row and everything referencing it stay put."""
+    store = batch_window._survey_store()
+    original = tmp_path / "GX010012.MP4"
+    original.write_bytes(b"same bytes" * 4096)
+    monkeypatch.setattr(
+        "deepreefmap_gui.simple.batch._probe_video", lambda _path: (60.0, 30.0)
+    )
+    batch_window._add_video_paths([str(original)])
+    assert wait_until(lambda: len(store.list_videos()) == 1)
+    first_id = store.list_videos()[0].id
+
+    drive = tmp_path / "drive"
+    drive.mkdir()
+    moved = drive / "GX010012.MP4"
+    moved.write_bytes(original.read_bytes())
+    original.unlink()
+    batch_window._add_video_paths([str(moved)])
+
+    assert wait_until(lambda: store.list_videos()[0].path == str(moved))
+    assert len(store.list_videos()) == 1
+    assert store.list_videos()[0].id == first_id
+    assert "Relinked 1 known clip" in batch_window._status_label.text()
