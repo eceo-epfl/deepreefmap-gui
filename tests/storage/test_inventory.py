@@ -7,6 +7,7 @@ a listing instead of building a filesystem.
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 
 from deepreefmap_gui.storage.inventory import (
     KIND_ABORTED_RUN,
@@ -25,8 +26,6 @@ from deepreefmap_gui.survey.catalogue import (
     VideoLibraryEntry,
 )
 from deepreefmap_gui.survey.models import RunRecord, TransectPass, VideoAsset
-
-from pathlib import Path
 
 GB = 1024**3
 MOUNTS = {"/", "/media/card"}

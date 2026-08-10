@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 from _factories import write_run_tree
 from PySide6.QtCore import Qt
 
