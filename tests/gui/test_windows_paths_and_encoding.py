@@ -10,8 +10,6 @@ imwrite reproduce all of them.
 
 from __future__ import annotations
 
-import csv
-
 import pytest
 
 
@@ -90,40 +88,6 @@ def test_cover_csvs_are_written_as_utf8(tmp_path):
 
     text = path.read_text(encoding="utf-8")
     assert "\u2014" in text
-
-
-def _write_csv(path, encoding, name="reef"):
-    rows = [
-        ["videos", "timestamps", "transect_length", "crop_width"],
-        [f"/tmp/{name}.mp4", "", "10", "2"],
-    ]
-    with path.open("w", newline="", encoding=encoding) as fh:
-        csv.writer(fh).writerows(rows)
-
-
-def test_a_csv_with_an_excel_bom_is_read(tmp_path):
-    """Excel writes UTF-8 with a BOM; without utf-8-sig the BOM lands in the
-    first column name and the required-columns check fails."""
-    from deepreefmap_gui.io.batch_csv import load_batch_csv
-
-    path = tmp_path / "jobs.csv"
-    _write_csv(path, "utf-8-sig")
-
-    jobs = load_batch_csv(path)
-
-    assert [j.name for j in jobs] == ["reef"]
-
-
-def test_a_csv_in_another_encoding_is_not_refused(tmp_path):
-    """One unrepresentable character should not cost the user the whole batch."""
-    from deepreefmap_gui.io.batch_csv import load_batch_csv
-
-    path = tmp_path / "jobs.csv"
-    _write_csv(path, "cp1252", name="r\u00e9cif")
-
-    jobs = load_batch_csv(path)
-
-    assert len(jobs) == 1
 
 
 def test_no_text_file_is_read_or_written_without_an_encoding():

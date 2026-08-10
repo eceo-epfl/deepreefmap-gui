@@ -1113,7 +1113,7 @@ class SimplePlanMixin(MixinBase):
 
     def _survey_data_changed(self) -> None:
         """Refresh survey views that mirror the store."""
-        self._refresh_survey_transect_combos()
+        self._refresh_survey_transect_names()
         self._refresh_survey_analysis()
         # Creating the transect an unassigned pass was waiting for has to
         # re-evaluate the Run gate, or the batch stays blocked with nothing left

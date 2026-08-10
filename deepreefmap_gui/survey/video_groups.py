@@ -73,7 +73,7 @@ class Span:
     run_count: int
 
 
-def pass_status(runs: Sequence[RunRecord], *, held: bool = False) -> str:
+def pass_status(runs: Sequence[RunRecord]) -> str:
     """The status shown for a pass: its latest run's, or ``queued`` with none.
 
     The single rule for "what became of this section". ``runs/video_detail.py``
@@ -84,7 +84,7 @@ def pass_status(runs: Sequence[RunRecord], *, held: bool = False) -> str:
     insertion order.
     """
     if not runs:
-        return "held" if held else "queued"
+        return "queued"
     return sorted(runs, key=lambda run: run.created_at or "")[-1].status
 
 
@@ -232,7 +232,7 @@ def timeline_spans(entry: VideoLibraryEntry) -> list[Span]:
                 pass_id=str(pass_.id),
                 begin=begin,
                 end=end,
-                status=pass_status(runs, held=getattr(pass_, "held", False)),
+                status=pass_status(runs),
                 run_count=len(runs),
             )
         )

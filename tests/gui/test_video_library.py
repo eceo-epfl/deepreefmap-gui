@@ -523,11 +523,31 @@ def test_a_section_shows_the_sessions_it_has_run_in(window):
     assert "2026-07-21" in window._section_detail.run_list.item(0).text()
 
 
-def test_the_section_card_offers_one_button_and_a_menu(window):
+def test_a_cart_row_opens_its_section_here(window):
+    """Scenario: the transect, direction or trim of a cart row is clicked.
+
+    Expected behaviour: the Videos page comes forward with that section picked
+    and scrolled to, because this is where a section is described.
+    """
+    store = window._survey_store()
+    video = _seed(store, "GX010051.MP4")
+    pass_ = _cut(store, video)
+    window._refresh_data_manager()
+
+    window._go_to_section("process")
+    window._open_section_in_videos(pass_.id)
+
+    assert window._current_section() == "videos"
+    assert window._selected_pass_id == str(pass_.id)
+    assert window._video_list.selected_section == str(pass_.id)
+
+
+def test_the_section_card_files_its_actions_under_one_menu(window):
     """Scenario: four full-width buttons in a 260px pane truncated every label.
 
-    Expected behaviour: the card keeps Add to cart as its one button and files
-    the occasional actions under More…, the same shape as Browse.
+    Expected behaviour: the occasional actions go under More…, the same shape as
+    Browse, and the cart is not among them: the section's own row carries that
+    control and shows its state on it.
     """
     store = window._survey_store()
     video = _seed(store, "GX010060.MP4")
@@ -537,9 +557,26 @@ def test_the_section_card_offers_one_button_and_a_menu(window):
     window._select_section(str(pass_.id))
 
     panel = window._section_detail
-    assert panel.cart_btn.isEnabled()
+    assert not hasattr(panel, "cart_btn")
     labels = [a.text() for a in panel.more_btn.menu().actions() if not a.isSeparator()]
     assert labels == ["Adjust trim…", "Change transect…", "Delete section"]
+
+
+def test_the_filing_fact_opens_the_dialog_that_sets_it(window):
+    """Transect and direction are one fact and one dialog, so the fact is the
+    way in rather than a menu entry that repeats it."""
+    store = window._survey_store()
+    video = _seed(store, "GX010062.MP4")
+    pass_ = _cut(store, video)
+
+    show_videos(window)
+    window._select_section(str(pass_.id))
+
+    panel = window._section_detail
+    asked = []
+    panel.reassign_requested.connect(asked.append)
+    panel.facts.link_activated.emit("filing")
+    assert asked == [str(pass_.id)]
 
 
 def test_menu_actions_act_on_the_shown_section(window):
@@ -840,10 +877,12 @@ def test_both_lists_say_the_same_thing_about_the_cart(window):
     assert _cart_marks(window, str(pass_.id)) == (True, True)
     assert "Added" in window._status_label.text()
 
-    # Asking again is not a second add, and it says so rather than claiming one.
+    # Clicking the same control again is how a section comes back out.
     window._on_video_pass_to_cart(str(pass_.id))
-    assert "already in the cart" in window._status_label.text()
+    assert _cart_marks(window, str(pass_.id)) == (False, False)
+    assert "out of the cart" in window._status_label.text()
 
+    window._on_video_pass_to_cart(str(pass_.id))
     cart = store.current_cart()
     store.remove_batch_item(cart.id, pass_.id)
     window._refresh_survey_batch_tab()

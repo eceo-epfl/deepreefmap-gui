@@ -7,15 +7,16 @@ import pytest
 from _factories import clip_pass, make_batch, make_transect, seed_pass
 from _qt_wait import wait_until
 from deepreefmap.pipeline.orchestrator import ReconstructionCancelled
-from PySide6.QtWidgets import QDialog, QMessageBox
+from PySide6.QtWidgets import QMessageBox
 
 from deepreefmap_gui.core.widgets import PASS_PERCENT_ROLE
 from deepreefmap_gui.simple.batch import (
     _COL_ACTION,
-    _COL_DIRECTION,
+    _COL_LENGTH,
+    _COL_RECORDED,
+    _COL_SECTION,
+    _COL_SETTINGS,
     _COL_STATUS,
-    _COL_TRANSECT,
-    _COL_TRIM,
     _COL_VIDEO,
     _diagnose_failure,
     _median_pass_seconds,
@@ -66,6 +67,22 @@ def test_cart_table_header_does_not_pretend_to_sort(batch_window):
     assert not table.isSortingEnabled()
     assert not header.sectionsClickable()
     assert header.property("sortable") is None
+
+
+def test_every_column_of_the_cart_is_named(batch_window):
+    """A table built wider than its labels ends with columns Qt names "9" and
+    "10", which read as data nobody put there."""
+    from PySide6.QtCore import Qt
+
+    table = batch_window._survey_pass_table
+    named = [
+        table.horizontalHeaderItem(column).text()
+        for column in range(table.columnCount())
+    ]
+    assert named == ["", "Clip", "Recorded", "Length", "Transect + section",
+                     "Settings", "Status", ""]
+    # Centred: a heading names a column rather than starting it.
+    assert table.horizontalHeader().defaultAlignment() & Qt.AlignmentFlag.AlignHCenter
 
 
 def await_batch(window, qapp, timeout=10.0):
@@ -130,9 +147,41 @@ def import_clips(window, tmp_path, monkeypatch, names=("GX010001.MP4",)):
     return paths
 
 
-def assign_transect(window, row_index):
-    combo = window._survey_pass_table.cellWidget(window._table_row_of(row_index), _COL_TRANSECT)
-    combo.setCurrentIndex(1)
+def assign_transect(window, row_index, transect_id=None):
+    """File a pass against a transect, as the Videos page does.
+
+    The cart shows the transect and no longer sets it, so the store is where a
+    test has to write one.
+    """
+    store = window._survey_store()
+    pass_ = store.get_pass(window._survey_rows[row_index].pass_id)
+    pass_.transect_id = transect_id or store.list_transects()[0].id
+    store.update_pass(pass_)
+    window._refresh_survey_batch_tab()
+
+
+def set_direction(window, row_index, direction):
+    store = window._survey_store()
+    pass_ = store.get_pass(window._survey_rows[row_index].pass_id)
+    pass_.direction = direction
+    store.update_pass(pass_)
+    window._refresh_survey_batch_tab()
+
+
+def retrim(window, row_index, begin_s, end_s):
+    store = window._survey_store()
+    pass_ = store.get_pass(window._survey_rows[row_index].pass_id)
+    pass_.begin_s, pass_.end_s = begin_s, end_s
+    store.update_pass(pass_)
+    window._refresh_survey_batch_tab()
+
+
+def row_cell(window, row_index, column):
+    return window._survey_pass_table.cellWidget(window._table_row_of(row_index), column)
+
+
+def click_delete(window, row_index):
+    row_cell(window, row_index, _COL_ACTION).click()
 
 
 def add_second_transect(window, name="T2"):
@@ -142,28 +191,8 @@ def add_second_transect(window, name="T2"):
     window._refresh_survey_batch_tab()
 
 
-def stub_trim_dialog(monkeypatch, begin_s, end_s, accepted=True):
-    """Stand in for the scrub dialog, which needs a decodable file and a screen."""
-    class _FakeScrub:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def exec(self):
-            return QDialog.DialogCode.Accepted if accepted else QDialog.DialogCode.Rejected
-
-        def time_range(self):
-            return (begin_s, end_s)
-
-    monkeypatch.setattr("deepreefmap_gui.simple.batch.VideoScrubDialog", _FakeScrub)
-
-
 def answer_question(monkeypatch, button):
     monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: button))
-
-
-def stored_directions(window):
-    store = window._survey_store()
-    return [store.get_pass(row.pass_id).direction for row in window._survey_rows]
 
 
 def test_a_queued_pass_without_a_transect_is_runnable(batch_window, tmp_path, monkeypatch):
@@ -175,9 +204,9 @@ def test_a_queued_pass_without_a_transect_is_runnable(batch_window, tmp_path, mo
     # Runnable as it stands: skipping the transect costs the comparison against
     # repeat passes, not the run.
     assert batch_window._survey_start_btn.isEnabled()
-    combo = batch_window._survey_pass_table.cellWidget(batch_window._table_row_of(0), _COL_TRANSECT)
-    assert combo.currentText() == "Skip transect"
-    assert combo.styleSheet() != ""
+    cell = row_cell(batch_window, 0, _COL_SECTION)
+    assert cell.text().startswith("No transect · forward · ")
+    assert cell.styleSheet() != ""
     assert len(batch_window._survey_store().list_passes()) == 1
     assert batch_window._survey_store().list_passes()[0].transect_id is None
 
@@ -214,13 +243,23 @@ def test_assigning_transect_persists_pass(batch_window, tmp_path, monkeypatch):
     assert batch_window._survey_start_btn.text() == "Start processing (1 pass)"
 
 
-def test_split_pass_duplicates_row(batch_window, tmp_path, monkeypatch):
+def test_the_section_cell_opens_the_section_under_videos(batch_window, tmp_path, monkeypatch):
+    """Scenario: the section on a cart row is clicked.
+
+    Expected behaviour: nothing is edited here. The Videos page opens on that
+    section, which is the one place a section is described. Transect, direction
+    and window are one button, because they are one thing and go to one place.
+    """
     add_video(batch_window, tmp_path, monkeypatch)
     assign_transect(batch_window, 0)
-    batch_window._survey_pass_table.setCurrentCell(batch_window._table_row_of(0), 0)
-    batch_window._on_survey_split_pass()
-    assert len(batch_window._survey_rows) == 2
-    assert len(batch_window._survey_store().list_passes()) == 2
+    opened = []
+    monkeypatch.setattr(batch_window, "_open_section_in_videos", opened.append)
+    batch_window._refresh_survey_batch_tab()
+
+    cell = row_cell(batch_window, 0, _COL_SECTION)
+    assert cell.text() == "T1 · forward · 0:00-1:00"
+    cell.click()
+    assert opened == [batch_window._survey_rows[0].pass_id]
 
 
 def test_each_pass_leaves_a_log_beside_its_outputs(
@@ -523,23 +562,22 @@ def test_attempt_names_survive_a_transect_rename(batch_window):
     assert batch_window._pass_dir_name(pass_, transect, store) == "T1__p01__abcd1234__r03"
 
 
-def test_the_worker_skips_a_pass_held_after_checkout(
+def test_the_worker_skips_a_pass_taken_out_after_checkout(
     batch_window, tmp_path, monkeypatch, qapp
 ):
-    """Hold on a not-yet-started row is the one per-item control a running
-    order keeps, and it only works because the worker re-reads the store."""
+    """Taking a not-yet-started row out is the one per-row control a running
+    order keeps, and it only works because the worker re-reads the cart."""
     add_videos(batch_window, tmp_path, monkeypatch, ["GX010001.MP4", "GX010002.MP4"])
     assign_transect(batch_window, 0)
     assign_transect(batch_window, 1)
     store = batch_window._survey_store()
+    batch = batch_window._survey_batch
     second_pass_id = batch_window._survey_rows[1].pass_id
     calls = []
 
     def fake_run(**kwargs):
         if not calls:
-            held = store.get_pass(second_pass_id)
-            held.held = True
-            store.update_pass(held)
+            store.remove_batch_item(batch.id, second_pass_id)
         calls.append(kwargs)
         (kwargs["output_dir"] / "run_manifest.json").write_text(json.dumps({"mode": "semantic"}))
 
@@ -551,7 +589,7 @@ def test_the_worker_skips_a_pass_held_after_checkout(
     statuses = {r.pass_id: r for r in store.list_runs()}
     skipped = statuses[second_pass_id]
     assert skipped.status == "cancelled"
-    assert "Held or removed" in skipped.error
+    assert "Taken out of the session" in skipped.error
 
 
 def test_failed_pass_keeps_its_cause_on_the_row(batch_window, tmp_path, monkeypatch, qapp):
@@ -685,6 +723,198 @@ def test_remove_from_session_honours_multi_selection(batch_window, tmp_path, mon
     # The passes and the session survive; only the membership is gone.
     assert len(store.list_passes()) == 2
     assert store.get_batch(session.id) is not None
+
+
+def test_the_row_button_takes_one_pass_out(batch_window, tmp_path, monkeypatch):
+    """Scenario: one pass of a filled cart is not wanted in this session.
+
+    Expected behaviour: its own button takes it out, with no selection first,
+    and takes nothing else with it. The pass and its clip are kept.
+    """
+    add_videos(batch_window, tmp_path, monkeypatch, ["GX010001.MP4", "GX010002.MP4"])
+    session = batch_window._survey_batch
+    click_delete(batch_window, 0)
+
+    store = batch_window._survey_store()
+    assert [row.video.file_name for row in batch_window._survey_rows] == ["GX010002.MP4"]
+    assert len(store.list_batch_items(session.id)) == 1
+    assert len(store.list_passes()) == 2
+
+
+# --- The processing order ---
+
+
+def test_a_dragged_row_changes_the_order_and_keeps_it(
+    batch_window, tmp_path, monkeypatch
+):
+    """Scenario: the last clip of the day is the one worth processing first.
+
+    Expected behaviour: dragging it to the top reorders the queue, the order is
+    written to the cart rows, and it survives a rebuild from the store.
+    """
+    add_videos(
+        batch_window, tmp_path, monkeypatch, ["GX010001.MP4", "GX010002.MP4", "GX010003.MP4"]
+    )
+    table = batch_window._survey_pass_table
+    table.rows_moved.emit(batch_window._table_row_of(2), batch_window._table_row_of(0))
+    assert [row.video.file_name for row in batch_window._survey_rows] == [
+        "GX010003.MP4", "GX010001.MP4", "GX010002.MP4"
+    ]
+
+    batch_window._survey_batch = None
+    batch_window._survey_rows = []
+    batch_window._refresh_survey_batch_tab()
+    assert [row.video.file_name for row in batch_window._survey_rows] == [
+        "GX010003.MP4", "GX010001.MP4", "GX010002.MP4"
+    ]
+
+
+def test_a_processed_row_cannot_be_dragged_into_the_queue(
+    batch_window, tmp_path, monkeypatch
+):
+    """Order only means something for the passes still to run."""
+    from deepreefmap_gui.survey.models import RunRecord
+
+    add_videos(batch_window, tmp_path, monkeypatch, ["GX010001.MP4", "GX010002.MP4"])
+    batch_window._survey_store().add_run(
+        RunRecord(
+            pass_id=batch_window._survey_rows[1].pass_id,
+            run_dir_name="run_001",
+            status="succeeded",
+            batch_id=batch_window._survey_batch.id,
+        )
+    )
+    batch_window._refresh_survey_batch_tab()
+    before = [row.video.file_name for row in batch_window._survey_rows]
+
+    table = batch_window._survey_pass_table
+    table.rows_moved.emit(batch_window._table_row_of(1), batch_window._table_row_of(0))
+    assert [row.video.file_name for row in batch_window._survey_rows] == before
+    assert "still to process" in batch_window._status_label.text()
+
+
+# --- Settings for one pass ---
+
+
+def settings_cell(window, row_index):
+    return row_cell(window, row_index, _COL_SETTINGS)
+
+
+def test_a_row_without_overrides_says_it_runs_on_the_session(
+    batch_window, tmp_path, monkeypatch
+):
+    add_video(batch_window, tmp_path, monkeypatch)
+    assert settings_cell(batch_window, 0).text() == "Default settings"
+
+
+def test_an_override_is_stored_counted_and_reaches_the_run(
+    batch_window, tmp_path, monkeypatch
+):
+    """Scenario: one long pass is given a lower frame rate than the session.
+
+    Expected behaviour: only that setting is stored, the button counts it, and
+    the run made from that row uses it while the session keeps its own.
+    """
+    add_videos(batch_window, tmp_path, monkeypatch, ["GX010001.MP4", "GX010002.MP4"])
+    assign_transect(batch_window, 0)
+    assign_transect(batch_window, 1)
+    session_fps = batch_window._fps_spin.value()
+    batch_window._write_overrides([0], {"fps": session_fps - 2})
+
+    store = batch_window._survey_store()
+    item = next(
+        i for i in store.list_batch_items(batch_window._survey_batch.id)
+        if i.pass_id == batch_window._survey_rows[0].pass_id
+    )
+    assert item.overrides == {"fps": session_fps - 2}
+    assert settings_cell(batch_window, 0).text() == "1 override"
+    assert settings_cell(batch_window, 1).text() == "Default settings"
+    # The session itself is untouched by a row's settings.
+    assert batch_window._fps_spin.value() == session_fps
+
+    seen = []
+    monkeypatch.setattr(
+        "deepreefmap.pipeline.orchestrator.run_reconstruction",
+        lambda **kwargs: seen.append(kwargs["fps"]),
+    )
+    batch_window._on_survey_start()
+    batch_window._pipeline_thread.join(timeout=10.0)
+    assert seen == [session_fps - 2, session_fps]
+    assert batch_window._fps_spin.value() == session_fps
+
+
+def test_an_override_that_matches_the_session_stops_being_one(
+    batch_window, tmp_path, monkeypatch
+):
+    """A session edited towards a row's override leaves it claiming a
+    difference that no longer exists."""
+    add_video(batch_window, tmp_path, monkeypatch)
+    batch_window._write_overrides([0], {"fps": 3})
+    assert settings_cell(batch_window, 0).text() == "1 override"
+
+    batch_window._fps_spin.setValue(3)
+    batch_window._recompute_survey_start()
+    assert settings_cell(batch_window, 0).text() == "Default settings"
+
+
+def test_settings_can_be_copied_from_another_pass_and_given_back(
+    batch_window, tmp_path, monkeypatch
+):
+    """Scenario: three passes of one dive need the settings the first one got.
+
+    Expected behaviour: the copy menu offers the pass that carries them, one
+    action gives them to the selection, and the session's own settings are
+    always on offer to undo it.
+    """
+    from PySide6.QtWidgets import QMenu
+
+    add_videos(
+        batch_window, tmp_path, monkeypatch, ["GX010001.MP4", "GX010002.MP4", "GX010003.MP4"]
+    )
+    batch_window._write_overrides([0], {"fps": 3})
+
+    actions = {}
+    monkeypatch.setattr(QMenu, "exec", lambda self, *a: None)
+    monkeypatch.setattr(
+        QMenu,
+        "addAction",
+        lambda self, label, handler=None: actions.setdefault(label, handler),
+    )
+    batch_window._survey_pass_table.selectAll()
+    batch_window._on_survey_copy_settings()
+
+    source = next(label for label in actions if label.startswith("GX010001.MP4"))
+    assert "frames per second" in source
+    actions[source]()
+    assert [row.overrides for row in batch_window._survey_rows] == [{"fps": 3}] * 3
+
+    actions["The session's settings"]()
+    assert [row.overrides for row in batch_window._survey_rows] == [{}] * 3
+
+
+def test_a_pass_too_big_for_the_machine_marks_its_settings(
+    batch_window, tmp_path, monkeypatch
+):
+    """The memory verdict rides on the button that opens what would fix it."""
+    class _Fit:
+        def __init__(self, fits):
+            self.fits = fits
+
+        headline = "Too long to process in one pass"
+        detail = "Needs about 40 GB of memory."
+        advice = "Set FPS to 3."
+
+    # Both grades are stubbed: what this machine can really give a run is not
+    # the subject, and a loaded test box would decide the answer either way.
+    monkeypatch.setattr(batch_window, "_row_fit", lambda *a, **k: _Fit(True))
+    add_video(batch_window, tmp_path, monkeypatch)
+    assert settings_cell(batch_window, 0).styleSheet() == ""
+
+    monkeypatch.setattr(batch_window, "_row_fit", lambda *a, **k: _Fit(False))
+    batch_window._refresh_settings_cells()
+    cell = settings_cell(batch_window, 0)
+    assert cell.styleSheet() != ""
+    assert "Set FPS to 3." in cell.toolTip()
 
 
 def test_clear_cart_click_empties_the_cart_without_crashing(
@@ -1047,44 +1277,7 @@ def test_corrupt_user_preset_falls_back_and_does_not_block(make_window, tmp_path
     assert window._survey_start_btn.isEnabled()
 
 
-# --- Bulk editing ---
-
-
-def test_bulk_assign_sets_every_selected_row_and_gates_once(
-    batch_window, tmp_path, monkeypatch
-):
-    """Scenario: a morning of clips, all of one transect, assigned in one action.
-
-    Expected behaviour: every selected row takes the transect and writes its
-    pass, and the run gate is rebuilt once rather than once per row.
-    """
-    add_second_transect(batch_window)
-    for name in ("GX010001.MP4", "GX010002.MP4", "GX010003.MP4"):
-        add_video(batch_window, tmp_path, monkeypatch, name=name)
-    table = batch_window._survey_pass_table
-    table.selectAll()
-    assert batch_window._selected_survey_rows() == [0, 1, 2]
-
-    gates = []
-    inner = batch_window._recompute_survey_start
-
-    def counted():
-        gates.append(1)
-        inner()
-
-    monkeypatch.setattr(batch_window, "_recompute_survey_start", counted)
-    target = batch_window._survey_transects[0]
-    batch_window._assign_rows_to_transect([0, 1, 2], target.id)
-
-    assert len(gates) == 1
-    assert all(row.transect_id == target.id for row in batch_window._survey_rows)
-    assert len(batch_window._survey_store().list_passes()) == 3
-    for index in range(3):
-        combo = table.cellWidget(batch_window._table_row_of(index), _COL_TRANSECT)
-        assert combo.currentText() == target.name
-        # The amber "not assigned" variant is a per-widget stylesheet.
-        assert combo.styleSheet() == ""
-    assert batch_window._survey_start_btn.text() == "Start processing (3 passes)"
+# --- Acting on a selection ---
 
 
 def test_pass_table_allows_a_multi_row_selection(batch_window, tmp_path, monkeypatch):
@@ -1095,71 +1288,88 @@ def test_pass_table_allows_a_multi_row_selection(batch_window, tmp_path, monkeyp
         add_video(batch_window, tmp_path, monkeypatch, name=name)
     table = batch_window._survey_pass_table
     assert table.selectionMode() == QTableWidget.SelectionMode.ExtendedSelection
-    assert not batch_window._survey_assign_btn.isEnabled()
+    assert not batch_window._survey_remove_btn.isEnabled()
     table.selectRow(batch_window._table_row_of(1))
     assert batch_window._selected_survey_rows() == [1]
-    assert batch_window._survey_assign_btn.isEnabled()
+    assert batch_window._survey_remove_btn.isEnabled()
+    assert batch_window._survey_bulk_settings_btn.isEnabled()
 
 
-def test_alternate_direction_walks_down_the_selection(batch_window, tmp_path, monkeypatch):
-    """Passes swum out and back alternate, so one action can set the whole run."""
-    add_second_transect(batch_window)
-    for name in ("GX010001.MP4", "GX010002.MP4", "GX010003.MP4"):
-        add_video(batch_window, tmp_path, monkeypatch, name=name)
-    batch_window._survey_alternate_check.setChecked(True)
-    target = batch_window._survey_transects[0]
-    batch_window._assign_rows_to_transect([0, 1, 2], target.id)
-
-    assert [row.direction for row in batch_window._survey_rows] == [
-        "forward", "reverse", "forward"
-    ]
-    assert stored_directions(batch_window) == ["forward", "reverse", "forward"]
-    table = batch_window._survey_pass_table
-    assert table.cellWidget(batch_window._table_row_of(1), _COL_DIRECTION).currentText() == "reverse"
+def section_cell(window, row_index):
+    return row_cell(window, row_index, _COL_SECTION)
 
 
-def direction_combo(window, row_index):
-    return window._survey_pass_table.cellWidget(
-        window._table_row_of(row_index), _COL_DIRECTION
-    )
-
-
-def test_one_way_transect_is_flagged(batch_window, tmp_path, monkeypatch):
-    """Nothing downstream can tell a one-way survey from forgotten dropdowns."""
+def test_one_way_transect_is_read_in_the_tooltip(batch_window, tmp_path, monkeypatch):
+    """Nothing downstream can tell a one-way survey from directions nobody set,
+    but a survey that really is one-way must not turn the table amber."""
     for name in ("GX010001.MP4", "GX010002.MP4"):
         add_video(batch_window, tmp_path, monkeypatch, name=name)
     assign_transect(batch_window, 0)
     assign_transect(batch_window, 1)
-    flagged = direction_combo(batch_window, 0)
-    assert flagged.styleSheet() != ""
+    flagged = section_cell(batch_window, 0)
     assert "swum out and back" in flagged.toolTip()
+    assert flagged.styleSheet() == ""
 
-    direction_combo(batch_window, 1).setCurrentText("reverse")
-    assert direction_combo(batch_window, 0).styleSheet() == ""
+    set_direction(batch_window, 1, "reverse")
+    assert "swum out and back" not in section_cell(batch_window, 0).toolTip()
 
 
-def test_one_pass_of_a_transect_is_not_flagged(batch_window, tmp_path, monkeypatch):
+def test_a_pass_with_no_transect_is_the_one_marked_section(
+    batch_window, tmp_path, monkeypatch
+):
     add_video(batch_window, tmp_path, monkeypatch)
-    assert direction_combo(batch_window, 0).styleSheet() == ""
+    assert section_cell(batch_window, 0).styleSheet() != ""
+    assign_transect(batch_window, 0)
+    assert section_cell(batch_window, 0).styleSheet() == ""
+
+
+def test_a_pass_whose_footage_is_gone_says_so_on_its_row(
+    batch_window, tmp_path, monkeypatch
+):
+    """Scenario: the drive holding one clip of the session is unplugged.
+
+    Expected behaviour: the notification centre counts them, but a count in the
+    corner does not say which rows. The row marks itself, in red and dashed
+    rather than the amber the advisory notices use.
+    """
+    from deepreefmap_gui.survey.catalogue import LINK_MISSING, VideoLibraryEntry
+
+    add_video(batch_window, tmp_path, monkeypatch)
+    assign_transect(batch_window, 0)
+    assert "dashed" not in section_cell(batch_window, 0).styleSheet()
+
+    clip = batch_window._survey_rows[0].video
+    batch_window._video_entries = [
+        VideoLibraryEntry(video=clip, pass_count=1, run_count=0, link_state=LINK_MISSING)
+    ]
+    batch_window._recompute_survey_start()
+
+    cell = section_cell(batch_window, 0)
+    assert "dashed" in cell.styleSheet()
+    assert "cannot be found" in cell.toolTip()
 
 
 # --- Clip identity ---
 
 
-def test_video_cell_names_the_clip_by_time_and_length(batch_window, tmp_path, monkeypatch):
+def test_the_clip_reads_as_a_name_a_time_and_a_length(batch_window, tmp_path, monkeypatch):
+    """Run together in one cell the three of them are an unreadable string."""
     add_video(batch_window, tmp_path, monkeypatch, name="GX010012.MP4", duration_s=401.0)
-    text = batch_window._survey_pass_table.item(batch_window._table_row_of(0), _COL_VIDEO).text()
-    assert text.startswith("GX010012.MP4 · ")
-    assert text.endswith(" · 6m 41s")
-    assert "time unknown" not in text
+    table_row = batch_window._table_row_of(0)
+    table = batch_window._survey_pass_table
+    assert table.item(table_row, _COL_VIDEO).text() == "GX010012.MP4"
+    assert table.item(table_row, _COL_LENGTH).text() == "6m 41s"
+    assert table.item(table_row, _COL_RECORDED).text() != "time unknown"
 
 
 def test_unreadable_clip_metadata_says_so():
-    from deepreefmap_gui.simple.batch import _video_cell_text
+    from deepreefmap_gui.simple.batch import _clip_length, _clip_name, _clip_time
     from deepreefmap_gui.survey.models import VideoAsset
 
     asset = VideoAsset(file_name="clip.mp4", path="/data/clip.mp4")
-    assert _video_cell_text([asset]) == "clip.mp4 · time unknown · length unknown"
+    assert _clip_name([asset]) == "clip.mp4"
+    assert _clip_time(asset.mtime) == "time unknown"
+    assert _clip_length(asset.duration_s) == "length unknown"
 
 
 def test_sort_by_time_orders_the_day_as_it_happened(batch_window, tmp_path, monkeypatch):
@@ -1176,7 +1386,14 @@ def test_sort_by_time_orders_the_day_as_it_happened(batch_window, tmp_path, monk
     assert [row.video.file_name for row in batch_window._survey_rows] == [
         "GX010001.MP4", "GX010002.MP4", "GX010003.MP4"
     ]
-    assert "time unknown" in batch_window._survey_pass_table.item(batch_window._table_row_of(2), _COL_VIDEO).text()
+    assert batch_window._survey_pass_table.item(
+        batch_window._table_row_of(2), _COL_RECORDED
+    ).text() == "time unknown"
+    # The order survives a rebuild, which reads it back from the cart rows.
+    batch_window._refresh_survey_batch_tab()
+    assert [row.video.file_name for row in batch_window._survey_rows] == [
+        "GX010001.MP4", "GX010002.MP4", "GX010003.MP4"
+    ]
 
 
 def test_probing_a_clip_stays_off_the_gui_thread(batch_window, tmp_path, monkeypatch):
@@ -1211,84 +1428,6 @@ def test_unreadable_clips_are_counted_not_imported(batch_window, tmp_path, monke
     assert wait_until(lambda: len(store.list_videos()) == 1)
     assert store.list_videos()[0].file_name == "good.MP4"
     assert "Skipped 1 unreadable" in batch_window._status_label.text()
-
-
-# --- Bulk trim ---
-
-
-def test_trim_can_apply_to_every_pass_of_a_transect(batch_window, tmp_path, monkeypatch):
-    """One transect filmed several times takes the same tape-in and tape-out cuts."""
-    for name in ("GX010001.MP4", "GX010002.MP4"):
-        add_video(batch_window, tmp_path, monkeypatch, name=name)
-    assign_transect(batch_window, 0)
-    assign_transect(batch_window, 1)
-    stub_trim_dialog(monkeypatch, 5.0, 40.0)
-    answer_question(monkeypatch, QMessageBox.StandardButton.Yes)
-    table = batch_window._survey_pass_table
-    batch_window._on_survey_row_trim(
-        batch_window._survey_rows[0], table.cellWidget(batch_window._table_row_of(0), _COL_TRIM)
-    )
-
-    assert [(row.begin_s, row.end_s) for row in batch_window._survey_rows] == [
-        (5.0, 40.0), (5.0, 40.0)
-    ]
-    store = batch_window._survey_store()
-    assert {
-        (store.get_pass(row.pass_id).begin_s, store.get_pass(row.pass_id).end_s)
-        for row in batch_window._survey_rows
-    } == {(5.0, 40.0)}
-    assert table.cellWidget(batch_window._table_row_of(1), _COL_TRIM).text() == "0:05-0:40"
-
-
-def test_declining_the_bulk_trim_leaves_the_other_rows_alone(
-    batch_window, tmp_path, monkeypatch
-):
-    for name in ("GX010001.MP4", "GX010002.MP4"):
-        add_video(batch_window, tmp_path, monkeypatch, name=name)
-    stub_trim_dialog(monkeypatch, 5.0, 40.0)
-    answer_question(monkeypatch, QMessageBox.StandardButton.No)
-    batch_window._on_survey_row_trim(
-        batch_window._survey_rows[0],
-        batch_window._survey_pass_table.cellWidget(batch_window._table_row_of(0), _COL_TRIM),
-    )
-    assert [(row.begin_s, row.end_s) for row in batch_window._survey_rows] == [
-        (5.0, 40.0), (0.0, 60.0)
-    ]
-
-
-def test_bulk_trim_keeps_a_short_clip_inside_its_own_length(
-    batch_window, tmp_path, monkeypatch
-):
-    """A shorter clip of the same transect runs to its own end rather than past it."""
-    add_video(batch_window, tmp_path, monkeypatch, name="GX010001.MP4")
-    add_video(batch_window, tmp_path, monkeypatch, name="GX010002.MP4", duration_s=20.0)
-    assign_transect(batch_window, 0)
-    assign_transect(batch_window, 1)
-    stub_trim_dialog(monkeypatch, 5.0, 40.0)
-    answer_question(monkeypatch, QMessageBox.StandardButton.Yes)
-    batch_window._on_survey_row_trim(
-        batch_window._survey_rows[0],
-        batch_window._survey_pass_table.cellWidget(batch_window._table_row_of(0), _COL_TRIM),
-    )
-    assert [(row.begin_s, row.end_s) for row in batch_window._survey_rows] == [
-        (5.0, 40.0), (5.0, 20.0)
-    ]
-
-
-def test_a_lone_pass_is_never_asked_about_bulk_trim(batch_window, tmp_path, monkeypatch):
-    add_video(batch_window, tmp_path, monkeypatch)
-    stub_trim_dialog(monkeypatch, 5.0, 40.0)
-    asked = []
-    monkeypatch.setattr(
-        QMessageBox,
-        "question",
-        staticmethod(lambda *a, **k: asked.append(1) or QMessageBox.StandardButton.No),
-    )
-    batch_window._on_survey_row_trim(
-        batch_window._survey_rows[0],
-        batch_window._survey_pass_table.cellWidget(batch_window._table_row_of(0), _COL_TRIM),
-    )
-    assert asked == []
 
 
 # --- Retrying a pass ---
@@ -1386,9 +1525,10 @@ def test_a_chaptered_pass_reads_as_one_row(batch_window, tmp_path, monkeypatch):
     assert [video.file_name for video in row.videos] == ["GX010012.MP4", "GX020012.MP4"]
     assert (row.begin_s, row.end_s) == (0.0, 600.0)
 
-    text = batch_window._survey_pass_table.item(batch_window._table_row_of(0), _COL_VIDEO).text()
-    assert text.startswith("GX010012.MP4 +1 chapter · ")
-    assert text.endswith(" · 10m 00s")
+    table = batch_window._survey_pass_table
+    table_row = batch_window._table_row_of(0)
+    assert table.item(table_row, _COL_VIDEO).text() == "GX010012.MP4 +1 chapter"
+    assert table.item(table_row, _COL_LENGTH).text() == "10m 00s"
 
     pass_ = batch_window._survey_store().get_pass(row.pass_id)
     assert pass_.video_ids() == [video.id for video in row.videos]
@@ -1421,18 +1561,6 @@ def test_reopening_a_batch_restores_the_chapters(batch_window, tmp_path, monkeyp
     ]
 
 
-def test_splitting_a_chaptered_pass_keeps_every_chapter(batch_window, tmp_path, monkeypatch):
-    add_chaptered_video(batch_window, tmp_path, ["GX010012.MP4", "GX020012.MP4"])
-    batch_window._survey_pass_table.setCurrentCell(batch_window._table_row_of(0), 0)
-    batch_window._on_survey_split_pass()
-
-    store = batch_window._survey_store()
-    assert len(batch_window._survey_rows) == 2
-    assert [
-        len(store.get_pass(row.pass_id).video_ids()) for row in batch_window._survey_rows
-    ] == [2, 2]
-
-
 def test_the_same_clip_picked_twice_imports_once(batch_window, tmp_path, monkeypatch):
     """Two folders holding one clip is still one file, so the library names it once."""
     store = batch_window._survey_store()
@@ -1461,50 +1589,6 @@ def group_headings(window):
     ]
 
 
-def test_held_pass_is_skipped_by_the_next_batch(batch_window, tmp_path, monkeypatch):
-    """Scenario: one clip of the day is not ready to process yet.
-
-    Expected behaviour: it stays in the batch, under its own heading, and
-    processing counts only the rest.
-    """
-    for name in ("GX010001.MP4", "GX010002.MP4"):
-        add_video(batch_window, tmp_path, monkeypatch, name=name)
-    assign_transect(batch_window, 0)
-    assign_transect(batch_window, 1)
-    assert batch_window._survey_start_btn.text() == "Start processing (2 passes)"
-
-    batch_window._move_rows([1], hold=True)
-    assert [row.held for row in batch_window._survey_rows] == [False, True]
-    assert len(batch_window._survey_remaining_rows()) == 1
-    assert batch_window._survey_start_btn.text() == "Start processing (1 pass)"
-    assert group_headings(batch_window) == ["To process  (1)", "Held back  (1)"]
-    status = batch_window._survey_pass_table.item(
-        batch_window._table_row_of(1), _COL_STATUS
-    )
-    assert status.text() == "Held"
-
-
-def test_holding_survives_reopening_the_batch(batch_window, tmp_path, monkeypatch):
-    add_video(batch_window, tmp_path, monkeypatch)
-    assign_transect(batch_window, 0)
-    batch_window._move_rows([0], hold=True)
-    batch_window._survey_batch = None
-    batch_window._survey_rows = []
-    batch_window._refresh_survey_batch_tab()
-    assert [row.held for row in batch_window._survey_rows] == [True]
-    assert batch_window._survey_remaining_rows() == []
-
-
-def test_returning_a_held_pass_puts_it_back_in_the_batch(batch_window, tmp_path, monkeypatch):
-    add_video(batch_window, tmp_path, monkeypatch)
-    assign_transect(batch_window, 0)
-    batch_window._move_rows([0], hold=True)
-    batch_window._move_rows([0], hold=False)
-    assert not batch_window._survey_rows[0].held
-    assert len(batch_window._survey_remaining_rows()) == 1
-    assert group_headings(batch_window) == ["To process  (1)"]
-
-
 def test_a_processed_pass_leaves_the_batch_until_asked_for_again(
     batch_window, tmp_path, monkeypatch
 ):
@@ -1528,70 +1612,11 @@ def test_a_processed_pass_leaves_the_batch_until_asked_for_again(
 
     # Process again: the same pass, ordered into a fresh cart.
     first_session = batch_window._survey_batch
-    batch_window._move_rows([0], hold=False)
+    batch_window._process_rows_again([0])
     assert batch_window._survey_batch.id != first_session.id
     assert group_headings(batch_window) == ["To process  (1)"]
     assert len(batch_window._survey_remaining_rows()) == 1
     assert "cart" in batch_window._status_label.text().lower()
-
-
-def test_each_row_carries_the_one_move_it_can_make(batch_window, tmp_path, monkeypatch):
-    """Scenario: a batch holding a queued, a held and a processed pass.
-
-    Expected behaviour: each row offers its own move, with no selection first.
-    """
-    from deepreefmap_gui.survey.models import RunRecord
-
-    for name in ("GX010001.MP4", "GX010002.MP4", "GX010003.MP4"):
-        add_video(batch_window, tmp_path, monkeypatch, name=name)
-    for index in range(3):
-        assign_transect(batch_window, index)
-    batch_window._survey_store().add_run(
-        RunRecord(
-            pass_id=batch_window._survey_rows[2].pass_id,
-            run_dir_name="run_001",
-            status="succeeded",
-            batch_id=batch_window._survey_batch.id,
-        )
-    )
-    batch_window._move_rows([1], hold=True)
-
-    labels = [
-        batch_window._survey_pass_table.cellWidget(
-            batch_window._table_row_of(index), _COL_ACTION
-        ).text()
-        for index in range(3)
-    ]
-    assert labels == ["Hold", "Return", "Process again"]
-
-    # Clicking a row's own button moves that row, without selecting it first.
-    batch_window._survey_pass_table.cellWidget(
-        batch_window._table_row_of(0), _COL_ACTION
-    ).click()
-    assert batch_window._survey_rows[0].held
-
-
-def test_holding_a_not_yet_started_row_mid_run_reaches_the_store(
-    batch_window, tmp_path, monkeypatch
-):
-    for name in ("GX010001.MP4", "GX010002.MP4"):
-        add_video(batch_window, tmp_path, monkeypatch, name=name)
-    assign_transect(batch_window, 0)
-    batch_window._survey_worker_running = True
-    batch_window._survey_running_batch = batch_window._survey_batch
-    batch_window._survey_job_pass_ids = [r.pass_id for r in batch_window._survey_rows]
-    batch_window._survey_running_index = 0
-
-    batch_window._move_rows([1], hold=True)
-
-    held = batch_window._survey_store().get_pass(batch_window._survey_rows[1].pass_id)
-    assert held.held is True
-    # The pass in flight cannot be held any more; the click does nothing.
-    batch_window._move_rows([0], hold=True)
-    in_flight = batch_window._survey_store().get_pass(batch_window._survey_rows[0].pass_id)
-    assert in_flight.held is False
-    batch_window._survey_worker_running = False
-    batch_window._survey_running_batch = None
 
 
 def test_a_finished_order_hands_the_page_to_the_cart(
@@ -1624,15 +1649,13 @@ def test_a_finished_order_hands_the_page_to_the_cart(
 
 
 def test_the_cart_badge_follows_the_queue(batch_window, tmp_path, monkeypatch):
-    """Adds, holds and checkouts all funnel through _recompute_survey_start,
+    """Adds, removals and checkouts all funnel through _recompute_survey_start,
     which is what keeps the badge honest."""
     assert batch_window._cart_button._count == 0
     add_video(batch_window, tmp_path, monkeypatch)
     assert batch_window._cart_button._count == 1
-    batch_window._move_rows([0], hold=True)
+    click_delete(batch_window, 0)
     assert batch_window._cart_button._count == 0
-    batch_window._move_rows([0], hold=False)
-    assert batch_window._cart_button._count == 1
 
 
 def test_the_cart_badge_counts_next_session_rows_mid_run(
@@ -1752,6 +1775,8 @@ def test_stopping_a_batch_leaves_it_continuable(batch_window, tmp_path, monkeypa
 
 
 def test_batch_standing_reports_what_is_behind_you(batch_window, tmp_path, monkeypatch, qapp):
+    from deepreefmap_gui.survey.models import RunRecord
+
     for name in ("GX010001.MP4", "GX010002.MP4"):
         add_video(batch_window, tmp_path, monkeypatch, name=name)
     assign_transect(batch_window, 0)
@@ -1759,62 +1784,59 @@ def test_batch_standing_reports_what_is_behind_you(batch_window, tmp_path, monke
     # A fresh batch has nothing behind it, so the line stays out of the way.
     assert not batch_window._survey_standing_label.isVisibleTo(batch_window)
 
-    batch_window._move_rows([1], hold=True)
-    batch_window._recompute_survey_start()
+    batch_window._survey_store().add_run(
+        RunRecord(
+            pass_id=batch_window._survey_rows[1].pass_id,
+            run_dir_name="run_001",
+            status="succeeded",
+            batch_id=batch_window._survey_batch.id,
+        )
+    )
+    batch_window._refresh_survey_batch_tab()
     text = batch_window._survey_standing_label.text()
+    assert "1 done" in text
     assert "1 remaining" in text
-    assert "1 held back" in text
 
 
-def test_a_running_order_freezes_but_keeps_hold_and_adding_open(
+def test_a_running_order_freezes_its_settings_and_keeps_the_rest_open(
     batch_window, tmp_path, monkeypatch
 ):
     """Scenario: a batch is running and the diver reaches for the table.
 
-    Expected behaviour: what the order *is* can no longer change -- its
-    transect, direction and trim are frozen and the header acts on nothing.
-    What stays open: Hold on a pass the worker has not reached, and queueing
-    more passes, which go to the next session's cart.
+    Expected behaviour: what the order will run under can no longer change, and
+    neither can its order. Taking a row out stays open, because the worker
+    re-reads the cart; so does opening a section under Videos, which edits
+    nothing here.
     """
     for name in ("GX010001.MP4", "GX010002.MP4"):
         add_video(batch_window, tmp_path, monkeypatch, name=name)
     assign_transect(batch_window, 0)
     table_row = batch_window._table_row_of(0)
-    editors = [
-        batch_window._survey_pass_table.cellWidget(table_row, column)
-        for column in (_COL_TRANSECT, _COL_DIRECTION, _COL_TRIM)
-    ]
+    section_cells = [batch_window._survey_pass_table.cellWidget(table_row, _COL_SECTION)]
     frozen_controls = [
         batch_window._survey_batch_name,
         batch_window._survey_clear_cart_btn,
         batch_window._survey_settings_btn,
         batch_window._survey_audit_btn,
         batch_window._survey_sort_btn,
+        batch_window._survey_pass_table.cellWidget(table_row, _COL_SETTINGS),
     ]
-    open_controls = [batch_window._survey_import_btn]
-    move = batch_window._survey_pass_table.cellWidget(table_row, _COL_ACTION)
-    assert all(w.isEnabled() for w in frozen_controls + open_controls + editors + [move])
+    delete = batch_window._survey_pass_table.cellWidget(table_row, _COL_ACTION)
+    assert all(w.isEnabled() for w in [*frozen_controls, *section_cells, delete])
 
     batch_window._survey_worker_running = True
     batch_window._survey_running_batch = batch_window._survey_batch
     batch_window._survey_job_pass_ids = [r.pass_id for r in batch_window._survey_rows]
     batch_window._survey_running_index = 0
     batch_window._recompute_row_actions()
-    assert not any(w.isEnabled() for w in frozen_controls + editors)
-    assert all(w.isEnabled() for w in open_controls)
-    # Row 0 is the pass in flight, so its Hold can no longer take effect; the
-    # pass behind it can still be held.
-    assert not batch_window._survey_pass_table.cellWidget(
-        batch_window._table_row_of(0), _COL_ACTION
-    ).isEnabled()
-    assert batch_window._survey_pass_table.cellWidget(
-        batch_window._table_row_of(1), _COL_ACTION
-    ).isEnabled()
+    assert not any(w.isEnabled() for w in frozen_controls)
+    assert not batch_window._survey_pass_table.dragEnabled()
+    assert all(w.isEnabled() for w in [*section_cells, delete])
 
     batch_window._survey_worker_running = False
     batch_window._survey_running_batch = None
     batch_window._recompute_row_actions()
-    assert all(w.isEnabled() for w in frozen_controls + open_controls + editors)
+    assert all(w.isEnabled() for w in [*frozen_controls, *section_cells])
 
 
 def test_passes_queued_mid_run_land_in_the_next_session(
@@ -1848,20 +1870,19 @@ def test_passes_queued_mid_run_land_in_the_next_session(
     batch_window._survey_running_batch = None
 
 
-def test_no_row_action_label_is_clipped(batch_window):
-    """The action column holds widgets, so its width has to fit the longest of
-    them. "Process again" is longer than the "Run again" it replaced and was
-    rendering as "rocess agai"."""
+def test_no_settings_label_is_clipped(batch_window):
+    """The settings column holds a button, so its width has to fit the longest
+    label it takes, which is the one that says nothing is overridden."""
     from PySide6.QtGui import QFontMetrics
 
-    from deepreefmap_gui.simple.batch import _COL_ACTION, _MOVE_LABELS
+    from deepreefmap_gui.simple.batch import _COL_SETTINGS
 
     table = batch_window._survey_pass_table
     metrics = QFontMetrics(table.font())
-    widest = max(metrics.horizontalAdvance(label) for label in _MOVE_LABELS.values())
+    widest = metrics.horizontalAdvance("Default settings")
     # Padding either side of a push button's text; generous rather than exact,
     # because the point is that the column is not sized to the text alone.
-    assert table.columnWidth(_COL_ACTION) >= widest + 24
+    assert table.columnWidth(_COL_SETTINGS) >= widest + 24
 
 
 def test_a_moved_clip_relinks_on_readd(batch_window, tmp_path, monkeypatch):

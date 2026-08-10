@@ -53,8 +53,8 @@ jobs:
       - name: Test (pytest)
         env:
           DEEPREEFMAP_REQUIRE_TORCH: "1"
-        # -n 2 over the -n auto in pyproject.toml: a worker holds torch and VTK,
-        # and the runner has 16 GB for four cores.
+        # -n 2 over the serial default in pyproject.toml: a worker holds torch
+        # and VTK, and the runner has 16 GB for four cores.
         run: uv run --python ${{ matrix.python-version }} pytest -q -n 2
 
       - name: Coverage

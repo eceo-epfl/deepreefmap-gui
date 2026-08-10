@@ -14,6 +14,7 @@ its result and never persists anything itself.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
 from PySide6.QtWidgets import (
     QDialog,
@@ -29,14 +30,23 @@ logger = logging.getLogger(__name__)
 class RunSettingsDialog(QDialog):
     """Hosts the borrowed run form until it is closed."""
 
-    def __init__(self, window, form: QWidget, per_run: list[QWidget]) -> None:
+    def __init__(
+        self,
+        window,
+        form: QWidget,
+        per_run: list[QWidget],
+        *,
+        title: str = "Run settings",
+        reset_label: str = "Restore standard settings",
+        on_reset: Callable[[], None] | None = None,
+    ) -> None:
         super().__init__(window)
         self._window = window
         self._form = form
         self._per_run = per_run
         self._restored = False
 
-        self.setWindowTitle("Run settings")
+        self.setWindowTitle(title)
         self.setModal(True)
         layout = QVBoxLayout(self)
 
@@ -59,11 +69,13 @@ class RunSettingsDialog(QDialog):
         ok.setDefault(True)
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Discard")
         reset = buttons.button(QDialogButtonBox.StandardButton.Reset)
-        # The standard is the organisation preset, not the values a fresh window
-        # happens to construct: those two drifted apart the moment a preset
-        # shipped, and only one of them is the configuration anybody blessed.
-        reset.setText("Restore standard settings")
-        reset.setToolTip("Put every setting back to the standard for this survey.")
+        # For the session, the standard is the organisation preset, not the
+        # values a fresh window happens to construct: those two drifted apart
+        # the moment a preset shipped, and only one of them is the configuration
+        # anybody blessed. For one pass's settings it is the session's own,
+        # which is what the caller passes instead.
+        reset.setText(reset_label)
+        reset.setToolTip(f"Put every setting back: {reset_label.lower()}.")
         # Restore writes into the live form like every other edit here, so Cancel
         # still undoes it, and only OK persists the machine override.
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setToolTip(
@@ -71,7 +83,9 @@ class RunSettingsDialog(QDialog):
         )
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
-        reset.clicked.connect(self._window._load_standard_into_form)
+        reset.clicked.connect(
+            self._window._load_standard_into_form if on_reset is None else on_reset
+        )
         layout.addWidget(buttons)
         self.resize(560, 640)
 

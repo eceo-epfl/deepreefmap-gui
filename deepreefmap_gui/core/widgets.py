@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
@@ -199,6 +200,21 @@ def segmented_qss(*, first: bool, last: bool) -> str:
     )
 
 
+def fact_link(text: str, href: str) -> str:
+    """A fact that is also the way to change it.
+
+    Values are labels rather than controls, so a fact that has an action behind
+    it says so as a link: the reader follows the same word they were reading
+    rather than hunting for a button that repeats it.
+    """
+    return f'<a href="{href}" style="color: {PRIMARY}; text-decoration: none;">{text}</a>'
+
+
+def _plain(value: str) -> str:
+    """Whatever a value says, without the markup a link is written in."""
+    return re.sub(r"<[^>]+>", "", value)
+
+
 class KeyValueList(QWidget):
     """Facts about one thing, as aligned label/value rows.
 
@@ -206,6 +222,9 @@ class KeyValueList(QWidget):
     values line up, so a run's numbers can be compared down the column instead of
     hunted for inside a sentence.
     """
+
+    # Which fact was clicked, by the href fact_link gave it.
+    link_activated = Signal(str)
 
     def __init__(self, parent: QWidget | None = None, *, wrap: bool = True) -> None:
         super().__init__(parent)
@@ -254,14 +273,16 @@ class KeyValueList(QWidget):
                 # aside, which is the same reason the ortho strip is Ignored.
                 shown.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
             shown.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+            shown.linkActivated.connect(self.link_activated)
             self._fill(shown, value)
             self._grid.addWidget(shown, row, 1)
             self._values.append(shown)
 
     def _fill(self, label: QLabel, value: str) -> None:
         label.setText(value)
-        # The tooltip carries what a one-line row cannot show in full.
-        label.setToolTip("" if self._wrap else value)
+        # The tooltip carries what a one-line row cannot show in full, in the
+        # words the row says rather than the markup a link is written in.
+        label.setToolTip("" if self._wrap else _plain(value))
 
     def clear(self) -> None:
         self.set_rows([])
@@ -546,6 +567,12 @@ def configure_table(
     their own background, so the stripe would stop halfway across the row.
     """
     table.setHorizontalHeaderLabels(list(headers))
+    # Centred, everywhere. A heading is the name of a column, not the first
+    # value in it, and left-aligned headings over cells that hold buttons read
+    # as though they belong to the cell to their left.
+    table.horizontalHeader().setDefaultAlignment(
+        Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter
+    )
     table.verticalHeader().setVisible(False)
     # Row height lives here, not in the QSS item padding: QTableView sizes its
     # rows off defaultSectionSize and ignores that padding, so the stylesheet

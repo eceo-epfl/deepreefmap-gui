@@ -9,27 +9,27 @@ of one piece of it.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMenu,
-    QPushButton,
-    QStackedWidget,
     QToolButton,
     QWidget,
 )
 
 from deepreefmap_gui.core.icons import status_dot_icon
 from deepreefmap_gui.core.theme import TEXT_MUTED
-from deepreefmap_gui.core.widgets import STATUS_COLORS, EmptyState, muted_label
+from deepreefmap_gui.core.widgets import STATUS_COLORS, fact_link, muted_label
 from deepreefmap_gui.profiling.system_probe import format_bytes
 from deepreefmap_gui.runs.run_detail import DetailCard
 from deepreefmap_gui.survey.models import RunRecord, TransectPass
 
-_RUN_PAGE, _NO_RUN_PAGE = 0, 1
-
 RUN_DIR_ROLE = Qt.ItemDataRole.UserRole
+
+# The href behind the transect-and-direction fact. Both are set in one dialog,
+# so the fact that shows them is the way into it.
+_FILING_LINK = "filing"
 
 _NO_SESSION = "No session recorded"
 
@@ -55,7 +55,6 @@ def _short_date(stamp: str | None) -> str:
 class SectionDetailPanel(DetailCard):
     """A titled card describing one section and the sessions that ran it."""
 
-    add_to_cart_requested = Signal(str)
     retrim_requested = Signal(str)
     reassign_requested = Signal(str)
     delete_requested = Signal(str)
@@ -72,18 +71,16 @@ class SectionDetailPanel(DetailCard):
         self.run_list.setTextElideMode(Qt.TextElideMode.ElideMiddle)
         self.run_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.run_list.itemDoubleClicked.connect(self._on_run_activated)
-        self._run_stack = QStackedWidget()
-        self._run_stack.addWidget(self.run_list)
-        self._run_stack.addWidget(
-            EmptyState("Not processed yet", "Add it to the cart to run it.")
-        )
-        layout.addWidget(self._run_stack, 1)
+        # The list is always the list, empty or not, the same way the clip's own
+        # section list is. Swapping it for a full-pane empty state moved every
+        # control below it and left the pane a different shape for a section
+        # that had run and one that had not.
+        layout.addWidget(self.run_list, 1)
 
-        # One primary and a menu, rather than four buttons sharing a row the
-        # detail pane cannot hold without truncating every label. The menu is
-        # built from one spec, the same shape as Browse's More… button.
-        self.cart_btn = QPushButton("Add to cart")
-        self.cart_btn.clicked.connect(self._emit_cart)
+        # A menu rather than a row of buttons the pane cannot hold without
+        # truncating every label. The cart is not among them: the section's own
+        # row carries that, and two cart controls on one screen disagree the
+        # moment one of them is stale.
         self.more_btn = QToolButton()
         self.more_btn.setText("More…")
         self.more_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
@@ -92,7 +89,9 @@ class SectionDetailPanel(DetailCard):
         menu.setToolTipsVisible(True)
         self.menu_actions = self._fill_section_actions(menu)
         self.more_btn.setMenu(menu)
-        self.add_actions(self.cart_btn, self.more_btn)
+        self.add_actions(None, self.more_btn)
+        # The filing fact is the way into the dialog that sets it.
+        self.facts.link_activated.connect(self._on_fact_link)
 
         self._pass: TransectPass | None = None
 
@@ -124,9 +123,6 @@ class SectionDetailPanel(DetailCard):
     def _pass_id(self) -> str:
         return "" if self._pass is None else str(self._pass.id)
 
-    def _emit_cart(self) -> None:
-        self.add_to_cart_requested.emit(self._pass_id())
-
     def _emit_retrim(self) -> None:
         self.retrim_requested.emit(self._pass_id())
 
@@ -135,6 +131,10 @@ class SectionDetailPanel(DetailCard):
 
     def _emit_delete(self) -> None:
         self.delete_requested.emit(self._pass_id())
+
+    def _on_fact_link(self, href: str) -> None:
+        if href == _FILING_LINK:
+            self._emit_reassign()
 
     def _on_run_activated(self, item: QListWidgetItem) -> None:
         self.run_activated.emit(str(item.data(RUN_DIR_ROLE) or ""))
@@ -154,12 +154,15 @@ class SectionDetailPanel(DetailCard):
         """Describe one section. ``session_name`` resolves a run's batch id."""
         self.title.setText(section_window(pass_))
         self.set_status(status, STATUS_COLORS.get(status, TEXT_MUTED))
+        # Transect and direction on one row, as one link. They are set together
+        # in one dialog, and which way a swim went means nothing without the
+        # line it went along. Cart membership is not here at all: the section's
+        # own row carries that control and shows its state on it.
+        filing = f"{transect_name or 'Unassigned'} · {pass_.direction}"
         rows = [
             ("Clip", clip_name),
-            ("Transect", transect_name or "Unassigned"),
-            ("Direction", pass_.direction),
+            ("Transect", fact_link(filing, _FILING_LINK)),
             ("Length", _length(pass_)),
-            ("In the cart", "yes" if in_cart else "no"),
         ]
         # What this cut has cost so far, which is the figure worth having when
         # deciding whether to run it again.
@@ -179,10 +182,18 @@ class SectionDetailPanel(DetailCard):
             item.setData(RUN_DIR_ROLE, run.run_dir_name)
             item.setToolTip(run.error or run.run_dir_name)
             self.run_list.addItem(item)
-        self._run_stack.setCurrentIndex(_RUN_PAGE if runs else _NO_RUN_PAGE)
+        if not runs:
+            # In the list rather than instead of it, so the pane keeps its shape
+            # and the empty case is answered where the answer would appear.
+            empty = QListWidgetItem(
+                "Not processed yet. Add it to the cart to run it."
+                if not in_cart
+                else "Not processed yet. It is in the cart for the next session."
+            )
+            empty.setFlags(Qt.ItemFlag.NoItemFlags)
+            empty.setForeground(QColor(TEXT_MUTED))
+            self.run_list.addItem(empty)
 
-        self.cart_btn.setEnabled(not in_cart)
-        self.cart_btn.setText("In the cart" if in_cart else "Add to cart")
         # A section with runs is the record of what they processed, so it cannot
         # go while they are still there.
         delete = self.menu_actions["delete"]
@@ -197,5 +208,4 @@ class SectionDetailPanel(DetailCard):
     def clear(self) -> None:
         super().clear()
         self.run_list.clear()
-        self._run_stack.setCurrentIndex(_NO_RUN_PAGE)
         self._pass = None

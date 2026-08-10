@@ -48,6 +48,8 @@ def from_row(cls: type[T], row: Mapping[str, Any]) -> T:
         hint = hints[f.name]
         if get_origin(hint) is list:
             value = _decode_list(hint, value)
+        elif get_origin(hint) is dict:
+            value = _decode_dict(value)
         elif hint is bool:
             # sqlite has no boolean type, so the column comes back as 0 or 1.
             value = bool(value)
@@ -61,6 +63,9 @@ def _encode(value: Any) -> Any:
     # A list of ids lands in one sqlite column, so it travels as a JSON array.
     if isinstance(value, list):
         return json.dumps([_encode(item) for item in value])
+    # A settings dict travels the same way, as a JSON object.
+    if isinstance(value, dict):
+        return json.dumps(value, sort_keys=True)
     return str(value) if isinstance(value, uuid.UUID) else value
 
 
@@ -70,6 +75,12 @@ def _decode_list(hint: Any, value: Any) -> list[Any]:
     if get_args(hint) == (uuid.UUID,):
         return [item if isinstance(item, uuid.UUID) else uuid.UUID(item) for item in raw]
     return raw
+
+
+def _decode_dict(value: Any) -> dict[str, Any]:
+    """The JSON object sqlite holds, or an already-parsed mapping from a document."""
+    raw = json.loads(value) if isinstance(value, str) else dict(value or {})
+    return raw if isinstance(raw, dict) else {}
 
 
 def _accepts_uuid(hint: Any) -> bool:

@@ -7,7 +7,6 @@ the machine in front of them is not quietly off standard.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QDialog,
@@ -67,7 +66,6 @@ class ConfigAuditDialog(QDialog):
         table = QTableWidget(len(rows), 3)
         configure_table(table, ["Run", "Settings", "Difference"])
         header = table.horizontalHeader()
-        header.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         header.setSectionResizeMode(_COL_NOTE, QHeaderView.ResizeMode.Stretch)
         table.setColumnWidth(_COL_RUN, 220)
         table.setColumnWidth(_COL_SETTINGS, 180)

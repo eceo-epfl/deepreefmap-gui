@@ -79,8 +79,9 @@ dev = [
   # ci.yml would otherwise sit on GitHub's 6-hour job default.
   "pytest-timeout>=2.3",
   "pytest-cov>=5.0",
-  # -n auto in addopts: the suite is mostly window builds, and each worker is a
-  # process with its own QApplication and temp dirs.
+  # Kept for the -n a machine with the memory for it can pass: the suite is
+  # mostly window builds, and each worker is a process with its own
+  # QApplication, its own torch and its own temp dirs.
   "pytest-xdist>=3.6",
   "ruff>=0.12.0",
   "mypy>=2.0.0",
@@ -103,7 +104,11 @@ build-backend = "setuptools.build_meta"
 include = ["deepreefmap_gui*"]
 
 [tool.setuptools.package-data]
-"deepreefmap_gui.resources" = ["*.png", "*.icns", "fonts/*.ttf", "fonts/*.txt", "configs/*.yaml"]
+"deepreefmap_gui.resources" = [
+  "*.png", "*.icns", "fonts/*.ttf", "fonts/*.txt", "configs/*.yaml",
+  # The icon set, vendored so an offline laptop still has one.
+  "icons/*.svg", "icons/LICENSE",
+]
 
 [tool.uv]
 conflicts = [
@@ -148,9 +153,12 @@ testpaths = ["tests"]
 # test basenames need not be globally unique.
 # -ra surfaces the skip reasons, which matters because the torch importorskip in
 # tests/gui/conftest.py silently gates most of the GUI suite.
-# -n auto: ~2 min serial against ~30 s across a desktop's cores. CI passes its
-# own -n over this one, sized for a hosted runner's memory.
-addopts = "--import-mode=importlib -ra --strict-markers --strict-config -n auto"
+# Serial by default. Each xdist worker is a process with its own QApplication
+# and its own torch, which is gigabytes apiece, so "one per core" is a memory
+# figure rather than a speed one: on a 32-core desktop -n auto swapped the
+# machine to death. Pass -n yourself when the machine can afford it; CI does,
+# sized for a hosted runner's memory.
+addopts = "--import-mode=importlib -ra --strict-markers --strict-config"
 # Puts tests/_factories.py on the path for the category subfolders that share it.
 pythonpath = ["tests"]
 timeout = 120

@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from deepreefmap_gui.core.theme import ERROR, SPACE_SM
+from deepreefmap_gui.core.theme import ERROR, SPACE_SM, TREE_ROW_PAD_V
 from deepreefmap_gui.core.widgets import muted_label
 from deepreefmap_gui.map.overlays import OverlayTransect, transect_overlays
 from deepreefmap_gui.map.slippy_map import SlippyMapWidget
@@ -285,17 +285,31 @@ class TransectPickerDialog(QDialog):
         self.list.blockSignals(True)
         try:
             self.list.clear()
-            unassigned = QListWidgetItem(UNASSIGNED_LABEL)
-            unassigned.setToolTip(UNASSIGNED_NOTE)
-            unassigned.setData(TRANSECT_ID_ROLE, "")
-            self.list.addItem(unassigned)
+            self._add_row(
+                UNASSIGNED_LABEL, "Not filed against any line", "", UNASSIGNED_NOTE
+            )
             for transect in self._transects:
-                item = QListWidgetItem(f"{transect.name}\n{self._subtitle(transect)}")
-                item.setData(TRANSECT_ID_ROLE, str(transect.id))
-                self.list.addItem(item)
+                self._add_row(
+                    transect.name, self._subtitle(transect), str(transect.id), ""
+                )
         finally:
             self.list.blockSignals(False)
         self._select(str(selected) if selected is not None else "")
+
+    def _add_row(self, title: str, subtitle: str, transect_id: str, tooltip: str) -> None:
+        """One entry, two lines, every row the same height.
+
+        The height is set here rather than left to Qt: an item's own hint counts
+        the text and not the padding the stylesheet adds, so the selection fill
+        was drawn taller than the row and bled over its neighbours.
+        """
+        item = QListWidgetItem(f"{title}\n{subtitle}")
+        item.setData(TRANSECT_ID_ROLE, transect_id)
+        if tooltip:
+            item.setToolTip(tooltip)
+        metrics = self.list.fontMetrics()
+        item.setSizeHint(QSize(0, metrics.lineSpacing() * 2 + 2 * TREE_ROW_PAD_V))
+        self.list.addItem(item)
 
     def _subtitle(self, transect: Transect) -> str:
         from deepreefmap_gui.simple.plan import bearing_text, transect_length_text

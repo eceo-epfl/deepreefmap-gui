@@ -44,11 +44,14 @@ from PySide6.QtWidgets import (
 from deepreefmap_gui.core.icons import (
     DEFAULT_INK,
     ICON_SM,
+    arrow_left_icon,
+    arrow_right_icon,
     broken_link_icon,
     cart_icon,
     check_icon,
     chevron_down_icon,
     chevron_right_icon,
+    close_icon,
     link_icon,
     pencil_icon,
     play_icon,
@@ -70,6 +73,7 @@ from deepreefmap_gui.core.theme import (
     SELECTION_BG,
     SELECTION_CONTROL_BG,
     SELECTION_CONTROL_BORDER,
+    SPACE_MD,
     SPACE_SM,
     SPACE_XS,
     SUCCESS,
@@ -135,9 +139,8 @@ RECORDED_CHARS = 10  # "~14:32", "Recorded ▼"
 LENGTH_CHARS = 9  # "12m 03s", "Length ▼"
 SIZE_CHARS = 9  # "1015 MB", "Size ▼"
 GRAVITY_CHARS = 9  # "Gravity ▼", over a cell holding only a dot
-WINDOW_CHARS = 14  # "0:00–11:51"
+WINDOW_CHARS = 22  # "0:00–11:51 · 11m 51s"
 TRANSECT_CHARS = 22  # a transect name, or "Unassigned"
-DIRECTION_CHARS = 9  # "Forward"
 RUNS_CHARS = 9  # "12 runs"
 
 # One row: the smallest comfortable click target and not a pixel more. The list
@@ -176,13 +179,13 @@ DROP_HINT = "Drop clips here to import them"
 EMPTY_TITLE = "Not cut into sections yet"
 EMPTY_NOTE = "Use + to process part or all of it."
 
-IN_CART_NOTE = "In cart"
-IN_CART_TOOLTIP = "This section is already in the cart."
+IN_CART_TOOLTIP = "In the cart. Click to take it back out."
 
 # The section menu, named once so the page and the tests read the same words.
 # The row's own buttons do the first four; the menu is the right-click copy of
 # them, plus the one action that has nowhere on the row to live.
 MENU_ADD_TO_CART = "Add to cart"
+MENU_REMOVE_FROM_CART = "Take out of the cart"
 MENU_RETRIM = "Adjust trim…"
 MENU_REASSIGN = "Change transect…"
 MENU_OPEN_TRANSECT = "Show on the Transects page"
@@ -267,6 +270,20 @@ def window_label(pass_: TransectPass) -> str:
     return f"{_clock(pass_.begin_s)}–{_clock(pass_.end_s)}"
 
 
+def section_length_label(pass_: TransectPass) -> str:
+    """How long the section runs for, in the clip row's own words.
+
+    The clip says how long the recording is; a section is a part of it, and how
+    much of it was cut is the figure that decides what a run will cost. Beside
+    the window rather than in a column of its own, because the two answer one
+    question between them.
+    """
+    if pass_.end_s is None:
+        return ""
+    seconds = int(round(max(0.0, pass_.end_s - pass_.begin_s)))
+    return f"{seconds}s" if seconds < 60 else f"{seconds // 60}m {seconds % 60:02d}s"
+
+
 def run_label(count: int) -> str:
     """"3 runs", and nothing at all until a section has been processed once."""
     if count < 1:
@@ -293,7 +310,7 @@ def section_facts(entry: VideoLibraryEntry) -> list[tuple[TransectPass, str, int
             facts.append((pass_, span.status, span.run_count))
             continue
         mine = runs.get(pass_.id, [])
-        facts.append((pass_, pass_status(mine, held=pass_.held), len(mine)))
+        facts.append((pass_, pass_status(mine), len(mine)))
     return facts
 
 
@@ -964,24 +981,17 @@ class SectionRow(QWidget):
             )
             row.addWidget(self.transect_chip)
 
-        # Beside the chip rather than inside it: the chip is a control, and a
-        # fact that changes with it still reads better as a word than as a glyph
-        # on a button.
-        self._direction = muted_label()
-        _fixed_width(self._direction, DIRECTION_CHARS)
+        # An arrow rather than the word: which way a swim went is one bit, and
+        # "Forward" spelled out took a column the clip pane cannot spare. The
+        # tooltip still says it in words.
+        self._direction = QLabel()
+        self._direction.setFixedWidth(ICON_SM)
         row.addWidget(self._direction)
 
         self._runs = muted_label()
         _fixed_width(self._runs, RUNS_CHARS)
         self._runs.setVisible(not compact)
         row.addWidget(self._runs)
-
-        # In the pane the cart button's own state says this; the wide row has
-        # the width to say it in words.
-        self._cart = muted_label(IN_CART_NOTE)
-        self._cart.setToolTip(IN_CART_TOOLTIP)
-        self._cart.setVisible(False)
-        row.addWidget(self._cart)
 
         if not compact:
             row.addStretch(1)
@@ -1046,12 +1056,16 @@ class SectionRow(QWidget):
         self._in_cart = in_cart
         self._available = available
         self._dot_label.setPixmap(_dot(STATUS_COLORS.get(status, TEXT_MUTED)))
-        self._window.setText(window_label(pass_))
+        length = section_length_label(pass_)
+        self._window.setText(
+            f"{window_label(pass_)} · {length}" if length else window_label(pass_)
+        )
         self.transect_chip.set_assignment(transect_name, pass_.direction)
-        self._direction.setText(pass_.direction.capitalize())
-        self._runs.setText(run_label(run_count))
-        self._cart.setVisible(in_cart and not self._compact)
+        self._direction.setToolTip(
+            f"Swum {pass_.direction} along the transect."
+        )
         self._apply_icons()
+        self._runs.setText(run_label(run_count))
         self.delete_btn.setToolTip(DELETE_BLOCKED_TOOLTIP if run_count else MENU_DELETE)
         # Trimming decodes the file, so a clip whose file is gone cannot be
         # trimmed. Marked in red rather than greyed out: a disabled button shows
@@ -1091,6 +1105,12 @@ class SectionRow(QWidget):
         ink = self._ink()
         self.trim_btn.setIcon(pencil_icon(color=QColor(ERROR) if not self._available else ink))
         self.delete_btn.setIcon(trash_icon(color=ink))
+        if self._pass is not None:
+            arrow = arrow_right_icon if self._pass.direction == "forward" else arrow_left_icon
+            self._direction.setPixmap(
+                arrow(ICON_SM, QColor(TEXT_MUTED if not self._selected else BRIGHT_TEXT))
+                .pixmap(ICON_SM, ICON_SM)
+            )
         self._apply_cart_icon()
 
     def _apply_cart_icon(self) -> None:
@@ -1110,13 +1130,14 @@ class SectionRow(QWidget):
         """Answer the click where it was made, then ask the page to do it.
 
         The count in the header is the far corner of the window, and a row that
-        looks identical after a click reads as a click that missed. No tick when
-        the file is missing: the page is about to refuse.
+        looks identical after a click reads as a click that missed. A tick for
+        going in, a cross for coming back out. No answer at all when the file is
+        missing: the page is about to refuse.
         """
         if self._pass is None:
             return
         if self._available:
-            self.cart_btn.setIcon(check_icon())
+            self.cart_btn.setIcon(close_icon() if self._in_cart else check_icon())
             self._cart_ack.start()
         self.add_to_cart_requested.emit(self.pass_id)
 
@@ -1128,10 +1149,11 @@ class SectionRow(QWidget):
         """
         menu = QMenu(self)
         menu.setToolTipsVisible(True)
-        cart = menu.addAction(MENU_ADD_TO_CART)
-        cart.setEnabled(not self._in_cart)
-        if self._in_cart:
-            cart.setToolTip(IN_CART_TOOLTIP)
+        # One entry that names the move it will make, rather than an "Add to
+        # cart" greyed out on everything already in it.
+        cart = menu.addAction(
+            MENU_REMOVE_FROM_CART if self._in_cart else MENU_ADD_TO_CART
+        )
         cart.triggered.connect(lambda *_: self.add_to_cart_requested.emit(self.pass_id))
         menu.addAction(MENU_RETRIM).triggered.connect(
             lambda *_: self.retrim_requested.emit(self.pass_id)
@@ -1529,6 +1551,18 @@ class VideoLibraryList(QScrollArea):
         self._selected_section = pass_id
         self._selected = None
         self._paint_selection()
+
+    def reveal(self, pass_id: str) -> None:
+        """Scroll a section into view.
+
+        Arriving from another page lands on a list of a season's clips, and a
+        highlight below the fold is no answer at all. The clip has to be open
+        first, which is _select_section's job, or the row is not in the layout
+        yet and there is nothing to scroll to.
+        """
+        rows = self._sections.get(pass_id)
+        if rows:
+            self.ensureWidgetVisible(rows[0], 0, SPACE_MD)
 
     def _shape_of(self, groups: Sequence[DateGroup]) -> list[_GroupShape]:
         return [

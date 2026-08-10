@@ -57,7 +57,6 @@ STATUSES: tuple[StatusSpec, ...] = (
     StatusSpec("interrupted", "Interrupted", TONE_BUSY, OUTCOME_UNFINISHED),
     # A pass with no run yet. The absence of a RunRecord is what says it.
     StatusSpec("queued", "Queued", TONE_IDLE, OUTCOME_UNFINISHED, persisted=False),
-    StatusSpec("held", "Held", TONE_QUIET, OUTCOME_UNFINISHED, persisted=False),
     # A run directory the database has no row for: the same event as interrupted
     # from the diver's side, so the same tone.
     StatusSpec("incomplete", "Incomplete", TONE_BUSY, OUTCOME_UNFINISHED, persisted=False),

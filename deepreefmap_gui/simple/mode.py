@@ -89,9 +89,13 @@ logger = logging.getLogger(__name__)
 
 # Peers, not steps. None is a prerequisite for another: a pass with no transect
 # processes perfectly well, so ordering them as a sequence would claim a
-# dependency the gate does not enforce. They read in the order a dive day moves
-# through them, which is a habit rather than a rule.
-DESTINATIONS = ("transects", "videos", "process", "browse")
+# dependency the gate does not enforce.
+#
+# Videos leads because it is where a day starts and where most of it is spent:
+# the footage comes off the camera, sections are cut from it, and the cart is
+# filled from those. Planning a transect is the rarer act, and a pass files
+# against one whenever it is planned.
+DESTINATIONS = ("videos", "transects", "process", "browse")
 
 # The glyph that says what a destination holds. Constant per destination: what
 # it currently has to report is the badge's job, and an icon that changed with

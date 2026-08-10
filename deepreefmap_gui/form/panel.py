@@ -1396,9 +1396,27 @@ class FormPanelMixin(MixinBase):
         except Exception:
             fit = None
         self._paint_capacity_readout(fit)
-        self._memory_advisory = "" if fit is None or fit.fits else fit.headline
+        self._memory_advisory = self._memory_advisory_text(fit)
         self._refresh_machine_button()
         self._refresh_readiness_view()
+
+    def _memory_advisory_text(self, fit) -> str:
+        """What Setup says about memory: how many passes, not which one.
+
+        Each cart row carries its own grade on its settings button, where the
+        frame rate or the resolution that caused it is a click away. What is
+        left for Setup is the count, which is what tells you whether to go and
+        look at all.
+        """
+        if fit is None or fit.fits:
+            return ""
+        try:
+            over = self._rows_over_memory()
+        except Exception:
+            over = 0
+        if over > 1:
+            return f"{over} passes need more memory than this machine can give a run."
+        return fit.headline
 
     def _paint_capacity_readout(self, fit) -> None:
         """Show the longest pass against what this machine can give one run."""

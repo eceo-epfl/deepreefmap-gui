@@ -210,11 +210,6 @@ def test_a_section_with_no_runs_is_queued():
     assert (span.status, span.run_count) == ("queued", 0)
 
 
-def test_a_held_section_says_so():
-    pass_ = make_pass(held=True)
-    assert timeline_spans(clip(duration_s=60.0, passes=[pass_]))[0].status == "held"
-
-
 def test_pass_status_matches_the_latest_run_regardless_of_order():
     pass_ = make_pass()
     late = make_run(pass_, "succeeded", "2026-08-02T10:00:00+00:00")

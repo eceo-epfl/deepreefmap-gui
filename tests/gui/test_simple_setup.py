@@ -204,16 +204,16 @@ def test_first_launch_skips_setup_when_ready(make_window, monkeypatch):
     monkeypatch.setattr(setup_mod, "probe_system", lambda *_a, **_k: _prof(gpu_name="GPU", free=50 * _GB))
     monkeypatch.setattr("deepreefmap_gui.models.cache.is_model_cached", lambda info: True)
     window = make_window()
-    assert window._current_section() == "transects"
+    assert window._current_section() == "videos"
     assert str(QSettings("ECEO", "deepreefmap").value("setup_complete")).lower() == "true"
 
 
-def test_completed_flag_goes_straight_to_plan(make_window):
+def test_completed_flag_goes_straight_to_the_footage(make_window):
     from PySide6.QtCore import QSettings
 
     QSettings("ECEO", "deepreefmap").setValue("setup_complete", True)
     window = make_window()
-    assert window._current_section() == "transects"
+    assert window._current_section() == "videos"
 
 
 def test_ready_records_the_flag_so_it_stops_leading(window, monkeypatch):

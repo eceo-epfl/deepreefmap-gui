@@ -224,7 +224,6 @@ class VideoLibraryMixin(MixinBase):
         detail.addWidget(self._video_detail)
 
         self._section_detail = SectionDetailPanel()
-        self._section_detail.add_to_cart_requested.connect(self._on_video_pass_to_cart)
         self._section_detail.retrim_requested.connect(self._on_section_retrim)
         self._section_detail.reassign_requested.connect(self._on_section_reassign)
         self._section_detail.delete_requested.connect(self._on_section_delete)
@@ -575,6 +574,17 @@ class VideoLibraryMixin(MixinBase):
         self._show_clip_detail(clip)
         self._video_detail.select_section(pass_id)
         self._fill_section_detail(clip, pass_id)
+        self._video_list.reveal(pass_id)
+
+    def _open_section_in_videos(self, pass_id: uuid.UUID) -> None:
+        """Edit a section where a section is defined.
+
+        The cart shows a pass's transect, direction and trim but no longer edits
+        any of them: they describe the swim, not the plan to process it, and
+        they are set here. Clicking one over there lands on it here.
+        """
+        self._go_to_section("videos")
+        self._select_section(str(pass_id))
 
     def _pass_by_id(self, store, pass_id: str):
         """The section an id names, and None when the id names nothing.
@@ -759,7 +769,12 @@ class VideoLibraryMixin(MixinBase):
         self._rebuild_video_list()
 
     def _on_video_pass_to_cart(self, pass_id_str: str) -> None:
-        """A section asked for the cart, from a row or the pane's list."""
+        """The cart control on a section, from a row or the pane's list.
+
+        One control, both ways: a section that is not in the cart goes in, and
+        one that is comes out. The button is green while it is in, so clicking
+        the green is how a section is taken back out again.
+        """
         try:
             pass_id = uuid.UUID(pass_id_str)
         except (ValueError, AttributeError, TypeError):
@@ -771,6 +786,12 @@ class VideoLibraryMixin(MixinBase):
         pass_ = store.get_pass(pass_id)
         if pass_ is None:
             return
+        if pass_id_str in self._cart_pass_ids():
+            self._take_pass_out_of_cart(pass_id)
+            self._status_label.setText(
+                f"Took the {section_window(pass_)} section out of the cart."
+            )
+            return
         # A section whose footage is not on disk would fail the moment the cart
         # was checked out, so it never gets in. Refused here rather than at the
         # run, where a whole session stops for one clip on an unplugged drive.
@@ -779,13 +800,6 @@ class VideoLibraryMixin(MixinBase):
             self._status_label.setText(
                 f"{', '.join(missing)} cannot be found, so this section cannot be "
                 "processed. Add the footage again from where it lives now."
-            )
-            return
-        # Adding twice is harmless, and saying "Added" twice is how a user comes
-        # to think the first click did not land.
-        if pass_id_str in self._cart_pass_ids():
-            self._status_label.setText(
-                f"The {section_window(pass_)} section is already in the cart."
             )
             return
         self._add_pass_to_cart(pass_id)
@@ -824,6 +838,9 @@ class VideoLibraryMixin(MixinBase):
         store.update_pass(pass_)
         self._refresh_video_library()
         self._select_section(pass_id)
+        # A cart row is this section, not a copy of it: the cart shows the new
+        # window, and the run made from it processes the new window too.
+        self._refresh_survey_batch_tab()
 
     def _transect_picker(self, store, **kwargs):
         """The map-and-list dialog both filing steps use, wired to the page.

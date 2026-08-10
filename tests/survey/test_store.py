@@ -390,6 +390,50 @@ def test_deleting_a_pass_with_a_run_says_why_it_cannot(store):
     assert [i.pass_id for i in store.list_batch_items(batch.id)] == [pass_.id]
 
 
+def test_a_carried_forward_cart_keeps_the_order_it_was_filled_in(tmp_path):
+    """Scenario: a v0.2.0 survey.db, whose cart rows carry no processing order.
+
+    Expected behaviour: each row's position backfills from the order the cart
+    was filled in, which is the order the table showed before there was one, so
+    an upgrade does not shuffle a day's work. The passes come back without a
+    held column, which nothing records any more.
+    """
+    transect_id, video_id, batch_id = (uuid.uuid4() for _ in range(3))
+    pass_ids = [uuid.uuid4() for _ in range(3)]
+    now = "2026-08-01T00:00:00+00:00"
+    db_path = write_v0_2_0_database(tmp_path / "old.db")
+    conn = sqlite3.connect(db_path)
+    with conn:
+        conn.execute(
+            "INSERT INTO transect VALUES (?,?,'',?,?,?,?,?,?,?,?)",
+            (str(transect_id), "T1", -17.5, 177.1, -17.5005, 177.1005, 50.0, 8.0, now, now),
+        )
+        conn.execute(
+            "INSERT INTO video_asset VALUES (?,?,?,?,?,?,?,?,?)",
+            (str(video_id), "GX010001.MP4", "/data/GX010001.MP4", "ab" * 16, 1024, now, 90.0,
+             30.0, now),
+        )
+        conn.execute(
+            "INSERT INTO survey_batch VALUES (?,?,?,?)",
+            (str(batch_id), "Day 1", "survey_preset", now),
+        )
+        for index, pass_id in enumerate(pass_ids):
+            conn.execute(
+                "INSERT INTO transect_pass (id, transect_id, video_id, batch_id, direction,"
+                " begin_s, end_s, notes, created_at, extra_video_ids, held)"
+                f" VALUES (?,?,?,?,'forward',{index},{index + 1},'',?,'[]',0)",
+                (str(pass_id), str(transect_id), str(video_id), str(batch_id), now),
+            )
+    conn.close()
+
+    store = SurveyStore(db_path)
+    items = store.list_batch_items(batch_id)
+    assert [i.pass_id for i in items] == pass_ids
+    assert [i.position for i in items] == [0, 1, 2]
+    assert all(i.overrides == {} for i in items)
+    assert not hasattr(store.get_pass(pass_ids[0]), "held")
+
+
 def test_a_carried_forward_survey_reaches_the_cart_cascade(tmp_path):
     """Scenario: a v0.2.0 survey.db, whose cart rows would restrict on pass delete.
 

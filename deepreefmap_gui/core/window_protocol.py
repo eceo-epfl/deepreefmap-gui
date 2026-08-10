@@ -344,6 +344,8 @@ if TYPE_CHECKING:
         def _reset_progress_bars(self) -> None: ...  # ProgressBarsMixin
         def _snapshot_form_settings(self) -> dict[str, Any]: ...  # InterfaceShellMixin
         def _restore_form_settings(self, snapshot: dict[str, Any]) -> None: ...  # InterfaceShellMixin
+        def _collect_preset_from_form(self) -> dict[str, Any]: ...  # InterfaceShellMixin
+        def _populate_form_from_preset(self, preset: dict[str, Any]) -> None: ...  # InterfaceShellMixin
         def _adopt_form_as_preset(self) -> None: ...  # InterfaceShellMixin
         def _reload_active_preset(self) -> None: ...  # InterfaceShellMixin
         def _restore_standard_settings(self) -> None: ...  # InterfaceShellMixin
@@ -400,11 +402,14 @@ if TYPE_CHECKING:
         def _on_transect_selected(self) -> None: ...  # SimplePlanMixin
         def _open_transect_page(self, transect_id: object = None) -> None: ...  # SimplePlanMixin
         def _refresh_cart_marks(self) -> None: ...  # VideoLibraryMixin
+        def _open_section_in_videos(self, pass_id: uuid.UUID) -> None: ...  # VideoLibraryMixin
         def _refresh_survey_analysis(self) -> None: ...  # SimpleAnalysisMixin
         def _refresh_survey_batch_tab(self) -> None: ...  # SimpleBatchMixin
         def _add_pass_to_cart(self, pass_id: uuid.UUID) -> None: ...  # SimpleBatchMixin
+        def _take_pass_out_of_cart(self, pass_id: uuid.UUID) -> None: ...  # SimpleBatchMixin
         def _cart_add(self, pass_id: uuid.UUID) -> None: ...  # SimpleBatchMixin
-        def _refresh_survey_transect_combos(self) -> None: ...  # SimpleBatchMixin
+        def _refresh_survey_transect_names(self) -> None: ...  # SimpleBatchMixin
+        def _rows_over_memory(self) -> int: ...  # SimpleBatchMixin
         def _refresh_survey_pass_statuses(self) -> None: ...  # SimpleBatchMixin
         def _recompute_survey_start(self) -> None: ...  # SimpleBatchMixin
         def _survey_preset_summary(self) -> str: ...  # SimpleBatchMixin

@@ -648,19 +648,24 @@ class SimpleSetupMixin(MixinBase):
         self._refresh_machine_button()
 
     def _initial_simple_section(self) -> str:
-        """Lead to readiness on first launch, unless the laptop is already ready."""
+        """Lead to readiness on first launch, unless the laptop is already ready.
+
+        Otherwise the footage: Videos is where a day starts, and it is the one
+        destination that says something useful about a survey with nothing in
+        it yet.
+        """
         if str(self._settings.value("setup_complete", "false")).lower() == "true":
-            return "transects"
+            return "videos"
         if setup_ready(self._current_setup_checks()):
             self._settings.setValue("setup_complete", True)
-            return "transects"
+            return "videos"
         return "machine"
 
     def _on_setup_continue(self) -> None:
         # Acknowledging the check is itself a reason to stop leading with it:
         # the diver has seen the state and chosen to move on.
         self._settings.setValue("setup_complete", True)
-        self._set_simple_section("transects")
+        self._set_simple_section("videos")
 
     def _on_setup_import_pack(self) -> None:
         if self._survey_worker_running:

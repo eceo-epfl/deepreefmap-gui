@@ -33,9 +33,6 @@ class TransectPass:
     end_s: float
     direction: str = "forward"
     batch_id: uuid.UUID | None = None
-    # Held back from processing: the pass stays in the batch and in the table,
-    # and every run of the batch skips it until it is released.
-    held: bool = False
     notes: str = ""
     extra_video_ids: list[uuid.UUID] = field(default_factory=list)
     id: uuid.UUID = field(default_factory=uuid.uuid4)

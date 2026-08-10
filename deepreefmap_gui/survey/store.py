@@ -12,6 +12,7 @@ import logging
 import sqlite3
 import threading
 import uuid
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -256,6 +257,58 @@ _MIGRATIONS: list[Migration] = [
             ON notification(fingerprint)
             WHERE resolved_at IS NULL AND kind = 'condition';
         CREATE INDEX notification_created ON notification(created_at);
+        """,
+    ),
+    # The cart carries the plan: what order its passes run in, and which of them
+    # depart from the session's settings. Both belong to the membership rather
+    # than to the pass, because the next session may plan the same pass
+    # differently. position backfills from rowid, which is the order the cart was
+    # filled in and the order the table showed until now.
+    #
+    # held goes in the same step. A pass is now either in the cart or out of it,
+    # so a third state meaning "in the cart but skipped every time" has nothing
+    # left to describe, and transect_pass is rebuilt without it.
+    Migration(
+        9,
+        "cart rows carry their order and their settings; passes are no longer held",
+        """
+        CREATE TABLE batch_item_new (
+            id TEXT PRIMARY KEY,
+            batch_id TEXT NOT NULL REFERENCES survey_batch(id),
+            pass_id TEXT NOT NULL REFERENCES transect_pass(id) ON DELETE CASCADE,
+            position INTEGER NOT NULL DEFAULT 0,
+            overrides TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            UNIQUE (batch_id, pass_id)
+        );
+        INSERT INTO batch_item_new (id, batch_id, pass_id, position, overrides, created_at)
+            SELECT id, batch_id, pass_id,
+                   (SELECT COUNT(*) FROM batch_item AS earlier
+                     WHERE earlier.batch_id = batch_item.batch_id
+                       AND earlier.rowid < batch_item.rowid),
+                   '{}', created_at
+            FROM batch_item;
+        DROP TABLE batch_item;
+        ALTER TABLE batch_item_new RENAME TO batch_item;
+
+        CREATE TABLE transect_pass_new (
+            id TEXT PRIMARY KEY,
+            transect_id TEXT REFERENCES transect(id),
+            video_id TEXT NOT NULL REFERENCES video_asset(id),
+            batch_id TEXT REFERENCES survey_batch(id),
+            direction TEXT NOT NULL CHECK (direction IN ('forward', 'reverse')),
+            begin_s REAL NOT NULL,
+            end_s REAL NOT NULL,
+            notes TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            extra_video_ids TEXT NOT NULL DEFAULT '[]'
+        );
+        INSERT INTO transect_pass_new
+            SELECT id, transect_id, video_id, batch_id, direction, begin_s, end_s,
+                   notes, created_at, extra_video_ids
+            FROM transect_pass;
+        DROP TABLE transect_pass;
+        ALTER TABLE transect_pass_new RENAME TO transect_pass;
         """,
     ),
 ]
@@ -668,9 +721,18 @@ class SurveyStore:
     # --- Batch items ---
 
     def add_batch_item(self, item: BatchItem) -> None:
-        """Add a pass to a session's worklist; already a member is a no-op."""
+        """Add a pass to a session's worklist; already a member is a no-op.
+
+        A new row lands at the end of the processing order, which is where a
+        thing added to a queue belongs until it is dragged somewhere else.
+        """
         row = to_row(item)
         with self._conn() as conn:
+            last = conn.execute(
+                "SELECT MAX(position) FROM batch_item WHERE batch_id = ?",
+                (row["batch_id"],),
+            ).fetchone()[0]
+            row["position"] = 0 if last is None else int(last) + 1
             conn.execute(
                 _insert_sql("batch_item", row).replace("INSERT", "INSERT OR IGNORE", 1), row
             )
@@ -682,10 +744,47 @@ class SurveyStore:
                 (str(batch_id), str(pass_id)),
             )
 
+    def has_batch_item(self, batch_id: uuid.UUID, pass_id: uuid.UUID) -> bool:
+        """Whether this pass is still ordered in this session.
+
+        The worker asks between passes: a row taken out of the cart while the
+        session runs must not be processed, and this is what says so.
+        """
+        row = self._conn().execute(
+            "SELECT 1 FROM batch_item WHERE batch_id = ? AND pass_id = ?",
+            (str(batch_id), str(pass_id)),
+        ).fetchone()
+        return row is not None
+
+    def set_batch_item_positions(
+        self, batch_id: uuid.UUID, pass_ids: Sequence[uuid.UUID]
+    ) -> None:
+        """Write the processing order, as the passes are given, from zero."""
+        with self._conn() as conn:
+            conn.executemany(
+                "UPDATE batch_item SET position = ? WHERE batch_id = ? AND pass_id = ?",
+                [
+                    (index, str(batch_id), str(pass_id))
+                    for index, pass_id in enumerate(pass_ids)
+                ],
+            )
+
+    def set_batch_item_overrides(
+        self, batch_id: uuid.UUID, pass_id: uuid.UUID, overrides: Mapping[str, Any]
+    ) -> None:
+        """Store what this pass alone changes about the session's settings."""
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE batch_item SET overrides = ? WHERE batch_id = ? AND pass_id = ?",
+                (json.dumps(dict(overrides), sort_keys=True), str(batch_id), str(pass_id)),
+            )
+
     def list_batch_items(self, batch_id: uuid.UUID) -> list[BatchItem]:
-        # rowid is insertion order, which is the order the cart was filled in.
+        # position is the processing order; rowid breaks a tie between rows that
+        # were written before there was an order, or in the same drag.
         rows = self._conn().execute(
-            "SELECT * FROM batch_item WHERE batch_id = ? ORDER BY rowid", (str(batch_id),)
+            "SELECT * FROM batch_item WHERE batch_id = ? ORDER BY position, rowid",
+            (str(batch_id),),
         ).fetchall()
         return [from_row(BatchItem, r) for r in rows]
 
@@ -694,13 +793,13 @@ class SurveyStore:
         return [from_row(BatchItem, r) for r in rows]
 
     def passes_in_batch(self, batch_id: uuid.UUID) -> list[TransectPass]:
-        """The session's worklist, in the order it was filled."""
+        """The session's worklist, in the order it will be processed."""
         rows = self._conn().execute(
             """
             SELECT transect_pass.* FROM transect_pass
             JOIN batch_item ON batch_item.pass_id = transect_pass.id
             WHERE batch_item.batch_id = ?
-            ORDER BY batch_item.rowid
+            ORDER BY batch_item.position, batch_item.rowid
             """,
             (str(batch_id),),
         ).fetchall()

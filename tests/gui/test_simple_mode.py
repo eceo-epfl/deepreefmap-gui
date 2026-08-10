@@ -158,8 +158,8 @@ def test_the_survey_db_is_created_under_the_output_root(window):
 def test_every_destination_carries_a_name_and_a_glyph(window):
     assert list(window._simple_nav_buttons) == list(DESTINATIONS)
     assert [b.text() for b in window._simple_nav_buttons.values()] == [
-        "Transects",
         "Videos",
+        "Transects",
         "Cart",
         "Browse",
     ]

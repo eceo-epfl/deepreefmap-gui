@@ -144,16 +144,13 @@ class DetailCard(QWidget):
         self.title_row.setContentsMargins(0, 0, 0, 0)
         self.title_row.setSpacing(SPACE_SM)
         self.title_row.addWidget(self.title, 1)
-        self.body.addLayout(self.title_row)
-
-        # In a row of its own so the chip is only as wide as its word; stretched
-        # to the pane it would read as a banner.
+        # Beside the name rather than under it: the verdict belongs to the thing
+        # the name names, and on its own line it took a row of a narrow pane to
+        # say one word. The stretch on the title keeps it right-aligned, next to
+        # whatever single-glyph action the card adds after it.
         self.status = StatusChip()
-        status_row = QHBoxLayout()
-        status_row.setContentsMargins(0, 0, 0, 0)
-        status_row.addWidget(self.status)
-        status_row.addStretch(1)
-        self.body.addLayout(status_row)
+        self.title_row.addWidget(self.status)
+        self.body.addLayout(self.title_row)
 
         # Non-wrapping: a value that wraps to a second line makes its row taller
         # for one selection than the next, so the pane shuffles as the table is
@@ -173,7 +170,9 @@ class DetailCard(QWidget):
         button.setProperty("pad", "none")
         self.title_row.addWidget(button)
 
-    def add_actions(self, primary: QPushButton, *secondary: QAbstractButton) -> None:
+    def add_actions(
+        self, primary: QPushButton | None, *secondary: QAbstractButton
+    ) -> None:
         """Close the card with what it is for, and quiet actions pushed right.
 
         Added at the point the pane calls this, so it lands under whatever the
@@ -182,11 +181,16 @@ class DetailCard(QWidget):
         worse than a row with a single button in it. A pane with more than one
         occasional action collapses them into a More… QToolButton instead of
         widening this row past what the pane can hold.
+
+        ``primary`` may be None, for a pane whose main action lives on the row
+        the pane describes rather than in the pane. Two controls for one act
+        disagree the moment one of them is stale.
         """
         actions = QHBoxLayout()
         actions.setSpacing(SPACE_SM)
-        primary.setProperty("cta", "true")
-        actions.addWidget(primary)
+        if primary is not None:
+            primary.setProperty("cta", "true")
+            actions.addWidget(primary)
         actions.addStretch(1)
         for button in secondary:
             button.setProperty("quiet", "true")

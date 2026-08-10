@@ -393,9 +393,14 @@ def test_a_section_row_leads_with_its_window_then_says_where_it_stands() -> None
     row = listing.sections()[str(entry.passes[0].id)]
 
     texts = label_texts(row)
-    assert "0:00–0:30" in texts
-    assert "Forward" in texts
+    # The window and how long it runs for, on one label: the clip above says how
+    # long the recording is, and this says how much of it was cut.
+    assert "0:00–0:30 · 30s" in texts
     assert "2 runs" in texts
+    # Direction is an arrow rather than a word, so it costs an icon's width
+    # instead of a column; the tooltip still says it in words.
+    assert "forward" in row._direction.toolTip()
+    assert not row._direction.pixmap().isNull()
     # The chip is the name and nothing else: an arrow on it read as a link to
     # somewhere, which it was not.
     assert row.transect_chip.full_text == "North reef"
@@ -414,14 +419,19 @@ def test_an_unfiled_section_invites_a_transect_rather_than_showing_a_blank() -> 
     assert PRIMARY in chip.styleSheet()
 
 
-def test_a_section_already_in_the_cart_cannot_be_added_twice() -> None:
+def test_a_section_in_the_cart_offers_the_way_back_out() -> None:
+    """One entry naming the move it will make, rather than an add greyed out on
+    everything already in the cart."""
+    from deepreefmap_gui.runs.video_rows import MENU_REMOVE_FROM_CART
+
     entry = make_entry(windows=((0.0, 30.0),))
     pass_id = str(entry.passes[0].id)
     listing = make_list(entry, in_cart=lambda pid: pid == pass_id)
 
     menu = listing.sections()[pass_id].menu()
 
-    assert not action(menu, MENU_ADD_TO_CART).isEnabled()
+    assert action(menu, MENU_REMOVE_FROM_CART).isEnabled()
+    assert [a for a in menu.actions() if a.text() == MENU_ADD_TO_CART] == []
     assert action(menu, MENU_RETRIM).isEnabled()
 
 

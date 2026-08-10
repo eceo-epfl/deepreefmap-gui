@@ -82,8 +82,8 @@ def rebuild_losses() -> list[str]:
         "folder, so they cannot be recovered.",
         "Runs that failed or were cancelled come back marked as succeeded, "
         "without their finish time or error.",
-        "Pass notes, held passes, and transect descriptions are not stored in "
-        "run folders.",
+        "Pass notes, cart order and per-pass settings, and transect "
+        "descriptions are not stored in run folders.",
         "Transects recover as they were when the run was processed, so later "
         "corrections to a name or coordinates are lost.",
     ]

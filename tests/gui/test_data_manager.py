@@ -551,8 +551,8 @@ def test_assigning_from_browse_reaches_the_process_table(
     """Scenario: a run is assigned to a transect from Browse while its pass sits
     in the Process table.
 
-    Expected behaviour: the Process row updates too. It held a stale copy
-    before, and its next write put the old transect back over the assignment.
+    Expected behaviour: the cart row updates too. It held a stale copy before,
+    and showed the old transect until the page was rebuilt.
     """
     store = SurveyStore(out_root / "survey.db")
     batch = make_batch(store)
@@ -570,11 +570,8 @@ def test_assigning_from_browse_reaches_the_process_table(
     window._on_data_assign_clicked()
 
     row = next(r for r in window._survey_rows if r.pass_id == pass_.id)
-    assert row.transect_id == other.id, "the Process table kept its stale copy"
-    # The next row write must keep the assignment, not put the old value back.
-    window._write_survey_row(row)
-    reopened = window._survey_store()
-    assert reopened.get_pass(pass_.id).transect_id == other.id
+    assert row.transect_id == other.id, "the cart kept its stale copy"
+    assert window._survey_store().get_pass(pass_.id).transect_id == other.id
 
 
 def test_run_record_names_the_session_in_tooltip_and_detail(out_root, make_window):
