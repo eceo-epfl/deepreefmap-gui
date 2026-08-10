@@ -415,7 +415,15 @@ class VideoLibraryMixin(MixinBase):
     def _show_clip_detail(self, clip: VideoLibraryEntry) -> None:
         self._video_detail.setVisible(True)
         self._video_detail.show_entry(
-            clip, self._transect_name_for, in_cart=self._cart_pass_ids().__contains__
+            clip,
+            self._transect_name_for,
+            in_cart=self._cart_pass_ids().__contains__,
+            # Hidden clips included: a chapter being out of the list does not
+            # stop the section that spans it wanting a frame from it.
+            assets={
+                entry.video.id: entry.video
+                for entry in getattr(self, "_video_entries", [])
+            },
         )
 
     def _selected_clip(self) -> VideoLibraryEntry | None:

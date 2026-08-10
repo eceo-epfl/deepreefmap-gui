@@ -10,6 +10,8 @@ below with what became of that cut.
 
 from __future__ import annotations
 
+import uuid
+from collections.abc import Mapping
 from typing import Any, Callable
 
 from PySide6.QtCore import Signal
@@ -32,6 +34,7 @@ from deepreefmap_gui.survey.catalogue import (
     LINK_MISSING,
     VideoLibraryEntry,
 )
+from deepreefmap_gui.survey.models.video_asset import VideoAsset
 from deepreefmap_gui.survey.statuses import clip_spec
 
 UNAVAILABLE = "Video unavailable"
@@ -171,8 +174,13 @@ class VideoDetailPanel(DetailCard):
         transect_name: Callable[[Any], str | None],
         *,
         in_cart: Callable[[str], bool] = lambda _pass_id: False,
+        assets: Mapping[uuid.UUID, VideoAsset] | None = None,
     ) -> None:
-        """Describe one clip. ``transect_name`` resolves a pass's transect id."""
+        """Describe one clip. ``transect_name`` resolves a pass's transect id.
+
+        ``assets`` is the rest of the library, passed through so a section cut
+        across chapters can still find the files its frames come from.
+        """
         self.title.setText(entry.video.file_name)
         self.set_status(
             clip_spec(entry.outcome).label, clip_outcome_color(entry.outcome)
@@ -197,7 +205,9 @@ class VideoDetailPanel(DetailCard):
         apply_link_state(self.link_btn, entry.link_state)
         self.unavailable.setVisible(entry.link_state == LINK_MISSING)
         self._set_queue_available(entry.link_state == LINK_LINKED)
-        self.pass_list.set_sections(entry, transect_name, in_cart=in_cart)
+        self.pass_list.set_sections(
+            entry, transect_name, in_cart=in_cart, assets=assets
+        )
         self._entry = entry
 
     def select_section(self, pass_id: str | None) -> None:

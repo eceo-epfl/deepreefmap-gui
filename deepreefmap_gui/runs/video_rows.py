@@ -15,13 +15,26 @@ from a rect and a list of spans rather than from its own children.
 
 from __future__ import annotations
 
+import html
+import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
 
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal, SignalInstance
+from PySide6.QtCore import (
+    QEvent,
+    QPointF,
+    QRectF,
+    QSize,
+    Qt,
+    QTimer,
+    QUrl,
+    Signal,
+    SignalInstance,
+)
 from PySide6.QtGui import (
     QColor,
     QContextMenuEvent,
+    QCursor,
     QIcon,
     QMouseEvent,
     QPainter,
@@ -37,6 +50,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QToolButton,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
@@ -90,9 +104,15 @@ from deepreefmap_gui.core.widgets import (
     muted_label,
     secondary_label,
 )
+from deepreefmap_gui.io.frame_grab import shared_frame_grabber
 from deepreefmap_gui.profiling.system_probe import format_bytes
 from deepreefmap_gui.survey import statuses
-from deepreefmap_gui.survey.catalogue import LINK_LINKED, LINK_MISSING, VideoLibraryEntry
+from deepreefmap_gui.survey.catalogue import (
+    LINK_LINKED,
+    LINK_MISSING,
+    VideoLibraryEntry,
+    preview_points,
+)
 from deepreefmap_gui.survey.models.run_record import RunRecord
 from deepreefmap_gui.survey.models.transect_pass import TransectPass
 from deepreefmap_gui.survey.models.video_asset import VideoAsset
@@ -141,6 +161,9 @@ SIZE_CHARS = 9  # "1015 MB", "Size ▼"
 GRAVITY_CHARS = 9  # "Gravity ▼", over a cell holding only a dot
 WINDOW_CHARS = 22  # "0:00–11:51 · 11m 51s"
 TRANSECT_CHARS = 22  # a transect name, or "Unassigned"
+# What the clip pane's chip is allowed to shrink to before the pane itself has
+# to give: enough that an elided name is still a name rather than an ellipsis.
+TRANSECT_MIN_CHARS = 6
 RUNS_CHARS = 9  # "12 runs"
 
 # One row: the smallest comfortable click target and not a pixel more. The list
@@ -301,6 +324,16 @@ def section_length_label(pass_: TransectPass) -> str:
         return ""
     seconds = int(round(max(0.0, pass_.end_s - pass_.begin_s)))
     return f"{seconds}s" if seconds < 60 else f"{seconds // 60}m {seconds % 60:02d}s"
+
+
+def preview_times(pass_: TransectPass) -> tuple[float, float, float]:
+    """The three moments of a section a hover preview shows.
+
+    The same three ``catalogue.preview_points`` resolves onto chapters, but as
+    the section's own times: what a caption has to say is where in the window
+    the frame came from, not where in some chapter file it was found.
+    """
+    return pass_.begin_s, (pass_.begin_s + pass_.end_s) / 2.0, pass_.end_s
 
 
 def run_label(count: int) -> str:
@@ -1022,7 +1055,7 @@ class SectionRow(QWidget):
 
         row = QHBoxLayout(self)
         row.setContentsMargins(0 if compact else SECTION_INDENT, 0, SPACE_SM, 0)
-        row.setSpacing(SPACE_SM)
+        row.setSpacing(SPACE_XS if compact else SPACE_SM)
 
         self._dot_label = QLabel()
         self._dot_label.setFixedWidth(ICON_SM)
@@ -1031,7 +1064,17 @@ class SectionRow(QWidget):
         # The window leads: it is the section's identity, and the only thing
         # that tells two sections of one clip apart before they are filed.
         self._window = secondary_label()
-        _fixed_width(self._window, WINDOW_CHARS)
+        if not compact:
+            _fixed_width(self._window, WINDOW_CHARS)
+        else:
+            # No column here: the pane is a third of the page, and a column
+            # wide enough for the longest window a clip could have spends the
+            # difference on a gap in front of the transect. Every section of one
+            # clip writes its window to much the same length anyway, so they
+            # line up without being made to.
+            self._window.setSizePolicy(
+                QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+            )
         row.addWidget(self._window)
 
         self.transect_chip = TransectChip()
@@ -1040,9 +1083,15 @@ class SectionRow(QWidget):
         )
         if compact:
             # The chip takes what the pane leaves it and elides; in the wide
-            # list it holds a column so the names line up down the page.
+            # list it holds a column so the names line up down the page. The
+            # floor is set here rather than left to the button's own text, or a
+            # long transect name makes the row wider than the pane and pushes
+            # the buttons off the end of it.
             self.transect_chip.setSizePolicy(
                 QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+            )
+            self.transect_chip.setMinimumWidth(
+                self.fontMetrics().averageCharWidth() * TRANSECT_MIN_CHARS
             )
             row.addWidget(self.transect_chip, 1)
         else:
@@ -1089,6 +1138,12 @@ class SectionRow(QWidget):
         self._in_cart = False
         self._available = True
         self._selected = False
+        # What the tooltip says before any frame has been decoded, and what it
+        # goes on saying underneath them once they have.
+        self._plain_tooltip = ""
+        self._preview: list[tuple[str, float]] | None = None
+        self._preview_key = ""
+        self._preview_wired = False
 
     @property
     def pass_id(self) -> str:
@@ -1113,6 +1168,7 @@ class SectionRow(QWidget):
         run_count: int = 0,
         in_cart: bool = False,
         available: bool = True,
+        preview: list[tuple[str, float]] | None = None,
     ) -> None:
         """Describe one section. ``status`` comes from ``section_facts``.
 
@@ -1120,6 +1176,10 @@ class SectionRow(QWidget):
         checked yet counts as available: not knowing is not the same as knowing
         it is gone, and marking every unchecked clip in red says the library is
         broken every time the app opens.
+
+        ``preview`` is where the section's frames can be grabbed from, out of
+        ``catalogue.preview_points``. None where there is no file to read, and
+        the row then says in words what it cannot show in pictures.
         """
         self._pass = pass_
         self._run_count = run_count
@@ -1141,9 +1201,62 @@ class SectionRow(QWidget):
         # trimmed. Marked in red rather than greyed out: a disabled button shows
         # no tooltip, and the reason is the whole of what the user needs.
         self.trim_btn.setToolTip(RETRIM_TOOLTIP if available else TRIM_UNLINKED_TOOLTIP)
-        self.setToolTip(
-            f"{window_label(pass_)}  ·  {transect_name or UNASSIGNED_NAME}"
-            f"  ·  {statuses.status_label(status)}"
+        # The window is not repeated here: the row shows it, and once frames
+        # arrive each one is captioned with where in the window it came from.
+        self._plain_tooltip = (
+            f"{transect_name or UNASSIGNED_NAME}  ·  {statuses.status_label(status)}"
+        )
+        self._preview = preview if available else None
+        self._preview_key = f"{pass_.id}@{pass_.begin_s:.2f}-{pass_.end_s:.2f}"
+        self.setToolTip(self._plain_tooltip)
+
+    def event(self, event: QEvent) -> bool:
+        """Decode the preview only when a tooltip is actually being asked for.
+
+        A section a cursor never rests on costs nothing, which is what makes it
+        affordable to do this for every row in a season's worth of clips.
+        """
+        if event.type() == QEvent.Type.ToolTip:
+            self._request_preview()
+        return super().event(event)
+
+    def _request_preview(self) -> None:
+        if not self._preview:
+            return
+        grabber = shared_frame_grabber()
+        if not self._preview_wired:
+            grabber.frames_ready.connect(self._on_frames_ready)
+            self._preview_wired = True
+        frames = grabber.request(self._preview_key, self._preview)
+        if frames is not None:
+            self.setToolTip(self._preview_tooltip(frames))
+
+    def _on_frames_ready(self, key: str, frames: list[str | None]) -> None:
+        if key != self._preview_key:
+            return
+        rich = self._preview_tooltip(frames)
+        self.setToolTip(rich)
+        # The plain tooltip is already on screen by the time the frames land, so
+        # it is replaced where it stands rather than after a leave and a return.
+        if self.underMouse():
+            QToolTip.showText(QCursor.pos(), rich, self)
+
+    def _preview_tooltip(self, frames: Sequence[str | None]) -> str:
+        """The frames in a row, each captioned, with the plain line beneath."""
+        if self._pass is None:
+            return self._plain_tooltip
+        cells = [
+            f"<td align='center'><img src='{QUrl.fromLocalFile(jpeg).toString()}'><br>"
+            f"<span style='color:{TEXT_MUTED}'>{_clock(t_s)}</span></td>"
+            for jpeg, t_s in zip(frames, preview_times(self._pass), strict=False)
+            if jpeg
+        ]
+        if not cells:
+            return self._plain_tooltip
+        return (
+            f"<table cellspacing='6'><tr>{''.join(cells)}</tr></table>"
+            f"<div align='center' style='color:{TEXT_MUTED}'>"
+            f"{html.escape(self._plain_tooltip)}</div>"
         )
 
     def _emit(self, signal: SignalInstance) -> None:
@@ -1313,9 +1426,16 @@ class SectionList(QScrollArea):
         transect_name: Callable[[Any], str | None] = lambda _id: None,
         *,
         in_cart: Callable[[str], bool] = lambda _pass_id: False,
+        assets: Mapping[uuid.UUID, VideoAsset] | None = None,
     ) -> None:
-        """Fill the pane from one clip, rebuilding only when the sections change."""
+        """Fill the pane from one clip, rebuilding only when the sections change.
+
+        ``assets`` is every clip in the library, for resolving a section that
+        spans chapters onto the files behind it. Without it only this clip can
+        be reached, and a chaptered section gets no hover preview.
+        """
         facts = section_facts(entry)
+        known = {entry.video.id: entry.video} if assets is None else assets
         order = [str(pass_.id) for pass_, _, _ in facts]
         if order != self._order:
             self._rebuild(order)
@@ -1327,6 +1447,7 @@ class SectionList(QScrollArea):
                 run_count=run_count,
                 in_cart=bool(in_cart(str(pass_.id))),
                 available=entry.link_state != LINK_MISSING,
+                preview=preview_points(pass_, known),
             )
         self.empty.setVisible(not facts)
         self._paint_selection()
@@ -1579,6 +1700,13 @@ class VideoLibraryList(QScrollArea):
         if shape != self._shape:
             self._rebuild(self._groups)
             self._shape = shape
+        # Built once for the whole list: a section spanning chapters needs the
+        # clips either side of the one its row sits under.
+        assets = {
+            entry.video.id: entry.video
+            for group in self._groups
+            for entry in group.entries
+        }
         for group in self._groups:
             for entry in group.entries:
                 video_id = str(entry.video.id)
@@ -1600,6 +1728,7 @@ class VideoLibraryList(QScrollArea):
                         run_count=run_count,
                         in_cart=bool(in_cart(str(pass_.id))),
                         available=entry.link_state != LINK_MISSING,
+                        preview=preview_points(pass_, assets),
                     )
         self._apply_expansion()
         self._paint_selection()

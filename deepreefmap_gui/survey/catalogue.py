@@ -13,7 +13,7 @@ import logging
 import shutil
 import uuid
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -619,6 +619,58 @@ def resolve_link_states(entries: Iterable[VideoLibraryEntry]) -> dict[str, str]:
             # merely slow would be wrong.
             states[path] = LINK_UNKNOWN
     return states
+
+
+# The end of a window is the last frame of it, and a seek that lands exactly on
+# it can fall past the end of the file and read nothing.
+_END_NUDGE_S = 0.04
+
+
+def _chapter_at(
+    chapters: list[VideoAsset], t_s: float
+) -> tuple[str, float] | None:
+    """Which chapter holds a time, and where in that chapter it falls.
+
+    The last chapter takes anything left over: its length is the one that need
+    not be known, since nothing comes after it to be pushed along.
+    """
+    offset = 0.0
+    for index, asset in enumerate(chapters):
+        if index == len(chapters) - 1:
+            return asset.path, max(0.0, t_s - offset)
+        duration = asset.duration_s
+        if not duration or duration <= 0:
+            return None
+        if t_s < offset + duration:
+            return asset.path, t_s - offset
+        offset += duration
+    return None
+
+
+def preview_points(
+    pass_: TransectPass, assets: Mapping[uuid.UUID, VideoAsset]
+) -> list[tuple[str, float]] | None:
+    """Where to grab the start, middle and end frames of a section.
+
+    ``begin_s`` and ``end_s`` are offsets into the pass's chapters played back to
+    back, so each has to be walked onto the chapter that actually holds it.
+    None when a chapter is unknown or its length is, since a frame from the
+    wrong part of the footage is worse than no frame at all.
+    """
+    chapters = []
+    for video_id in pass_.video_ids():
+        asset = assets.get(video_id)
+        if asset is None or not asset.path:
+            return None
+        chapters.append(asset)
+    end = max(pass_.begin_s, pass_.end_s - _END_NUDGE_S)
+    points = []
+    for t_s in (pass_.begin_s, (pass_.begin_s + pass_.end_s) / 2.0, end):
+        placed = _chapter_at(chapters, t_s)
+        if placed is None:
+            return None
+        points.append(placed)
+    return points
 
 
 def video_library(
