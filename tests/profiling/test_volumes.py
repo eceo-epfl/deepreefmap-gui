@@ -4,7 +4,17 @@ from __future__ import annotations
 
 import types
 
-from deepreefmap_gui.profiling.volumes import VolumeUsage, group_by_volume, volume_root
+from deepreefmap_gui.profiling.volumes import (
+    FULLNESS_FULL,
+    FULLNESS_OK,
+    FULLNESS_TIGHT,
+    MIN_FREE_BYTES,
+    VolumeUsage,
+    fullness,
+    group_by_volume,
+    used_percent,
+    volume_root,
+)
 
 GB = 1024**3
 
@@ -121,3 +131,38 @@ def test_an_empty_path_names_no_volume() -> None:
 def test_usage_is_a_frozen_record() -> None:
     volume = VolumeUsage("/", "/", 10, 4, 3, 2)
     assert volume.other_used_bytes == 1
+
+
+def volume_at(*, total: int, free: int) -> VolumeUsage:
+    return VolumeUsage("/", "/", total, free, 0, 0)
+
+
+def test_a_comfortable_drive_is_not_banded() -> None:
+    assert fullness(volume_at(total=4000 * GB, free=1600 * GB)) == FULLNESS_OK
+
+
+def test_the_percentage_bands_a_drive_with_room_to_spare() -> None:
+    """A 4 TB external at 96% is still full, however many bytes are left."""
+    assert fullness(volume_at(total=4000 * GB, free=160 * GB)) == FULLNESS_FULL
+    assert fullness(volume_at(total=4000 * GB, free=520 * GB)) == FULLNESS_TIGHT
+
+
+def test_headroom_bands_a_drive_the_percentage_calls_fine() -> None:
+    """80% of a 60 GB card is 12 GB, which is four passes and no margin."""
+    assert fullness(volume_at(total=60 * GB, free=9 * GB)) == FULLNESS_FULL
+    assert fullness(volume_at(total=60 * GB, free=11 * GB)) == FULLNESS_TIGHT
+
+
+def test_the_worse_of_the_two_readings_wins() -> None:
+    """Half empty by percentage, under the download floor by headroom."""
+    assert fullness(volume_at(total=16 * GB, free=8 * GB)) == FULLNESS_FULL
+
+
+def test_the_download_floor_is_the_one_models_cache_refuses_under() -> None:
+    from deepreefmap_gui.models.cache import _MIN_FREE_BYTES
+
+    assert MIN_FREE_BYTES == _MIN_FREE_BYTES
+
+
+def test_a_drive_reporting_no_size_is_not_divided_by() -> None:
+    assert used_percent(volume_at(total=0, free=0)) == 0.0

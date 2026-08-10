@@ -8,7 +8,9 @@ from __future__ import annotations
 from PySide6.QtCore import QSize
 from PySide6.QtGui import QPixmap
 
-from deepreefmap_gui.core.storage_bar import MAX_BARS, StorageBars, VolumeBar
+from deepreefmap_gui.core.storage_bar import MAX_BARS, StorageBars, VolumeBar, alert_colour
+from deepreefmap_gui.core.theme import BLOCK, WARNING
+from deepreefmap_gui.core.volume_card import VolumeCard
 from deepreefmap_gui.profiling.system_probe import format_bytes
 from deepreefmap_gui.profiling.volumes import VolumeUsage
 
@@ -45,19 +47,19 @@ def test_a_bar_per_drive(qapp) -> None:
     bars.set_volumes([make_volume(name) for name in ("a", "b", "c")])
     bars.show()
     assert len(bars.bars) == 3
-    assert not bars.overflow_label.isVisible()
+    assert not bars.overflow_button.isVisible()
 
 
-def test_extra_drives_collapse_into_an_overflow_label(qapp) -> None:
+def test_extra_drives_collapse_into_an_overflow_button(qapp) -> None:
     volumes = [make_volume(name) for name in ("a", "b", "c", "d", "e")]
     bars = StorageBars()
     bars.set_volumes(volumes)
     bars.show()
 
     assert len(bars.bars) == MAX_BARS
-    assert bars.overflow_label.isVisible()
-    assert bars.overflow_label.text() == "+2 more"
-    tooltip = bars.overflow_label.toolTip()
+    assert bars.overflow_button.isVisible()
+    assert bars.overflow_button.text() == "+2 more"
+    tooltip = bars.overflow_button.toolTip()
     assert "d" in tooltip and "e" in tooltip
 
 
@@ -70,11 +72,11 @@ def test_compact_mode_shows_only_the_first_drive(qapp) -> None:
 
     assert len(bars.bars) == 1
     assert bars.bars[0].usage() is volumes[0]
-    assert bars.overflow_label.text() == "+2 more"
+    assert bars.overflow_button.text() == "+2 more"
 
     bars.set_compact(False)
     assert len(bars.bars) == 3
-    assert not bars.overflow_label.isVisible()
+    assert not bars.overflow_button.isVisible()
 
 
 def test_repeated_refreshes_reuse_the_same_bars(qapp) -> None:
@@ -127,3 +129,78 @@ def test_the_widget_paints_with_volumes(qapp) -> None:
     bars = StorageBars()
     bars.set_volumes([make_volume(name) for name in ("a", "b", "c", "d")])
     paint(bars)
+
+
+def test_a_press_asks_rather_than_lighting_itself(qapp) -> None:
+    """The window decides where a press lands, so the button waits to be told."""
+    bars = StorageBars()
+    volumes = [make_volume("a"), make_volume("b")]
+    bars.set_volumes(volumes)
+    bars.show()
+    asked: list[str] = []
+    bars.volume_clicked.connect(asked.append)
+
+    bars.buttons[0].click()
+    assert asked == [volumes[0].root]
+    assert not bars.buttons[0].isChecked()
+
+
+def test_the_lit_button_follows_the_selected_root(qapp) -> None:
+    bars = StorageBars()
+    volumes = [make_volume("a"), make_volume("b")]
+    bars.set_volumes(volumes)
+    bars.show()
+
+    bars.set_selected_root(volumes[1].root)
+    assert [b.isChecked() for b in bars.buttons] == [False, True]
+
+    bars.set_selected_root(None)
+    assert not any(b.isChecked() for b in bars.buttons)
+
+
+def test_compact_mode_keeps_the_drive_whose_page_is_open(qapp) -> None:
+    """Starting a batch must not take the button out from under the open page."""
+    bars = StorageBars()
+    volumes = [make_volume(name) for name in ("a", "b", "c")]
+    bars.set_volumes(volumes)
+    bars.show()
+    bars.set_selected_root(volumes[2].root)
+    bars.set_compact(True)
+
+    assert [b.usage() for b in bars.buttons] == [volumes[2]]
+    assert bars.buttons[0].isChecked()
+
+
+def test_a_tight_drive_is_banded_and_a_full_one_paints(qapp) -> None:
+    tight = VolumeUsage(root="/mnt/t", label="t", total_bytes=100 * GB,
+                        free_bytes=11 * GB, video_bytes=40 * GB, output_bytes=40 * GB)
+    full = VolumeUsage(root="/mnt/f", label="f", total_bytes=100 * GB,
+                       free_bytes=2 * GB, video_bytes=50 * GB, output_bytes=40 * GB)
+    assert alert_colour(tight) == WARNING
+    assert alert_colour(full) == BLOCK
+    assert alert_colour(make_volume("a")) is None
+
+    bar = VolumeBar()
+    bar.set_usage(full)
+    paint(bar)
+
+
+def test_the_card_carries_the_figures_and_raises_no_tooltip_of_its_own(qapp) -> None:
+    card = VolumeCard()
+    volume = make_volume("a")
+    card.set_volume(volume)
+
+    inner = card.findChildren(VolumeBar)
+    assert len(inner) == 1
+    assert inner[0].toolTip() == ""
+
+
+def test_the_card_is_not_a_child_of_the_bars(qapp) -> None:
+    """test_repeated_refreshes_reuse_the_same_bars counts VolumeBar children."""
+    bars = StorageBars()
+    bars.set_volumes([make_volume("a")])
+    bars.show()
+    bars._card_for = bars.buttons[0]
+    bars._show_card()
+
+    assert len(bars.findChildren(VolumeBar)) == 1

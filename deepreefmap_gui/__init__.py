@@ -11,7 +11,7 @@ transect they belong to, whether this laptop can run another one.
 
 ## Where the code for a feature is
 
-The window is a single class fused from 19 mixins, so a feature is a file rather than a widget
+The window is a single class fused from 20 mixins, so a feature is a file rather than a widget
 subtree. `class <Mixin>` is the only grep you need after this table:
 
 | What you see                                          | Mixin                  | File                   |
@@ -35,6 +35,7 @@ subtree. `class <Mixin>` is the only grep you need after this table:
 | Results: ortho preview, transect crop, exports, cover | `ResultsMixin`         | `runs/results.py`      |
 | Viewer controls: playback, legend, picking, app mode  | `ViewerControlsMixin`  | `viewer/controls.py`   |
 | Update check and install, the desktop entry toggle    | `VersionCheckMixin`    | `update/version.py`    |
+| Storage: one drive's runs, clips and what can go      | `StorageMixin`         | `storage/page.py`      |
 
 Widgets those mixins build but do not own are their own modules beside them (`runs/run_table.py`,
 `runs/run_detail.py`, `viewer/legend.py`, and so on). Each subpackage's `__init__.py` states its

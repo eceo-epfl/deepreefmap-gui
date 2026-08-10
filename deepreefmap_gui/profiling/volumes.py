@@ -57,6 +57,39 @@ class VolumeUsage:
         return max(0, self.total_bytes - self.free_bytes - self.video_bytes - self.output_bytes)
 
 
+# How full is too full. A drive is judged on whichever of the two readings is
+# worse, because neither alone describes a field laptop: 90% of a 4 TB external
+# still holds a hundred passes, and 60% of a 128 GB system disk holds two.
+FULLNESS_OK, FULLNESS_TIGHT, FULLNESS_FULL = "ok", "tight", "full"
+
+TIGHT_PERCENT, FULL_PERCENT = 85.0, 95.0
+
+# The floor a model download already refuses to start under
+# (models/cache.py::_MIN_FREE_BYTES), restated rather than imported: that module
+# pulls huggingface_hub, and this one is the app's import-light accounting.
+MIN_FREE_BYTES = 10 * 1024**3
+
+# Four passes at simple/setup.py::ROUGH_PASS_BYTES, which is about a session.
+SESSION_FREE_BYTES = 12 * 1024**3
+
+
+def used_percent(volume: VolumeUsage) -> float:
+    """How much of the drive is in use, 0 when it reports no size at all."""
+    if volume.total_bytes <= 0:
+        return 0.0
+    return 100.0 * (volume.total_bytes - volume.free_bytes) / volume.total_bytes
+
+
+def fullness(volume: VolumeUsage) -> str:
+    """Whether this drive is fine, getting tight, or about to stop a run."""
+    used = used_percent(volume)
+    if used >= FULL_PERCENT or volume.free_bytes < MIN_FREE_BYTES:
+        return FULLNESS_FULL
+    if used >= TIGHT_PERCENT or volume.free_bytes < SESSION_FREE_BYTES:
+        return FULLNESS_TIGHT
+    return FULLNESS_OK
+
+
 def _drive_root(path: str) -> str | None:
     """The `C:\\`-style root of `path`, or None where the path names no drive.
 

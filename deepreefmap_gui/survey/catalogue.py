@@ -779,14 +779,25 @@ def delete_run_dir(out_root: Path, run_dir: Path, store: SurveyStore | None) -> 
             store.delete_run(run.id)
 
 
+def require_run_dir(out_root: Path, run_dir: Path) -> Path:
+    """The resolved run directory, once it is proven to be one.
+
+    The one gate everything that deletes run data goes through, so a bug that
+    hands over a path from somewhere else cannot reach a filesystem call. Direct
+    children of the output root only: a run directory is never nested, and
+    anything deeper is somebody's own folder.
+    """
+    resolved = run_dir.resolve()
+    if resolved.parent != out_root.resolve():
+        raise ValueError(f"{run_dir} is not directly under {out_root}")
+    return resolved
+
+
 def delete_run_data(out_root: Path, run_dir: Path) -> None:
     """Remove a run directory and nothing else: the database row stays, so the
     run lives on as a data-removed record. Only direct children of the output
     root are ever removed."""
-    resolved = run_dir.resolve()
-    if resolved.parent != out_root.resolve():
-        raise ValueError(f"{run_dir} is not directly under {out_root}")
-    shutil.rmtree(resolved)
+    shutil.rmtree(require_run_dir(out_root, run_dir))
 
 
 def assign_to_transect(

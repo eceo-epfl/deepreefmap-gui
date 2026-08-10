@@ -128,7 +128,12 @@ _DESTINATION_TIPS = {
 # appended last, and neither is a destination: machine is a utility you visit
 # and leave, and view is where an opened run goes, reached by opening one.
 # Everything is keyed by name, so the destinations may be reordered freely.
-SIMPLE_SECTIONS = (*DESTINATIONS, "machine", "view")
+SIMPLE_SECTIONS = (*DESTINATIONS, "machine", "view", "storage")
+
+# Sections no destination pill owns. Machine is a utility you visit and leave,
+# and storage belongs to a drive button at the foot of the window, which is what
+# lights while its page is open.
+NON_DESTINATIONS = ("machine", "storage")
 
 # What the info panel takes when it is open. Wide enough for the metadata block
 # without eating into the cloud, which is what View mode is for.
@@ -448,6 +453,7 @@ class InterfaceShellMixin(MixinBase):
             "process": self._build_simple_run_page(),
             "browse": self._build_browse_page(),
             "machine": self._build_machine_page(),
+            "storage": self._build_storage_page(),
             "view": self._build_view_info_page(),
         }
 
@@ -642,7 +648,7 @@ class InterfaceShellMixin(MixinBase):
         # first backing out of a cloud.
         self._simple_header.setVisible(True)
         self._set_view_bar_visible(section == "view")
-        if section == "machine":
+        if section in NON_DESTINATIONS:
             # Not a destination, so no pill should own it.
             #
             # Exclusivity is lifted first: an exclusive QButtonGroup refuses to
@@ -665,6 +671,10 @@ class InterfaceShellMixin(MixinBase):
         for name, button in self._simple_nav_buttons.items():
             ink = QColor(ON_ACCENT if button.isChecked() else WINDOW_TEXT)
             button.setIcon(_DESTINATION_ICONS[name](_DESTINATION_ICON_PX, ink))
+        # Guarded: the shell is built before the bottom bar, and this runs once
+        # from _build_simple_shell while the drive buttons do not exist yet.
+        if hasattr(self, "_storage_bars"):
+            self._sync_storage_buttons()
 
     def _videos_verdict(self) -> SectionState:
         """What the footage has to report, counted off the library as it stands."""
@@ -742,6 +752,8 @@ class InterfaceShellMixin(MixinBase):
             self._refresh_readiness_view()
         self._simple_stack.setCurrentIndex(SIMPLE_SECTIONS.index(name))
         self._sync_destination_chrome()
+        if name == "storage":
+            self._refresh_storage_page()
         # The gauges poll at 1 Hz, so they run only while they are on screen.
         self._sync_system_gauges_running()
         self._update_work_area()

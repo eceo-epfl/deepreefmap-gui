@@ -1,6 +1,6 @@
 """The window, and the process it runs in.
 
-`DeepReefMapWindow` builds no feature of its own. It fuses the 19 mixins listed in its bases
+`DeepReefMapWindow` builds no feature of its own. It fuses the 20 mixins listed in its bases
 (the feature-to-file table is in `deepreefmap_gui/__init__.py`), owns the frame they fill in
 (splitters, the run banner, the central layout, the shortcuts), and shuts everything down in
 `closeEvent`. Read `__init__` in order, not in parts: the form widgets are built first because
@@ -78,6 +78,7 @@ from deepreefmap_gui.simple.machine import SimpleMachineMixin
 from deepreefmap_gui.simple.mode import InterfaceShellMixin
 from deepreefmap_gui.simple.plan import SimplePlanMixin
 from deepreefmap_gui.simple.setup import SimpleSetupMixin
+from deepreefmap_gui.storage.page import StorageMixin
 from deepreefmap_gui.system.system_tab import SystemPanelMixin
 from deepreefmap_gui.update.version import VersionCheckMixin
 from deepreefmap_gui.viewer.controls import ViewerControlsMixin
@@ -102,6 +103,7 @@ class DeepReefMapWindow(
     SimpleMachineMixin,
     SimplePlanMixin,
     SimpleSetupMixin,
+    StorageMixin,
     SystemPanelMixin,
     VideoLibraryMixin,
     ViewerControlsMixin,
@@ -127,6 +129,7 @@ class DeepReefMapWindow(
     _sig_clip_links_done = Signal(object)
     _sig_videos_probed = Signal(object)
     _sig_storage_usage = Signal(object)
+    _sig_storage_page = Signal(object)
     _sig_shortcut_done = Signal(object)
     # What a worker thread has to say, as data: a new kind of message should not
     # need a new signal here.
@@ -161,6 +164,7 @@ class DeepReefMapWindow(
         self._sig_clip_links_done.connect(self._apply_clip_link_states)
         self._sig_videos_probed.connect(self._on_videos_probed)
         self._sig_storage_usage.connect(self._apply_storage_usage)
+        self._sig_storage_page.connect(self._apply_storage_page_scan)
         self._sig_notify.connect(self._notify_post)
 
         self.setWindowTitle("DeepReefMap")

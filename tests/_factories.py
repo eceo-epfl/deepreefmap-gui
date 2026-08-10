@@ -499,3 +499,27 @@ class FakeAccessor:
 
     def close(self):
         self.closed = True
+
+
+KB = 1024
+
+
+def write_run_tree(root: Path, name: str = "20260520-155637", *, frames: int = 3) -> Path:
+    """A run directory holding one of everything the pipeline leaves behind."""
+    run_dir = root / name
+    for folder, size in (("frames", 4 * KB), ("labels", 2 * KB), ("masks", KB)):
+        (run_dir / folder).mkdir(parents=True)
+        for index in range(frames):
+            (run_dir / folder / f"{index:08d}.png").write_bytes(b"x" * size)
+    (run_dir / ".cache").mkdir()
+    (run_dir / ".cache" / "preprocess.json").write_text('{"key": "abc"}')
+    (run_dir / ".cache" / "mapping.json").write_text('{"key": "abc"}')
+    (run_dir / "mapping_outputs.npz").write_bytes(b"m" * 8 * KB)
+    (run_dir / "run_manifest.json").write_text("{}")
+    (run_dir / "run.log").write_text("started\n")
+    (run_dir / "semantic_reference_cloud.ply").write_bytes(b"p" * 6 * KB)
+    (run_dir / "ortho.npz").write_bytes(b"o" * KB)
+    (run_dir / "ortho.png").write_bytes(b"o" * KB)
+    (run_dir / "benthic_cover.json").write_text("{}")
+    (run_dir / f"{name}.scene.zarr.zip").write_bytes(b"z" * 5 * KB)
+    return run_dir

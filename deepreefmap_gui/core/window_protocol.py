@@ -214,6 +214,13 @@ if TYPE_CHECKING:
         _video_entries: list
         _clip_link_cache: dict[str, str]
         _run_size_stale: set[str]
+
+        # --- storage page --------------------------------------------------
+        _storage_root: str | None
+        _storage_scan_id: int
+        _storage_page_scanning: bool
+        _storage_inventory: Any
+        _storage_breakdowns: dict
         # (output root, measured bytes per footage minute); None until measured.
         _footage_rate_cache: tuple[Path, float | None] | None
 
@@ -285,6 +292,7 @@ if TYPE_CHECKING:
         _sig_clip_links_done = Signal(object)
         _sig_videos_probed = Signal(object)
         _sig_storage_usage = Signal(object)
+        _sig_storage_page = Signal(object)
         _sig_shortcut_done = Signal(object)
         _sig_notify = Signal(object)
 
@@ -335,6 +343,12 @@ if TYPE_CHECKING:
         def _apply_clip_link_states(self, states: dict) -> None: ...  # VideoLibraryMixin
         def _refresh_storage_bars(self) -> None: ...  # FormPanelMixin
         def _apply_storage_usage(self, volumes: object) -> None: ...  # FormPanelMixin
+        def _build_storage_page(self) -> QWidget: ...  # StorageMixin
+        def _open_storage_page(self, root: str) -> None: ...  # StorageMixin
+        def _refresh_storage_page(self) -> None: ...  # StorageMixin
+        def _apply_storage_page_scan(self, payload: object) -> None: ...  # StorageMixin
+        def _sync_storage_buttons(self) -> None: ...  # StorageMixin
+        def _recheck_clip_link(self, video_id: str) -> None: ...  # VideoLibraryMixin
         def _set_storage_compact(self, running: bool) -> None: ...  # RunLoadingMixin
         def _request_data_refresh(self) -> None: ...  # BrowseMixin
         def _apply_run_sizes(self, sizes: dict) -> None: ...  # BrowseMixin

@@ -1093,6 +1093,9 @@ class FormPanelMixin(MixinBase):
         # BAR_HEIGHT tall inside a row already twice that, so the one number
         # that can stop a run mid-dive costs no height to keep on screen.
         self._storage_bars = StorageBars()
+        # Pressing a drive asks the window to go to its page; the window decides
+        # where that lands and says afterwards which button is lit.
+        self._storage_bars.volume_clicked.connect(self._open_storage_page)
         row.addWidget(self._storage_bars)
         self._eta_total_label.setVisible(False)
         row.addWidget(self._eta_total_label)
