@@ -117,6 +117,15 @@ def test_an_empty_library_says_so(window):
     assert window._video_stack.currentIndex() == 1
 
 
+def test_an_empty_library_keeps_the_pages_panels(window):
+    """Expected behaviour: the page keeps its shape, columns and detail pane included."""
+    show_videos(window)
+
+    assert not window._video_header.isHidden()
+    assert window._video_detail_stack.currentIndex() == 0
+    assert not window._video_detail_stack.isHidden()
+
+
 def test_clips_are_grouped_by_the_day_they_were_shot(window):
     store = window._survey_store()
     store.upsert_video(

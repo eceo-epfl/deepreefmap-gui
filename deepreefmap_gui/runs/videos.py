@@ -226,7 +226,14 @@ class VideoLibraryMixin(MixinBase):
         self._video_detail.delete_requested.connect(self._on_section_delete)
         self._video_detail.open_transect_requested.connect(self._open_transect_page)
         self._video_detail.reveal_requested.connect(self._on_video_reveal)
-        detail.addWidget(self._video_detail)
+        # The pane keeps its place with nothing selected: a right half that
+        # disappears re-lays the page every time a clip is picked or dropped.
+        self._video_detail_stack = QStackedWidget()
+        self._video_detail_stack.addWidget(
+            EmptyState("No clip selected", "Pick a clip to see its sections and runs.")
+        )
+        self._video_detail_stack.addWidget(self._video_detail)
+        detail.addWidget(self._video_detail_stack)
 
         self._section_detail = SectionDetailPanel()
         self._section_detail.retrim_requested.connect(self._on_section_retrim)
@@ -379,8 +386,6 @@ class VideoLibraryMixin(MixinBase):
             hidden=self._hidden_clip_ids.__contains__,
         )
         self._video_stack.setCurrentIndex(0 if clips else 1)
-        # Columns over an empty state describe nothing.
-        self._video_header.setVisible(bool(clips))
         self._refresh_video_chips()
         self._refresh_video_detail()
         self._refresh_section_state()
@@ -407,13 +412,13 @@ class VideoLibraryMixin(MixinBase):
         clip = self._selected_clip()
         if clip is None:
             self._video_detail.clear()
-            self._video_detail.setVisible(False)
+            self._video_detail_stack.setCurrentIndex(0)
             return
         self._show_clip_detail(clip)
         self._video_detail.select_section(None)
 
     def _show_clip_detail(self, clip: VideoLibraryEntry) -> None:
-        self._video_detail.setVisible(True)
+        self._video_detail_stack.setCurrentIndex(1)
         self._video_detail.show_entry(
             clip,
             self._transect_name_for,
