@@ -138,65 +138,107 @@ CREATE TABLE batch_item (
 );
 """
 
-# Released schema version -> the script that brings it to SCHEMA_VERSION. Only
-# versions an installed build actually wrote appear here; the steps between them
-# never outlived their own transaction.
+# Schema version -> the script that brings it to SCHEMA_VERSION, for every
+# version below the baseline that a build ever wrote. The steps that produced
+# them were flattened into _BASELINE; these scripts are what a database stamped
+# mid-flattening still needs.
+#
+# Every version from _OLDEST_SUPPORTED up to SCHEMA_VERSION must appear here.
+# Flattening again without adding an entry leaves databases at the versions in
+# between with no way forward and no way back, so _assert_chain_is_contiguous
+# refuses to import.
+# transect_id becomes nullable: footage worth processing is not always footage
+# laid against a tape. SQLite cannot relax NOT NULL in place, so the table is
+# rebuilt; foreign keys are off for the duration, set in _migrate.
+_PASS_TRANSECT_NULLABLE = """
+CREATE TABLE transect_pass_new (
+    id TEXT PRIMARY KEY,
+    transect_id TEXT REFERENCES transect(id),
+    video_id TEXT NOT NULL REFERENCES video_asset(id),
+    batch_id TEXT REFERENCES survey_batch(id),
+    direction TEXT NOT NULL CHECK (direction IN ('forward', 'reverse')),
+    begin_s REAL NOT NULL,
+    end_s REAL NOT NULL,
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    extra_video_ids TEXT NOT NULL DEFAULT '[]',
+    held INTEGER NOT NULL DEFAULT 0
+);
+INSERT INTO transect_pass_new
+    SELECT id, transect_id, video_id, batch_id, direction, begin_s, end_s,
+           notes, created_at, extra_video_ids, held
+    FROM transect_pass;
+DROP TABLE transect_pass;
+ALTER TABLE transect_pass_new RENAME TO transect_pass;
+"""
+
+# The session a run ran in, and cart membership as a table of its own so a pass
+# can be ordered in several sessions. Both backfill from the pass, the only
+# session either had, minting ids in the 8-4-4-4-12 form from_row parses back.
+_RUN_SESSION_AND_CART = """
+ALTER TABLE run_record ADD COLUMN batch_id TEXT REFERENCES survey_batch(id);
+UPDATE run_record SET batch_id =
+    (SELECT batch_id FROM transect_pass WHERE transect_pass.id = run_record.pass_id);
+CREATE TABLE batch_item (
+    id TEXT PRIMARY KEY,
+    batch_id TEXT NOT NULL REFERENCES survey_batch(id),
+    pass_id TEXT NOT NULL REFERENCES transect_pass(id),
+    created_at TEXT NOT NULL,
+    UNIQUE (batch_id, pass_id)
+);
+INSERT INTO batch_item (id, batch_id, pass_id, created_at)
+    SELECT printf('%s-%s-%s-%s-%s',
+                  lower(hex(randomblob(4))), lower(hex(randomblob(2))),
+                  lower(hex(randomblob(2))), lower(hex(randomblob(2))),
+                  lower(hex(randomblob(6)))),
+           batch_id, id, created_at
+    FROM transect_pass WHERE batch_id IS NOT NULL;
+"""
+
+# What Videos reads out of each file itself. The tri-states default to 'unknown'
+# rather than 'no': "the camera recorded no gravity" is a different fact from
+# "nobody looked".
+_VIDEO_PROBE_COLUMNS = """
+ALTER TABLE video_asset ADD COLUMN captured_at TEXT;
+ALTER TABLE video_asset ADD COLUMN captured_source TEXT;
+ALTER TABLE video_asset ADD COLUMN width INTEGER;
+ALTER TABLE video_asset ADD COLUMN height INTEGER;
+ALTER TABLE video_asset ADD COLUMN codec TEXT;
+ALTER TABLE video_asset ADD COLUMN probed_at TEXT;
+ALTER TABLE video_asset ADD COLUMN gravity TEXT NOT NULL DEFAULT 'unknown';
+ALTER TABLE video_asset ADD COLUMN gps TEXT NOT NULL DEFAULT 'unknown';
+"""
+
 _CARRY_FORWARD = {
-    # 0.2.0. SQLite cannot relax NOT NULL in place, so transect_pass is rebuilt.
-    # Foreign keys are off for the duration, set in _migrate. run_record.batch_id
-    # and batch_item both backfill from the pass, the only session either had,
-    # minting ids in the 8-4-4-4-12 form from_row parses back.
-    3: """
-    CREATE TABLE transect_pass_new (
-        id TEXT PRIMARY KEY,
-        transect_id TEXT REFERENCES transect(id),
-        video_id TEXT NOT NULL REFERENCES video_asset(id),
-        batch_id TEXT REFERENCES survey_batch(id),
-        direction TEXT NOT NULL CHECK (direction IN ('forward', 'reverse')),
-        begin_s REAL NOT NULL,
-        end_s REAL NOT NULL,
-        notes TEXT NOT NULL DEFAULT '',
-        created_at TEXT NOT NULL,
-        extra_video_ids TEXT NOT NULL DEFAULT '[]',
-        held INTEGER NOT NULL DEFAULT 0
-    );
-    INSERT INTO transect_pass_new
-        SELECT id, transect_id, video_id, batch_id, direction, begin_s, end_s,
-               notes, created_at, extra_video_ids, held
-        FROM transect_pass;
-    DROP TABLE transect_pass;
-    ALTER TABLE transect_pass_new RENAME TO transect_pass;
-
-    ALTER TABLE run_record ADD COLUMN batch_id TEXT REFERENCES survey_batch(id);
-    UPDATE run_record SET batch_id =
-        (SELECT batch_id FROM transect_pass WHERE transect_pass.id = run_record.pass_id);
-    CREATE TABLE batch_item (
-        id TEXT PRIMARY KEY,
-        batch_id TEXT NOT NULL REFERENCES survey_batch(id),
-        pass_id TEXT NOT NULL REFERENCES transect_pass(id),
-        created_at TEXT NOT NULL,
-        UNIQUE (batch_id, pass_id)
-    );
-    INSERT INTO batch_item (id, batch_id, pass_id, created_at)
-        SELECT printf('%s-%s-%s-%s-%s',
-                      lower(hex(randomblob(4))), lower(hex(randomblob(2))),
-                      lower(hex(randomblob(2))), lower(hex(randomblob(2))),
-                      lower(hex(randomblob(6)))),
-               batch_id, id, created_at
-        FROM transect_pass WHERE batch_id IS NOT NULL;
-
-    ALTER TABLE video_asset ADD COLUMN captured_at TEXT;
-    ALTER TABLE video_asset ADD COLUMN captured_source TEXT;
-    ALTER TABLE video_asset ADD COLUMN width INTEGER;
-    ALTER TABLE video_asset ADD COLUMN height INTEGER;
-    ALTER TABLE video_asset ADD COLUMN codec TEXT;
-    ALTER TABLE video_asset ADD COLUMN probed_at TEXT;
-    ALTER TABLE video_asset ADD COLUMN gravity TEXT NOT NULL DEFAULT 'unknown';
-    ALTER TABLE video_asset ADD COLUMN gps TEXT NOT NULL DEFAULT 'unknown';
-    """,
+    # What 0.2.0 wrote.
+    3: _PASS_TRANSECT_NULLABLE + _RUN_SESSION_AND_CART + _VIDEO_PROBE_COLUMNS,
+    # 4 and 5 were never released -- they are what builds between 0.2.0 and the
+    # baseline wrote, and each is the version above it minus the step it already
+    # has. Composing them this way is what keeps the three in step.
+    4: _RUN_SESSION_AND_CART + _VIDEO_PROBE_COLUMNS,
+    5: _VIDEO_PROBE_COLUMNS,
 }
 
 _OLDEST_CARRIED = min(_CARRY_FORWARD)
+
+
+def _assert_chain_is_contiguous() -> None:
+    """Every version below the baseline must have a way up to it.
+
+    A database can only be opened at a version this reaches, so a gap is not a
+    tidy-up waiting to happen: it strands whoever is sitting on that version
+    with no route forward and none back. Checked at import so the gap is a
+    failed test rather than a field laptop that will not open its survey.
+    """
+    missing = [v for v in range(_OLDEST_CARRIED, SCHEMA_VERSION) if v not in _CARRY_FORWARD]
+    if missing:
+        raise AssertionError(
+            f"survey schema versions {missing} have no carry-forward to "
+            f"v{SCHEMA_VERSION}. A database stamped at one could not be opened."
+        )
+
+
+_assert_chain_is_contiguous()
 
 # Steps taken after the baseline was cut. Appended to, never renumbered. Both
 # the fresh path and the carry-forward path land on SCHEMA_VERSION first, so
@@ -315,7 +357,44 @@ _MIGRATIONS: list[Migration] = [
 
 
 def latest_schema_version() -> int:
+    """The version this build writes, and the highest it can read."""
     return max([SCHEMA_VERSION, *(m.version for m in _MIGRATIONS)])
+
+
+def oldest_supported_version() -> int:
+    """The lowest version this build can carry forward."""
+    return _OLDEST_CARRIED
+
+
+def can_open(version: int) -> bool:
+    """Whether a database stamped at this version has a route to the present.
+
+    The one definition of openable, so health checks and recovery cannot drift
+    apart from what the store will actually do. Version 0 is a file sqlite has
+    only just brought into being, which the baseline writes whole.
+    """
+    return version == 0 or _OLDEST_CARRIED <= version <= latest_schema_version()
+
+
+def _no_route_forward(version: int) -> str:
+    """Why a database cannot be opened, and the one thing that would help.
+
+    Imported here rather than at module scope: schema_history reads this
+    module's version numbers, so the dependency only runs one way at import.
+    """
+    from deepreefmap_gui.survey.schema_history import newest_release_reading
+
+    opener = newest_release_reading(version)
+    advice = (
+        f" Open it once with {opener.version}, which brings it to "
+        f"v{opener.reads_up_to}."
+        if opener is not None
+        else ""
+    )
+    return (
+        f"survey.db is schema v{version}, which this build cannot carry forward "
+        f"(it reads v{_OLDEST_CARRIED} and up).{advice}"
+    )
 
 
 def resolved_path(path: str) -> str | None:
@@ -431,22 +510,23 @@ class SurveyStore:
             )
         if version == latest:
             return
-        # Version 0 is the database _conn just brought into being; there is no
-        # prior build's work in it to protect.
-        if version > 0:
-            self._backup_before_migrating(version)
         if version == 0:
+            # The database _conn just brought into being: nothing to protect,
+            # and the baseline writes the schema whole.
             self._apply(conn, _BASELINE, SCHEMA_VERSION)
             version = SCHEMA_VERSION
         elif version < SCHEMA_VERSION:
             carry = _CARRY_FORWARD.get(version)
             if carry is None:
-                raise RuntimeError(
-                    f"survey.db is schema v{version}, which this build cannot carry "
-                    f"forward. Open it once with 0.2.0, which brings it to v{_OLDEST_CARRIED}."
-                )
+                # Nothing has been written and no backup taken: a refusal must
+                # leave the database exactly as it was found, and must not drop
+                # a .bak beside it that no build can use.
+                raise RuntimeError(_no_route_forward(version))
+            self._backup_before_migrating(version)
             self._apply(conn, carry, SCHEMA_VERSION)
             version = SCHEMA_VERSION
+        else:
+            self._backup_before_migrating(version)
         for migration in _MIGRATIONS:
             if migration.version > version:
                 self._apply(conn, migration.sql, migration.version)

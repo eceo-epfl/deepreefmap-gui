@@ -239,13 +239,20 @@ class VersionCheckMixin(MixinBase):
         self._refresh_envs()
 
     def _confirm_downgrade(self, target: str) -> bool:
-        """Warn before rolling back, and take a backup that makes it reversible.
+        """Say what rolling back does to this survey, and make it reversible.
 
         Going back is not symmetric with going forward. Migrations only run one
         way, so an older build refuses a survey database a newer one has already
-        migrated. The backup written here is what its recovery dialog offers to
-        restore, and it is taken before anything is swapped -- a warning that
-        only warns would leave the user to find out afterwards.
+        migrated. Two separate things follow from that, and both happen here:
+
+        The backup is written *before* anything is swapped, so the trip back
+        exists. It is stamped with the format the survey is in now, which is
+        what a later upgrade restores to undo whatever the older build does.
+
+        The warning states the actual outcome rather than a maybe. Whether the
+        target can open this survey is knowable in advance -- a rollback target
+        is older than the build asking, so its format range is already in this
+        build's table -- and rollback_outlook works it out.
         """
         current_v = parse_version(self._current_version_str)
         target_v = parse_version(target)
@@ -254,30 +261,21 @@ class VersionCheckMixin(MixinBase):
 
         from deepreefmap_gui.survey.backup import write_backup
         from deepreefmap_gui.survey.health import inspect_survey_db
+        from deepreefmap_gui.survey.rollback import rollback_outlook
         from deepreefmap_gui.survey.store import SURVEY_DB_NAME
 
         db_path = Path(self._out_root_input.text()).expanduser() / SURVEY_DB_NAME
+        outlook = rollback_outlook(db_path, target)
         health = inspect_survey_db(db_path)
-        saved = (
+        if health.db_version is not None:
             write_backup(db_path, health.db_version)
-            if health.db_version is not None
-            else None
-        )
-        where = (
-            f"A copy of this survey has been saved as {saved.name}, which "
-            f"version {target} can restore."
-            if saved is not None
-            else "No survey database was found in the current output folder to copy."
-        )
         return confirm(
             self,
             "Roll back to an older version",
             f"Version {target} is older than the version running now "
             f"({self._current_version_str}).\n\n"
-            f"Surveys created or opened by this version may use a database "
-            f"format {target} cannot read. If that happens it will offer to "
-            f"restore a backup or rebuild from your run folders.\n\n"
-            f"{where}\n\nRoll back to {target}?",
+            f"{outlook.summary()}\n\n"
+            f"Roll back to {target}?",
         )
 
     def _on_update(self) -> None:

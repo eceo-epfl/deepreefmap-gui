@@ -231,14 +231,47 @@ CREATE TABLE run_record (
 """
 
 
-def write_v0_2_0_database(db_path):
-    """A survey.db in the shape v0.2.0 left it, with no rows."""
+# Versions 4 and 5 were never released: they are what builds between v0.2.0 and
+# the flattened baseline wrote, and the store still has to carry them forward.
+# Stated here as what changed rather than as two more copies of the whole
+# schema, and stated independently of the store's own carry-forward scripts --
+# a fixture built from those would be agreeing with itself.
+
+# v4 relaxed transect_pass.transect_id: a pass need not name a transect.
+V4_SCHEMA = V0_2_0_SCHEMA.replace(
+    "transect_id TEXT NOT NULL REFERENCES transect(id),",
+    "transect_id TEXT REFERENCES transect(id),",
+)
+assert V4_SCHEMA != V0_2_0_SCHEMA
+
+# v5 recorded the session a run ran in, and made cart membership its own table.
+V5_SCHEMA = V4_SCHEMA + """
+ALTER TABLE run_record ADD COLUMN batch_id TEXT REFERENCES survey_batch(id);
+CREATE TABLE batch_item (
+    id TEXT PRIMARY KEY,
+    batch_id TEXT NOT NULL REFERENCES survey_batch(id),
+    pass_id TEXT NOT NULL REFERENCES transect_pass(id),
+    created_at TEXT NOT NULL,
+    UNIQUE (batch_id, pass_id)
+);
+"""
+
+LEGACY_SCHEMAS = {3: V0_2_0_SCHEMA, 4: V4_SCHEMA, 5: V5_SCHEMA}
+
+
+def write_legacy_database(db_path, version: int):
+    """A survey.db in the shape the build that stamped ``version`` left it."""
     conn = sqlite3.connect(db_path)
     with conn:
-        conn.executescript(V0_2_0_SCHEMA)
-        conn.execute("PRAGMA user_version = 3")
+        conn.executescript(LEGACY_SCHEMAS[version])
+        conn.execute(f"PRAGMA user_version = {version}")
     conn.close()
     return db_path
+
+
+def write_v0_2_0_database(db_path):
+    """A survey.db in the shape v0.2.0 left it, with no rows."""
+    return write_legacy_database(db_path, 3)
 
 
 # --- video containers --------------------------------------------------------

@@ -22,7 +22,11 @@ from deepreefmap_gui.survey.recovery import (
     rebuild_losses,
     recovery_options,
 )
-from deepreefmap_gui.survey.store import SurveyStore, latest_schema_version
+from deepreefmap_gui.survey.store import (
+    SurveyStore,
+    latest_schema_version,
+    oldest_supported_version,
+)
 
 # v0.2.0 is the only build whose database this one carries forward, so it is the
 # only state a backup can be taken from.
@@ -143,6 +147,20 @@ def test_best_backup_ignores_ones_this_build_cannot_read(tmp_path):
     assert bk.best_backup(path, 1) is None
 
 
+def test_best_backup_honours_the_bottom_of_the_range_as_well(tmp_path):
+    """A build reads a range of formats, not everything below the newest it
+    knows, so a caller asking what it can open has to say both ends."""
+    path = tmp_path / "survey.db"
+    SurveyStore(path).close()
+    bk.write_backup(path, 2)
+    bk.write_backup(path, 4)
+
+    assert bk.best_backup(path, latest_schema_version()).version == 4
+    assert bk.best_backup(path, latest_schema_version(), min_version=3).version == 4
+    assert bk.best_backup(path, 3, min_version=3) is None
+    assert bk.best_backup(path, 2, min_version=3) is None
+
+
 def test_setting_aside_moves_the_wal_sidecars_with_it(tmp_path):
     """A -wal left behind would be grafted onto whatever takes the database's
     place."""
@@ -228,6 +246,60 @@ def test_choosing_a_folder_is_always_available(tmp_path):
     _stamp_ahead(path)
     kinds = [o.kind for o in recovery_options(inspect_survey_db(path), tmp_path)]
     assert kinds[-1] is RecoveryKind.CHOOSE_FOLDER
+
+
+def test_starting_fresh_is_always_available(tmp_path):
+    """A survey that cannot be recovered is not a reason to leave someone with a
+    window that will not open one at all."""
+    path = tmp_path / "survey.db"
+    SurveyStore(path).close()
+    _stamp_ahead(path)
+
+    options = recovery_options(inspect_survey_db(path), tmp_path)
+    fresh = next(o for o in options if o.kind is RecoveryKind.START_FRESH)
+    assert options.index(fresh) == len(options) - 2, "offered above the way out of the folder"
+    assert "survey.db.schema-v" in fresh.detail, "the name it is kept under is the point"
+    assert not fresh.recommended
+
+
+def test_starting_fresh_keeps_the_old_database_under_a_new_name(tmp_path):
+    path = tmp_path / "survey.db"
+    write_v0_2_0_database(path)
+    _insert_transect_directly(path, "Reef edge")
+    SurveyStore(path).close()
+    _stamp_ahead(path)
+
+    health = inspect_survey_db(path)
+    option = next(
+        o for o in recovery_options(health, tmp_path) if o.kind is RecoveryKind.START_FRESH
+    )
+    message = apply_recovery(option, health, tmp_path)
+
+    displaced = tmp_path / f"survey.db.schema-v{health.db_version}"
+    assert displaced.exists()
+    assert displaced.name in message
+    store = SurveyStore(path)
+    try:
+        assert store.list_transects() == [], "a new database, not the old one reopened"
+    finally:
+        store.close()
+    # The row is still in the displaced file, which is what "nothing is deleted"
+    # has to mean for it to be worth saying.
+    conn = sqlite3.connect(displaced)
+    assert conn.execute("SELECT name FROM transect").fetchall() == [("Reef edge",)]
+    conn.close()
+
+
+def test_a_backup_this_build_also_refuses_is_not_offered_as_a_route_back(tmp_path):
+    """The closed loop: a database refused for being too old was answered with a
+    copy of itself, and restoring it landed straight back on the same refusal."""
+    path = tmp_path / "survey.db"
+    SurveyStore(path).close()
+    bk.write_backup(path, oldest_supported_version() - 1)
+    _stamp_ahead(path)
+
+    kinds = [o.kind for o in recovery_options(inspect_survey_db(path), tmp_path)]
+    assert RecoveryKind.RESTORE_BACKUP not in kinds
 
 
 def test_restoring_brings_the_rows_back_and_keeps_the_newer_database(tmp_path):

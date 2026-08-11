@@ -26,6 +26,10 @@ class SurveyDbState(str, Enum):
     MISSING = "missing"
     # Stamped past the last migration this build carries: a rolled-back update.
     TOO_NEW = "too_new"
+    # Stamped below the oldest format this build can carry forward. Support for
+    # a format is dropped, not lost, so the file is intact and an older release
+    # can still bring it up.
+    TOO_OLD = "too_old"
     CORRUPT = "corrupt"
     # The file may be fine; the location is not. A read-only mount, an unplugged
     # drive, or a network share where WAL cannot be used.
@@ -33,7 +37,12 @@ class SurveyDbState(str, Enum):
 
 
 # The states where opening a store would fail, so callers do not restate the list.
-UNOPENABLE = (SurveyDbState.TOO_NEW, SurveyDbState.CORRUPT, SurveyDbState.UNWRITABLE)
+UNOPENABLE = (
+    SurveyDbState.TOO_NEW,
+    SurveyDbState.TOO_OLD,
+    SurveyDbState.CORRUPT,
+    SurveyDbState.UNWRITABLE,
+)
 
 
 @dataclass(frozen=True)
@@ -55,6 +64,29 @@ def _known_version() -> int:
     from deepreefmap_gui.survey.store import latest_schema_version
 
     return latest_schema_version()
+
+
+def _can_open(version: int) -> bool:
+    from deepreefmap_gui.survey.store import can_open
+
+    return can_open(version)
+
+
+def _too_old_detail(version: int) -> str:
+    from deepreefmap_gui.survey.schema_history import newest_release_reading
+    from deepreefmap_gui.survey.store import oldest_supported_version
+
+    opener = newest_release_reading(version)
+    route = (
+        f" Version {opener.version} still reads it, and opening it there once "
+        f"brings it to v{opener.reads_up_to}."
+        if opener is not None
+        else ""
+    )
+    return (
+        f"This survey is in an older database format (v{version}); this version "
+        f"reads v{oldest_supported_version()} and up.{route}"
+    )
 
 
 def _writable(path: Path) -> tuple[bool, str]:
@@ -128,5 +160,16 @@ def inspect_survey_db(path: Path) -> SurveyDbHealth:
                 f"This survey was last opened by a newer version of DeepReefMap "
                 f"(database format v{version}; this version reads up to v{known})."
             ),
+        )
+    # Asked of the store rather than compared against a floor here: the store
+    # decides what it can carry forward, and a verdict that disagreed with it
+    # would send the window round the same failing open again and again.
+    if not _can_open(version):
+        return SurveyDbHealth(
+            SurveyDbState.TOO_OLD,
+            path,
+            known,
+            db_version=version,
+            detail=_too_old_detail(version),
         )
     return SurveyDbHealth(SurveyDbState.OK, path, known, db_version=version)

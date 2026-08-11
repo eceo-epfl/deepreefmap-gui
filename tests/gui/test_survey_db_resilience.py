@@ -133,6 +133,58 @@ def test_an_open_survey_is_not_inspected_again(make_window, out_root, monkeypatc
     assert calls == []
 
 
+@pytest.fixture
+def too_old_root(out_root):
+    """An output root holding a database older than this build carries forward."""
+    from deepreefmap_gui.survey.store import oldest_supported_version
+
+    out_root.mkdir(parents=True, exist_ok=True)
+    path = out_root / SURVEY_DB_NAME
+    SurveyStore(path).close()
+    conn = sqlite3.connect(path)
+    conn.execute(f"PRAGMA user_version = {oldest_supported_version() - 1}")
+    conn.commit()
+    conn.close()
+    return out_root
+
+
+def test_a_database_older_than_this_build_carries_does_not_stop_the_window(
+    make_window, too_old_root, monkeypatch
+):
+    window = _window_on(make_window, too_old_root, monkeypatch)
+    assert window._survey_db_health().state is SurveyDbState.TOO_OLD
+
+
+def test_a_database_that_will_not_open_is_not_tried_again(
+    make_window, too_old_root, monkeypatch
+):
+    """Expected behaviour: one verdict, held.
+
+    Nothing changes between attempts, so a retry can only fail the same way --
+    and each one logged a traceback and dropped a backup beside the database.
+    The handful of refreshes that arrive on every output-folder change turned
+    that into a flooded log and a .bak rewritten in a loop.
+    """
+    from deepreefmap_gui.survey import backup as bk
+
+    window = _window_on(make_window, too_old_root, monkeypatch)
+    path = too_old_root / SURVEY_DB_NAME
+    window._try_survey_store()
+
+    calls = []
+    import deepreefmap_gui.simple.mode as mode
+
+    real = mode.inspect_survey_db
+    monkeypatch.setattr(
+        mode, "inspect_survey_db", lambda p: calls.append(p) or real(p)
+    )
+    for _ in range(5):
+        assert window._try_survey_store() is None
+
+    assert calls == []
+    assert bk.list_backups(path) == [], "a refused open must leave no copy behind"
+
+
 def test_recovering_reopens_the_survey(make_window, rolled_back_root, monkeypatch):
     """After recovery the window goes back to reading the database rather than
     needing a restart."""

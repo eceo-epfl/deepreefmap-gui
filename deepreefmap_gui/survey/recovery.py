@@ -13,7 +13,13 @@ summarising as "some data may be lost".
 
 Both counts here are measured, not estimated: the rebuild is dry-run into a
 throwaway database first, so the numbers offered are the numbers that will
-result. Qt-free.
+result.
+
+The remaining two routes recover nothing and do not pretend to: starting a new
+database, and working in a different folder. They are offered anyway, because a
+survey that cannot be recovered is not a reason to leave someone with a window
+that will not open one at all. Nothing here deletes; the database in place is
+always renamed. Qt-free.
 """
 
 from __future__ import annotations
@@ -34,6 +40,7 @@ logger = logging.getLogger(__name__)
 class RecoveryKind(str, Enum):
     RESTORE_BACKUP = "restore_backup"
     REBUILD = "rebuild"
+    START_FRESH = "start_fresh"
     CHOOSE_FOLDER = "choose_folder"
 
 
@@ -123,12 +130,20 @@ def count_rebuild(out_root: Path) -> RebuildCounts:
 def recovery_options(health: SurveyDbHealth, out_root: Path) -> list[RecoveryOption]:
     """Every route out of this state, in the order the dialog should offer them.
 
-    Restoring a backup comes first when one exists because it is the only exact
-    route; the rebuild is offered whenever a run folder can be read.
+    Restoring a backup comes first when one this build can open exists, because
+    it is the only exact route; the rebuild is offered whenever a run folder can
+    be read; the two that recover nothing come last.
     """
+    from deepreefmap_gui.survey.store import oldest_supported_version
+
     options: list[RecoveryOption] = []
 
-    backup = best_backup(health.path, health.known_version)
+    # Floored as well as capped. known_version is the newest format this build
+    # writes, not the whole range it reads, so without the floor a database
+    # refused for being too old is answered with a copy of itself.
+    backup = best_backup(
+        health.path, health.known_version, min_version=oldest_supported_version()
+    )
     if backup is not None:
         taken = backup.taken_at.astimezone().strftime("%d %b %Y, %H:%M")
         options.append(RecoveryOption(
@@ -152,6 +167,18 @@ def recovery_options(health: SurveyDbHealth, out_root: Path) -> list[RecoveryOpt
             counts=counts,
             recommended=not options,
         ))
+
+    # Last of the routes that keep working here, and offered whatever the state:
+    # when nothing can be recovered, carrying on is still worth more than a
+    # window that will not open a survey. The old file is renamed, never deleted.
+    options.append(RecoveryOption(
+        kind=RecoveryKind.START_FRESH,
+        title="Start a new survey database",
+        detail=(
+            f"The current one is kept as {_set_aside_name(health)}, so it can be "
+            f"opened again by a version that reads it. Nothing in it is carried over."
+        ),
+    ))
 
     options.append(RecoveryOption(
         kind=RecoveryKind.CHOOSE_FOLDER,
@@ -190,6 +217,14 @@ def apply_recovery(option: RecoveryOption, health: SurveyDbHealth, out_root: Pat
         return (
             f"Rebuilt the survey from {report.runs} run folder(s). The previous "
             f"database was kept as {displaced.name}."
+        )
+
+    if option.kind is RecoveryKind.START_FRESH:
+        displaced = set_aside(health.path, health.db_version)
+        SurveyStore(health.path).close()
+        return (
+            f"Started a new survey database. The previous one was kept as "
+            f"{displaced.name}."
         )
 
     raise ValueError(f"{option.kind} is not applied here")

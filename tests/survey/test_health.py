@@ -11,7 +11,11 @@ import sqlite3
 import pytest
 
 from deepreefmap_gui.survey.health import SurveyDbState, inspect_survey_db
-from deepreefmap_gui.survey.store import SurveyStore, latest_schema_version
+from deepreefmap_gui.survey.store import (
+    SurveyStore,
+    latest_schema_version,
+    oldest_supported_version,
+)
 
 
 def test_a_folder_with_no_database_is_not_a_problem(tmp_path):
@@ -45,6 +49,27 @@ def test_a_database_from_a_newer_build_is_refused(tmp_path, ahead):
     assert not health.openable
     assert health.db_version == latest_schema_version() + ahead
     assert str(latest_schema_version()) in health.detail
+
+
+def test_a_database_older_than_this_build_carries_is_refused(tmp_path):
+    """Expected behaviour: the verdict agrees with what the store will do.
+
+    It used to say OK for anything below the newest format, because it only
+    compared against the top of the range. The window then tried the open the
+    store was always going to refuse, over and over.
+    """
+    path = tmp_path / "survey.db"
+    SurveyStore(path).close()
+    conn = sqlite3.connect(path)
+    conn.execute(f"PRAGMA user_version = {oldest_supported_version() - 1}")
+    conn.commit()
+    conn.close()
+
+    health = inspect_survey_db(path)
+    assert health.state is SurveyDbState.TOO_OLD
+    assert not health.openable
+    assert health.db_version == oldest_supported_version() - 1
+    assert "0.2.0" in health.detail, "the version that can still open it is the way out"
 
 
 def test_a_file_that_is_not_a_database_reads_as_corrupt(tmp_path):

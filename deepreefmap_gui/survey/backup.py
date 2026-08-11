@@ -80,9 +80,15 @@ def find_backup(db_path: Path, version: int) -> SurveyBackup | None:
     return None
 
 
-def best_backup(db_path: Path, max_version: int) -> SurveyBackup | None:
-    """The newest backup this build could open, i.e. at or below its schema version."""
-    candidates = [b for b in list_backups(db_path) if b.version <= max_version]
+def best_backup(db_path: Path, max_version: int, min_version: int = 0) -> SurveyBackup | None:
+    """The newest backup inside a range of schema versions, or None.
+
+    Both ends matter. A build reads a *range* of formats, not everything below
+    the newest it knows, so a caller asking "which backup can I open?" that only
+    capped the top would be offered a copy in the very format it had just
+    refused -- and restoring it would put the app straight back where it started.
+    """
+    candidates = [b for b in list_backups(db_path) if min_version <= b.version <= max_version]
     return max(candidates, key=lambda b: b.version) if candidates else None
 
 

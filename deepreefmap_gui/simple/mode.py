@@ -881,6 +881,12 @@ class InterfaceShellMixin(MixinBase):
         is not re-inspected: refreshes arrive by the handful whenever the output
         folder changes, and the answer can only change when the root changes or
         the store is dropped, both of which clear ``_survey_store_obj``.
+
+        A verdict of "will not open" is held on to just as firmly. Retrying it
+        cannot succeed -- nothing has changed since the last attempt -- and each
+        attempt logs a traceback and takes a backup, so the handful of refreshes
+        becomes a flood. check_survey_database clears the verdict once recovery
+        has actually altered something.
         """
         db_path = Path(self._out_root_input.text()).expanduser() / SURVEY_DB_NAME
         open_store = self._survey_store_obj
@@ -892,6 +898,8 @@ class InterfaceShellMixin(MixinBase):
             and health.state is SurveyDbState.OK
         ):
             return open_store
+        if health is not None and health.path == db_path and not health.openable:
+            return None
         health = inspect_survey_db(db_path)
         if not health.openable:
             self._survey_health = health
