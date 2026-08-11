@@ -162,8 +162,14 @@ addopts = "--import-mode=importlib -ra --strict-markers --strict-config"
 # Puts tests/_factories.py on the path for the category subfolders that share it.
 pythonpath = ["tests"]
 timeout = 120
+# thread, not the signal default: a signal handler is Python-level, so it only
+# runs once the interpreter is back from C. A test parked in QDialog::exec()
+# never gets there and the timeout never fires -- CI sat on one for five hours.
+# The thread method dumps every stack and exits, naming the test.
+timeout_method = "thread"
 markers = [
   "real_reveal: opt out of the conftest stub that keeps reveals off the desktop",
+  "real_modal: opt out of the conftest guard that blocks exec() on dialogs and menus",
 ]
 # Scoped to our own package: VTK and numpy emit deprecations we don't control,
 # and drowning those would mean turning the filter off again.

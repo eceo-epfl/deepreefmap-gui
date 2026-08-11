@@ -620,6 +620,9 @@ def test_the_filing_fact_opens_the_dialog_that_sets_it(window):
     window._select_section(str(pass_.id))
 
     panel = window._section_detail
+    # The window answers this signal by opening the picker itself, and what is
+    # under test is that the fact reaches the signal at all.
+    panel.reassign_requested.disconnect(window._on_section_reassign)
     asked = []
     panel.reassign_requested.connect(asked.append)
     panel.facts.link_activated.emit("filing")
@@ -635,6 +638,7 @@ def test_menu_actions_act_on_the_shown_section(window):
     window._select_section(str(pass_.id))
 
     panel = window._section_detail
+    panel.retrim_requested.disconnect(window._on_section_retrim)
     fired = []
     panel.retrim_requested.connect(fired.append)
     panel.menu_actions["retrim"].trigger()

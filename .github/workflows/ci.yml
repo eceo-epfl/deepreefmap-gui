@@ -23,12 +23,11 @@ jobs:
   test:
     name: pytest + ruff (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
-    # Generous on purpose: the suite is mostly window builds, each holding its
-    # own QApplication, torch and VTK, and it only grows. A job cancelled for
-    # running long tells you nothing about the code, so the ceiling is here to
-    # catch a wedged runner rather than to pace the tests. A test that genuinely
-    # hangs is caught far sooner by the per-test timeout in pyproject.toml.
-    timeout-minutes: 300
+    # The suite runs in about two minutes, so the room here is for a slow
+    # runner and the installs, not for the tests. A hung test is caught far
+    # sooner by the per-test timeout in pyproject.toml; this ceiling only has
+    # to stop a wedged runner from billing hours before anyone notices.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:

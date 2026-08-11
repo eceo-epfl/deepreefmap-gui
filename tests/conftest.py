@@ -112,6 +112,69 @@ def _no_file_manager(request, monkeypatch):
     yield
 
 
+_MODAL_ADVICE = (
+    "Nothing offscreen can close it, so the interpreter parks inside Qt's C++ "
+    "event loop and the run stalls. Stub the call, disconnect the handler that "
+    "opens it, or mark the test real_modal."
+)
+
+
+@pytest.fixture(autouse=True)
+def _no_blocking_modals(request, monkeypatch):
+    """Turn an unexpected modal into a named failure rather than a stalled suite.
+
+    A test that drives a widget wired to the window reaches the real handler
+    behind it, and those handlers open dialogs. pytest-timeout's signal method
+    cannot interrupt one: its handler is Python-level and the interpreter never
+    gets back to run it. One such dialog held every CI leg for five hours.
+
+    Tests that mean to drive a dialog already stub the call themselves, and
+    those stubs still win -- monkeypatch applies them after this fixture.
+
+    Raising is what keeps the suite moving, but it is not what reports: these
+    calls happen inside Qt slots, and PySide6 prints an unhandled slot exception
+    rather than propagating it, so the test would otherwise pass with the
+    traceback buried in captured output. The blocked calls are recorded and the
+    test fails on the record at teardown.
+    """
+    if request.node.get_closest_marker("real_modal"):
+        yield
+        return
+
+    try:
+        from PySide6.QtWidgets import QDialog, QMenu, QMessageBox
+    except ImportError:
+        yield
+        return
+
+    blocked: list[str] = []
+
+    def _block(what: str):
+        message = f"{what} would block. {_MODAL_ADVICE}"
+        blocked.append(message)
+        raise AssertionError(message)
+
+    def _blocked_exec(self, *_args, **_kwargs):
+        _block(f"{type(self).__name__}.exec()")
+
+    # QMessageBox and QMenu carry their own exec, so patching QDialog's alone
+    # would leave both reachable.
+    for cls in (QDialog, QMenu, QMessageBox):
+        monkeypatch.setattr(cls, "exec", _blocked_exec)
+
+    def _blocked_static(name):
+        def _call(*_args, **_kwargs):
+            _block(f"QMessageBox.{name}()")
+
+        return staticmethod(_call)
+
+    for name in ("question", "warning", "information", "critical", "about"):
+        monkeypatch.setattr(QMessageBox, name, _blocked_static(name))
+    yield
+    if blocked:
+        raise AssertionError(blocked[0])
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _isolate_qsettings():
     """Redirect all QSettings storage to a tempdir for the whole test session.
