@@ -118,12 +118,13 @@ def seed_pass(
     direction: str = "forward",
     transect: Transect | None = None,
     batch: SurveyBatch | None = None,
+    video: VideoAsset | None = None,
 ):
     """transect -> video -> pass, the chain every survey row hangs off."""
     transect = transect or make_transect()
     if store.get_transect(transect.id) is None:
         store.add_transect(transect)
-    video = store.upsert_video(make_video())
+    video = store.upsert_video(video or make_video())
     pass_ = TransectPass(
         transect_id=transect.id,
         video_id=video.id,
@@ -150,10 +151,14 @@ def seed_survey_run(
     dir_name: str,
     transect: Transect | None = None,
     batch: SurveyBatch | None = None,
+    direction: str = "forward",
+    video: VideoAsset | None = None,
     **manifest_overrides,
 ):
     """A succeeded run, in the database and on disk with a matching manifest."""
-    transect, _video, pass_ = seed_pass(store, transect=transect, batch=batch)
+    transect, _video, pass_ = seed_pass(
+        store, direction=direction, transect=transect, batch=batch, video=video
+    )
     run = RunRecord(
         pass_id=pass_.id,
         run_dir_name=dir_name,

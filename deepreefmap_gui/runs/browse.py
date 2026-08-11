@@ -398,6 +398,7 @@ class BrowseMixin(MixinBase):
         self._run_detail.set_open_action_visible(True)
         self._run_detail.open_requested.connect(self._on_data_open_clicked)
         self._run_detail.log_requested.connect(self._show_run_log)
+        self._run_detail.rename_requested.connect(self._on_data_rename_clicked)
         self._data_detail_stack.addWidget(self._run_detail)
 
         # A summary and a way through, not a second chart. The transect's cover
@@ -1394,13 +1395,46 @@ class BrowseMixin(MixinBase):
         QGuiApplication.clipboard().setText(text)
         self._status_label.setText(f"Copied the command for '{entry.display_name}'.")
 
+    def _taken_run_names(self, keep: RunEntry) -> set[str]:
+        """What the other runs are called, so no two arrive with one name between them."""
+        return {
+            e.display_name.strip()
+            for e in self._data_entries
+            if e.run_dir != keep.run_dir and e.display_name.strip()
+        }
+
+    def _ask_run_name(self, entry: RunEntry) -> str | None:
+        """Ask for a name, and keep asking while it is one another run already has.
+
+        The retry is offered pre-filled with the first free variant rather than
+        with the rejected text, so accepting the dialog a second time always
+        gets somewhere.
+        """
+        from deepreefmap_gui.survey.labels import unique_label
+
+        taken = self._taken_run_names(entry)
+        proposed = (entry.manifest.get("name") or "").strip() or entry.dir_name
+        prompt = "Run name:"
+        while True:
+            text, ok = QInputDialog.getText(
+                self, "Rename run", prompt, text=proposed
+            )
+            if not ok:
+                return None
+            wanted = " ".join(text.split())
+            if not wanted:
+                return None
+            if wanted not in taken:
+                return wanted
+            prompt = f"'{wanted}' is already taken by another run. Run name:"
+            proposed = unique_label(wanted, taken)
+
     def _on_data_rename_clicked(self) -> None:
         entry = self._data_selected_entry()
         if entry is None:
             return
-        current = (entry.manifest.get("name") or "").strip() or entry.dir_name
-        new_name, ok = QInputDialog.getText(self, "Rename run", "Run name:", text=current)
-        if not ok or not new_name.strip():
+        new_name = self._ask_run_name(entry)
+        if new_name is None:
             return
         try:
             manifest = catalogue.rename_run(entry.run_dir, new_name)
@@ -1411,7 +1445,7 @@ class BrowseMixin(MixinBase):
         if self._active_run_dir == entry.run_dir:
             self._active_run_manifest = manifest
             self._show_run_meta_banner(manifest, entry.run_dir, include_disk_size=False)
-        self._status_label.setText(f"Renamed run to '{new_name.strip()}'.")
+        self._status_label.setText(f"Renamed run to '{new_name}'.")
         self._refresh_data_manager()
 
     def _on_data_session_delete(self) -> None:

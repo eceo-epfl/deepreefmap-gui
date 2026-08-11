@@ -29,12 +29,14 @@ from deepreefmap_gui.runs.run_cards import (
     emphasise_line,
     format_run_metadata,
     points_label,
+    recorded_text,
 )
 from deepreefmap_gui.survey import catalogue
 from deepreefmap_gui.survey.catalogue import RunEntry
 
 COL_NAME, COL_STATUS, COL_CREATED, COL_FRAMES = 0, 1, 2, 3
-COL_POINTS, COL_RUNTIME, COL_SIZE, COL_TRANSECT, COL_VIDEO = 4, 5, 6, 7, 8
+COL_POINTS, COL_RUNTIME, COL_SIZE = 4, 5, 6
+COL_TRANSECT, COL_DIRECTION, COL_RECORDED, COL_VIDEO = 7, 8, 9, 10
 
 _HEADERS = (
     "Name",
@@ -45,6 +47,8 @@ _HEADERS = (
     "Runtime",
     "Size",
     "Transect",
+    "Direction",
+    "Recorded",
     "Video",
 )
 
@@ -61,6 +65,13 @@ _FIXED_WIDTHS = {
     COL_SIZE: 72,
 }
 
+# Secondary identifiers, shown in the order they earn their width and hidden
+# when it is not there. Browse leaves the table around 830px with the rail open,
+# which is what the columns above plus the flexing ones already spend; adding
+# these unconditionally would put a scrollbar under the page's one table. The
+# row's tooltip carries both whether or not a column does.
+_OPTIONAL_WIDTHS = ((COL_DIRECTION, 76), (COL_RECORDED, 112))
+
 # What is left over, shared out by weight. Qt's Stretch mode splits slack
 # equally, which would hand Transect as much room as Name; the name is what
 # identifies a row, so it takes the larger share and the two weaker identifiers
@@ -69,7 +80,7 @@ _FLEX_WEIGHTS = {COL_NAME: 3, COL_VIDEO: 2, COL_TRANSECT: 1}
 
 # Below these a column has stopped saying which run, which clip or which line,
 # so it holds its floor and the table scrolls instead. That only happens on a
-# window too narrow to hold nine columns by any arrangement.
+# window too narrow to hold the columns by any arrangement.
 _FLEX_MINIMUMS = {COL_NAME: 140, COL_VIDEO: 100, COL_TRANSECT: 80}
 
 # No column narrower than this, whatever its content measures.
@@ -93,25 +104,35 @@ _TOOLTIP_LABELS = {
     COL_RUNTIME: "Runtime",
     COL_SIZE: "Size",
     COL_TRANSECT: "Transect",
+    COL_DIRECTION: "Direction",
+    COL_RECORDED: "Recorded",
     COL_VIDEO: "Video",
 }
 
 
 def column_widths(available: int) -> dict[int, int]:
-    """How a viewport of `available` px divides between the nine columns.
+    """How a viewport of `available` px divides between the columns it can hold.
 
-    The fixed columns take theirs first; the rest is shared by weight. A share
-    that falls under a column's floor is clamped to it and the *remainder* is
+    The fixed columns take theirs first, then the optional ones in turn while
+    their width is still spare, then the rest is shared by weight. A share that
+    falls under a column's floor is clamped to it and the *remainder* is
     re-divided among the columns still flexing, rather than every column being
     clamped independently -- doing that over-spends the viewport by the size of
     each bump and puts back the scrollbar this exists to avoid.
 
-    On a window too narrow to hold nine columns at their floors the floors win
-    and the table scrolls. That is the honest answer: a column shrunk past
-    reading is not a column.
+    Columns left out are absent from the result, not zero-width. On a window too
+    narrow to hold even the mandatory ones at their floors the floors win and the
+    table scrolls. That is the honest answer: a column shrunk past reading is not
+    a column.
     """
     widths = dict(_FIXED_WIDTHS)
-    slack = max(0, available - sum(_FIXED_WIDTHS.values()))
+    spent = sum(_FIXED_WIDTHS.values()) + sum(_FLEX_MINIMUMS.values())
+    for column, width in _OPTIONAL_WIDTHS:
+        if spent + width > available:
+            break
+        widths[column] = width
+        spent += width
+    slack = max(0, available - sum(widths.values()))
     flexing = dict(_FLEX_WEIGHTS)
     while flexing:
         weight_total = sum(flexing.values())
@@ -144,6 +165,11 @@ def _created_text(entry: RunEntry) -> str:
     except (OverflowError, OSError, ValueError):
         return ""
     return stamp.astimezone().strftime("%Y-%m-%d %H:%M")
+
+
+def _recorded_sort_key(entry: RunEntry) -> float | None:
+    stamp = entry.recorded_at
+    return stamp.timestamp() if stamp is not None else None
 
 
 def _frame_count(entry: RunEntry) -> int | None:
@@ -215,7 +241,10 @@ class RunTable(QTableWidget):
         available = self.viewport().width()
         if available <= 0:
             return
-        for column, width in column_widths(available).items():
+        widths = column_widths(available)
+        for column, _width in _OPTIONAL_WIDTHS:
+            self.setColumnHidden(column, column not in widths)
+        for column, width in widths.items():
             header.resizeSection(column, width)
 
     def resizeEvent(self, event) -> None:  # noqa: N802 (Qt override)
@@ -286,6 +315,12 @@ class RunTable(QTableWidget):
                 0 if entry.data_missing else entry.size_bytes,
             ),
             (COL_TRANSECT, entry.transect_name or "", _sort_text(entry.transect_name)),
+            (
+                COL_DIRECTION,
+                (entry.direction or "").capitalize(),
+                _sort_text(entry.direction),
+            ),
+            (COL_RECORDED, recorded_text(entry), _recorded_sort_key(entry)),
             (COL_VIDEO, entry.video_name or "", _sort_text(entry.video_name)),
         )
         tooltip = _row_tooltip(entry, related)

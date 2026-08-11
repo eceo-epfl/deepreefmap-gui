@@ -2,7 +2,13 @@ import json
 from pathlib import Path
 
 import pytest
-from _factories import make_batch, make_transect, seed_survey_run, write_run
+from _factories import (
+    make_batch,
+    make_transect,
+    make_video,
+    seed_survey_run,
+    write_run,
+)
 from _qt_wait import wait_until
 from PySide6.QtCore import QEvent, Qt, QUrl
 from PySide6.QtGui import QImage
@@ -190,7 +196,78 @@ def test_rename_updates_manifest_and_card(out_root, make_window, monkeypatch):
     window._on_data_rename_clicked()
     on_disk = json.loads((run_dir / "run_manifest.json").read_text())
     assert on_disk["name"] == "reef north"
-    assert listed_runs(window) == ["reef north  (run_a)"]
+    assert listed_runs(window) == ["reef north"]
+
+
+def test_rename_refuses_a_name_another_run_already_has(out_root, make_window, monkeypatch):
+    """Expected behaviour: a name in use is asked again, pre-filled with a free
+    variant, so a second Enter always gets somewhere.
+
+    Two runs called the same thing cannot be told apart in the row reporting one
+    of them.
+    """
+    write_run(out_root, "run_a")
+    write_run(out_root, "run_b", name="reef north")
+    window = make_window()
+    select_run(window, row_of(window, "run_a"))
+    asked = []
+
+    def answer(_parent, _title, _prompt, text="", **_kw):
+        asked.append(text)
+        return ("reef north", True) if len(asked) == 1 else (text, True)
+
+    monkeypatch.setattr(
+        "deepreefmap_gui.runs.browse.QInputDialog.getText", staticmethod(answer)
+    )
+    window._on_data_rename_clicked()
+
+    assert asked[1] == "reef north 2"
+    assert sorted(listed_runs(window)) == ["reef north", "reef north 2"]
+
+
+def test_the_detail_pane_renames_the_run_it_is_showing(out_root, make_window, monkeypatch):
+    write_run(out_root, "run_a")
+    window = make_window()
+    select_run(window, 0)
+    monkeypatch.setattr(
+        "deepreefmap_gui.runs.browse.QInputDialog.getText",
+        staticmethod(lambda *a, **k: ("reef north", True)),
+    )
+    assert not window._run_detail.rename_btn.isHidden()
+    window._run_detail.rename_btn.click()
+
+    assert listed_runs(window) == ["reef north"]
+    assert window._run_detail.title.text() == "reef north"
+
+
+def test_a_crashed_run_offers_no_rename(out_root, make_window):
+    """The name lives in the manifest, and a crashed run never wrote one."""
+    write_crashed_run(out_root, "died")
+    window = make_window()
+    select_run(window, 0)
+    assert window._run_detail.rename_btn.isHidden()
+
+
+def test_the_table_columns_carry_the_survey_metadata(out_root, make_window):
+    """Expected behaviour: direction and the moment the footage was shot are
+    columns that sort, not fragments of a run name."""
+    from deepreefmap_gui.runs.run_table import COL_DIRECTION, COL_RECORDED
+
+    store = SurveyStore(out_root / "survey.db")
+    seed_survey_run(
+        store,
+        out_root,
+        "swim",
+        direction="reverse",
+        video=make_video(captured_at="2026-07-21T08:14:00+00:00"),
+    )
+    store.close()
+    window = make_window()
+    window._data_run_table.resize(1600, 400)
+
+    row = row_of(window, "swim")
+    assert cell(window, row, COL_DIRECTION) == "Reverse"
+    assert cell(window, row, COL_RECORDED).startswith("2026-07-21")
 
 
 def test_delete_removes_run_after_confirmation(out_root, make_window, monkeypatch):
@@ -1117,7 +1194,7 @@ def test_detail_pane_shows_the_ortho_a_run_produced(out_root, make_window):
 
 @pytest.mark.parametrize("available", [1440, 1080, 900, 830])
 def test_the_run_table_fits_its_columns_rather_than_scrolling(available):
-    """Expected behaviour: nine columns divide the width they are given.
+    """Expected behaviour: the columns divide the width they are given.
 
     Sized to their contents they overflowed instead, so a run with a long clip
     name put a horizontal scrollbar under the one table the page is for. 830px
@@ -1131,7 +1208,22 @@ def test_the_run_table_fits_its_columns_rather_than_scrolling(available):
     assert widths[COL_NAME] > widths[COL_VIDEO] >= widths[COL_TRANSECT]
 
 
-def test_a_window_too_narrow_for_nine_columns_keeps_them_readable():
+def test_the_secondary_columns_appear_only_where_there_is_room_for_them():
+    """Expected behaviour: Direction and Recorded are dropped, widest last in,
+    rather than squeezing the columns that say which run this is.
+
+    A pane wide enough shows both. The 830px Browse leaves with the rail open
+    shows neither, and the tooltip is where they are read there.
+    """
+    from deepreefmap_gui.runs.run_table import COL_DIRECTION, COL_RECORDED, column_widths
+
+    assert {COL_DIRECTION, COL_RECORDED} <= set(column_widths(1440))
+    assert COL_DIRECTION in column_widths(900)
+    assert COL_RECORDED not in column_widths(900)
+    assert not {COL_DIRECTION, COL_RECORDED} & set(column_widths(830))
+
+
+def test_a_window_too_narrow_for_the_columns_keeps_them_readable():
     """A column shrunk past reading is not a column, so below the floors' total
     the floors win and the table scrolls rather than eliding everything away."""
     from deepreefmap_gui.runs.run_table import COL_NAME, COL_VIDEO, column_widths

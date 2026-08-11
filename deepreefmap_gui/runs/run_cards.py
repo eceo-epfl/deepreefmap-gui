@@ -138,6 +138,12 @@ def _video_line(entry: RunEntry) -> str:
     return line
 
 
+def recorded_text(entry: RunEntry) -> str:
+    """When the footage was shot, in local time. Empty when nothing recorded it."""
+    stamp = entry.recorded_at
+    return stamp.astimezone().strftime("%Y-%m-%d %H:%M") if stamp is not None else ""
+
+
 def _column_lines(entry: RunEntry) -> list[str]:
     """One line per column the run table shows, present whether or not it has a value.
 
@@ -154,6 +160,8 @@ def _column_lines(entry: RunEntry) -> list[str]:
         f"Status: {catalogue.entry_status(entry).capitalize()}",
         f"Created: {format_timestamp(manifest.get('run_timestamp')) or _MISSING}",
         f"Transect: {entry.transect_name or 'Not assigned yet'}",
+        f"Direction: {(entry.direction or '').capitalize() or _MISSING}",
+        f"Recorded: {recorded_text(entry) or _MISSING}",
         # No column shows the session, so the tooltip is where it lives; in the
         # always-shown block because its absence is a fact too.
         f"Session: {entry.session_name or _MISSING}",

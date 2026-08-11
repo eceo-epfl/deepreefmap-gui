@@ -105,6 +105,10 @@ class RunEntry:
     db_pass: TransectPass | None = None
     db_transect_name: str | None = None
     db_session_name: str | None = None
+    # When the footage was shot, as opposed to when the run was made. Only the
+    # database knows it: the manifest records which clips went in, not when they
+    # were recorded.
+    db_captured_at: str | None = None
     moved_from: str | None = None
     size_bytes: int | None = None
     # A run directory that never wrote a manifest: crashed, cancelled, or still
@@ -157,6 +161,11 @@ class RunEntry:
         if self.db_pass is not None:
             return self.db_pass.direction
         return self.manifest_direction
+
+    @property
+    def recorded_at(self) -> datetime | None:
+        """When the clip was shot, aware, or None when nothing recorded it."""
+        return parse_run_timestamp(self.db_captured_at)
 
 
 @dataclass(slots=True)
@@ -237,11 +246,10 @@ def scan_out_root(out_root: Path) -> list[RunEntry]:
 
 def _entry_from_manifest(run_dir: Path, manifest: dict, mtime: float) -> RunEntry:
     name = manifest.get("name")
-    # The folder only when it adds something. A run left unnamed takes its
-    # timestamp as a name, so spelling both printed "20260716-135235
-    # (20260716-135235)" and spent half the table's widest column saying it
-    # twice.
-    display = f"{name}  ({run_dir.name})" if name and name != run_dir.name else run_dir.name
+    # The name the person gave it, alone. The folder is machine-safe and
+    # unique but says nothing, and it is one hover away in the row's tooltip
+    # and spelled out in the detail pane.
+    display = str(name).strip() if isinstance(name, str) and name.strip() else run_dir.name
     videos = manifest.get("input_videos") or []
     survey = _dict_or_empty(manifest.get("survey"))
     pass_block = _dict_or_empty(survey.get("pass"))
@@ -390,6 +398,7 @@ def reconcile(entries: list[RunEntry], store: SurveyStore) -> None:
     passes = {p.id: p for p in store.list_passes()}
     transects = {t.id: t for t in store.list_transects()}
     batches = {b.id: b for b in store.list_batches()}
+    videos = {v.id: v for v in store.list_videos()}
     for entry in entries:
         run = runs.get(entry.dir_name)
         if run is None:
@@ -402,6 +411,9 @@ def reconcile(entries: list[RunEntry], store: SurveyStore) -> None:
         if pass_ is None:
             continue
         entry.db_pass = pass_
+        video = videos.get(pass_.video_id)
+        if video is not None:
+            entry.db_captured_at = video.captured_at or video.mtime
         transect = (
             transects.get(pass_.transect_id) if pass_.transect_id is not None else None
         )

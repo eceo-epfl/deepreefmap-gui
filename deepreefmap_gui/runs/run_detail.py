@@ -48,6 +48,7 @@ from deepreefmap_gui.runs.run_cards import (
     geometry_label,
     points_label,
     provenance_rows,
+    recorded_text,
 )
 from deepreefmap_gui.survey import catalogue
 from deepreefmap_gui.survey.catalogue import RunEntry
@@ -236,8 +237,10 @@ def run_fact_rows(entry: RunEntry, related: int = 0) -> list[tuple[str, str]]:
     return [
         ("Folder", entry.dir_name),
         ("Transect", entry.transect_name or "Not assigned yet"),
+        ("Direction", (entry.direction or "").capitalize() or _MISSING),
         ("Session", entry.session_name or "No session recorded"),
         ("Video", entry.video_name or _MISSING),
+        ("Recorded", recorded_text(entry) or _MISSING),
         ("Range", format_trim_range(manifest) or "whole video"),
         ("Frames", _frames_text(manifest)),
         ("Points", points_label(entry.points) if entry.points else _MISSING),
@@ -271,6 +274,7 @@ class RunDetailPanel(DetailCard):
     # open_requested because the runs whose log matters most are the ones that
     # cannot be opened at all.
     log_requested = Signal(object)
+    rename_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -340,7 +344,17 @@ class RunDetailPanel(DetailCard):
         self.log_btn.setToolTip("Show this run's log, including why it stopped")
         self.log_btn.clicked.connect(self._request_log)
         self.log_btn.setVisible(False)
-        self.add_actions(self.open_btn, self.log_btn, self.copy_command_btn)
+
+        # The name in the title is the one the person chose at staging time, and
+        # this is where they get to reconsider it once they have seen the result.
+        self.rename_btn = QPushButton("Rename")
+        self.rename_btn.setToolTip("Change what this run is called")
+        self.rename_btn.clicked.connect(self.rename_requested)
+        self.rename_btn.setVisible(False)
+
+        self.add_actions(
+            self.open_btn, self.log_btn, self.rename_btn, self.copy_command_btn
+        )
         self._entry: RunEntry | None = None
 
     def set_open_action_visible(self, visible: bool) -> None:
@@ -397,6 +411,9 @@ class RunDetailPanel(DetailCard):
         # it wrote before it failed is exactly what a diagnosis starts from. A
         # data-removed run kept no manifest to build one from.
         self.copy_command_btn.setVisible(not entry.data_missing)
+        # The name lives in the manifest, so a run that never wrote one has
+        # nothing to rename.
+        self.rename_btn.setVisible(not (entry.incomplete or entry.data_missing))
         self.open_btn.setVisible(
             self._open_action_allowed and not (entry.incomplete or entry.data_missing)
         )
