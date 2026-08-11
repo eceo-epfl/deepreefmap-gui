@@ -1,1 +1,1 @@
-"""Simple-mode GUI: the plan, batch, and analysis workflow with preset settings."""
+"""The interface shell and its destinations: Transects, Process and Browse."""

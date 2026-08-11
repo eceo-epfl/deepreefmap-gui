@@ -27,19 +27,19 @@ def test_bootstrap_self_heals_then_reexecs_when_env_broken(monkeypatch, tmp_path
     restored: list[str] = []
     monkeypatch.setattr(binary_swap, "self_restore", lambda b: bool(restored.append(b)) or True)
 
-    class _Reexec(Exception):
+    class _ReexecError(Exception):
         pass
 
     execs: list[tuple] = []
 
     def fake_execv(path, args):
         execs.append((path, args))
-        raise _Reexec
+        raise _ReexecError
 
     monkeypatch.setattr(bootstrap.os, "execv", fake_execv)
 
     try:
-        with pytest.raises(_Reexec):
+        with pytest.raises(_ReexecError):
             bootstrap.main()
         assert restored, "self_restore should have been invoked"
         assert execs, "binary should be re-exec'd after restore"
@@ -51,9 +51,10 @@ def test_bootstrap_self_heals_then_reexecs_when_env_broken(monkeypatch, tmp_path
 def test_bootstrap_provision_arg_exits_without_launching(monkeypatch, tmp_path) -> None:
     """The installer runs `<binary> __provision__` to provision (in the launcher,
     before Python) and exit, never opening the GUI or dispatching to the CLI."""
+    import deepreefmap.cli.main as cli_main
+
     import deepreefmap_gui.app as gui_app
     import deepreefmap_gui.bootstrap as bootstrap
-    import deepreefmap.cli.main as cli_main
 
     monkeypatch.setattr(sys, "argv", ["deepreefmap", "__provision__"])
     monkeypatch.setattr(gui_app, "launch", lambda: pytest.fail("GUI must not launch for __provision__"))
@@ -69,8 +70,8 @@ def _quiet_bootstrap(monkeypatch, tmp_path):
 
 
 def test_bootstrap_no_args_launches_gui(monkeypatch, tmp_path) -> None:
-    import deepreefmap_gui.bootstrap as bootstrap
     import deepreefmap_gui.app as gui_app
+    import deepreefmap_gui.bootstrap as bootstrap
 
     _quiet_bootstrap(monkeypatch, tmp_path)
     monkeypatch.setattr(sys, "argv", ["deepreefmap"])
@@ -81,9 +82,10 @@ def test_bootstrap_no_args_launches_gui(monkeypatch, tmp_path) -> None:
 
 
 def test_bootstrap_args_dispatch_to_cli(monkeypatch, tmp_path) -> None:
-    import deepreefmap_gui.bootstrap as bootstrap
     import deepreefmap.cli.main as cli_main
+
     import deepreefmap_gui.app as gui_app
+    import deepreefmap_gui.bootstrap as bootstrap
 
     _quiet_bootstrap(monkeypatch, tmp_path)
     monkeypatch.setattr(sys, "argv", ["deepreefmap", "list-models"])

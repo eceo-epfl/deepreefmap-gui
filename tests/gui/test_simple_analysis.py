@@ -1,21 +1,20 @@
 import json
 
 import pytest
-
-from deepreefmap_gui.survey.models import RunRecord
-
 from _factories import seed_pass
+
+from deepreefmap_gui.map.overlays import transect_overlays
+from deepreefmap_gui.survey.models import RunRecord
 
 
 @pytest.fixture
-def analysis_window(simple_window, tmp_path):
-    window = simple_window
+def analysis_window(window, out_root):
     store = window._survey_store()
     _transect, _video, pass_ = seed_pass(store)
     run = RunRecord(pass_id=pass_.id, run_dir_name="t1__p01", status="succeeded")
     store.add_run(run)
     cls = window._classes_config.classes[0]
-    run_dir = tmp_path / "t1__p01"
+    run_dir = out_root / "t1__p01"
     run_dir.mkdir()
     (run_dir / "benthic_cover.json").write_text(json.dumps({
         "classes": {str(cls.id): {"name": cls.name, "count": 30.0, "fraction": 0.3}},
@@ -25,14 +24,22 @@ def analysis_window(simple_window, tmp_path):
     return window
 
 
-def test_analysis_populates_chart_table_and_runs(analysis_window):
+def test_analysis_populates_chart_and_table(analysis_window):
+    """The runs behind these numbers are the list beside the pane, not a second copy."""
     w = analysis_window
     assert w._analysis_transect_combo.count() == 1
     assert len(w._analysis_covers) == 1
     assert w._analysis_stats_table.rowCount() >= 1
     assert w._analysis_stats_table.item(0, 1).text() == "30.0%"
-    assert w._analysis_runs_list.count() == 1
-    assert "t1__p01" in w._analysis_runs_list.item(0).text()
+    assert not hasattr(w, "_analysis_runs_list")
+
+
+def test_analysis_stats_table_declares_its_sort(analysis_window):
+    table = analysis_window._analysis_stats_table
+    header = table.horizontalHeader()
+    assert table.isSortingEnabled()
+    assert header.property("sortable") == "true"
+    assert header.isSortIndicatorShown()
 
 
 def test_analysis_export_csv(analysis_window, tmp_path, monkeypatch):
@@ -58,7 +65,7 @@ def test_analysis_map_labels_and_counts_each_transect(analysis_window):
     """Transects are identifiable on the map, with their survey effort on hover."""
     window = analysis_window
     window._refresh_survey_analysis()
-    overlays = window._analysis_map._transects
+    overlays = transect_overlays(window._survey_store(), None)
     assert overlays
     overlay = overlays[0]
     assert overlay.label == "T1"
@@ -82,5 +89,6 @@ def test_unprocessed_transect_says_so(analysis_window):
         )
     )
     window._refresh_survey_analysis()
-    tooltips = {o.label: o.tooltip for o in window._analysis_map._transects}
+    overlays = transect_overlays(window._survey_store(), None)
+    tooltips = {o.label: o.tooltip for o in overlays}
     assert "Not processed yet" in tooltips["Untouched"]

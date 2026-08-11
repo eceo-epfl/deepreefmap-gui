@@ -11,6 +11,26 @@ from deepreefmap_gui.survey.models.common import utc_now_iso
 _EARTH_RADIUS_M = 6_371_000.0
 
 
+_COMPASS_POINTS = (
+    "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+    "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW",
+)
+
+
+def initial_bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Forward azimuth from the first point to the second, in [0, 360)."""
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dlam = math.radians(lon2 - lon1)
+    y = math.sin(dlam) * math.cos(phi2)
+    x = math.cos(phi1) * math.sin(phi2) - math.sin(phi1) * math.cos(phi2) * math.cos(dlam)
+    return math.degrees(math.atan2(y, x)) % 360.0
+
+
+def compass_point(bearing_deg: float) -> str:
+    """Sixteen-point compass abbreviation for a bearing."""
+    return _COMPASS_POINTS[int((bearing_deg % 360.0) / 22.5 + 0.5) % 16]
+
+
 def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Great-circle distance in metres between two WGS84 points."""
     phi1, phi2 = math.radians(lat1), math.radians(lat2)

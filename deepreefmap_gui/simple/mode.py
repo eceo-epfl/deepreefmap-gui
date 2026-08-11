@@ -1,117 +1,169 @@
-"""Simple / Advanced UI mode switch and the shared survey store accessor."""
+"""The interface shell: destinations, and the shared survey store accessor.
+
+One interface, and every panel in it is a single widget lent to the destination
+that shows it: Browse into the shell, the model library and system panel into
+Setup, the results panel into View mode, the run form into the settings dialog.
+Two copies of any of them would disagree the moment a download or a path edit
+landed against only one.
+
+The header holds three peer destinations and no sequence: run_gate() treats a
+pass with no transect as fine, so transects are not a precondition for
+processing. Anything wrong with one of them is named once, in the alert box.
+"""
 
 from __future__ import annotations
-
-from deepreefmap_gui.core.window_protocol import MixinBase
 
 import logging
 from functools import partial
 from pathlib import Path
 from typing import Any
 
+import yaml
 from PySide6.QtCore import QSize, Qt
+from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
-    QAbstractButton,
     QButtonGroup,
     QCheckBox,
     QComboBox,
+    QDialog,
     QDoubleSpinBox,
     QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
+    QScrollArea,
     QSpinBox,
-    QSplitter,
     QStackedWidget,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
-from deepreefmap_gui.core.icons import step_badge_icon
+from deepreefmap_gui.core.icons import (
+    browse_icon,
+    cart_icon,
+    transects_icon,
+    videos_icon,
+)
 from deepreefmap_gui.core.theme import (
     BORDER,
-    BUTTON,
     CARD_BG,
     DISABLED_FG,
     GUTTER,
+    ON_ACCENT,
     PAGE_MARGIN,
-    PRIMARY,
-    RADIUS_SM,
-    SURFACE_HI,
-    TEXT_MUTED,
-    WINDOW,
+    SPACE_SM,
+    SPACE_XS,
     WINDOW_TEXT,
 )
-from deepreefmap_gui.simple.progress import browse_state, plan_state, run_gate
-from deepreefmap_gui.survey.preset import save_user_preset
-from deepreefmap_gui.survey.store import SURVEY_DB_NAME, SurveyStore
+from deepreefmap_gui.core.widgets import muted_label, utility_button_qss
+from deepreefmap_gui.core.window_protocol import MixinBase
+from deepreefmap_gui.notify.conditions import conditions_from_state
+from deepreefmap_gui.runs.run_detail import RunDetailPanel
+from deepreefmap_gui.simple.cart import CartButton
+from deepreefmap_gui.simple.section_state import (
+    SectionState,
+    browse_state,
+    run_gate,
+    transects_state,
+    videos_state,
+)
+from deepreefmap_gui.survey.catalogue import LINK_MISSING
+from deepreefmap_gui.survey.health import SurveyDbHealth, SurveyDbState, inspect_survey_db
+from deepreefmap_gui.survey.models.notification import WARNING as NOTIFY_WARNING
+from deepreefmap_gui.survey.preset import (
+    ActivePreset,
+    OrgPreset,
+    OverrideResult,
+    clear_machine_override,
+    describe_keys,
+    deviations_from_org,
+    load_active_preset,
+    save_machine_override,
+)
+from deepreefmap_gui.survey.store import SURVEY_DB_NAME, SurveyStore, latest_schema_version
 
 logger = logging.getLogger(__name__)
 
-UI_MODES = ("advanced", "simple")
+# Peers, not steps. None is a prerequisite for another: a pass with no transect
+# processes perfectly well, so ordering them as a sequence would claim a
+# dependency the gate does not enforce.
+#
+# Videos leads because it is where a day starts and where most of it is spent:
+# the footage comes off the camera, sections are cut from it, and the cart is
+# filled from those. Planning a transect is the rarer act, and a pass files
+# against one whenever it is planned.
+DESTINATIONS = ("videos", "transects", "process", "browse")
 
-# Left-to-right order in the segmented control: simplest first.
-UI_MODE_ORDER = ("simple", "advanced")
+# The glyph that says what a destination holds. Constant per destination: what
+# it currently has to report is the badge's job, and an icon that changed with
+# state would leave the pill with no stable identity to recognise it by.
+_DESTINATION_ICONS = {
+    "transects": transects_icon,
+    "videos": videos_icon,
+    "process": cart_icon,
+    "browse": browse_icon,
+}
 
-# Doing the work is a short sequence; looking at what came out is not a step you
-# finish but a place you return to, so the two are different kinds of thing.
-WORKSPACES = ("survey", "browse")
+# What each destination pill says. The process pill reads Cart: the queue is
+# the cart, checkout is Start processing.
+_DESTINATION_LABELS = {
+    "transects": "Transects",
+    "videos": "Videos",
+    "process": "Cart",
+    "browse": "Browse",
+}
 
-# Inside Survey: plan your transects, then process the day's videos.
-SURVEY_STEPS = ("plan", "run")
+# One line per destination, said in the terms of the work rather than the widget.
+_DESTINATION_TIPS = {
+    "transects": "The lines you survey, and what repeat passes of each one found.",
+    "videos": "The footage itself: every clip, when it was shot, and what has been cut from it.",
+    "process": "The cart: sections queued for the next session, and the batch as it runs.",
+    "browse": "Every run so far, grouped however you need to read it.",
+}
 
-# Every destination the stack can show, in stack order.
-SIMPLE_SECTIONS = (*SURVEY_STEPS, "browse")
+# Every destination the stack can show, in stack order. Machine and view are
+# appended last, and neither is a destination: machine is a utility you visit
+# and leave, and view is where an opened run goes, reached by opening one.
+# Everything is keyed by name, so the destinations may be reordered freely.
+SIMPLE_SECTIONS = (*DESTINATIONS, "machine", "view", "storage")
 
-_STEP_BADGE_PX = 20
+# Sections no destination pill owns. Machine is a utility you visit and leave,
+# and storage belongs to a drive button at the foot of the window, which is what
+# lights while its page is open.
+NON_DESTINATIONS = ("machine", "storage")
 
-# The numbered badge carries the emphasis, so the label itself stays at body
-# weight and only the current step is filled.
-_STEP_QSS = (
-    "QToolButton { font-weight: 600; padding: 5px 14px 5px 8px;"
-    f" border: 1px solid transparent; border-radius: {RADIUS_SM}px;"
-    f" background: transparent; color: {TEXT_MUTED}; }}"
-    f" QToolButton:hover {{ background: {SURFACE_HI}; color: {WINDOW_TEXT}; }}"
-    f" QToolButton:checked {{ background: {PRIMARY}; color: {WINDOW}; }}"
-    f" QToolButton:disabled {{ color: {DISABLED_FG}; background: transparent; }}"
+# What the info panel takes when it is open. Wide enough for the metadata block
+# without eating into the cloud, which is what View mode is for.
+VIEW_INFO_WIDTH = 340
+
+_DESTINATION_ICON_PX = 16
+
+# The same control as Log and Setup at the other end of the band: everything in
+# the header is a button, so everything in the header is drawn as one.
+#
+# Not segmented_qss: a joined segmented control is what this app uses for filters
+# and facets, and navigation in that shape reads as another filter.
+_DESTINATION_QSS = utility_button_qss() + (
+    f" QToolButton:disabled {{ color: {DISABLED_FG}; background: transparent;"
+    f" border-color: {BORDER}; }}"
+)
+
+# Bars that top a page and are separated from it by a hairline. Object-name
+# scoped: an unscoped `border-bottom` on the container is inherited by every
+# child, which drew a stray underline beneath each label and button in the row.
+_BAR_QSS = (
+    f"QWidget {{ background-color: {CARD_BG}; }}"
+    f" QWidget#simpleBar {{ border-bottom: 1px solid {BORDER}; }}"
 )
 
 
-def _segment_qss(*, first: bool) -> str:
-    """One half of a joined two-button control, filled when it is the live mode.
-
-    The halves share a seam: only the outer corners round, and the right half
-    drops its left border so the pair reads as one control.
-    """
-    corners = (
-        "border-top-left-radius: 6px; border-bottom-left-radius: 6px;"
-        if first
-        else "border-top-right-radius: 6px; border-bottom-right-radius: 6px; border-left: none;"
-    )
-    return (
-        f"QToolButton {{ border: 1px solid {BORDER}; border-radius: 0; {corners}"
-        f" padding: 4px 14px; background: {BUTTON}; color: {WINDOW_TEXT}; }}"
-        f" QToolButton:hover {{ background: {SURFACE_HI}; }}"
-        f" QToolButton:checked {{ background: {PRIMARY}; color: {WINDOW};"
-        f" font-weight: bold; }}"
-    )
-
-
-def _step_connector() -> QFrame:
-    """Hairline joining two step badges, in place of an arrow glyph."""
-    line = QFrame()
-    line.setFrameShape(QFrame.Shape.HLine)
-    line.setFixedWidth(24)
-    line.setFixedHeight(1)
-    line.setStyleSheet(f"background-color: {BORDER}; border: none;")
-    return line
-
-# Preset key -> run-form widget attribute, one entry per settings widget. Simple
-# mode can edit the whole run form, so the preset snapshots all of it. Per-run
-# inputs (video, run name, trim, transect length, output root) are not settings
-# and never appear here.
+# Preset key -> run-form widget attribute, one entry per settings widget. The
+# settings dialog can edit the whole run form, so the preset snapshots all of it.
+# Per-run inputs (video, run name, trim, transect length, output root) are not
+# settings and never appear here.
 #
 # The resolution preset comes before the explicit width/height so restoring a
 # Custom size wins over the native size the combo recomputes.
@@ -171,67 +223,37 @@ def _set_widget_value(widget: QWidget, value: Any) -> None:
         raise TypeError(f"Unsupported form widget: {type(widget).__name__}")
 
 
-class UiModeMixin(MixinBase):
-    """DeepReefMapWindow methods for switching between the simple and advanced UIs."""
+class InterfaceShellMixin(MixinBase):
+    """DeepReefMapWindow methods for the workspace shell and the survey store."""
 
     _survey_store_obj: SurveyStore | None = None
+    # Why the survey database could not be opened, when it could not be. None
+    # until something has looked; read it through _survey_db_health.
+    _survey_health: SurveyDbHealth | None = None
+    # The configuration as persisted: organisation preset plus this machine's
+    # allow-listed changes. _survey_preset is what the run will use, which can
+    # additionally hold a session-only edit the override would not keep.
+    _active_preset: ActivePreset | None = None
     _form_defaults: dict[str, Any]
     _simple_nav_buttons: dict[str, QToolButton]
-    _workspace_buttons: dict[str, QToolButton]
-    _section_counts: dict[str, QLabel]
-    _step_widgets: list[QWidget]
+    _destination_group: QButtonGroup
     _section_state_cache: tuple | None = None
-    _last_survey_step: str = "plan"
-    _work_area_state: tuple[bool, bool, str] | None = None
+    # False until the video library and the run archive have been read once.
+    # Until then an empty verdict means "not looked yet", not "nothing wrong".
+    _survey_loaded: bool = False
+    _work_area_state: tuple[bool, str, bool] | None = None
 
-    def _build_mode_toggle(self) -> QWidget:
-        """Segmented control: both names stay readable and the filled half says
-        which mode you are in, rather than the one you would switch to."""
-        container = QWidget()
-        layout = QHBoxLayout(container)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-        group = QButtonGroup(container)
-        group.setExclusive(True)
-        self._mode_buttons = {}
-        for index, mode in enumerate(UI_MODE_ORDER):
-            button = QToolButton()
-            button.setText(mode.capitalize())
-            button.setCheckable(True)
-            button.setStyleSheet(_segment_qss(first=index == 0))
-            button.setToolTip(
-                "The guided survey workflow." if mode == "simple"
-                else "The full run form, with every setting."
-            )
-            button.clicked.connect(partial(self._request_ui_mode, mode))
-            group.addButton(button)
-            layout.addWidget(button)
-            self._mode_buttons[mode] = button
-        self._mode_toggle_btn = container
-        return container
-
-    def _request_ui_mode(self, mode: str) -> None:
-        """User-initiated switch, carrying settings both ways: entering advanced
-        expands the working preset into the run form; returning to simple adopts
-        and persists whatever the form now holds."""
-        if mode == self._ui_mode:
-            return
-        if getattr(self, "_settings_dialog_open", False):
-            # The advanced form is inside the settings dialog; switching would
-            # pull it out from under the user.
-            self._status_label.setText("Close the run settings first.")
-            self._mode_buttons[self._ui_mode].setChecked(True)
-            return
-        if mode == "simple":
-            self._adopt_form_as_preset()
-        elif self._survey_preset is not None:
-            self._populate_form_from_preset(self._survey_preset)
-        self._set_ui_mode(mode)
+    def _reveal_memory_detail(self) -> None:
+        """Where the memory warning sends you: the readiness rows, which carry
+        the same sentence without the system panel's jargon."""
+        self._set_simple_section("machine")
+        self._set_machine_view("readiness")
 
     def _idle_status_text(self) -> str:
-        if getattr(self, "_ui_mode", "advanced") == "simple":
-            return "Ready. Plan your transects, then add videos on the Run step."
-        return "Ready. Fill the form and click Start."
+        return (
+            "Ready. Add videos under Videos, cut sections to process, and mark "
+            "out transects to compare them against."
+        )
 
     def _refresh_browse_state(self) -> None:
         """Cache Browse's count from entries the data manager already scanned."""
@@ -241,173 +263,247 @@ class UiModeMixin(MixinBase):
         self._refresh_section_state()
 
     def _adopt_form_as_preset(self) -> None:
-        """Take the form's current settings as the survey preset and persist them."""
-        preset = self._collect_preset_from_form()
-        self._survey_preset = preset
+        """Persist the settings this machine is allowed to change, and only those.
+
+        The organisation preset owns the method: which models run, at what
+        resolution, over how many frames. Those decide the numbers a survey
+        reports, so one diver's curiosity must not rewrite them for every dive
+        after. Only MACHINE_OVERRIDABLE_KEYS describe the computer rather than
+        the method, and only those are written back.
+
+        A locked preset (an administrator named one) puts the rest of the form
+        back to standard, because an authoritative configuration that the next
+        run would silently ignore is not authoritative. An unlocked one leaves
+        the edit in place for this session and says it will not be kept.
+        """
+        # With no readable organisation preset there is nothing to measure a
+        # deviation against, so there is nothing meaningful to write either.
+        if self._active_preset is None:
+            return
+        org = self._active_preset.org
         try:
-            save_user_preset(preset)
+            result = save_machine_override(self._collect_preset_from_form(), org)
         except OSError as exc:
-            logger.warning("Could not save the preset: %s", exc)
-            self._status_label.setText(f"Preset not saved: {exc}")
+            logger.warning("Could not save the settings for this machine: %s", exc)
+            self._status_label.setText(f"Settings not saved: {exc}")
+            return
+        self._active_preset = ActivePreset(org=org, overrides=result.saved)
+        if result.refused and org.locked:
+            self._populate_form_from_preset(self._active_preset.settings)
+        # What the run will use, which is the form: a session-only deviation the
+        # organisation preset would not keep still reaches the pipeline.
+        self._survey_preset = self._collect_preset_from_form()
+        self._announce_preset_save(result, org)
         self._survey_preset_label.setText(self._survey_preset_summary())
 
-    def _build_preview_toggle(self) -> QToolButton:
-        self._preview_toggle_btn = QToolButton()
-        self._preview_toggle_btn.setText("3D preview")
-        self._preview_toggle_btn.setCheckable(True)
-        self._preview_toggle_btn.setToolTip(
-            "Show the live 3D point cloud. When off, run progress and frame "
-            "previews are shown instead."
+    def _announce_preset_save(self, result: OverrideResult, org: OrgPreset) -> None:
+        """Say what was kept and what was not, naming the settings in plain words."""
+        if result.refused and org.locked:
+            self._status_label.setText(
+                f"{org.name} sets {describe_keys(result.refused)}, so that went back to standard."
+            )
+        elif result.refused:
+            self._status_label.setText(
+                f"{describe_keys(result.refused)} changed for now, but the standard"
+                " settings come back next launch."
+            )
+        elif result.saved:
+            self._status_label.setText(
+                f"Saved for this machine: {describe_keys(result.saved)}."
+            )
+
+    def _survey_deviations(self) -> dict[str, Any]:
+        """Form settings that differ from the organisation preset.
+
+        Read from the form rather than the saved override, because a batch runs
+        from _collect_run_settings(): a session-only edit changes the run just as
+        much as a saved one, so it is named and recorded just the same.
+        """
+        if self._active_preset is None:
+            return {}
+        return deviations_from_org(
+            self._collect_preset_from_form(), self._active_preset.org
         )
-        checked = str(self._settings.value("preview_3d", "false")).lower() == "true"
-        self._preview_toggle_btn.setChecked(checked)
-        self._viewer.set_canvas_allowed(checked)
-        self._preview_toggle_btn.toggled.connect(self._on_preview_toggled)
-        return self._preview_toggle_btn
 
-    def _on_preview_toggled(self, checked: bool) -> None:
-        self._settings.setValue("preview_3d", checked)
-        self._viewer.set_canvas_allowed(checked)
+    def _reload_active_preset(self) -> None:
+        """Re-resolve the organisation preset and this machine's changes.
 
-    def _init_ui_mode(self) -> None:
-        mode = str(self._settings.value("ui_mode", "simple"))
-        if mode not in UI_MODES:
-            mode = "simple"
-        # Starting in advanced still shows what simple mode would run.
-        if mode == "advanced" and self._survey_preset is not None:
+        A malformed admin file is caught here rather than allowed to abort window
+        construction: the gate then blocks with a reason the diver can read,
+        instead of the app refusing to open on a field laptop.
+        """
+        try:
+            self._active_preset = load_active_preset()
+        except (OSError, ValueError, yaml.YAMLError) as exc:
+            self._active_preset = None
+            self._survey_preset = None
+            logger.warning("Settings unavailable: %s", exc)
+            return
+        self._survey_preset = self._active_preset.settings
+
+    def _restore_standard_settings(self) -> None:
+        """Drop this machine's changes and go back to the organisation preset."""
+        if self._survey_worker_running:
+            self._status_label.setText("Unavailable while processing.")
+            return
+        # Ask before restoring, or the answer is always "nothing changed".
+        deviated = bool(self._survey_deviations())
+        had_override = clear_machine_override()
+        self._reload_active_preset()
+        if self._survey_preset is not None:
             self._populate_form_from_preset(self._survey_preset)
-        self._set_ui_mode(mode)
-
-    def _set_ui_mode(self, mode: str) -> None:
-        if mode not in UI_MODES:
-            raise ValueError(f"Unknown ui mode: {mode!r}")
-        self._ui_mode = mode
-        simple = mode == "simple"
-        self._left_stack.setCurrentIndex(1 if simple else 0)
-        button = self._mode_buttons[mode]
-        button.blockSignals(True)
-        button.setChecked(True)
-        button.blockSignals(False)
-        # Simple mode starts runs from its Run section, so it has no start
-        # button. Pause and stop stay run-driven and appear in both modes.
-        self._start_btn.setVisible(not simple and not self._run_in_flight())
-        if simple:
-            self._memory_warn_icon.setVisible(False)
         else:
-            self._update_memory_profile_warning()
-        self._settings.setValue("ui_mode", mode)
-        # Each mode is driven differently, and simple mode has neither a form
-        # nor a Start button, so the idle hint must follow the mode.
+            # No readable preset to restore from, so the fresh-window values are
+            # the only known-good state left to offer.
+            self._reset_form_defaults()
+        self._recompute_survey_start()
+        if self._active_preset is None:
+            self._status_label.setText(
+                "Settings could not be read. The form has reverted to its defaults."
+            )
+        elif had_override or deviated:
+            self._status_label.setText(
+                f"Settings are back to {self._active_preset.org.label}."
+            )
+        else:
+            self._status_label.setText(
+                f"Already on {self._active_preset.org.label}; nothing to restore."
+            )
+
+    def _load_standard_into_form(self) -> None:
+        """Load the organisation standard into the form without persisting.
+
+        The run settings dialog borrows the live form, so its Restore button must
+        only touch widgets: the caller's snapshot undoes it on Cancel, and OK
+        persists the result, which clears the machine override once the form is
+        back on the standard. The persistent restore is the Run page's own button.
+        """
+        if self._active_preset is not None:
+            self._populate_form_from_preset(self._active_preset.org.settings)
+        else:
+            self._reset_form_defaults()
+
+    def _activate_interface(self) -> None:
+        """Bring the shell up once everything it reads has been built.
+
+        There is one interface, so these refreshes belong to construction rather
+        than to a mode change.
+        """
+        # The form is never shown outside the run settings dialog, but the batch
+        # runs from _collect_run_settings(), which reads exactly these widgets.
+        # Left on the constructor defaults, a run would ignore the preset.
+        if self._survey_preset is not None:
+            self._populate_form_from_preset(self._survey_preset)
+        self._update_memory_profile_warning()
         if getattr(self, "_app_mode", "SETUP") == "SETUP":
             self._status_label.setText(self._idle_status_text())
-        self._host_data_panel(simple)
-        if simple:
-            self._refresh_transect_list()
-            self._refresh_survey_batch_tab()
-            self._refresh_survey_analysis()
-            self._refresh_data_manager()
-        else:
-            viewing = getattr(self, "_app_mode", "SETUP") == "VIEWING"
-            self._sidebar_tabs.setCurrentIndex(self._TAB_RESULTS if viewing else self._TAB_RUN)
+        self._host_machine_panels()
+        self._refresh_transect_list()
+        self._refresh_survey_batch_tab()
+        self._refresh_survey_analysis()
+        self._refresh_data_manager()
+        self._refresh_readiness_view()
+        self._sync_system_gauges_running()
         self._update_work_area()
+        # Everything the verdicts read has now been read at least once, so an
+        # empty verdict from here on means "nothing wrong", not "not looked yet".
+        self._survey_loaded = True
+        self._refresh_section_state()
 
     def _build_simple_shell(self) -> QWidget:
-        """Two workspaces over one page stack.
+        """Three destinations over one page stack.
 
-        Survey is the work you do in order: plan the transects, then process the
-        videos. Browse is where everything you have ever produced lives, which
-        is not a step you finish but a place you come back to — so it sits
-        beside the flow rather than at the end of it.
+        Transects are the lines you survey, Process is where a session's videos
+        are queued and watched, and Browse is everything produced so far. You
+        move between them freely: none is a step you finish, so none of them
+        gates another.
 
-        Both live in one header band, so the band answers "where am I in simple
-        mode" while the top bar keeps answering "which interface am I in".
+        One band, one switch, one thing filled at a time. Utilities sit at the
+        far end, bordered rather than filled, so "where am I working" and "what
+        can I go and check" never look like the same kind of control.
         """
         shell = QWidget()
         layout = QVBoxLayout(shell)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
+        # Built here so it exists before the first _sync_destination_chrome, but
+        # added to the window's central column rather than to this shell: in View
+        # mode the shell is squeezed to zero width, and a Back button inside it
+        # would go with it.
+        self._build_view_bar()
+
         header = QWidget()
-        header.setStyleSheet(
-            f"background-color: {CARD_BG}; border-bottom: 1px solid {BORDER};"
-        )
+        header.setObjectName("simpleBar")
+        header.setStyleSheet(_BAR_QSS)
+        self._simple_header = header
         nav = QHBoxLayout(header)
-        nav.setContentsMargins(PAGE_MARGIN, 8, PAGE_MARGIN, 8)
-        nav.setSpacing(4)
+        nav.setContentsMargins(PAGE_MARGIN, SPACE_XS, PAGE_MARGIN, SPACE_XS)
+        nav.setSpacing(SPACE_XS)
 
         self._simple_stack = QStackedWidget()
         self._simple_nav_buttons = {}
-        self._workspace_buttons = {}
-        self._section_counts = {}
-        self._wizard_back_buttons = {}
-        self._wizard_next_buttons = {}
         self._section_state_cache = None
 
-        workspace_group = QButtonGroup(shell)
-        workspace_group.setExclusive(True)
-        for index, workspace in enumerate(WORKSPACES):
-            btn = QToolButton()
-            btn.setText(workspace.capitalize())
-            btn.setCheckable(True)
-            btn.setStyleSheet(_segment_qss(first=index == 0))
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setToolTip(
-                "Plan transects and process this session's videos."
-                if workspace == "survey"
-                else "Everything processed so far, and how repeat passes compare."
-            )
-            btn.clicked.connect(partial(self._on_workspace_clicked, workspace))
-            workspace_group.addButton(btn)
-            nav.addWidget(btn)
-            self._workspace_buttons[workspace] = btn
-        nav.addSpacing(GUTTER * 2)
-
-        # Pages are built before the step buttons that select them, because the
-        # Run page constructs the button the Plan footer forwards to.
+        # Pages are built before the buttons that select them: Process builds
+        # the start button, and Transects builds the list its badge counts.
         pages = {
-            "plan": self._build_plan_page(),
-            "run": self._build_simple_run_page(),
+            "transects": self._build_plan_page(),
+            "videos": self._build_video_library(),
+            "process": self._build_simple_run_page(),
             "browse": self._build_browse_page(),
+            "machine": self._build_machine_page(),
+            "storage": self._build_storage_page(),
+            "view": self._build_view_info_page(),
         }
 
-        step_group = QButtonGroup(shell)
-        step_group.setExclusive(True)
-        self._step_widgets = []
-        for number, name in enumerate(SURVEY_STEPS, start=1):
-            btn = QToolButton()
-            btn.setText(name.capitalize())
+        nav_group = QButtonGroup(shell)
+        nav_group.setExclusive(True)
+        self._destination_group = nav_group
+        for name in DESTINATIONS:
+            # The process pill is the cart, so it carries the cart's count badge.
+            if name == "process":
+                self._cart_button = CartButton()
+                btn: QToolButton = self._cart_button
+            else:
+                btn = QToolButton()
+            btn.setText(_DESTINATION_LABELS[name])
             btn.setCheckable(True)
-            btn.setStyleSheet(_STEP_QSS)
+            btn.setStyleSheet(_DESTINATION_QSS)
             btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-            btn.setIconSize(QSize(_STEP_BADGE_PX, _STEP_BADGE_PX))
+            btn.setIconSize(QSize(_DESTINATION_ICON_PX, _DESTINATION_ICON_PX))
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            step_group.addButton(btn)
-            nav.addWidget(btn)
-            self._step_widgets.append(btn)
-            # The count sits outside the pill so it does not fight the fill when
-            # the step is selected.
-            count = QLabel("")
-            count.setStyleSheet(f"color: {TEXT_MUTED};")
-            nav.addWidget(count)
-            self._step_widgets.append(count)
-            self._section_counts[name] = count
-            if number < len(SURVEY_STEPS):
-                connector = _step_connector()
-                nav.addWidget(connector)
-                self._step_widgets.append(connector)
+            btn.setToolTip(_DESTINATION_TIPS[name])
+            nav_group.addButton(btn)
+            # Every pill but the cart sits at the left with the work; the cart
+            # goes to the far right, past the utilities, behind a divider.
+            if name != "process":
+                nav.addWidget(btn)
             btn.toggled.connect(partial(self._on_simple_nav_toggled, name))
             self._simple_nav_buttons[name] = btn
 
-        browse_count = QLabel("")
-        browse_count.setStyleSheet(f"color: {TEXT_MUTED};")
-        nav.addWidget(browse_count)
-        self._section_counts["browse"] = browse_count
-
         nav.addStretch(1)
+        # Utilities, at the far end from the work. Bordered rather than filled
+        # (see utility_button_qss): these are places you visit and leave, not
+        # where you are working. What a destination holds is shown on the
+        # destination; everything that is wrong with any of them is behind the
+        # bell, which is empty unless something is.
+        nav.addWidget(self._build_notification_bell())
+        nav.addWidget(self._log_toggle_btn)
+        nav.addWidget(self._build_machine_nav_button())
+        # The cart last, split from the utilities: it is a destination, badged
+        # with what the next session holds.
+        nav.addSpacing(SPACE_SM)
+        divider = QWidget()
+        divider.setFixedWidth(1)
+        divider.setStyleSheet(f"background: {BORDER};")
+        nav.addWidget(divider)
+        nav.addSpacing(SPACE_SM)
+        nav.addWidget(self._cart_button)
         layout.addWidget(header)
 
         for name in SIMPLE_SECTIONS:
-            self._simple_stack.addWidget(self._wrap_wizard_page(name, pages[name]))
+            self._simple_stack.addWidget(pages[name])
 
         body = QWidget()
         body_layout = QVBoxLayout(body)
@@ -416,54 +512,178 @@ class UiModeMixin(MixinBase):
         body_layout.addWidget(self._simple_stack, 1)
         layout.addWidget(body, 1)
 
-        self._set_simple_section("plan")
+        self._set_simple_section(self._initial_simple_section())
         self._refresh_section_state()
         return shell
 
     def _build_browse_page(self) -> QWidget:
-        """Browse: the run archive, with per-transect comparison underneath it.
+        """Browse: the run archive, and the detail of whatever is selected in it.
 
-        The browser groups runs by transect and the analysis works per transect,
-        so the two belong on one surface — selecting a transect above drives the
-        comparison below.
+        The whole page is the browse panel. Transect comparison is one page of
+        its detail pane, shown when a transect is what is selected.
         """
-        split = QSplitter(Qt.Orientation.Vertical)
-        split.setHandleWidth(GUTTER)
-        split.addWidget(self._build_simple_data_host())
-        split.addWidget(self._build_analysis_page())
-        split.setStretchFactor(0, 2)
-        split.setStretchFactor(1, 3)
-        return split
+        return self._build_data_panel()
+
+    def _build_view_bar(self) -> QWidget:
+        """The way out of View mode, and the switch for the metadata beside it.
+
+        Full window width, so it survives the info column collapsing to nothing.
+        """
+        self._view_info_open = False
+        bar = QWidget()
+        bar.setObjectName("simpleBar")
+        bar.setStyleSheet(_BAR_QSS)
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(PAGE_MARGIN, SPACE_SM, PAGE_MARGIN, SPACE_SM)
+        row.setSpacing(GUTTER)
+
+        # A breadcrumb, not a way out. The header above stays put with Browse
+        # lit, so an opened run reads as a place inside Browse rather than a
+        # mode that has taken the window; the crumb says where inside.
+        crumb = QPushButton("Browse")
+        crumb.setProperty("quiet", "true")
+        crumb.setCursor(Qt.CursorShape.PointingHandCursor)
+        crumb.setToolTip("Back to the run list.")
+        crumb.clicked.connect(lambda: self._set_simple_section("browse"))
+        row.addWidget(crumb)
+        row.addWidget(muted_label("›"))
+
+        self._view_title = QLabel("")
+        font = self._view_title.font()
+        font.setWeight(QFont.Weight.DemiBold)
+        self._view_title.setFont(font)
+        row.addWidget(self._view_title)
+        row.addStretch(1)
+
+        self._view_info_btn = QToolButton()
+        self._view_info_btn.setText("Info")
+        self._view_info_btn.setCheckable(True)
+        self._view_info_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._view_info_btn.setToolTip("Show what this run is, beside the cloud.")
+        self._view_info_btn.setStyleSheet(_DESTINATION_QSS)
+        self._view_info_btn.toggled.connect(self._on_view_info_toggled)
+        row.addWidget(self._view_info_btn)
+
+        bar.setVisible(False)
+        self._view_bar = bar
+        return bar
+
+    def _set_view_bar_visible(self, visible: bool) -> None:
+        if hasattr(self, "_view_bar"):
+            self._view_bar.setVisible(visible)
+
+    def _on_view_info_toggled(self, checked: bool) -> None:
+        self._view_info_open = checked
+        self._update_work_area()
+
+    def _enter_view_mode(self, run_dir: Path) -> None:
+        """Point View mode at the run now on screen, and go there.
+
+        The catalogue entry carries what the info panel shows, but a run opened
+        from outside the output root has none; the title still names it, and the
+        panel stays on whatever it last described rather than showing another
+        run's facts under this one's name.
+        """
+        entry = next(
+            (e for e in getattr(self, "_data_entries", []) if e.run_dir == run_dir),
+            None,
+        )
+        if entry is not None:
+            self._view_title.setText(entry.display_name)
+            self._view_detail.show_entry(entry)
+        else:
+            manifest = getattr(self, "_active_run_manifest", None) or {}
+            self._view_title.setText(manifest.get("name") or run_dir.name)
+            self._view_detail.clear()
+        self._set_simple_section("view")
+
+    def _build_view_info_page(self) -> QWidget:
+        """What the run on screen is, and what it produced, beside the cloud.
+
+        The whole point of View mode is the viewport, so this column is off by
+        default and the Info button in the view bar brings it back. It reuses the
+        Browse detail pane's filler, so the two cannot describe one run
+        differently, and it takes the results panel: the ortho, the benthic
+        cover, the transect crop and the exports all act on the run you are
+        looking at, which is the only place they were ever about.
+
+        Scrolls as one column rather than per section: the metadata is short and
+        the results are long, and two scrollbars side by side in a 340px column
+        is more chrome than content.
+        """
+        column = QWidget()
+        layout = QVBoxLayout(column)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(GUTTER)
+        self._view_detail = RunDetailPanel()
+        self._view_detail.cover.set_classes_config(self._classes_config)
+        layout.addWidget(self._view_detail)
+        layout.addWidget(self._results_page)
+        layout.addStretch(1)
+
+        page = QScrollArea()
+        page.setWidgetResizable(True)
+        page.setWidget(column)
+        page.setFrameShape(QFrame.Shape.NoFrame)
+        page.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        return page
 
     def _current_section(self) -> str:
         index = self._simple_stack.currentIndex()
         if 0 <= index < len(SIMPLE_SECTIONS):
             return SIMPLE_SECTIONS[index]
-        return "plan"
+        return DESTINATIONS[0]
 
-    def _on_workspace_clicked(self, workspace: str) -> None:
-        if workspace == "browse":
-            self._set_simple_section("browse")
-        elif self._current_section() == "browse":
-            # Coming back from Browse lands on the step you left, not always the
-            # first one.
-            self._set_simple_section(getattr(self, "_last_survey_step", "plan"))
+    def _sync_destination_chrome(self) -> None:
+        """Light the pill the live section belongs to, and recolour its glyph.
 
-    def _sync_workspace_chrome(self) -> None:
-        """Reflect which workspace the live section belongs to, and hide the
-        step controls entirely in Browse — they steer nothing there."""
+        The icon has to be repainted per state because a checked pill is filled
+        with the accent and its ink is near-black, while an unchecked one is
+        transparent over the dark shell: one colour cannot serve both.
+        """
         section = self._current_section()
-        in_survey = section in SURVEY_STEPS
-        button = self._workspace_buttons["survey" if in_survey else "browse"]
-        button.blockSignals(True)
-        button.setChecked(True)
-        button.blockSignals(False)
-        for widget in self._step_widgets:
-            widget.setVisible(in_survey)
-        self._section_counts["browse"].setVisible(not in_survey)
+        # The header stays through View. An opened run is a page inside Browse,
+        # so hiding the destination switch to show it made the app look like it
+        # had changed mode, and left no way to Transects or Process without
+        # first backing out of a cloud.
+        self._simple_header.setVisible(True)
+        self._set_view_bar_visible(section == "view")
+        if section in NON_DESTINATIONS:
+            # Not a destination, so no pill should own it.
+            #
+            # Exclusivity is lifted first: an exclusive QButtonGroup refuses to
+            # let its one checked member be unchecked, so this silently did
+            # nothing and Browse stayed lit while Setup was on screen.
+            self._destination_group.setExclusive(False)
+            for button in self._simple_nav_buttons.values():
+                button.blockSignals(True)
+                button.setChecked(False)
+                button.blockSignals(False)
+            self._destination_group.setExclusive(True)
+        else:
+            # View is a page inside Browse, so Browse is what it lights: the
+            # cloud you are looking at came from the archive you are still in.
+            lit = "browse" if section == "view" else section
+            button = self._simple_nav_buttons[lit]
+            button.blockSignals(True)
+            button.setChecked(True)
+            button.blockSignals(False)
+        for name, button in self._simple_nav_buttons.items():
+            ink = QColor(ON_ACCENT if button.isChecked() else WINDOW_TEXT)
+            button.setIcon(_DESTINATION_ICONS[name](_DESTINATION_ICON_PX, ink))
+        # Guarded: the shell is built before the bottom bar, and this runs once
+        # from _build_simple_shell while the drive buttons do not exist yet.
+        if hasattr(self, "_storage_bars"):
+            self._sync_storage_buttons()
+
+    def _videos_verdict(self) -> SectionState:
+        """What the footage has to report, counted off the library as it stands."""
+        clips = getattr(self, "_video_entries", [])
+        missing = sum(1 for clip in clips if clip.link_state == LINK_MISSING)
+        return videos_state(len(clips), missing)
 
     def _refresh_section_state(self) -> None:
-        """Paint each step's badge and count from the cached verdicts.
+        """Paint the header from the cached verdicts: tooltips, and the alert.
 
         A pure painter: it reads attributes other code has already computed and
         never touches the store or the filesystem, because it is called from
@@ -472,8 +692,9 @@ class UiModeMixin(MixinBase):
         if not hasattr(self, "_simple_nav_buttons"):
             return
         states = {
-            "plan": getattr(self, "_plan_state", None) or plan_state(0, False),
-            "run": getattr(self, "_survey_gate", None) or run_gate(
+            "transects": getattr(self, "_plan_state", None) or transects_state(0, False),
+            "videos": self._videos_verdict(),
+            "process": getattr(self, "_survey_gate", None) or run_gate(
                 pass_count=0,
                 unassigned=0,
                 remaining=0,
@@ -483,78 +704,36 @@ class UiModeMixin(MixinBase):
             ),
             "browse": getattr(self, "_browse_state", None) or browse_state(0, 0),
         }
-        key = tuple((name, s.state, s.count, s.reason) for name, s in states.items())
+        machine = self._machine_verdict() if hasattr(self, "_machine_button") else None
+        # The cause and the number behind the count, not the sentence: a reworded
+        # reason is the same fault, and repainting for it would churn the log.
+        key = tuple((name, s.state, s.count, s.cause, s.n) for name, s in states.items()) + (
+            (machine.state, machine.cause, machine.n) if machine is not None else (),
+        )
         if self._section_state_cache == key:
             return
         self._section_state_cache = key
-        for number, name in enumerate(SURVEY_STEPS, start=1):
-            verdict = states[name]
-            button = self._simple_nav_buttons[name]
-            button.setIcon(step_badge_icon(number, verdict.state, _STEP_BADGE_PX))
-            button.setToolTip(verdict.reason or f"{name.capitalize()}: {verdict.count}")
         for name, verdict in states.items():
-            self._section_counts[name].setText(verdict.count)
-            self._section_counts[name].setToolTip(verdict.reason)
-        self._workspace_buttons["browse"].setToolTip(
-            states["browse"].reason
-            or "Everything processed so far, and how repeat passes compare."
-        )
+            self._simple_nav_buttons[name].setToolTip(
+                "\n".join(filter(None, [_DESTINATION_TIPS[name], verdict.count, verdict.reason]))
+            )
+        conditions = conditions_from_state(states, machine, getattr(self, "_survey_health", None))
+        if self._notify.reconcile(conditions, authoritative=self._survey_loaded):
+            self._refresh_notification_bell()
 
-    def _wrap_wizard_page(self, name: str, page: QWidget) -> QWidget:
-        container = QWidget()
-        layout = QVBoxLayout(container)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(page, 1)
-        layout.addLayout(self._build_wizard_footer(name))
-        return container
-
-    def _build_wizard_footer(self, name: str) -> QHBoxLayout:
-        """Back on the left, the step's forward action on the right.
-
-        The Run step's forward action is the run button itself, so there is one
-        obvious thing to press rather than a Next beside a Start. Browse has no
-        footer: it is a destination, not a step on the way to one.
-        """
-        row = QHBoxLayout()
-        row.setContentsMargins(0, 6, 0, 0)
-        if name not in SURVEY_STEPS:
-            return row
-        index = SURVEY_STEPS.index(name)
-        if index > 0:
-            back = QPushButton("← Back")
-            back.setProperty("quiet", "true")
-            back.clicked.connect(partial(self._go_to_step, SURVEY_STEPS[index - 1]))
-            self._wizard_back_buttons[name] = back
-            row.addWidget(back)
-        row.addStretch(1)
-        if name == "run":
-            row.addWidget(self._survey_start_btn)
-        elif index < len(SURVEY_STEPS) - 1:
-            nxt = SURVEY_STEPS[index + 1]
-            button = QPushButton(f"Next: {nxt.capitalize()} →")
-            button.setProperty("cta", "true")
-            button.clicked.connect(partial(self._go_to_step, nxt))
-            self._wizard_next_buttons[name] = button
-            row.addWidget(button)
-        return row
-
-    def _go_to_step(self, name: str) -> None:
+    def _go_to_section(self, name: str) -> None:
         self._set_simple_section(name)
 
-    def _set_wizard_navigation_enabled(self, enabled: bool) -> None:
-        """A run in flight owns the Survey steps, so stepping away is blocked.
+    def _set_navigation_enabled(self, enabled: bool) -> None:
+        """A batch in flight owns the queue it is working, so editing it is out.
 
+        Only Transects is locked. Process is where the batch reports itself, and
         Browse stays reachable throughout: a batch takes tens of minutes and
         looking at what finished earlier is exactly what you want to do while it
         runs. Opening a run from there is refused separately, so the live run
         keeps the viewer.
         """
-        steps: list[QAbstractButton] = list(self._simple_nav_buttons.values())
-        steps.extend(self._wizard_back_buttons.values())
-        steps.extend(self._wizard_next_buttons.values())
-        steps.append(self._workspace_buttons["survey"])
-        for button in steps:
-            button.setEnabled(enabled)
+        self._simple_nav_buttons["transects"].setEnabled(enabled)
 
     def _on_simple_nav_toggled(self, name: str, checked: bool) -> None:
         if checked:
@@ -563,32 +742,36 @@ class UiModeMixin(MixinBase):
     def _set_simple_section(self, name: str) -> None:
         if name not in SIMPLE_SECTIONS:
             raise ValueError(f"Unknown simple section: {name!r}")
-        if name in SURVEY_STEPS:
-            self._last_survey_step = name
+        if name in DESTINATIONS:
             button = self._simple_nav_buttons[name]
             if not button.isChecked():
                 button.blockSignals(True)
                 button.setChecked(True)
                 button.blockSignals(False)
+        if name == "machine":
+            self._refresh_readiness_view()
         self._simple_stack.setCurrentIndex(SIMPLE_SECTIONS.index(name))
-        self._sync_workspace_chrome()
+        self._sync_destination_chrome()
+        if name == "storage":
+            self._refresh_storage_page()
+        # The gauges poll at 1 Hz, so they run only while they are on screen.
+        self._sync_system_gauges_running()
         self._update_work_area()
 
     def _update_work_area(self) -> None:
         """The one place that decides whether the viewer pane shows and how the
-        work splitter divides, from (ui_mode, app_mode, section)."""
+        work splitter divides, from (app_mode, section)."""
         if not hasattr(self, "_work_hsplitter"):
             return
-        simple = getattr(self, "_ui_mode", "advanced") == "simple"
-        app_mode = getattr(self, "_app_mode", "SETUP")
-        section = self._current_section() if hasattr(self, "_simple_stack") else "plan"
-        # Browse is a reading surface: a run opened from it wants the viewer, but
-        # a batch running in the background must not shove 3D onto the page you
-        # went there to read.
-        show_viewer = not simple or (
-            app_mode == "VIEWING" or (app_mode == "RUNNING" and section != "browse")
+        section = (
+            self._current_section() if hasattr(self, "_simple_stack") else DESTINATIONS[0]
         )
-        state = (simple, show_viewer, section)
+        # The point cloud gets a destination of its own rather than half of
+        # Browse. Browsing wants the whole window for the table, and looking at
+        # a cloud wants the whole window for the cloud; sharing served neither.
+        show_viewer = section == "view"
+        info_open = getattr(self, "_view_info_open", False)
+        state = (show_viewer, section, info_open)
         if getattr(self, "_work_area_state", None) == state:
             return
         self._work_area_state = state
@@ -596,19 +779,29 @@ class UiModeMixin(MixinBase):
         total = max(self._work_hsplitter.width(), 800)
         if not show_viewer:
             self._work_hsplitter.setSizes([total, 0])
-        elif simple:
-            left = int(total * 0.45)
-            self._work_hsplitter.setSizes([left, total - left])
         else:
-            left = min(self._form_preferred_width, total // 2)
+            # View mode gives the viewport everything the info panel is not using.
+            left = min(VIEW_INFO_WIDTH, total // 3) if info_open else 0
             self._work_hsplitter.setSizes([left, total - left])
+
+    def _snapshot_form_settings(self) -> dict[str, Any]:
+        """Every settings widget's current value, keyed by attribute name.
+
+        Widget values rather than a preset dict: the preset drops the processing
+        size when the resolution is not Custom, which is right for storage and
+        wrong for an undo, since cancelling has to put back exactly what was
+        there.
+        """
+        return {attr: _widget_value(getattr(self, attr)) for _, attr in _PRESET_FIELD_WIDGETS}
+
+    def _restore_form_settings(self, snapshot: dict[str, Any]) -> None:
+        for _, attr in _PRESET_FIELD_WIDGETS:
+            _set_widget_value(getattr(self, attr), snapshot[attr])
 
     def _capture_form_defaults(self) -> None:
         """Snapshot fresh-window values of every settings field, so the run
         settings dialog can offer Reset defaults."""
-        self._form_defaults = {
-            attr: _widget_value(getattr(self, attr)) for _, attr in _PRESET_FIELD_WIDGETS
-        }
+        self._form_defaults = self._snapshot_form_settings()
 
     def _collect_preset_from_form(self) -> dict[str, Any]:
         preset: dict[str, Any] = {}
@@ -632,8 +825,7 @@ class UiModeMixin(MixinBase):
             _set_widget_value(getattr(self, attr), value)
 
     def _reset_form_defaults(self) -> None:
-        for _, attr in _PRESET_FIELD_WIDGETS:
-            _set_widget_value(getattr(self, attr), self._form_defaults[attr])
+        self._restore_form_settings(self._form_defaults)
 
     def _survey_store(self) -> SurveyStore:
         """Store keyed to the current output root; reopened when the root changes.
@@ -658,4 +850,106 @@ class UiModeMixin(MixinBase):
                 store.close()
             store = SurveyStore(db_path)
             self._survey_store_obj = store
+            # Episodes belong to the survey they were about, and nothing in the
+            # new root has been read yet, so the next reconcile must not clear
+            # what it cannot see.
+            self._survey_loaded = False
+            self._rebind_notification_log(store)
+            if store.interrupted_at_open:
+                self._notify_post(
+                    {
+                        "fingerprint": "runs.interrupted",
+                        "title": f"{store.interrupted_at_open} run(s) were left unfinished",
+                        "body": "The app closed before they finished. They can be started again.",
+                        "severity": NOTIFY_WARNING,
+                        "section": "browse",
+                    }
+                )
+        self._survey_health = SurveyDbHealth(SurveyDbState.OK, db_path, latest_schema_version())
         return store
+
+    def _try_survey_store(self) -> SurveyStore | None:
+        """The store, or None with the reason recorded in ``_survey_health``.
+
+        Opening happens while the window is still being built, so a database this
+        build cannot read -- one left by a newer version after a rollback, a
+        corrupt file, an output root on an unplugged drive -- would otherwise
+        take the whole launch down before there is anything to show the error in.
+        Every caller that runs during construction goes through here.
+
+        An open store is its own verdict, so a root that has already been opened
+        is not re-inspected: refreshes arrive by the handful whenever the output
+        folder changes, and the answer can only change when the root changes or
+        the store is dropped, both of which clear ``_survey_store_obj``.
+        """
+        db_path = Path(self._out_root_input.text()).expanduser() / SURVEY_DB_NAME
+        open_store = self._survey_store_obj
+        health = self._survey_health
+        if (
+            open_store is not None
+            and open_store.path == db_path
+            and health is not None
+            and health.state is SurveyDbState.OK
+        ):
+            return open_store
+        health = inspect_survey_db(db_path)
+        if not health.openable:
+            self._survey_health = health
+            return None
+        try:
+            return self._survey_store()
+        except Exception as exc:
+            # inspect_survey_db opens read-only and cannot see everything that
+            # can go wrong in a read-write open, so this is the backstop.
+            logger.exception("Survey database unavailable at %s", db_path)
+            self._survey_health = SurveyDbHealth(
+                SurveyDbState.CORRUPT, db_path, latest_schema_version(), detail=str(exc)
+            )
+            return None
+
+    def check_survey_database(self) -> None:
+        """Offer a way out if the survey database will not open. Called after show().
+
+        After, not during, construction: the window has to exist and be visible
+        before anything modal, and declining has to leave a usable app rather
+        than an aborted launch.
+        """
+        health = self._survey_db_health()
+        if health.openable:
+            return
+        from deepreefmap_gui.survey.recovery import RecoveryKind, apply_recovery
+        from deepreefmap_gui.survey.recovery_dialog import SurveyRecoveryDialog
+
+        out_root = Path(self._out_root_input.text()).expanduser()
+        dialog = SurveyRecoveryDialog(health, out_root, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        option = dialog.selected()
+        if option is None:
+            return
+        if option.kind is RecoveryKind.CHOOSE_FOLDER:
+            self._browse_output_root()
+            return
+        try:
+            message = apply_recovery(option, health, out_root)
+        except Exception as exc:
+            logger.exception("Survey recovery failed")
+            QMessageBox.critical(
+                self, "Survey database", f"That did not work: {exc}"
+            )
+            return
+        # The store was never opened, so there is nothing to close; drop the
+        # verdict so the next read re-inspects what recovery just put in place.
+        self._survey_health = None
+        self._survey_store_obj = None
+        self._activate_interface()
+        self._status_label.setText(message)
+
+    def _survey_db_health(self) -> SurveyDbHealth:
+        """The last verdict, asking the database if nothing has looked yet."""
+        health = getattr(self, "_survey_health", None)
+        if health is None:
+            self._try_survey_store()
+            health = getattr(self, "_survey_health", None)
+        assert health is not None
+        return health

@@ -1,11 +1,67 @@
+import atexit
 import os
+import shutil
+import subprocess
 import tempfile
+import time
 
 import pytest
 
 
-if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+def _headless() -> None:
+    """Keep the suite off the developer's screen: `Xvfb` if there is one, else `offscreen`.
+
+    Xvfb first because the viewer tests need a GL context, and `offscreen`
+    segfaults them on a machine with no software GL. An explicit
+    `QT_QPA_PLATFORM` wins, and must be `xcb`: VTK under Wayland hangs.
+    """
+    if os.environ.get("QT_QPA_PLATFORM"):
+        return
+    if (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")) and _start_xvfb():
+        os.environ["QT_QPA_PLATFORM"] = "xcb"
+        return
+    os.environ["QT_QPA_PLATFORM"] = "offscreen"
+
+
+def _start_xvfb() -> bool:
+    """Point DISPLAY at a throwaway X server of our own. True if one came up."""
+    if not shutil.which("Xvfb"):
+        return False
+    for number in range(99, 110):
+        if os.path.exists(f"/tmp/.X11-unix/X{number}"):
+            continue
+        try:
+            server = subprocess.Popen(
+                ["Xvfb", f":{number}", "-screen", "0", "1920x1200x24", "-nolisten", "tcp"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError:
+            return False
+        # Poll for the socket: Qt fails to connect if it starts first.
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if os.path.exists(f"/tmp/.X11-unix/X{number}"):
+                atexit.register(_stop_xvfb, server)
+                os.environ["DISPLAY"] = f":{number}"
+                os.environ.pop("WAYLAND_DISPLAY", None)
+                return True
+            if server.poll() is not None:
+                break  # Another server took the number, or Xvfb is unusable.
+            time.sleep(0.05)
+        server.kill()
+    return False
+
+
+def _stop_xvfb(server: subprocess.Popen) -> None:
+    server.terminate()
+    try:
+        server.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        server.kill()
+
+
+_headless()
 
 # Keep the suite off the developer's real run history: measured peaks in
 # ~/.local/share/deepreefmap/run_timings.json would otherwise shift memory
@@ -22,15 +78,101 @@ os.environ.setdefault("DEEPREEFMAP_MOCK_VERSIONS", "")
 
 @pytest.fixture(scope="session")
 def qapp():
-    # Force xcb before QApplication exists: VTK under Wayland hangs the suite.
-    if os.environ.get("WAYLAND_DISPLAY") and not os.environ.get("QT_QPA_PLATFORM"):
-        os.environ["QT_QPA_PLATFORM"] = "xcb"
     from PySide6.QtWidgets import QApplication
 
     app = QApplication.instance()
     if app is None:
         app = QApplication([])
     return app
+
+
+@pytest.fixture(autouse=True)
+def _no_file_manager(request, monkeypatch):
+    """Stop a click reaching a real file manager on `tmp_path`.
+
+    The effect functions rather than `reveal_in_file_manager`: callers import
+    that name into their own module, and its dispatch stays real.
+    `tests/core/test_reveal.py` is the exception, marked `real_reveal`.
+    """
+    if request.node.get_closest_marker("real_reveal"):
+        yield
+        return
+
+    from deepreefmap_gui.core import reveal
+
+    for name in ("_show_items", "_xdg_open", "_qt_open", "_reveal_windows", "_reveal_macos"):
+        monkeypatch.setattr(reveal, name, lambda _path: False)
+
+    try:
+        from PySide6.QtGui import QDesktopServices
+    except ImportError:
+        yield
+        return
+    monkeypatch.setattr(QDesktopServices, "openUrl", staticmethod(lambda _url: True))
+    yield
+
+
+_MODAL_ADVICE = (
+    "Nothing offscreen can close it, so the interpreter parks inside Qt's C++ "
+    "event loop and the run stalls. Stub the call, disconnect the handler that "
+    "opens it, or mark the test real_modal."
+)
+
+
+@pytest.fixture(autouse=True)
+def _no_blocking_modals(request, monkeypatch):
+    """Turn an unexpected modal into a named failure rather than a stalled suite.
+
+    A test that drives a widget wired to the window reaches the real handler
+    behind it, and those handlers open dialogs. pytest-timeout's signal method
+    cannot interrupt one: its handler is Python-level and the interpreter never
+    gets back to run it. One such dialog held every CI leg for five hours.
+
+    Tests that mean to drive a dialog already stub the call themselves, and
+    those stubs still win -- monkeypatch applies them after this fixture.
+
+    Raising is what keeps the suite moving, but it is not what reports: these
+    calls happen inside Qt slots, and PySide6 prints an unhandled slot exception
+    rather than propagating it, so the test would otherwise pass with the
+    traceback buried in captured output. The blocked calls are recorded and the
+    test fails on the record at teardown.
+    """
+    if request.node.get_closest_marker("real_modal"):
+        yield
+        return
+
+    try:
+        from PySide6.QtWidgets import QDialog, QMenu, QMessageBox
+    except ImportError:
+        yield
+        return
+
+    blocked: list[str] = []
+
+    def _block(what: str):
+        message = f"{what} would block. {_MODAL_ADVICE}"
+        blocked.append(message)
+        raise AssertionError(message)
+
+    def _blocked_exec(self, *_args, **_kwargs):
+        _block(f"{type(self).__name__}.exec()")
+
+    # QMessageBox and QMenu carry their own exec, so patching QDialog's alone
+    # would leave both reachable.
+    for cls in (QDialog, QMenu, QMessageBox):
+        monkeypatch.setattr(cls, "exec", _blocked_exec)
+
+    def _blocked_static(name):
+        def _call(*_args, **_kwargs):
+            _block(f"QMessageBox.{name}()")
+
+        return staticmethod(_call)
+
+    for name in ("question", "warning", "information", "critical", "about"):
+        monkeypatch.setattr(QMessageBox, name, _blocked_static(name))
+    yield
+    if blocked:
+        raise AssertionError(blocked[0])
 
 
 @pytest.fixture(autouse=True, scope="session")

@@ -1,267 +1,161 @@
-"""QPainter-rendered icons for consistent, DPI-aware toolbar buttons."""
+"""The icon set: Lucide glyphs, rendered to DPI-aware QIcons.
+
+The glyphs are Lucide (ISC), vendored as SVG under ``resources/icons`` rather
+than fetched or installed: a field laptop is offline, and an icon set that has
+to be downloaded is an icon set that is sometimes missing. The licence sits
+beside them.
+
+Every icon here is one 24px-grid Lucide glyph at one stroke weight, so two of
+them in the same button are drawn the same. Colour is applied by substituting
+the ``currentColor`` the glyphs are drawn with, which is why each is a function
+of ``(size, color)`` rather than a file path.
+
+Only two icons are still drawn by hand, and both are data rather than glyphs:
+``status_dot_icon`` is a dot in whatever colour an outcome has, and
+``section_state_icon`` picks one of these glyphs for a verdict.
+"""
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPen, QPixmap
+import functools
+from importlib import resources
+from typing import Callable
+
+from PySide6.QtCore import QPointF, Qt
+from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
+from PySide6.QtSvg import QSvgRenderer
 
 from deepreefmap_gui.core.theme import (
-    BORDER_STRONG,
     ERROR,
     SUCCESS,
     TEXT_MUTED,
     WARNING,
-    WINDOW,
 )
 
+# Inline with text, on a toolbar button, and on the transport controls.
+ICON_SM, ICON_MD, ICON_LG = 16, 20, 24
 
-def _px(size: int = 24, bg: QColor | None = None) -> tuple[QPixmap, QPainter]:
+# Ink for a glyph with no role colour of its own: near-white, so it reads on the
+# dark surfaces without the hard contrast of pure white. Not a theme token
+# because it is the icon layer's own default, not a text colour.
+DEFAULT_INK = "#e6e6e6"
+
+
+@functools.lru_cache(maxsize=64)
+def _source(name: str) -> str:
+    path = resources.files("deepreefmap_gui.resources").joinpath(f"icons/{name}.svg")
+    return path.read_text(encoding="utf-8")
+
+
+@functools.lru_cache(maxsize=512)
+def _rendered(name: str, size: int, colour: str) -> QPixmap:
+    """One glyph at one size in one colour. Cached: rows repaint constantly.
+
+    Rendered at the device pixel ratio the pixmap is asked for rather than
+    scaled from a fixed bitmap, which is the reason for keeping these as
+    vectors at all.
+    """
+    svg = _source(name).replace("currentColor", colour)
     pm = QPixmap(size, size)
-    pm.fill(bg or Qt.GlobalColor.transparent)
-    p = QPainter(pm)
-    p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    return pm, p
+    pm.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pm)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    QSvgRenderer(svg.encode("utf-8")).render(painter)
+    painter.end()
+    return pm
 
 
-def crosshair_icon(size: int = 24, color: QColor | None = None) -> QIcon:
-    c = color or QColor(230, 230, 230)
-    pm, p = _px(size)
-    pen = QPen(c, 1.6)
-    p.setPen(pen)
-    cx, cy = size / 2, size / 2
-    r = size * 0.32
-    gap = size * 0.08
-    p.drawEllipse(QPointF(cx, cy), r, r)
-    p.drawLine(QPointF(cx, cy - r - gap), QPointF(cx, cy - gap))
-    p.drawLine(QPointF(cx, cy + gap), QPointF(cx, cy + r + gap))
-    p.drawLine(QPointF(cx - r - gap, cy), QPointF(cx - gap, cy))
-    p.drawLine(QPointF(cx + gap, cy), QPointF(cx + r + gap, cy))
-    p.end()
-    return QIcon(pm)
+def _glyph(
+    name: str, *, size: int = ICON_MD, ink: str = DEFAULT_INK
+) -> Callable[..., QIcon]:
+    """Bind a Lucide glyph to the size and ink this app draws it at.
+
+    The result takes the same ``(size, color)`` every icon here does, so a
+    caller that wants a bigger or an amber one says so at the call site.
+    """
+
+    def build(size_: int = size, color: QColor | None = None) -> QIcon:
+        colour = (color.name() if isinstance(color, QColor) else color) or ink
+        return QIcon(_rendered(name, size_, colour))
+
+    build.__name__ = f"{name.replace('-', '_')}_icon"
+    build.__doc__ = f"The Lucide '{name}' glyph."
+    return build
 
 
-def refresh_icon(size: int = 24, color: QColor | None = None) -> QIcon:
-    c = color or QColor(230, 230, 230)
-    pm, p = _px(size)
-    pen = QPen(c, 1.8)
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    p.setPen(pen)
-    cx, cy = size / 2, size / 2
-    r = size * 0.3
-    p.drawArc(QRectF(cx - r, cy - r, 2 * r, 2 * r), 60 * 16, 270 * 16)
-    ax, ay = cx + r * 0.5, cy - r
-    a = size * 0.12
-    p.drawLine(QPointF(ax - a, ay - a * 0.3), QPointF(ax, ay))
-    p.drawLine(QPointF(ax, ay), QPointF(ax - a * 0.3, ay + a))
-    p.end()
-    return QIcon(pm)
-
-
-def play_icon(size: int = 24, color: QColor | None = None) -> QIcon:
-    c = color or QColor(230, 230, 230)
-    pm, p = _px(size)
-    p.setPen(Qt.PenStyle.NoPen)
-    p.setBrush(c)
-    m = size * 0.3
-    tri = [
-        QPointF(m, m),
-        QPointF(size - m, size / 2),
-        QPointF(m, size - m),
-    ]
-    from PySide6.QtGui import QPolygonF
-
-    p.drawPolygon(QPolygonF(tri))
-    p.end()
-    return QIcon(pm)
-
-
-def pause_icon(size: int = 24, color: QColor | None = None) -> QIcon:
-    c = color or QColor(230, 230, 230)
-    pm, p = _px(size)
-    p.setPen(Qt.PenStyle.NoPen)
-    p.setBrush(c)
-    bar_w = size * 0.16
-    gap = size * 0.14
-    top, bot = size * 0.28, size * 0.72
-    cx = size / 2
-    p.drawRoundedRect(QRectF(cx - gap / 2 - bar_w, top, bar_w, bot - top), 1.5, 1.5)
-    p.drawRoundedRect(QRectF(cx + gap / 2, top, bar_w, bot - top), 1.5, 1.5)
-    p.end()
-    return QIcon(pm)
-
-
-def plus_icon(size: int = 24, color: QColor | None = None) -> QIcon:
-    c = color or QColor(230, 230, 230)
-    pm, p = _px(size)
-    pen = QPen(c, 2.0)
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    p.setPen(pen)
-    cx, cy = size / 2, size / 2
-    arm = size * 0.28
-    p.drawLine(QPointF(cx - arm, cy), QPointF(cx + arm, cy))
-    p.drawLine(QPointF(cx, cy - arm), QPointF(cx, cy + arm))
-    p.end()
-    return QIcon(pm)
-
-
-def arrow_right_icon(size: int = 24, color: QColor | None = None) -> QIcon:
-    c = color or QColor(230, 230, 230)
-    pm, p = _px(size)
-    pen = QPen(c, 1.8)
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-    p.setPen(pen)
-    cx, cy = size / 2, size / 2
-    arm = size * 0.28
-    head = size * 0.16
-    p.drawLine(QPointF(cx - arm, cy), QPointF(cx + arm, cy))
-    p.drawLine(QPointF(cx + arm - head, cy - head), QPointF(cx + arm, cy))
-    p.drawLine(QPointF(cx + arm - head, cy + head), QPointF(cx + arm, cy))
-    p.end()
-    return QIcon(pm)
-
-
-def help_icon(size: int = 24, color: QColor | None = None) -> QIcon:
-    c = color or QColor(170, 170, 170)
-    pm, p = _px(size)
-    pen = QPen(c, 1.6)
-    p.setPen(pen)
-    cx, cy = size / 2, size / 2
-    r = size * 0.36
-    p.drawEllipse(QPointF(cx, cy), r, r)
-    from PySide6.QtGui import QFont
-
-    f = QFont()
-    f.setPixelSize(int(size * 0.45))
-    f.setBold(True)
-    p.setFont(f)
-    p.drawText(QRectF(0, -size * 0.03, size, size), Qt.AlignmentFlag.AlignCenter, "?")
-    p.end()
-    return QIcon(pm)
-
-
-def check_icon(size: int = 16, color: QColor | None = None) -> QIcon:
-    c = color or QColor(SUCCESS)
-    pm, p = _px(size)
-    pen = QPen(c, 2.0)
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-    p.setPen(pen)
-    m = size * 0.22
-    p.drawLine(QPointF(m, size * 0.52), QPointF(size * 0.42, size - m))
-    p.drawLine(QPointF(size * 0.42, size - m), QPointF(size - m, m))
-    p.end()
-    return QIcon(pm)
-
-
-def download_icon(size: int = 16, color: QColor | None = None) -> QIcon:
-    c = color or QColor(WARNING)
-    pm, p = _px(size)
-    pen = QPen(c, 1.8)
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    p.setPen(pen)
-    cx = size / 2
-    top = size * 0.15
-    bot = size * 0.62
-    p.drawLine(QPointF(cx, top), QPointF(cx, bot))
-    a = size * 0.18
-    p.drawLine(QPointF(cx - a, bot - a), QPointF(cx, bot))
-    p.drawLine(QPointF(cx + a, bot - a), QPointF(cx, bot))
-    base_y = size * 0.82
-    p.drawLine(QPointF(size * 0.22, base_y), QPointF(size * 0.78, base_y))
-    p.end()
-    return QIcon(pm)
-
-
-def copy_icon(size: int = 16, color: QColor | None = None) -> QIcon:
-    """Two offset sheets, the usual shorthand for copy-to-clipboard."""
-    c = color or QColor(230, 230, 230)
-    pm, p = _px(size)
-    pen = QPen(c, 1.4)
-    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-    p.setPen(pen)
-    w = size * 0.42
-    h = size * 0.52
-    p.drawRoundedRect(QRectF(size * 0.20, size * 0.16, w, h), 1.5, 1.5)
-    p.drawRoundedRect(QRectF(size * 0.38, size * 0.32, w, h), 1.5, 1.5)
-    p.end()
-    return QIcon(pm)
-
-
-# What a step has to say about itself. Deliberately not about position: the
-# checked pill in the header already shows which step you are on, which frees
-# the badge to carry meaning instead of repeating the selection.
+# --- The set ----------------------------------------------------------------
 #
-# The vocabulary is owned by simple/progress.py, which must stay Qt-free and so
-# cannot be imported from core. Spelled out here rather than imported upwards;
-# tests/gui/test_simple_progress.py asserts the two never drift apart.
+# One entry per glyph the interface uses, named for the job it does here rather
+# than for the picture, so a change of picture is one line.
+
+crosshair_icon = _glyph("crosshair")
+refresh_icon = _glyph("refresh-cw")
+chevron_right_icon = _glyph("chevron-right", size=ICON_SM, ink=TEXT_MUTED)
+chevron_down_icon = _glyph("chevron-down", size=ICON_SM, ink=TEXT_MUTED)
+play_icon = _glyph("play")
+pause_icon = _glyph("pause")
+arrow_right_icon = _glyph("arrow-right")
+arrow_left_icon = _glyph("arrow-left")
+check_icon = _glyph("check", size=ICON_SM, ink=SUCCESS)
+download_icon = _glyph("download")
+warning_icon = _glyph("triangle-alert", size=ICON_SM, ink=WARNING)
+blocked_icon = _glyph("ban", size=ICON_SM, ink=ERROR)
+cog_icon = _glyph("settings", size=ICON_SM, ink=TEXT_MUTED)
+log_icon = _glyph("scroll-text", size=ICON_SM, ink=TEXT_MUTED)
+copy_icon = _glyph("copy", size=ICON_SM, ink=TEXT_MUTED)
+pencil_icon = _glyph("pencil", size=ICON_SM, ink=TEXT_MUTED)
+trash_icon = _glyph("trash-2", size=ICON_SM, ink=TEXT_MUTED)
+link_icon = _glyph("link", size=ICON_SM, ink=SUCCESS)
+broken_link_icon = _glyph("unlink", size=ICON_SM, ink=ERROR)
+folder_icon = _glyph("folder", size=ICON_SM, ink=TEXT_MUTED)
+bell_icon = _glyph("bell", size=ICON_SM, ink=TEXT_MUTED)
+silence_icon = _glyph("bell-off", size=ICON_SM, ink=TEXT_MUTED)
+close_icon = _glyph("x", size=ICON_SM, ink=TEXT_MUTED)
+grip_icon = _glyph("grip-vertical", size=ICON_SM, ink=TEXT_MUTED)
+cart_icon = _glyph("shopping-cart", size=ICON_SM)
+videos_icon = _glyph("film", size=ICON_SM)
+lock_icon = _glyph("lock", size=ICON_SM, ink=WARNING)
+
+# The destination glyphs. A transect is a route between two points; browsing is
+# reading a table of what came back from them.
+transects_icon = _glyph("route", size=ICON_SM)
+browse_icon = _glyph("table-2", size=ICON_SM)
+process_icon = _glyph("cpu", size=ICON_SM)
+
+
+# Glyphs for the header's alert box. Only the two states worth acting on get
+# one: a badge that is always lit is a badge nobody reads.
+#
+# The vocabulary belongs to simple/section_state.py, which is Qt-free and so
+# cannot be imported from core. tests/simple/test_section_state.py holds the two
+# lists together.
 STEP_STATES = ("todo", "ok", "attention", "blocked")
 
-_STEP_RING = {
-    "todo": BORDER_STRONG,
-    "ok": SUCCESS,
-    "attention": WARNING,
-    "blocked": ERROR,
-}
-_STEP_INK = {
-    "todo": TEXT_MUTED,
-    "ok": SUCCESS,
-    "attention": WARNING,
-    "blocked": ERROR,
-}
+_STATE_GLYPHS = {"attention": warning_icon, "blocked": blocked_icon}
 
 
-def step_badge_icon(number: int, state: str, size: int = 20) -> QIcon:
-    """Numbered disc for the wizard stepper.
+def status_dot_icon(colour: str, size: int = ICON_SM) -> QIcon:
+    """A filled dot in an outcome's colour, for a row whose status is one word
+    inside a longer line and has no room for a chip.
 
-    A satisfied step carries a tick and a blocked one an exclamation, so the
-    header says what still needs doing without the labels being read.
+    Drawn rather than a glyph: the colour is the whole content, and there is no
+    picture to get right.
     """
+    pm = QPixmap(size, size)
+    pm.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pm)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor(colour))
+    radius = size * 0.22
+    painter.drawEllipse(QPointF(size / 2, size / 2), radius, radius)
+    painter.end()
+    return QIcon(pm)
+
+
+def section_state_icon(state: str, size: int = ICON_SM) -> QIcon | None:
+    """The glyph for a destination's verdict, or None when there is nothing to say."""
     if state not in STEP_STATES:
-        raise ValueError(f"Unknown step state: {state!r}")
-    pm, p = _px(size)
-    cx, cy = size / 2, size / 2
-    r = size * 0.42
-
-    # Filled with the shell colour rather than left transparent: the badge sits
-    # on the accent pill when its step is selected, and a dim ring and numeral
-    # drawn straight onto that blue are barely legible.
-    p.setPen(QPen(QColor(_STEP_RING[state]), 1.2 if state == "todo" else 1.4))
-    p.setBrush(QColor(WINDOW))
-    p.drawEllipse(QPointF(cx, cy), r, r)
-    ink = QColor(_STEP_INK[state])
-
-    if state == "ok":
-        pen = QPen(ink, 1.8)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        p.setPen(pen)
-        p.drawLine(QPointF(size * 0.30, cy), QPointF(size * 0.44, size * 0.66))
-        p.drawLine(QPointF(size * 0.44, size * 0.66), QPointF(size * 0.71, size * 0.34))
-    else:
-        f = QFont()
-        f.setPixelSize(max(8, int(size * 0.52)))
-        f.setBold(True)
-        p.setFont(f)
-        p.setPen(ink)
-        glyph = "!" if state == "blocked" else str(number)
-        p.drawText(QRectF(0, 0, size, size), Qt.AlignmentFlag.AlignCenter, glyph)
-    p.end()
-    return QIcon(pm)
-
-
-def lock_icon(size: int = 16, color: QColor | None = None) -> QIcon:
-    c = color or QColor(WARNING)
-    pm, p = _px(size)
-    pen = QPen(c, 1.6)
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    p.setPen(pen)
-    cx = size / 2
-    bw = size * 0.44
-    bh = size * 0.34
-    by = size * 0.52
-    p.drawRect(QRectF(cx - bw / 2, by, bw, bh))
-    ar = size * 0.22
-    p.drawArc(QRectF(cx - ar, by - ar * 1.6, ar * 2, ar * 2), 0, 180 * 16)
-    p.end()
-    return QIcon(pm)
+        raise ValueError(f"Unknown section state: {state!r}")
+    draw = _STATE_GLYPHS.get(state)
+    return draw(size) if draw is not None else None

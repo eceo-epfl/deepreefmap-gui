@@ -1,8 +1,9 @@
-"""Transect imports: quick decimal-degree text entry, CSV, and GPX."""
+"""Transect imports: quick coordinate text entry, CSV, and GPX."""
 
 from __future__ import annotations
 
 import csv
+import re
 import uuid
 from pathlib import Path
 from xml.etree import ElementTree
@@ -11,18 +12,109 @@ from deepreefmap_gui.survey.models.transect import Transect
 
 _CSV_REQUIRED = {"name", "start_lat", "start_lon", "end_lat", "end_lon"}
 
+_HEMISPHERE_SIGN = {"N": 1.0, "S": -1.0, "E": 1.0, "W": -1.0}
+# One coordinate ending in a hemisphere letter: digits and the usual degree,
+# minute and second punctuation, then N/S/E/W. Lazy, so it stops at the first
+# hemisphere letter and never swallows the second coordinate.
+_COMPONENT_RE = re.compile(r"(\d[\d\s.,°'\"]*?)\s*([NSEW])", re.IGNORECASE)
+_NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
+
 
 def parse_latlon(text: str) -> tuple[float, float]:
-    """Parse "lat lon" or "lat, lon" in decimal degrees."""
-    parts = text.replace(",", " ").split()
-    if len(parts) != 2:
-        raise ValueError(f"Expected 'lat lon', got: {text!r}")
-    lat, lon = float(parts[0]), float(parts[1])
+    """Parse a coordinate pair off a GPS, pasted or typed.
+
+    Accepts decimal degrees ("lat lon" or "lat, lon") and hemisphere forms in
+    degrees decimal minutes or degrees/minutes/seconds, such as
+    "17°30.512'S 149°49.104'W" or "17 30.512 S 149 49.104 W".
+    """
+    pair = _parse_hemisphere_pair(text)
+    lat, lon = pair if pair is not None else _parse_decimal_pair(text)
     if not -90.0 <= lat <= 90.0:
         raise ValueError(f"Latitude out of range: {lat}")
     if not -180.0 <= lon <= 180.0:
         raise ValueError(f"Longitude out of range: {lon}")
     return lat, lon
+
+
+def build_transect(
+    name: str,
+    start_text: str,
+    end_text: str,
+    length_m: float | None = None,
+    depth_m: float | None = None,
+    description: str = "",
+) -> Transect:
+    """Validate and build a transect from typed fields, naming the field at fault.
+
+    Shared by the Transects form and the new-transect dialog so their
+    validation cannot drift. Both endpoints are required: inventing 0,0 would
+    file the transect in the Gulf of Guinea.
+    """
+    coords: list[float] = []
+    for which, raw in (("start", start_text), ("end", end_text)):
+        cleaned = raw.strip()
+        if not cleaned:
+            raise ValueError(f"Missing {which} point")
+        try:
+            coords.extend(parse_latlon(cleaned))
+        except ValueError as exc:
+            raise ValueError(f"{which.capitalize()} point: {exc}") from None
+    return Transect(
+        name=name.strip(),
+        start_lat=coords[0],
+        start_lon=coords[1],
+        end_lat=coords[2],
+        end_lon=coords[3],
+        length_m=length_m or None,
+        depth_m=depth_m or None,
+        description=description,
+    )
+
+
+def _parse_decimal_pair(text: str) -> tuple[float, float]:
+    parts = text.replace(",", " ").split()
+    if len(parts) != 2:
+        raise ValueError(f"Expected 'lat lon', got: {text!r}")
+    return float(parts[0]), float(parts[1])
+
+
+def _parse_hemisphere_pair(text: str) -> tuple[float, float] | None:
+    """A lat/lon pair with N/S/E/W markers, or None when the text carries none.
+
+    Returning None lets the decimal parser handle plain (and negative) degrees;
+    this path only claims text that actually names its hemispheres.
+    """
+    matches = _COMPONENT_RE.findall(text)
+    if len(matches) != 2:
+        return None
+    lat: float | None = None
+    lon: float | None = None
+    for numbers, hemisphere in matches:
+        value = _dms_to_degrees(numbers, hemisphere.upper())
+        if hemisphere.upper() in ("N", "S"):
+            if lat is not None:
+                raise ValueError(f"Two latitude values in: {text!r}")
+            lat = value
+        elif lon is not None:
+            raise ValueError(f"Two longitude values in: {text!r}")
+        else:
+            lon = value
+    if lat is None or lon is None:
+        raise ValueError(f"Expected one N/S and one E/W value in: {text!r}")
+    return lat, lon
+
+
+def _dms_to_degrees(numbers: str, hemisphere: str) -> float:
+    """Fold degrees, optional minutes and optional seconds into signed degrees."""
+    parts = _NUMBER_RE.findall(numbers)
+    if not parts:
+        raise ValueError(f"No digits in coordinate: {numbers!r}")
+    degrees = float(parts[0])
+    minutes = float(parts[1]) if len(parts) > 1 else 0.0
+    seconds = float(parts[2]) if len(parts) > 2 else 0.0
+    if minutes >= 60.0 or seconds >= 60.0:
+        raise ValueError(f"Minutes and seconds must be under 60: {numbers!r}")
+    return _HEMISPHERE_SIGN[hemisphere] * (degrees + minutes / 60.0 + seconds / 3600.0)
 
 
 def import_transects_csv(path: Path) -> list[Transect]:
@@ -31,7 +123,7 @@ def import_transects_csv(path: Path) -> list[Transect]:
     Required columns: name, start_lat, start_lon, end_lat, end_lon.
     Optional: length_m, depth_m, description, id (a UUID kept for round-trips).
     """
-    with path.open(newline="") as f:
+    with path.open(newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
         if reader.fieldnames is None:
             raise ValueError("CSV has no header row.")

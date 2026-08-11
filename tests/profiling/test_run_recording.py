@@ -19,13 +19,6 @@ from deepreefmap_gui.profiling.run_history import (
 )
 
 
-@pytest.fixture
-def timings(tmp_path, monkeypatch):
-    path = tmp_path / "run_timings.json"
-    monkeypatch.setenv("DEEPREEFMAP_RUN_TIMINGS", str(path))
-    return path
-
-
 def _manifest(**overrides) -> dict:
     manifest = {
         "mapping_backend": "loger_star",

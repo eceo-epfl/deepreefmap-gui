@@ -1,3 +1,34 @@
+"""Everything the app does to its own binary: pick the asset, download it, swap it, provision it.
+
+Only meaningful under PyApp, where the app is one executable plus a per-version environment it
+provisions on first launch. In a dev venv `pyapp_binary()` returns None and the callers stand
+down.
+
+The asset is chosen from the running build, not from the user: a ROCm install must not be handed
+a CUDA binary by a dropdown, so `resolve_asset_name` reads the accelerator off the current
+environment. Downloads land on a `.part` and are size-checked against both the server and the
+release metadata before the rename, because a truncated binary that swaps in cleanly is
+indistinguishable from a working one until the next launch.
+
+Three constraints shape the rest:
+
+- **Windows cannot overwrite a running executable.** The old binary is renamed aside first, and if
+  the second rename then fails (antivirus, a full volume) the backup is put back, since the
+  alternative is an install with no binary at all. The stale `.old` is swept on next startup.
+- **PyApp checks that a version's environment exists, not that it is intact.** An OS update or an
+  antivirus sweep that deletes files inside it leaves a broken env in place, so `env_is_healthy`
+  looks for the heavy native packages and `self_restore` rebuilds from the shared uv cache.
+- **Rolling back must not need the network.** A field laptop that has to undo an update is the
+  least likely to have one, so the outgoing binary is copied into `previous/` before it is
+  overwritten and `perform_rollback` swaps it back from there. `prune_previous_binaries` caps that
+  ring; the binaries are small, and the multi-GB environments beside them are never pruned
+  automatically -- re-provisioning needs a package index, so what to delete is the user's call,
+  made on Setup's Updates view.
+
+Qt-free, so the whole swap is testable headless; the dialog that drives it is `update/dialog.py`,
+and `tests/e2e/update_e2e.sh` runs the real thing on two real binaries.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -142,7 +173,7 @@ def download_to(
     """
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     part = dest_path.with_name(dest_path.name + ".part")
-    req = urllib.request.Request(url, headers={"User-Agent": "deepreefmap-gui-updater"})
+    req = urllib.request.Request(url, headers={"User-Agent": "deepreefmap-gui-updater"})  # noqa: S310 (asset URL from our GH release metadata)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (URL is our GH release metadata)
             declared = int(resp.headers.get("Content-Length") or 0)
@@ -258,7 +289,7 @@ def self_restore(binary_path: str | os.PathLike[str]) -> bool:
 # Every version change keeps the outgoing binary next to the installed one, so a
 # later rollback needs no download. Each version keeps its own environment, so if
 # that version's env is still on disk the rollback is instant; if the user has
-# deleted it from the System tab, the next launch re-provisions it from the cache.
+# deleted it on Setup's Updates view, the next launch re-provisions it from the cache.
 
 
 def _versioned_name(binary_path: Path, version: str) -> str:
@@ -398,7 +429,7 @@ def perform_rollback(
     """Swap in a locally kept binary with no download.
 
     That version keeps its own environment, so if it still exists the next launch
-    is instant; if it was deleted from the System tab, PyApp re-provisions it from
+    is instant; if it was deleted on Setup's Updates view, PyApp re-provisions it from
     the warm cache. Raises BinarySwapError when ``target_version`` was not retained.
     """
     binary_path = Path(binary_path)

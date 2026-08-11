@@ -1,7 +1,14 @@
-# Run settings used by survey mode. Per-pass values (transect length, time trim)
-# come from the survey database, never from here. To override on one machine,
-# copy this file to <user data dir>/deepreefmap/survey_preset.yaml.
-schema_version: 2
+# The organisation preset: the blessed run settings survey mode measures with.
+# Per-pass values (transect length, time trim) come from the survey database,
+# never from here.
+#
+# An administrator publishes their own by pointing DEEPREEFMAP_SURVEY_PRESET at a
+# copy of this file, which locks it: a field machine may then differ only on the
+# few keys in MACHINE_OVERRIDABLE_KEYS (survey/preset.py). Bump preset_version
+# whenever a value below changes, so past runs can be told apart from new ones.
+schema_version: 3
+preset_name: Standard reef survey
+preset_version: 1
 fps: 5
 segmentation_name: coralscapes-vit-b-dpt
 mapping_name: loger_star

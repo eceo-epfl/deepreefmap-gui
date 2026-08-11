@@ -1,15 +1,32 @@
+"""Benthic cover as two rings: the fine classes outside, the groups they belong to inside.
+
+Cover is a long tail. A flat list of forty classes reads as forty numbers, where the question
+being asked is almost always coarse first (how much of this is coral) and fine second (which
+coral). Nesting the two rings answers both from one figure without a second chart, and the grouped
+inner ring is the reason the widget cannot just take a dict of percentages: the grouping comes
+from `cover.py`, which is also what colours it.
+
+Painting only, and one signal out. `selection_clicked` carries the class ids under the slice (the
+group's members for an inner slice), which the viewer controls turn into the legend's filter, so
+clicking a wedge and ticking the same classes in the legend are one action. `set_selection` paints
+that state back, dimming what is not selected.
+
+`render_pixmap` is the export path: the same paint routine over an offscreen pixmap at any size,
+so a chart bound for a report is drawn at print resolution instead of screenshotted at whatever
+size the panel happened to be.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Sequence, SupportsFloat, cast
 
+from deepreefmap.config.classes import ClassConfig
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPaintEvent, QPen, QPixmap
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
-from deepreefmap.config.classes import ClassConfig
 from deepreefmap_gui.cover import aggregate_cover, group_color_for_name, group_name_for_id
-
 
 _FINE_RING_OUTER = 1.00
 _FINE_RING_INNER = 0.62
@@ -337,6 +354,13 @@ def _slice_at_angle(slices: Sequence[_Slice], angle_deg: float) -> _Slice | None
     # QPainter angles increase counter-clockwise; our spans are negative
     # (clockwise). Reduce both to a normalized [0, 360) frame and test.
     for slc in slices:
+        # A slice covering the whole circle reduces to lo == hi, exactly as an
+        # empty one does, and was skipped with it -- so a run with a single class
+        # at 100% had no clickable slice and no tooltip anywhere on the chart.
+        # The two cases are opposites: 360 degrees contains every angle, 0
+        # contains none.
+        if abs(slc.span_deg) >= 360.0:
+            return slc
         end = slc.start_deg + slc.span_deg
         lo = min(slc.start_deg, end) % 360.0
         hi = max(slc.start_deg, end) % 360.0

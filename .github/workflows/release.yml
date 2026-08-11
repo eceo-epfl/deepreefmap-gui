@@ -8,7 +8,7 @@ on:
 
 # Branch pushes produce downloadable artifacts only; a GitHub Release is cut
 # solely from v* tags (the release job below). Cancel superseded runs on the
-# same ref — a tag has a unique ref, so tag→release builds are never cancelled.
+# same ref. A tag has a unique ref, so tag/release builds are never cancelled.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -61,7 +61,7 @@ jobs:
         uses: actions/checkout@v6
 
       # On tag builds the artifact is labelled from the tag, but PyApp embeds the
-      # wheel version from pyproject — fail fast if they disagree so a release can't
+      # wheel version from pyproject. Fail fast if they disagree so a release can't
       # ship a binary whose internal version differs from its tag.
       - name: Assert tag matches pyproject version
         if: startsWith(github.ref, 'refs/tags/v')
@@ -128,13 +128,13 @@ jobs:
           f="dist/${{ matrix.artifact }}-${{ steps.label.outputs.value }}${{ matrix.ext }}"
           test -f "$f"
           # POSIX binaries: assert the executable bit and the expected object format.
-          # Windows (empty filetype) skips this — Git Bash has no reliable `file`.
+          # Windows (empty filetype) skips this: Git Bash has no reliable `file`.
           if [ -n "${{ matrix.filetype }}" ]; then
             test -x "$f"
             file "$f" | grep -q "${{ matrix.filetype }}"
           fi
 
-      # The raw binary asset stays on every release — the in-app updater
+      # The raw binary asset stays on every release, because the in-app updater
       # downloads it to swap the installed binary in place. The installer/dmg
       # is the first-install path for end users.
       - name: Build Windows installer

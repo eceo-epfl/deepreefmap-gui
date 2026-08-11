@@ -2,6 +2,11 @@
 # Keyed by segmentation class id. `fine` is the class name itself (from the
 # classes YAML); only intermediate/coarse groupings live here.
 
+# Bump `version` whenever any grouping below changes. Cover exports record this
+# number and a hash of the file, so a recomputed figure can be told apart from
+# one grouped by an earlier taxonomy.
+version: 1
+
 1:
   intermediate: "seagrass"
   coarse: "seagrass"

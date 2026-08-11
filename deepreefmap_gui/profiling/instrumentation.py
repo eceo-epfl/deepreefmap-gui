@@ -98,7 +98,7 @@ def apply_manifest_timings(
     if not manifest_path.exists():
         return None
     try:
-        manifest = json.loads(manifest_path.read_text())
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except Exception:
         return None
     if run_name is not None:
@@ -135,6 +135,9 @@ class _MarkingViewer:
         # copy arrives through a queued signal and may not have been indexed yet
         # when the run ends, so the scene writer reads it from here instead.
         self.data: dict | None = None
+        # Quality warnings the pipeline raised, bound for the manifest: the
+        # live viewer's list is cleared by the next pass of a batch.
+        self.warnings: list[str] = []
 
     def _mark_once(self, name) -> None:
         if name and name not in self._instr.marks:
@@ -158,6 +161,8 @@ class _MarkingViewer:
 
     def set_stage(self, stage, status, message=None):
         self._mark_for(stage, message)
+        if status == "warning" and message and message not in self.warnings:
+            self.warnings.append(message)
         if self._inner is not None:
             self._inner.set_stage(stage, status, message)
 
@@ -193,6 +198,29 @@ class _MarkingViewer:
             self._inner.wait_forever()
 
 
+def _record_run_command(output_dir: Path, kwargs: dict) -> dict:
+    """The CLI equivalent of this run, dropped in the run dir and returned for
+    the manifest.
+
+    Written before the pipeline starts so a run that crashes or is cancelled
+    still leaves behind what it was asked to do. Never raises: losing the record
+    must not lose the run.
+    """
+    from deepreefmap_gui.runs.run_command import (
+        build_reconstruct_argv,
+        format_command,
+        write_run_command_script,
+    )
+
+    try:
+        argv = build_reconstruct_argv(kwargs)
+        write_run_command_script(output_dir, argv)
+        return {"cli_argv": argv, "cli_command": format_command(argv)}
+    except Exception:
+        logger.warning("Failed to record the run command", exc_info=True)
+        return {}
+
+
 def instrumented_reconstruction(
     *,
     run_name: str | None = None,
@@ -220,15 +248,21 @@ def instrumented_reconstruction(
     output_dir = Path(kwargs["output_dir"])
     instr = RunInstrumentation(output_dir)
     proxy = _MarkingViewer(kwargs.pop("viewer", None), instr)
+    extra = dict(manifest_extra or {})
+    extra.update(_record_run_command(output_dir, kwargs))
     manifest: dict | None = None
     try:
         run_reconstruction(viewer=proxy, **kwargs)
+        # Into the extra block both folds share, so the post-scene re-fold
+        # keeps them. Only when there are any: an absent key reads as clean.
+        if proxy.warnings:
+            extra["quality_warnings"] = list(proxy.warnings)
         # Fold the run name, survey block and timings in before the scene file is
         # written: the scene embeds the manifest and is read back in place of it,
         # so a scene built from the raw pipeline manifest would come back missing
         # the name the user gave the run and the survey block that files it.
         manifest = apply_manifest_timings(
-            output_dir, instr, run_name=run_name, manifest_extra=manifest_extra
+            output_dir, instr, run_name=run_name, manifest_extra=extra
         )
         if scene_writer is not None and proxy.data is not None and manifest is not None:
             try:
@@ -240,7 +274,7 @@ def instrumented_reconstruction(
                 # Re-fold so the manifest on disk carries the scene_save duration
                 # and peak; the copy inside the scene file predates them.
                 manifest = apply_manifest_timings(
-                    output_dir, instr, run_name=run_name, manifest_extra=manifest_extra
+                    output_dir, instr, run_name=run_name, manifest_extra=extra
                 )
     finally:
         instr.stop()

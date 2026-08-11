@@ -17,7 +17,18 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from deepreefmap_gui.core.theme import OVERLAY_TEXT
+from deepreefmap_gui.core.theme import (
+    FONT_LG,
+    FONT_MD,
+    FONT_SM,
+    OVERLAY_BG_STRONG,
+    OVERLAY_BORDER_STRONG,
+    OVERLAY_DANGER,
+    OVERLAY_FILL,
+    OVERLAY_TEXT,
+    RADIUS,
+    RADIUS_SM,
+)
 
 
 class PickCard(QFrame):
@@ -38,29 +49,29 @@ class PickCard(QFrame):
         self.setStyleSheet(
             f"""
             PickCard {{
-                background-color: rgba(28, 28, 28, 240);
-                border: 1px solid rgba(255, 255, 255, 80);
-                border-radius: 6px;
+                background-color: {OVERLAY_BG_STRONG};
+                border: 1px solid {OVERLAY_BORDER_STRONG};
+                border-radius: {RADIUS}px;
             }}
-            PickCard QLabel {{ color: {OVERLAY_TEXT}; font-size: 11px; }}
-            PickCard QLabel#class_name {{ font-weight: bold; font-size: 12px; }}
+            PickCard QLabel {{ color: {OVERLAY_TEXT}; font-size: {FONT_SM}; }}
+            PickCard QLabel#class_name {{ font-weight: bold; font-size: {FONT_MD}; }}
             PickCard QPushButton {{
                 color: {OVERLAY_TEXT};
-                background-color: rgba(255, 255, 255, 25);
+                background-color: {OVERLAY_FILL};
                 border: 1px solid rgba(255, 255, 255, 60);
-                border-radius: 3px;
+                border-radius: {RADIUS_SM}px;
                 padding: 3px 8px;
-                font-size: 11px;
+                font-size: {FONT_SM};
             }}
             PickCard QPushButton:hover {{ background-color: rgba(255, 255, 255, 55); }}
             PickCard QToolButton {{
                 color: {OVERLAY_TEXT};
                 background: transparent;
                 border: none;
-                font-size: 13px;
+                font-size: {FONT_LG};
                 font-weight: bold;
             }}
-            PickCard QToolButton:hover {{ color: #ff8080; }}
+            PickCard QToolButton:hover {{ color: {OVERLAY_DANGER}; }}
             """
         )
 
@@ -136,7 +147,7 @@ class PickCard(QFrame):
         self._name_label.setText(name)
         self._swatch.setStyleSheet(
             f"background-color: rgb({int(r)},{int(g)},{int(b)}); "
-            "border: 1px solid rgba(255,255,255,80);"
+            f"border: 1px solid {OVERLAY_BORDER_STRONG};"
         )
         xyz = payload.get("xyz", (0.0, 0.0, 0.0))
         self._xyz = (float(xyz[0]), float(xyz[1]), float(xyz[2]))

@@ -27,8 +27,8 @@ def test_defaults_span_the_full_video(qapp, tiny_video) -> None:
 
 
 def test_end_at_slider_max_returns_exact_duration(qapp, tiny_video) -> None:
-    # _effective_time_range() only collapses end to "full length" when it
-    # matches the probed duration, so the max tick must not round away from it.
+    # An untrimmed pass has to come back reading as the whole clip, so the max
+    # tick must not round away from the probed duration.
     from deepreefmap_gui.form.video_scrub import VideoScrubDialog
 
     path, _ = tiny_video
@@ -103,3 +103,88 @@ def test_format_time_shows_seconds_and_minutes() -> None:
 
     assert _format_time(83.45) == "83.45 s (1:23.45)"
     assert _format_time(0.0) == "0.00 s (0:00.00)"
+
+
+def _click(slider, x: float) -> None:
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    slider.mousePressEvent(QMouseEvent(
+        QEvent.Type.MouseButtonPress, QPointF(x, 14), Qt.MouseButton.LeftButton,
+        Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+    ))
+
+
+def test_playing_walks_the_playhead_down_the_clip(qapp, tiny_video) -> None:
+    from deepreefmap_gui.form.video_scrub import VideoScrubDialog
+
+    path, duration = tiny_video
+    dialog = VideoScrubDialog(path, duration, fps=10)
+    assert not dialog.is_playing()
+
+    dialog._play()
+    assert dialog.is_playing()
+    dialog._advance_frame()
+    first = dialog._range_slider.playhead()
+    dialog._advance_frame()
+
+    assert first is not None
+    assert dialog._range_slider.playhead() > first
+    dialog.reject()
+
+
+def test_playback_stops_at_the_end_of_the_trim(qapp, tiny_video) -> None:
+    """The range is what will be processed, so playing past it previews nothing."""
+    from deepreefmap_gui.form.video_scrub import VideoScrubDialog
+
+    path, duration = tiny_video
+    dialog = VideoScrubDialog(path, duration, end_s=0.4, fps=10)
+    dialog._play()
+    for _ in range(40):
+        if not dialog.is_playing():
+            break
+        dialog._advance_frame()
+
+    assert not dialog.is_playing()
+    dialog.reject()
+
+
+def test_scrubbing_takes_the_capture_back_from_playback(qapp, tiny_video) -> None:
+    """Both seek the one capture, so a drag mid-play would fight the timer."""
+    from deepreefmap_gui.form.video_scrub import VideoScrubDialog
+
+    path, duration = tiny_video
+    dialog = VideoScrubDialog(path, duration, fps=10)
+    dialog._play()
+    dialog._range_slider.setBegin(50)
+
+    assert not dialog.is_playing()
+    dialog.reject()
+
+
+def test_preview_mode_is_a_player_not_a_trimmer(qapp, tiny_video) -> None:
+    from deepreefmap_gui.form.video_scrub import VideoScrubDialog
+
+    path, duration = tiny_video
+    dialog = VideoScrubDialog(path, duration, trim=False)
+    dialog.show()
+    moved = []
+    dialog._range_slider.playhead_moved.connect(moved.append)
+
+    assert dialog.windowTitle().startswith("Preview")
+    assert not dialog._begin_readout.isVisibleTo(dialog)
+    _click(dialog._range_slider, dialog._range_slider.width() / 2)
+
+    assert moved and dialog._range_slider.playhead() == moved[0]
+    dialog.reject()
+
+
+def test_closing_mid_play_stops_the_timer(qapp, tiny_video) -> None:
+    from deepreefmap_gui.form.video_scrub import VideoScrubDialog
+
+    path, duration = tiny_video
+    dialog = VideoScrubDialog(path, duration, fps=10)
+    dialog._play()
+    dialog.reject()
+
+    assert not dialog.is_playing()

@@ -15,6 +15,17 @@ def test_default_classes_and_camera_profiles_load_outside_repo_root(tmp_path, mo
     assert "gopro_hero_10" in available_profile_names()
 
 
+def test_the_macos_bundle_icon_ships() -> None:
+    # The macOS wrapper bundle writes this straight out of package data, so that
+    # a shortcut can be created on a host with no sips/iconutil. Missing from
+    # package-data it would degrade silently to a generic Dock icon.
+    from importlib import resources
+
+    icon = resources.files("deepreefmap_gui.resources").joinpath("icon.icns")
+    assert icon.is_file()
+    assert icon.read_bytes()[:4] == b"icns"
+
+
 def test_bundled_fonts_are_present() -> None:
     # The GUI pins a global Inter font and a JetBrains Mono monospace; both
     # must ship as package data or the app silently falls back to per-OS system

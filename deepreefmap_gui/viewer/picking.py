@@ -6,14 +6,12 @@ import logging
 from typing import TYPE_CHECKING, Any, Callable
 
 import numpy as np
-
 from PySide6.QtCore import Qt, QTimer
 
 if TYPE_CHECKING:
+    from deepreefmap.pointcloud.final_cloud_index import FinalCloudIndex
     from PySide6.QtCore import Signal
     from PySide6.QtWidgets import QWidget
-
-    from deepreefmap.pointcloud.final_cloud_index import FinalCloudIndex
 
     class _ViewerPickingHost(QWidget):
         # --- plotter + actor tables --------------------------------------
@@ -24,7 +22,6 @@ if TYPE_CHECKING:
         _class_names: dict[int, str]
         _final_index: FinalCloudIndex | None
         _frustum_batch_actor: Any
-        _frustum_actors: dict[int, Any]
         _frustum_frame_ids: list[int]
         _frustum_fid_to_idx: dict[int, int]
         _frustum_pts_per: int
@@ -35,12 +32,14 @@ if TYPE_CHECKING:
         _pick_ring_sources: list[Any]
         _pick_tick_sources: list[tuple[Any, float, float, float, float]]
         _picked_xyz: tuple[float, float, float] | None
-        _picked_color: tuple[int, int, int]
         _picked_leader_target: tuple[float, float] | None
         _pick_camera_obs_id: int | None
         _pick_mode_enabled: bool
         _pick_press_pos: tuple[int, int] | None
         _status_callback: Callable[..., None] | None
+
+        # Implemented on QtPointCloudViewer; returns False if the render raised.
+        def _safe_render(self) -> bool: ...
 
         # --- signals (defined as class attrs on QtPointCloudViewer) -------
         point_picked = Signal(object)
@@ -98,7 +97,6 @@ class ViewerPickingMixin(_ViewerPickingHost):
         # from _process_pick's lookup tables, so a pick on them never resolves.
         if self._frustum_batch_actor is not None:
             yield self._frustum_batch_actor
-        yield from self._frustum_actors.values()
         yield from self._class_actors.values()
 
     @staticmethod
@@ -227,17 +225,6 @@ class ViewerPickingMixin(_ViewerPickingHost):
             except Exception:
                 pass
 
-        # Legacy per-actor frustum pick
-        for fid, actor in self._frustum_actors.items():
-            try:
-                mapper = actor.GetMapper()
-                if mapper is not None and mapper.GetInput() is mesh:
-                    self.frustum_picked.emit(int(fid))
-                    self.point_picked_clear.emit()
-                    return
-            except Exception:
-                continue
-
         picked_cid: int | None = None
         for cid, actor in self._class_actors.items():
             try:
@@ -344,7 +331,6 @@ class ViewerPickingMixin(_ViewerPickingHost):
         self.clear_picked_marker()
         r, g, b = color
         self._picked_xyz = (float(xyz[0]), float(xyz[1]), float(xyz[2]))
-        self._picked_color = (int(r), int(g), int(b))
         self._picked_leader_target = leader_target_display
         if anchor_display is not None:
             self._add_pick_2d_overlay(
@@ -398,10 +384,7 @@ class ViewerPickingMixin(_ViewerPickingHost):
                 src.Modified()
             except Exception:
                 continue
-        try:
-            self._plotter.render()
-        except Exception:
-            pass
+        self._safe_render()
 
     def _install_pick_camera_observer(self) -> None:
         """Re-emit canvas_resized on camera moves so a pick's leader line tracks its point."""
@@ -440,10 +423,6 @@ class ViewerPickingMixin(_ViewerPickingHost):
             return (float(dx), float(dy))
         except Exception:
             return None
-
-    @property
-    def picked_xyz(self) -> tuple[float, float, float] | None:
-        return self._picked_xyz
 
     def _add_pick_2d_overlay(
         self,
@@ -575,7 +554,4 @@ class ViewerPickingMixin(_ViewerPickingHost):
         self._pick_line_sources = []
         self._pick_ring_sources = []
         self._pick_tick_sources = []
-        try:
-            self._plotter.render()
-        except Exception:
-            pass
+        self._safe_render()

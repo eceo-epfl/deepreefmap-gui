@@ -265,12 +265,39 @@ def test_running_stage_label_is_monotonic() -> None:
     assert est.running_stage_label() == "Scene file"
 
 
-def test_stage_label_for_phase() -> None:
-    from deepreefmap_gui.profiling.eta import stage_label_for_phase
+def test_stage_plain_label_for_phase_reads_for_a_diver() -> None:
+    # The status line shows the plain phrase. The engineer name lives on
+    # Stage.label, which the hover breakdown reads off the stage directly.
+    from deepreefmap_gui.profiling.eta import stage_plain_label_for_phase
 
-    assert stage_label_for_phase("ortho_pca") == "Ortho"
-    assert stage_label_for_phase("preprocess") == "Preprocess"
-    assert stage_label_for_phase("nonsense") is None
+    assert stage_plain_label_for_phase("ortho_pca") == "Building the flat map"
+    assert stage_plain_label_for_phase("outputs") == "Building the point cloud"
+    assert stage_plain_label_for_phase("viewer_upload") == "Saving"
+    assert stage_plain_label_for_phase("scene_save") == "Preparing for fast reopen"
+    assert stage_plain_label_for_phase("mapping_align") == "Working out the 3D shape"
+    assert stage_plain_label_for_phase("nonsense") is None
+
+
+def test_running_stage_plain_label_tracks_the_engineer_label() -> None:
+    # The two stay in lockstep on the same running stage: one drives the status
+    # line, the other the breakdown, and the breakdown must not move to plain text.
+    est = RunEtaEstimator(frames=100)
+    assert est.running_stage_plain_label() is None
+    est.update("mapping", current=1, total=100, now=0.0)
+    assert est.running_stage_label() == "Mapping"
+    assert est.running_stage_plain_label() == "Working out the 3D shape"
+    est.update("scene_save", current=1, total=10, now=50.0)
+    assert est.running_stage_label() == "Scene file"
+    assert est.running_stage_plain_label() == "Preparing for fast reopen"
+
+
+def test_breakdown_rows_keep_engineer_labels() -> None:
+    # The timing popup renders stage_rows, and those must stay engineer names
+    # even after the status line switched to plain language.
+    est = RunEtaEstimator(frames=100)
+    est.update("preprocess", current=1, total=100, now=0.0)
+    labels = {row.label for row in est.stage_rows(now=0.0)}
+    assert {"Startup", "Preprocess", "Mapping", "Cloud", "Ortho"} <= labels
 
 
 def test_phase_folding() -> None:
@@ -283,13 +310,13 @@ def test_phase_folding() -> None:
 def test_mapping_substeps_fold_onto_the_one_mapping_stage() -> None:
     # The align and resume-save sub-phases are their own bars on the total, but
     # the estimator keeps them under a single learnable "mapping" stage so the
-    # coarse status label stays "Mapping" and mapping isn't marked done early.
-    from deepreefmap_gui.profiling.eta import stage_label_for_phase
+    # coarse status label holds steady and mapping isn't marked done early.
+    from deepreefmap_gui.profiling.eta import stage_plain_label_for_phase
 
     assert stage_for_phase("mapping_align") == "mapping"
     assert stage_for_phase("mapping_save") == "mapping"
-    assert stage_label_for_phase("mapping_align") == "Mapping"
-    assert stage_label_for_phase("mapping_save") == "Mapping"
+    assert stage_plain_label_for_phase("mapping_align") == "Working out the 3D shape"
+    assert stage_plain_label_for_phase("mapping_save") == "Working out the 3D shape"
 
 
 def test_live_remaining_ticks_at_render_time_between_events() -> None:

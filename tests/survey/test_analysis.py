@@ -1,17 +1,19 @@
 import json
 
 import pytest
-
+from _factories import VIDEO_HASH, make_transect, make_video
 from deepreefmap.config.classes import load_classes
+
 from deepreefmap_gui.survey.analysis import (
     assemble_transect_covers,
+    collate_long_format,
     cover_labels,
+    latest_run_per_pass,
+    pooled_transect_cover,
     repeatability_stats,
     reproducibility_groups,
 )
 from deepreefmap_gui.survey.models import RunRecord, TransectPass
-
-from _factories import VIDEO_HASH, make_transect, make_video
 
 
 @pytest.fixture(scope="module")
@@ -110,3 +112,175 @@ def test_cover_labels_orders_by_mean_and_filters(store, tmp_path, classes_config
     names = [cls.name for cls in classes_config.classes[:3]]
     assert labels[0] == names[1]
     assert names[2] not in labels
+
+
+def _write_cover(run_dir, classes_config, counts, denom):
+    run_dir.mkdir(parents=True, exist_ok=True)
+    classes = {}
+    # strict=False: `counts` covers only the leading classes.
+    for cls, count in zip(classes_config.classes, counts, strict=False):
+        classes[str(cls.id)] = {
+            "name": cls.name,
+            "count": float(count),
+            "fraction": (count / denom if denom else 0.0),
+        }
+    (run_dir / "benthic_cover.json").write_text(
+        json.dumps({"classes": classes, "denominator": float(denom)})
+    )
+
+
+def seed_run_counts(store, out_root, transect, run_dir_name, counts, denom, *,
+                    classes_config, pass_=None, begin_s=0.0, end_s=60.0,
+                    created_at=None, status="succeeded", content_hash=VIDEO_HASH):
+    """A run with explicit per-class counts and denominator, optionally a rerun
+    of an existing pass (pass the pass_ back in)."""
+    if pass_ is None:
+        video = store.upsert_video(make_video(content_hash))
+        pass_ = TransectPass(
+            transect_id=transect.id, video_id=video.id, begin_s=begin_s, end_s=end_s
+        )
+        store.add_pass(pass_)
+    kwargs = {"pass_id": pass_.id, "run_dir_name": run_dir_name, "status": status}
+    if created_at is not None:
+        kwargs["created_at"] = created_at
+    run = RunRecord(**kwargs)
+    store.add_run(run)
+    _write_cover(out_root / run_dir_name, classes_config, counts, denom)
+    return pass_, run
+
+
+def test_pooled_cover_is_count_weighted_not_mean_of_fractions(store, tmp_path, classes_config):
+    """A short pass must not swing the estimate the way an average of ratios does."""
+    transect = seed_transect(store)
+    out_root = tmp_path / "out"
+    # Pass A saw a lot and is 90% class0. Pass B saw little and is 1% class0.
+    seed_run_counts(store, out_root, transect, "run_a", [90.0], 100.0,
+                    classes_config=classes_config, begin_s=0.0, end_s=60.0)
+    seed_run_counts(store, out_root, transect, "run_b", [10.0], 1000.0,
+                    classes_config=classes_config, begin_s=60.0, end_s=120.0)
+    covers = assemble_transect_covers(store, out_root, transect.id, classes_config, level="fine")
+    pooled = pooled_transect_cover(covers, expected_passes=2)
+    label = classes_config.classes[0].name
+
+    assert pooled.cover[label] == pytest.approx(100.0 / 1100.0)
+    assert pooled.denominator == pytest.approx(1100.0)
+    assert pooled.counts[label] == pytest.approx(100.0)
+    assert pooled.contributing_passes == 2
+    assert pooled.expected_passes == 2
+    # The discredited unweighted mean would have read ~0.455, not ~0.091.
+    mean_of_ratios = (0.9 + 0.01) / 2
+    assert pooled.cover[label] != pytest.approx(mean_of_ratios)
+
+
+def test_assemble_dedupes_to_latest_run_per_pass(store, tmp_path, classes_config):
+    """A rerun of one pass replaces its predecessor, it does not add a data point."""
+    transect = seed_transect(store)
+    out_root = tmp_path / "out"
+    pass_, _old = seed_run_counts(
+        store, out_root, transect, "run_old", [90.0], 100.0,
+        classes_config=classes_config, created_at="2026-07-01T10:00:00+00:00",
+    )
+    seed_run_counts(
+        store, out_root, transect, "run_new", [10.0], 100.0,
+        classes_config=classes_config, pass_=pass_,
+        created_at="2026-07-01T11:00:00+00:00",
+    )
+    deduped = assemble_transect_covers(store, out_root, transect.id, classes_config, level="fine")
+    assert [c.run_dir_name for c in deduped] == ["run_new"]
+
+    every = assemble_transect_covers(
+        store, out_root, transect.id, classes_config, level="fine", dedupe=False
+    )
+    assert {c.run_dir_name for c in every} == {"run_old", "run_new"}
+
+    label = classes_config.classes[0].name
+    pooled = pooled_transect_cover(deduped, expected_passes=1)
+    # Only the latest run counts: 10/100, not the pooled (90+10)/200 of both.
+    assert pooled.cover[label] == pytest.approx(0.1)
+    assert pooled.contributing_passes == 1
+
+
+def test_reproducibility_needs_the_undeduped_reruns(store, tmp_path, classes_config):
+    """Reproducibility is the spread between reruns, exactly what dedupe strips."""
+    transect = seed_transect(store)
+    out_root = tmp_path / "out"
+    pass_, _first = seed_run_counts(
+        store, out_root, transect, "run_1", [30.0], 100.0,
+        classes_config=classes_config, created_at="2026-07-01T10:00:00+00:00",
+    )
+    seed_run_counts(
+        store, out_root, transect, "run_2", [32.0], 100.0,
+        classes_config=classes_config, pass_=pass_,
+        created_at="2026-07-01T11:00:00+00:00",
+    )
+    every = assemble_transect_covers(
+        store, out_root, transect.id, classes_config, level="fine", dedupe=False
+    )
+    groups = reproducibility_groups(every)
+    assert len(groups) == 1
+    assert {c.run_dir_name for c in groups[0]} == {"run_1", "run_2"}
+
+    deduped = assemble_transect_covers(store, out_root, transect.id, classes_config, level="fine")
+    assert reproducibility_groups(deduped) == []
+
+
+def test_latest_run_per_pass_keeps_pass_order(store, tmp_path, classes_config):
+    transect = seed_transect(store)
+    out_root = tmp_path / "out"
+    seed_run_counts(store, out_root, transect, "p1", [10.0], 100.0,
+                    classes_config=classes_config, begin_s=0.0, end_s=60.0)
+    seed_run_counts(store, out_root, transect, "p2", [20.0], 100.0,
+                    classes_config=classes_config, begin_s=60.0, end_s=120.0)
+    every = assemble_transect_covers(
+        store, out_root, transect.id, classes_config, level="fine", dedupe=False
+    )
+    assert [c.run_dir_name for c in latest_run_per_pass(every)] == ["p1", "p2"]
+
+
+def test_pooled_reports_partial_pass_coverage(store, tmp_path, classes_config):
+    """Two passes defined, one processed: the estimate says 1 of 2."""
+    transect = seed_transect(store)
+    out_root = tmp_path / "out"
+    seed_run_counts(store, out_root, transect, "run_a", [40.0], 100.0,
+                    classes_config=classes_config, begin_s=0.0, end_s=60.0)
+    # A second pass with no succeeded run at all.
+    video = store.upsert_video(make_video())
+    store.add_pass(TransectPass(
+        transect_id=transect.id, video_id=video.id, begin_s=60.0, end_s=120.0
+    ))
+    covers = assemble_transect_covers(store, out_root, transect.id, classes_config, level="fine")
+    expected = len(store.list_passes(transect_id=transect.id))
+    pooled = pooled_transect_cover(covers, expected_passes=expected)
+    assert (pooled.contributing_passes, pooled.expected_passes) == (1, 2)
+
+
+def test_collate_long_format_rows_and_provenance(store, tmp_path, classes_config):
+    transect = seed_transect(store)
+    out_root = tmp_path / "out"
+    seed_run_counts(store, out_root, transect, "run_a", [90.0, 10.0], 100.0,
+                    classes_config=classes_config, begin_s=0.0, end_s=60.0)
+    seed_run_counts(store, out_root, transect, "run_b", [10.0], 1000.0,
+                    classes_config=classes_config, begin_s=60.0, end_s=120.0)
+    rows = collate_long_format(
+        store, out_root, classes_config, levels=("fine",)
+    )
+    per_pass = [r for r in rows if r.estimator == "per_pass"]
+    pooled = [r for r in rows if r.estimator == "pooled"]
+    assert per_pass and pooled
+
+    label0 = classes_config.classes[0].name
+    a_row = next(r for r in per_pass if r.run_dir_name == "run_a" and r.group == label0)
+    assert a_row.count == pytest.approx(90.0)
+    assert a_row.denominator == pytest.approx(100.0)
+    assert a_row.fraction == pytest.approx(0.9)
+    assert a_row.expected_passes == 2
+
+    pooled0 = next(r for r in pooled if r.group == label0)
+    assert pooled0.fraction == pytest.approx(100.0 / 1100.0)
+    assert pooled0.pass_id == ""
+    assert pooled0.begin_s is None
+
+    # Provenance rides every row so a number can be traced to what produced it.
+    assert a_row.gui_version
+    assert a_row.taxonomy_version == 1
+    assert len(a_row.taxonomy_hash) == 64

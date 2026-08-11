@@ -6,15 +6,17 @@ import uuid
 from dataclasses import dataclass, field
 
 from deepreefmap_gui.survey.models.common import utc_now_iso
+from deepreefmap_gui.survey.statuses import RUN_STATUSES, TERMINAL_STATUSES
 
-RUN_STATUSES = ("pending", "running", "succeeded", "failed", "cancelled")
-TERMINAL_STATUSES = ("succeeded", "failed", "cancelled")
+__all__ = ["RUN_STATUSES", "TERMINAL_STATUSES", "RunRecord"]
 
 
 @dataclass(slots=True)
 class RunRecord:
     """Re-running a pass creates a new record; repeats are the reproducibility data.
 
+    ``batch_id`` is the session the attempt ran in; a rerun of the same pass can
+    belong to a later session than the pass itself.
     ``run_dir_name`` is relative to the output root so a moved folder keeps working.
     Cover numbers stay in the run directory's benthic_cover.json, never in the database.
     """
@@ -25,6 +27,7 @@ class RunRecord:
     started_at: str | None = None
     finished_at: str | None = None
     error: str = ""
+    batch_id: uuid.UUID | None = None
     id: uuid.UUID = field(default_factory=uuid.uuid4)
     created_at: str = field(default_factory=utc_now_iso)
 

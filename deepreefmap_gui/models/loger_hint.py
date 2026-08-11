@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-# Shown in the UI (mapping dropdown + Models tab) when loger/loger_star are
+# Shown in the UI (mapping dropdown + the model library) when loger/loger_star are
 # unavailable. See the "LoGeR path" section of the README for the full setup.
 LOGER_INSTALL_HINT = (
     "LoGeR is an optional mapping backend.\n"

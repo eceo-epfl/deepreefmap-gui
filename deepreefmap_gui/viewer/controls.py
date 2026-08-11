@@ -2,27 +2,52 @@
 
 from __future__ import annotations
 
-from deepreefmap_gui.core.window_protocol import MixinBase
-
-import json
 import logging
-from pathlib import Path
 from typing import TYPE_CHECKING, SupportsInt, cast
 
-
-from deepreefmap_gui.system.log_view import close_run_log_file
+from deepreefmap_gui.core.theme import (
+    BORDER,
+    BRIGHT_TEXT,
+    FONT_MD,
+    FONT_XS,
+    OVERLAY_ACCENT_FILL,
+    OVERLAY_BG,
+    OVERLAY_BORDER,
+    OVERLAY_BORDER_STRONG,
+    OVERLAY_FILL,
+    OVERLAY_FILL_HI,
+    OVERLAY_HANDLE,
+    OVERLAY_TEXT,
+    PRIMARY,
+    RADIUS,
+    RADIUS_SM,
+    TEXT_MUTED,
+    TEXT_SECONDARY,
+    WEIGHT_BOLD,
+)
+from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.profiling.eta import STAGE_MESSAGE_TO_PHASE as _STAGE_MESSAGE_TO_PHASE
 from deepreefmap_gui.runs.progress import _SETUP_MESSAGE_TO_PHASE
-from deepreefmap_gui.core.theme import BORDER, OVERLAY_TEXT, PRIMARY, TEXT_MUTED, TEXT_SECONDARY
 
 if TYPE_CHECKING:
-    from PySide6.QtWidgets import QToolButton, QVBoxLayout, QWidget
-
     from deepreefmap.config.classes import ClassConfig
     from deepreefmap.pipeline.artifacts import SemanticPointCloud
     from deepreefmap.pointcloud.grid_ortho import OrthoGrid
+    from PySide6.QtWidgets import QToolButton, QVBoxLayout, QWidget
 
 logger = logging.getLogger(__name__)
+
+# Shared label column in the overlay, so the sliders line up under each other.
+_OVERLAY_LABEL_W = 90
+
+# Coarse stage names for the status line. Module level because _on_viewer_status
+# runs on every progress callback, and this was being rebuilt each time.
+_STAGE_LABELS = {
+    "startup": "Startup",
+    "preprocess": "Preprocessing",
+    "mapping": "Mapping",
+    "outputs": "Building outputs",
+}
 
 
 class ViewerControlsMixin(MixinBase):
@@ -33,28 +58,14 @@ class ViewerControlsMixin(MixinBase):
         if mode not in ("SETUP", "RUNNING", "VIEWING"):
             raise ValueError(f"Unknown app mode: {mode!r}")
         self._app_mode = mode
-        simple = getattr(self, "_ui_mode", "advanced") == "simple"
-        if simple:
-            # RUNNING shows the pass table so the batch has somewhere to report.
-            # VIEWING deliberately does not move: a run is opened from the pass
-            # table or from Browse, and both are places you want to stay.
-            if mode == "RUNNING":
-                self._set_simple_section("run")
-        elif hasattr(self, "_sidebar_tabs"):
-            # Guarded because the very first _set_app_mode("SETUP") call happens
-            # inside _build_form_panel before the tab widget is constructed.
-            self._sidebar_tabs.setCurrentIndex(
-                self._TAB_RESULTS if mode == "VIEWING" else self._TAB_RUN
-            )
-        # A loaded run with the canvas gated off would show an idle progress
-        # panel; surface the cloud and let the user toggle it back off. Signals
-        # are blocked so opening one run does not silently make 3D preview the
-        # persisted default for every future session.
-        if mode == "VIEWING" and hasattr(self, "_preview_toggle_btn"):
-            self._preview_toggle_btn.blockSignals(True)
-            self._preview_toggle_btn.setChecked(True)
-            self._preview_toggle_btn.blockSignals(False)
-            self._viewer.set_canvas_allowed(True)
+        # RUNNING shows the pass table so the batch has somewhere to report.
+        # VIEWING deliberately does not move: a run is opened from the pass
+        # table or from Browse, and both are places you want to stay.
+        #
+        # Guarded on the shell existing, because the first _set_app_mode("SETUP")
+        # happens inside _build_form_widgets, before there is anything to show.
+        if mode == "RUNNING" and hasattr(self, "_simple_stack"):
+            self._set_simple_section("process")
         self._update_work_area()
 
     def _refresh_run_warnings_view(self) -> None:
@@ -64,14 +75,17 @@ class ViewerControlsMixin(MixinBase):
         self._warnings_label_running.setText(text)
         self._warnings_label_running.setVisible(visible)
 
-    def _cancel_load(self) -> None:
-        # Soft cancel: the worker thread can't be interrupted mid-read, but
-        # we set a flag so _apply_loaded_run drops the result when it eventually
-        # arrives. The thread is a daemon and will exit with the process.
-        self._load_cancelled = True
-        self._spinner_stop.setVisible(False)
-        self._reset_progress_bars()
-        self._status_label.setText("Load cancelled.")
+    def _overlay_point_size(self) -> float:
+        """The overlay slider holds tenths, because QSlider is integer-only."""
+        return self._ov_pt_slider.value() / 10.0
+
+    def _frustums_visible(self) -> bool:
+        button = getattr(self, "_ov_frustum_btn", None)
+        return button is not None and button.isChecked()
+
+    def _following_camera(self) -> bool:
+        button = getattr(self, "_ov_follow_btn", None)
+        return button is not None and button.isChecked()
 
     def _on_viewer_control_changed(self) -> None:
         if not self._viewer.has_scene_data:
@@ -79,25 +93,22 @@ class ViewerControlsMixin(MixinBase):
         if self._viewer.is_geometry_mode:
             self._viewer.apply_geometry_state(
                 timeline_t=self._frame_slider.value(),
-                point_size=self._point_size_spin.value(),
-                frustums_visible=(
-                    getattr(self, "_ov_frustum_btn", None) is not None
-                    and self._ov_frustum_btn.isChecked()
-                ),
+                point_size=self._overlay_point_size(),
+                frustums_visible=self._frustums_visible(),
             )
-            if getattr(self, "_follow_camera_check", None) and self._follow_camera_check.isChecked():
+            if self._following_camera():
                 self._snap_camera_to_current_frame()
             return
         self._viewer.apply_state(
             timeline_t=self._frame_slider.value(),
-            accumulate=self._accumulate_check.isChecked(),
+            accumulate=self._ov_acc_btn.isChecked(),
             enabled_classes=self._enabled_class_set(),
-            semantic_colors=self._semantic_check.isChecked(),
-            point_size=self._point_size_spin.value(),
-            min_confidence=self._confidence_slider.value() / 100.0,
-            frustums_visible=getattr(self, "_ov_frustum_btn", None) is not None and self._ov_frustum_btn.isChecked(),
+            semantic_colors=self._ov_sem_btn.isChecked(),
+            point_size=self._overlay_point_size(),
+            min_confidence=self._ov_conf_slider.value() / 100.0,
+            frustums_visible=self._frustums_visible(),
         )
-        if getattr(self, "_follow_camera_check", None) and self._follow_camera_check.isChecked():
+        if self._following_camera():
             self._snap_camera_to_current_frame()
         self._apply_legend_sort()
         self._update_master_check()
@@ -106,17 +117,18 @@ class ViewerControlsMixin(MixinBase):
     def _enabled_class_set(self) -> frozenset[int]:
         return frozenset(int(cid) for cid, cb in self._legend_toggles.items() if cb.isChecked())
 
+    def _playback_interval_ms(self) -> int:
+        return max(16, int(1000 / max(1, self._ov_fps_spin.value())))
+
     def _on_play_toggled(self, playing: bool) -> None:
         if playing:
-            interval = max(16, int(1000 / max(1, self._play_fps_spin.value())))
-            self._playback_timer.start(interval)
+            self._playback_timer.start(self._playback_interval_ms())
         else:
             self._playback_timer.stop()
 
     def _on_play_fps_changed(self) -> None:
         if self._playback_timer.isActive():
-            interval = max(16, int(1000 / max(1, self._play_fps_spin.value())))
-            self._playback_timer.setInterval(interval)
+            self._playback_timer.setInterval(self._playback_interval_ms())
 
     def _on_playback_tick(self) -> None:
         n = self._viewer.n_frames
@@ -125,137 +137,46 @@ class ViewerControlsMixin(MixinBase):
         nxt = (self._frame_slider.value() + 1) % n
         self._frame_slider.setValue(nxt)
 
-    def _connect_overlay_sync(self) -> None:
-        """Wire bidirectional sync between overlay and sidebar controls, once both exist."""
-        if getattr(self, "_overlay_sync_connected", False):
+    def _connect_overlay_controls(self) -> None:
+        """Wire the overlay's controls to the viewer, once.
+
+        Each control is the only copy of its setting, so there is nothing to
+        mirror: a change goes straight to the viewer.
+        """
+        if getattr(self, "_overlay_controls_connected", False):
             return
-        self._overlay_sync_connected = True
+        self._overlay_controls_connected = True
 
-        ov = self._ov_pt_slider
-        sb = self._point_size_spin
-        ov_r = self._ov_pt_readout
-
-        def _sync_bool(src, dst, callback):
-            def _fn(checked):
-                dst.blockSignals(True)
-                dst.setChecked(checked)
-                dst.blockSignals(False)
-                callback()
-            return _fn
-
-        # Point size: overlay slider (int ×10) ↔ sidebar spin (float)
-        def _pt_from_overlay(val: int) -> None:
-            fval = val / 10.0
-            ov_r.setText(f"{fval:.1f}")
-            sb.blockSignals(True)
-            sb.setValue(fval)
-            sb.blockSignals(False)
-            self._on_viewer_control_changed()
-
-        def _pt_from_sidebar(fval: float) -> None:
-            ov.blockSignals(True)
-            ov.setValue(int(fval * 10))
-            ov.blockSignals(False)
-            ov_r.setText(f"{fval:.1f}")
-
-        ov.valueChanged.connect(_pt_from_overlay)
-        sb.valueChanged.connect(_pt_from_sidebar)
-
-        # Semantic toggle
-        self._ov_sem_btn.toggled.connect(
-            _sync_bool(self._ov_sem_btn, self._semantic_check, self._on_viewer_control_changed)
-        )
-        self._semantic_check.toggled.connect(
-            _sync_bool(self._semantic_check, self._ov_sem_btn, lambda: None)
-        )
-
-        # Accumulate toggle
-        self._ov_acc_btn.toggled.connect(
-            _sync_bool(self._ov_acc_btn, self._accumulate_check, self._on_viewer_control_changed)
-        )
-        self._accumulate_check.toggled.connect(
-            _sync_bool(self._accumulate_check, self._ov_acc_btn, lambda: None)
-        )
-
-        # Confidence
-        ov_c = self._ov_conf_slider
-        sb_c = self._confidence_slider
-        ov_cr = self._ov_conf_readout
-
-        def _conf_from_overlay(val: int) -> None:
-            ov_cr.setText(f"{val}%")
-            sb_c.blockSignals(True)
-            sb_c.setValue(val)
-            sb_c.blockSignals(False)
-            self._on_viewer_control_changed()
-
-        def _conf_from_sidebar(val: int) -> None:
-            ov_c.blockSignals(True)
-            ov_c.setValue(val)
-            ov_c.blockSignals(False)
-            ov_cr.setText(f"{val}%")
-
-        ov_c.valueChanged.connect(_conf_from_overlay)
-        sb_c.valueChanged.connect(_conf_from_sidebar)
-
-        # Play / pause. _on_play_toggled takes (playing: bool)
-        def _play_from_overlay(checked):
-            self._play_check.blockSignals(True)
-            self._play_check.setChecked(checked)
-            self._play_check.blockSignals(False)
-            self._on_play_toggled(checked)
-
-        self._ov_play_btn.toggled.connect(_play_from_overlay)
-        self._play_check.toggled.connect(
-            _sync_bool(self._play_check, self._ov_play_btn, lambda: None)
-        )
-
-        # FPS
-        ov_f = self._ov_fps_spin
-        sb_f = self._play_fps_spin
-
-        def _fps_from_overlay(val: int) -> None:
-            sb_f.blockSignals(True)
-            sb_f.setValue(val)
-            sb_f.blockSignals(False)
-            self._on_play_fps_changed()
-
-        def _fps_from_sidebar(val: int) -> None:
-            ov_f.blockSignals(True)
-            ov_f.setValue(val)
-            ov_f.blockSignals(False)
-
-        ov_f.valueChanged.connect(_fps_from_overlay)
-        sb_f.valueChanged.connect(_fps_from_sidebar)
-
-        # Follow camera
-        self._ov_follow_btn.toggled.connect(
-            _sync_bool(self._ov_follow_btn, self._follow_camera_check, self._on_follow_camera_changed)
-        )
-        self._follow_camera_check.toggled.connect(
-            _sync_bool(self._follow_camera_check, self._ov_follow_btn, lambda: None)
-        )
-
-        # Frustum visibility (overlay-only, no sidebar counterpart)
-        self._ov_frustum_btn.toggled.connect(lambda _: self._on_viewer_control_changed())
+        for widget in (self._ov_pt_slider, self._ov_conf_slider):
+            widget.valueChanged.connect(lambda _: self._on_viewer_control_changed())
+        for button in (self._ov_sem_btn, self._ov_acc_btn, self._ov_frustum_btn):
+            button.toggled.connect(lambda _: self._on_viewer_control_changed())
+        self._ov_play_btn.toggled.connect(self._on_play_toggled)
+        self._ov_fps_spin.valueChanged.connect(lambda _: self._on_play_fps_changed())
+        self._ov_follow_btn.toggled.connect(lambda _: self._on_follow_camera_changed())
+        self._ov_backoff_slider.valueChanged.connect(lambda _: self._on_follow_camera_changed())
+        self._ov_snap_btn.clicked.connect(self._on_view_from_camera)
 
     def _show_viewer_controls(self) -> None:
         n = self._viewer.n_frames
         self._frame_slider.setRange(0, max(0, n - 1))
         self._frame_slider.setValue(n - 1)
-        # Viewer controls now live in the canvas overlay; the sidebar group
-        # stays hidden but the widgets remain so _on_viewer_control_changed
-        # can read from them.
         self._set_semantic_only_controls_visible(True)
-        self._sidebar_tabs.setTabEnabled(self._TAB_RESULTS, True)
-        self._connect_overlay_sync()
-        # Show the overlay display controls on the canvas.
+        self._connect_overlay_controls()
+        self._set_overlay_controls_visible(True)
+
+    def _set_overlay_controls_visible(self, visible: bool) -> None:
+        """Show or hide the overlay's display controls with the loaded run.
+
+        The Pick and Reset buttons above them stay: they steer the camera, which
+        is worth doing over a live preview as much as over a finished cloud.
+        """
         overlay_ctrl = getattr(self, "_overlay_controls_container", None)
         if overlay_ctrl is not None:
-            overlay_ctrl.setVisible(True)
+            overlay_ctrl.setVisible(visible)
         ctrl_sep = getattr(self, "_overlay_ctrl_sep", None)
         if ctrl_sep is not None:
-            ctrl_sep.setVisible(True)
+            ctrl_sep.setVisible(visible)
         overlay = getattr(self, "_pick_mode_overlay", None)
         if overlay is not None:
             overlay.adjustSize()
@@ -263,9 +184,6 @@ class ViewerControlsMixin(MixinBase):
 
     def _set_semantic_only_controls_visible(self, visible: bool) -> None:
         """Hide per-class/semantic-only controls for geometry-only runs."""
-        self._semantic_check.setVisible(visible)
-        self._accumulate_check.setVisible(visible)
-        self._confidence_box.setVisible(visible)
         ov_sem = getattr(self, "_ov_sem_btn", None)
         if ov_sem is not None:
             ov_sem.setVisible(visible)
@@ -283,7 +201,7 @@ class ViewerControlsMixin(MixinBase):
         cc = self._classes_config
         counts = self._viewer.class_point_counts()
         class_ids = sorted(cc.id_to_name.keys())
-        self._legend_toggles, self._legend_solo_buttons = self._viewer.legend_overlay.rebuild(
+        self._legend_toggles = self._viewer.legend_overlay.rebuild(
             class_ids,
             cc.id_to_name,
             cc.id_to_color,
@@ -427,9 +345,7 @@ class ViewerControlsMixin(MixinBase):
             self._on_isolate_class(cid)
 
     def _on_follow_camera_changed(self) -> None:
-        if not getattr(self, "_follow_camera_check", None):
-            return
-        if not self._follow_camera_check.isChecked():
+        if not self._following_camera():
             return
         self._snap_camera_to_current_frame()
 
@@ -439,7 +355,8 @@ class ViewerControlsMixin(MixinBase):
     def _snap_camera_to_current_frame(self) -> None:
         if not hasattr(self, "_frame_slider"):
             return
-        backoff = float(self._camera_backoff_spin.value()) if hasattr(self, "_camera_backoff_spin") else 0.0
+        slider = getattr(self, "_ov_backoff_slider", None)
+        backoff = slider.value() / 10.0 if slider is not None else 0.0
         self._viewer.view_from_frame_pose(int(self._frame_slider.value()), backoff_m=backoff)
 
     def _on_frustum_picked(self, frame_idx: int) -> None:
@@ -540,53 +457,53 @@ class ViewerControlsMixin(MixinBase):
         overlay.setStyleSheet(
             f"""
             QWidget#pick_mode_overlay {{
-                background-color: rgba(20, 20, 20, 200);
-                border: 1px solid rgba(255, 255, 255, 40);
-                border-radius: 6px;
+                background-color: {OVERLAY_BG};
+                border: 1px solid {OVERLAY_BORDER};
+                border-radius: {RADIUS}px;
             }}
             QWidget#pick_mode_overlay QToolButton {{
                 color: {OVERLAY_TEXT};
-                background-color: rgba(255, 255, 255, 20);
-                border: 1px solid rgba(255, 255, 255, 60);
-                border-radius: 4px;
-                font-size: 12px;
-                font-weight: bold;
+                background-color: {OVERLAY_FILL};
+                border: 1px solid {OVERLAY_BORDER_STRONG};
+                border-radius: {RADIUS_SM}px;
+                font-size: {FONT_MD};
+                font-weight: {WEIGHT_BOLD};
                 padding: 6px 10px;
             }}
             QWidget#pick_mode_overlay QToolButton:hover {{
-                background-color: rgba(255, 255, 255, 50);
+                background-color: {OVERLAY_FILL_HI};
             }}
             QWidget#pick_mode_overlay QToolButton:checked {{
-                background-color: rgba(74, 163, 255, 90);
+                background-color: {OVERLAY_ACCENT_FILL};
                 border: 1px solid {PRIMARY};
-                color: #ffffff;
+                color: {BRIGHT_TEXT};
             }}
             QWidget#pick_mode_overlay QToolButton#ov_secondary {{
-                font-size: 10px;
+                font-size: {FONT_XS};
                 font-weight: normal;
                 padding: 3px 8px;
-                border-radius: 3px;
+                border-radius: {RADIUS_SM}px;
             }}
             QWidget#pick_mode_overlay QLabel#pick_mode_shortcut {{
                 color: {TEXT_MUTED};
-                font-size: 10px;
+                font-size: {FONT_XS};
             }}
             QWidget#pick_mode_overlay QSlider::groove:horizontal {{
                 height: 4px; background: {BORDER}; border-radius: 2px;
             }}
             QWidget#pick_mode_overlay QSlider::handle:horizontal {{
-                background: #ddd; width: 10px; height: 10px;
+                background: {OVERLAY_HANDLE}; width: 10px; height: 10px;
                 margin: -3px 0; border-radius: 5px;
             }}
             QWidget#pick_mode_overlay QSlider::sub-page:horizontal {{
                 background: {PRIMARY}; border-radius: 2px;
             }}
             QWidget#pick_mode_overlay QSpinBox {{
-                background: rgba(255,255,255,20); color: {OVERLAY_TEXT};
-                border: 1px solid rgba(255,255,255,40); border-radius: 3px;
-                padding: 1px 2px; font-size: 10px;
+                background: {OVERLAY_FILL}; color: {OVERLAY_TEXT};
+                border: 1px solid {OVERLAY_BORDER}; border-radius: {RADIUS_SM}px;
+                padding: 1px 2px; font-size: {FONT_XS};
             }}
-            QWidget#pick_mode_overlay QCheckBox {{ color: {OVERLAY_TEXT}; font-size: 10px; }}
+            QWidget#pick_mode_overlay QCheckBox {{ color: {OVERLAY_TEXT}; font-size: {FONT_XS}; }}
             """
         )
         layout = QVBoxLayout(overlay)
@@ -596,7 +513,12 @@ class ViewerControlsMixin(MixinBase):
         btn, reset_btn = self._build_overlay_tool_buttons(overlay, layout)
         self._build_overlay_display_controls(overlay, layout)
 
-        self._overlay_sync_connected = False
+        # The timeline is the one display control not on the overlay: it is wide,
+        # so the viewer keeps it under the canvas. This is where it joins the rest.
+        self._frame_slider = self._viewer.frame_slider
+        self._frame_slider.valueChanged.connect(self._on_viewer_control_changed)
+
+        self._overlay_controls_connected = False
 
         self._pick_mode_overlay = overlay
         self._pick_mode_button = btn
@@ -617,7 +539,7 @@ class ViewerControlsMixin(MixinBase):
 
         def _on_reset_clicked() -> None:
             try:
-                if getattr(self, "_follow_camera_check", None) and self._follow_camera_check.isChecked():
+                if self._following_camera():
                     self._snap_camera_to_current_frame()
                 else:
                     self._viewer.reset_view()
@@ -698,7 +620,7 @@ class ViewerControlsMixin(MixinBase):
 
         ctrl_sep = QFrame(overlay)
         ctrl_sep.setFrameShape(QFrame.Shape.HLine)
-        ctrl_sep.setStyleSheet("color: rgba(255,255,255,40); margin: 2px 0;")
+        ctrl_sep.setStyleSheet(f"color: {OVERLAY_BORDER}; margin: 2px 0;")
         layout.addWidget(ctrl_sep)
 
         controls_container = QWidget(overlay)
@@ -711,6 +633,7 @@ class ViewerControlsMixin(MixinBase):
         self._build_overlay_sliders(overlay, ctrl_layout)
         self._build_overlay_toggles(overlay, ctrl_layout)
         self._build_overlay_playback(overlay, ctrl_layout)
+        self._build_overlay_camera(overlay, ctrl_layout)
 
         layout.addWidget(controls_container)
         ctrl_sep.setVisible(False)
@@ -722,12 +645,11 @@ class ViewerControlsMixin(MixinBase):
         from PySide6.QtCore import Qt
         from PySide6.QtWidgets import QHBoxLayout, QLabel, QSlider, QWidget
 
-        _lbl_w = 90
         ps_row = QHBoxLayout()
         ps_row.setSpacing(4)
         ps_lbl = QLabel("Point size", overlay)
-        ps_lbl.setFixedWidth(_lbl_w)
-        ps_lbl.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 10px;")
+        ps_lbl.setFixedWidth(_OVERLAY_LABEL_W)
+        ps_lbl.setStyleSheet(f"color: {TEXT_MUTED}; font-size: {FONT_XS};")
         ps_row.addWidget(ps_lbl)
         ov_pt_slider = QSlider(Qt.Orientation.Horizontal, overlay)
         ov_pt_slider.setRange(5, 200)
@@ -736,15 +658,15 @@ class ViewerControlsMixin(MixinBase):
         ps_row.addWidget(ov_pt_slider, 1)
         ov_pt_readout = QLabel("2.0", overlay)
         ov_pt_readout.setFixedWidth(30)
-        ov_pt_readout.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 10px;")
+        ov_pt_readout.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: {FONT_XS};")
         ps_row.addWidget(ov_pt_readout)
         ctrl_layout.addLayout(ps_row)
 
         conf_row = QHBoxLayout()
         conf_row.setSpacing(4)
         conf_lbl = QLabel("Min confidence", overlay)
-        conf_lbl.setFixedWidth(_lbl_w)
-        conf_lbl.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 10px;")
+        conf_lbl.setFixedWidth(_OVERLAY_LABEL_W)
+        conf_lbl.setStyleSheet(f"color: {TEXT_MUTED}; font-size: {FONT_XS};")
         conf_row.addWidget(conf_lbl)
         ov_conf_slider = QSlider(Qt.Orientation.Horizontal, overlay)
         ov_conf_slider.setRange(0, 100)
@@ -753,14 +675,14 @@ class ViewerControlsMixin(MixinBase):
         conf_row.addWidget(ov_conf_slider, 1)
         ov_conf_readout = QLabel("0%", overlay)
         ov_conf_readout.setFixedWidth(30)
-        ov_conf_readout.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 10px;")
+        ov_conf_readout.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: {FONT_XS};")
         conf_row.addWidget(ov_conf_readout)
         ov_conf_container = QWidget(overlay)
         conf_row.setContentsMargins(0, 0, 0, 0)
         ov_conf_container.setLayout(conf_row)
         ctrl_layout.addWidget(ov_conf_container)
 
-        # Overlay-only connections (no sidebar dependency).
+        # Overlay-only connections.
         ov_pt_slider.valueChanged.connect(
             lambda val: ov_pt_readout.setText(f"{val / 10.0:.1f}")
         )
@@ -769,9 +691,7 @@ class ViewerControlsMixin(MixinBase):
         )
 
         self._ov_pt_slider = ov_pt_slider
-        self._ov_pt_readout = ov_pt_readout
         self._ov_conf_slider = ov_conf_slider
-        self._ov_conf_readout = ov_conf_readout
         self._ov_conf_container = ov_conf_container
 
     def _build_overlay_toggles(self, overlay: QWidget, ctrl_layout: QVBoxLayout) -> None:
@@ -783,10 +703,10 @@ class ViewerControlsMixin(MixinBase):
         toggle_row.setSpacing(4)
         ov_sem_btn = QToolButton(overlay)
         ov_sem_btn.setObjectName("ov_secondary")
-        ov_sem_btn.setText("Class colors")
+        ov_sem_btn.setText("Class colours")
         ov_sem_btn.setCheckable(True)
         ov_sem_btn.setChecked(True)
-        ov_sem_btn.setToolTip("On: color by semantic class. Off: original camera RGB.")
+        ov_sem_btn.setToolTip("On: colour by semantic class. Off: original camera RGB.")
         toggle_row.addWidget(ov_sem_btn, 1)
         ov_acc_btn = QToolButton(overlay)
         ov_acc_btn.setObjectName("ov_secondary")
@@ -816,7 +736,7 @@ class ViewerControlsMixin(MixinBase):
         ov_play_btn.setToolTip("Play / pause timeline")
         play_row.addWidget(ov_play_btn)
         fps_lbl = QLabel("FPS", overlay)
-        fps_lbl.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 10px;")
+        fps_lbl.setStyleSheet(f"color: {TEXT_MUTED}; font-size: {FONT_XS};")
         play_row.addWidget(fps_lbl)
         ov_fps_spin = QSpinBox(overlay)
         ov_fps_spin.setRange(1, 60)
@@ -824,12 +744,6 @@ class ViewerControlsMixin(MixinBase):
         ov_fps_spin.setFixedWidth(52)
         ov_fps_spin.setFixedHeight(22)
         play_row.addWidget(ov_fps_spin)
-        ov_follow_btn = QToolButton(overlay)
-        ov_follow_btn.setObjectName("ov_secondary")
-        ov_follow_btn.setText("Follow")
-        ov_follow_btn.setCheckable(True)
-        ov_follow_btn.setToolTip("Auto-snap camera to current frame pose")
-        play_row.addWidget(ov_follow_btn, 1)
         ov_frustum_btn = QToolButton(overlay)
         ov_frustum_btn.setObjectName("ov_secondary")
         ov_frustum_btn.setText("Frustums")
@@ -841,8 +755,60 @@ class ViewerControlsMixin(MixinBase):
 
         self._ov_play_btn = ov_play_btn
         self._ov_fps_spin = ov_fps_spin
-        self._ov_follow_btn = ov_follow_btn
         self._ov_frustum_btn = ov_frustum_btn
+
+    def _build_overlay_camera(self, overlay: QWidget, ctrl_layout: QVBoxLayout) -> None:
+        """Where the 3D view sits relative to the frame: follow, snap, backoff.
+
+        The three act on one thing, so they are a row of their own rather than
+        tacked onto playback. Backoff only means anything once the view is on a
+        frame pose, which is what the other two put it there for.
+        """
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QHBoxLayout, QLabel, QSlider, QToolButton
+
+        ctrl_layout.addSpacing(4)
+
+        cam_row = QHBoxLayout()
+        cam_row.setSpacing(4)
+        ov_follow_btn = QToolButton(overlay)
+        ov_follow_btn.setObjectName("ov_secondary")
+        ov_follow_btn.setText("Follow")
+        ov_follow_btn.setCheckable(True)
+        ov_follow_btn.setToolTip("Keep the 3D view on the current frame's camera")
+        cam_row.addWidget(ov_follow_btn, 1)
+        ov_snap_btn = QToolButton(overlay)
+        ov_snap_btn.setObjectName("ov_secondary")
+        ov_snap_btn.setText("Snap")
+        ov_snap_btn.setToolTip("Snap the 3D view to the current frame's camera, once")
+        cam_row.addWidget(ov_snap_btn, 1)
+        ctrl_layout.addLayout(cam_row)
+
+        backoff_row = QHBoxLayout()
+        backoff_row.setSpacing(4)
+        backoff_lbl = QLabel("Camera backoff", overlay)
+        backoff_lbl.setFixedWidth(_OVERLAY_LABEL_W)
+        backoff_lbl.setStyleSheet(f"color: {TEXT_MUTED}; font-size: {FONT_XS};")
+        backoff_row.addWidget(backoff_lbl)
+        # Tenths of a metre, matching the point-size slider's ×10 integer trick:
+        # QSlider is integer-only and a 0.1 m step is fine enough to frame a shot.
+        ov_backoff_slider = QSlider(Qt.Orientation.Horizontal, overlay)
+        ov_backoff_slider.setRange(0, 50)
+        ov_backoff_slider.setValue(5)
+        ov_backoff_slider.setFixedHeight(16)
+        backoff_row.addWidget(ov_backoff_slider, 1)
+        ov_backoff_readout = QLabel("0.5 m", overlay)
+        ov_backoff_readout.setFixedWidth(40)
+        ov_backoff_readout.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: {FONT_XS};")
+        backoff_row.addWidget(ov_backoff_readout)
+        ov_backoff_slider.valueChanged.connect(
+            lambda val: ov_backoff_readout.setText(f"{val / 10.0:.1f} m")
+        )
+        ctrl_layout.addLayout(backoff_row)
+
+        self._ov_follow_btn = ov_follow_btn
+        self._ov_snap_btn = ov_snap_btn
+        self._ov_backoff_slider = ov_backoff_slider
 
     def _reposition_pick_mode_overlay(self) -> None:
         overlay = getattr(self, "_pick_mode_overlay", None)
@@ -956,13 +922,8 @@ class ViewerControlsMixin(MixinBase):
             )
         except Exception:
             logger.exception("Failed to draw picked-point marker")
+
     def _on_viewer_status(self, event: str, **kwargs: object) -> None:
-        _STAGE_LABELS = {
-            "startup": "Startup",
-            "preprocess": "Preprocessing",
-            "mapping": "Mapping",
-            "outputs": "Building outputs",
-        }
         if event == "start_run":
             self._clear_run_warnings()
             self._apply_progress("startup", "Starting reconstruction", 0, 0)
@@ -1057,46 +1018,13 @@ class ViewerControlsMixin(MixinBase):
             # an explicit processEvents the user sees the bars freeze.
             self._apply_progress(phase_key, message, current, total, flush=True)
         elif event == "mark_outputs":
-            output_dir = kwargs.get("output_dir", "")
-            if getattr(self, "_survey_worker_running", False):
-                # Mid-batch pass completion: record it and keep the batch view;
-                # the results/VIEWING transition belongs to single runs.
-                self._status_label.setText(f"Outputs saved to {output_dir}")
-                self._refresh_survey_pass_statuses()
-                return
-            self._status_label.setText(f"Outputs saved to {output_dir}")
-            self._reset_progress_bars()
-            self._set_form_enabled(True)
-            self._end_run_controls()
-            if output_dir:
-                self._show_results(str(output_dir))
-                self._active_run_dir = Path(str(output_dir))
-                manifest_path = self._active_run_dir / "run_manifest.json"
-                if manifest_path.exists():
-                    try:
-                        self._active_run_manifest = json.loads(manifest_path.read_text())
-                    except Exception:
-                        self._active_run_manifest = None
-                self._settings.setValue("last_run_dir", str(self._active_run_dir))
-                self._refresh_data_manager()
-                # The run worker records its measured peaks right after the
-                # pipeline returns; re-grade the current form so the next run's
-                # warning uses them instead of the analytic estimate, without
-                # waiting for the user to touch a control.
-                self._update_memory_profile_warning()
-            close_run_log_file(self._run_log_file_handler)
-            self._run_log_file_handler = None
+            # One pass of a batch finished. The batch is the unit of work, so
+            # neither this nor a failure ends the run or moves the user: the
+            # batch worker carries on to the next pass and _on_survey_done is
+            # what tidies up once there are none left.
+            self._status_label.setText(f"Outputs saved to {kwargs.get('output_dir', '')}")
+            self._refresh_survey_pass_statuses()
         elif event == "fail_run":
             error = kwargs.get("error_message", "unknown error")
             self._status_label.setText(f"Failed: {error}")
-            if getattr(self, "_survey_worker_running", False):
-                # The batch worker records the failure and moves on to the
-                # next pass; do not drop out of RUNNING.
-                self._refresh_survey_pass_statuses()
-                return
-            self._reset_progress_bars()
-            self._set_form_enabled(True)
-            self._end_run_controls()
-            close_run_log_file(self._run_log_file_handler)
-            self._run_log_file_handler = None
-            self._set_app_mode("SETUP")
+            self._refresh_survey_pass_statuses()

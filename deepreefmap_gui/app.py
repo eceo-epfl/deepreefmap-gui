@@ -1,3 +1,40 @@
+"""The window, and the process it runs in.
+
+`DeepReefMapWindow` builds no feature of its own. It fuses the 20 mixins listed in its bases
+(the feature-to-file table is in `deepreefmap_gui/__init__.py`), owns the frame they fill in
+(splitters, the run banner, the central layout, the shortcuts), and shuts everything down in
+`closeEvent`. Read `__init__` in order, not in parts: the form widgets are built first because
+the toolbar, the settings dialog and Setup are all wired to them, and `_activate_interface`
+is last because it populates every page and re-divides the splitter.
+
+## Signals
+
+Every `_sig_*` is declared here rather than in the mixin that emits it, because `Signal` has to be
+a class attribute of a QObject subclass and `DeepReefMapWindow` is the only one in the fusion:
+`MixinBase` is `object` at runtime, and PySide6 refuses a second QObject base. The protocol in
+`core/window_protocol.py` restates them so mypy can see them from a mixin, and
+`tests/core/test_window_protocol_sync.py` compares the two lists.
+
+They exist because a worker thread cannot touch a widget. The pattern is the same everywhere: a
+daemon thread does the slow thing (a download in `models/cache_ui.py`, a reconstruction or a run
+load in `runs/loading.py`, a batch in `simple/batch.py`, a disk walk in `runs/browse.py`, a
+release check in `update/version.py`) and emits; the connection made in `__init__` below delivers
+it as a queued call on the GUI thread, where the `_on_*`/`_apply_*` slot in the owning mixin runs.
+`QTimer.singleShot` from a worker thread would silently do nothing, so it is never the answer.
+
+Two signals are deliberately not connected here. `_sig_qc_render_progress` and
+`_sig_qc_render_done` are connected per export in `runs/results.py`, because their slots close
+over a QProgressDialog that only exists for that render; `closeEvent` disconnects them before
+releasing handles so a render still in flight cannot drive a widget Qt is about to destroy.
+
+## launch()
+
+Order matters more than the code suggests. The Wayland/OpenGL environment variables and the
+`QSurfaceFormat` have to be set before the QApplication exists (VTK 9 needs a 3.2 core profile,
+and macOS exposes nothing above 2.1 any other way), fonts and theme before the window, and the
+SIGINT heartbeat after it, so Ctrl-C reaches the interpreter while `exec()` blocks in C++.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -5,8 +42,11 @@ import os
 import signal
 import sys
 import threading
+import traceback
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
+
+from deepreefmap.config.classes import ClassConfig
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QIcon, QSurfaceFormat
 from PySide6.QtWidgets import (
@@ -15,57 +55,62 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QSplitter,
-    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from deepreefmap.config.classes import ClassConfig
 from deepreefmap_gui.core.theme import BANNER_BG, BANNER_BORDER, BANNER_TEXT
-from deepreefmap_gui.form.batch import BatchMixin
+from deepreefmap_gui.core.widgets import confirm
 from deepreefmap_gui.form.panel import FormPanelMixin
-from deepreefmap_gui.models.management import ModelManagementMixin
-from deepreefmap_gui.models.library_ui import ModelLibraryMixin
-from deepreefmap_gui.runs.data_manager import DataManagerMixin
+from deepreefmap_gui.models.cache_ui import ModelManagementMixin
+from deepreefmap_gui.models.packs_ui import ModelLibraryMixin
+from deepreefmap_gui.notify.center_ui import NotificationCenterMixin
+from deepreefmap_gui.runs.browse import BrowseMixin
+from deepreefmap_gui.runs.loading import RunLoadingMixin
 from deepreefmap_gui.runs.past_runs import PastRunsMixin
+from deepreefmap_gui.runs.progress import ProgressBarsMixin
 from deepreefmap_gui.runs.progress_panel import ProgressPanel
 from deepreefmap_gui.runs.results import ResultsMixin
-from deepreefmap_gui.runs.loading import RunLoadingMixin
+from deepreefmap_gui.runs.videos import VideoLibraryMixin
 from deepreefmap_gui.simple.analysis import SimpleAnalysisMixin
 from deepreefmap_gui.simple.batch import SimpleBatchMixin
-from deepreefmap_gui.simple.mode import UiModeMixin
+from deepreefmap_gui.simple.machine import SimpleMachineMixin
+from deepreefmap_gui.simple.mode import InterfaceShellMixin
 from deepreefmap_gui.simple.plan import SimplePlanMixin
-from deepreefmap_gui.system.panel import SystemPanelMixin
-from deepreefmap_gui.viewer.controls import ViewerControlsMixin
-from deepreefmap_gui.runs.progress import ProgressBarsMixin
+from deepreefmap_gui.simple.setup import SimpleSetupMixin
+from deepreefmap_gui.storage.page import StorageMixin
+from deepreefmap_gui.system.system_tab import SystemPanelMixin
 from deepreefmap_gui.update.version import VersionCheckMixin
+from deepreefmap_gui.viewer.controls import ViewerControlsMixin
 
 logger = logging.getLogger(__name__)
 
 
 class DeepReefMapWindow(
     QMainWindow,
-    BatchMixin,
-    DataManagerMixin,
+    BrowseMixin,
     FormPanelMixin,
+    InterfaceShellMixin,
     ModelLibraryMixin,
     ModelManagementMixin,
+    NotificationCenterMixin,
     PastRunsMixin,
     ProgressBarsMixin,
     ResultsMixin,
     RunLoadingMixin,
     SimpleAnalysisMixin,
     SimpleBatchMixin,
+    SimpleMachineMixin,
     SimplePlanMixin,
+    SimpleSetupMixin,
+    StorageMixin,
     SystemPanelMixin,
-    UiModeMixin,
+    VideoLibraryMixin,
     ViewerControlsMixin,
     VersionCheckMixin,
 ):
     _sig_update_check_done = Signal(str, object, object)
     _sig_model_status_done = Signal(object, object)
-    _sig_pipeline_error = Signal(str)
-    _sig_pipeline_cancelled = Signal()
     _sig_status_text = Signal(str)
     _sig_hf_auth_done = Signal(object, str)
     _sig_download_progress = Signal(str, int)
@@ -75,15 +120,23 @@ class DeepReefMapWindow(
     _sig_run_loaded = Signal(object, str, str, int)
     _sig_load_progress = Signal(str, int, int)
     _sig_scene_file_done = Signal()
-    _sig_batch_progress = Signal(int, int, str)
-    _sig_batch_done = Signal(int, int, str)
     _sig_qc_render_progress = Signal(int, int)
     _sig_qc_render_done = Signal(bool, str)
     _sig_discovery_done = Signal(object, object)
     _sig_survey_progress = Signal(int, int, str)
     _sig_survey_done = Signal(int, int, str)
     _sig_run_sizes_done = Signal(object)
-    _sig_storage_done = Signal(object)
+    _sig_clip_links_done = Signal(object)
+    _sig_videos_probed = Signal(object)
+    _sig_storage_usage = Signal(object)
+    _sig_storage_page = Signal(object)
+    # Installed versions of the app, not the user's run data: the three storage
+    # signals above measure drives, this one measures PyApp environments.
+    _sig_envs_done = Signal(object)
+    _sig_shortcut_done = Signal(object)
+    # What a worker thread has to say, as data: a new kind of message should not
+    # need a new signal here.
+    _sig_notify = Signal(object)
 
     def __init__(self, classes_config: ClassConfig, classes_path: Path | None) -> None:
         super().__init__()
@@ -94,12 +147,11 @@ class DeepReefMapWindow(
         self._playback_timer.timeout.connect(self._on_playback_tick)
 
         self._sig_update_check_done.connect(self._apply_update_check)
-        self._sig_storage_done.connect(self._apply_storage)
+        self._sig_shortcut_done.connect(self._on_shortcut_done)
+        self._sig_envs_done.connect(self._apply_envs)
         self._sig_model_status_done.connect(self._apply_model_status)
-        self._sig_pipeline_error.connect(self._on_pipeline_error)
-        self._sig_pipeline_cancelled.connect(self._on_pipeline_cancelled)
         # The lambda is load-bearing, not noise: _status_label is built later, by
-        # _build_form_panel(). Binding self._status_label.setText here would
+        # _build_form_widgets(). Binding self._status_label.setText here would
         # resolve the attribute at connect time and raise AttributeError.
         self._sig_status_text.connect(lambda t: self._status_label.setText(t))  # noqa: PLW0108
         self._sig_hf_auth_done.connect(self._on_hf_auth_done)
@@ -109,12 +161,15 @@ class DeepReefMapWindow(
         self._sig_run_loaded.connect(self._apply_loaded_run)
         self._sig_load_progress.connect(self._on_load_progress)
         self._sig_scene_file_done.connect(self._on_scene_file_done)
-        self._sig_batch_progress.connect(self._on_batch_progress)
-        self._sig_batch_done.connect(self._on_batch_done)
         self._sig_discovery_done.connect(self._on_discovery_done)
         self._sig_survey_progress.connect(self._on_survey_progress)
         self._sig_survey_done.connect(self._on_survey_done)
         self._sig_run_sizes_done.connect(self._apply_run_sizes)
+        self._sig_clip_links_done.connect(self._apply_clip_link_states)
+        self._sig_videos_probed.connect(self._on_videos_probed)
+        self._sig_storage_usage.connect(self._apply_storage_usage)
+        self._sig_storage_page.connect(self._apply_storage_page_scan)
+        self._sig_notify.connect(self._notify_post)
 
         self.setWindowTitle("DeepReefMap")
         # Open at ~90% of the available screen, capped at the comfortable
@@ -135,7 +190,7 @@ class DeepReefMapWindow(
         # width.
         self.setMinimumSize(720, 480)
 
-        from deepreefmap_gui.viewer.widget import QtPointCloudViewer
+        from deepreefmap_gui.viewer.point_cloud import QtPointCloudViewer
 
         self._viewer = QtPointCloudViewer(
             class_colors=classes_config.id_to_color,
@@ -153,34 +208,22 @@ class DeepReefMapWindow(
         self._pick_card_pinned_pos: tuple[int, int] | None = None
         self._build_pick_mode_overlay()
 
-        # Build the form first so widgets it references (status_label, etc.)
-        # are constructed before we wire them into the top toolbar.
-        form_panel = self._build_form_panel()
+        # Build the form widgets first: they are what the toolbar, the settings
+        # dialog and Setup are all wired to, and none of them can be laid
+        # out before the widgets they reference exist.
+        self._build_form_widgets()
         self._capture_form_defaults()
         top_bar = self._build_top_bar()
-        # The preview toggle gates the viewer canvas, so it docks onto the
-        # viewer's header rather than the global toolbar.
-        self._viewer.add_header_widget(self._build_preview_toggle())
         log_panel = self._build_log_panel()
 
-        # The left pane is either the advanced sidebar (page 0) or the simple
-        # full-page shell (page 1); _set_ui_mode flips the stack.
-        self._left_stack = QStackedWidget()
-        self._left_stack.addWidget(form_panel)
-        self._left_stack.addWidget(self._build_simple_shell())
-
         splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.addWidget(self._left_stack)
+        splitter.addWidget(self._build_simple_shell())
         splitter.addWidget(self._viewer)
-        # Size the form pane to its DPI-aware content width, clamped to at most
-        # half the window so the 3D viewport keeps the majority. Stretch factor
-        # 0 then pins that width when the window grows, so the viewer absorbs the
-        # extra space rather than the form. _update_work_area re-divides the
-        # splitter per mode.
-        form_w = getattr(self, "_form_preferred_width", 440)
-        form_w = max(360, min(form_w, self.width() // 2))
-        splitter.setSizes([form_w, max(400, self.width() - form_w)])
-        splitter.setStretchFactor(0, 0)
+        # The shell takes the window and the viewer nothing, until View mode
+        # opens a run. _update_work_area owns the division from then on; this is
+        # only the state before it has been asked anything.
+        splitter.setSizes([self.width(), 0])
+        splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 1)
         splitter.setChildrenCollapsible(True)
         splitter.setHandleWidth(6)
@@ -188,8 +231,7 @@ class DeepReefMapWindow(
 
         # Vertical splitter places the live log as a togglable section at the
         # bottom of the window, alongside the form + 3D viewer above it. Hidden
-        # initially; the top-bar Log button drives visibility, and _on_submit
-        # auto-opens it when a run starts.
+        # initially; the Log button drives visibility.
         self._central_vsplitter = QSplitter(Qt.Orientation.Vertical)
         self._central_vsplitter.addWidget(splitter)
         self._central_vsplitter.addWidget(log_panel)
@@ -220,16 +262,66 @@ class DeepReefMapWindow(
         central_layout.setContentsMargins(0, 0, 0, 0)
         central_layout.setSpacing(0)
         central_layout.addWidget(top_bar)
+        # Spans the window rather than riding in the simple shell, which View
+        # mode squeezes to nothing to give the viewport the full width.
+        central_layout.addWidget(self._view_bar)
         central_layout.addWidget(self._run_meta_banner)
         central_layout.addWidget(self._central_vsplitter, 1)
         # Status and progress span the whole window under everything else, so
-        # they read the same in both modes and survive log-panel resizing.
+        # they read the same from every section and survive log-panel resizing.
         central_layout.addWidget(self._build_bottom_bar())
         self.setCentralWidget(central)
 
-        # Apply the saved mode last: it flips the left stack and re-divides the
-        # splitter, so everything above must exist first.
-        self._init_ui_mode()
+        # Last: it populates every page and re-divides the splitter, so the
+        # whole window has to exist first.
+        self._activate_interface()
+        self._install_shortcuts()
+
+    def _install_shortcuts(self) -> None:
+        """Keyboard routes to the destinations that otherwise need a mouse.
+
+        The app is driven on a laptop trackpad, which makes a keyboard route to
+        the things you reach constantly worth having. Deliberately few: one per
+        destination, no chords, nothing that shadows a text field's own keys.
+
+        QAction on the window rather than QShortcut so the binding survives focus
+        moving into a child, and so a menu bar can adopt them later without the
+        bindings being defined twice.
+        """
+        from PySide6.QtGui import QAction, QKeySequence
+
+        bindings = (
+            ("Show or hide the log", "Ctrl+L", self._log_toggle_btn.click),
+            ("Go to Browse", "Ctrl+B", self._activate_browse),
+            ("Run settings", "Ctrl+,", self._activate_settings),
+            ("Setup", "F1", self._activate_machine),
+            ("Quit", QKeySequence.StandardKey.Quit, self.close),
+        )
+        for name, key, slot in bindings:
+            action = QAction(name, self)
+            action.setShortcut(QKeySequence(key) if isinstance(key, str) else key)
+            action.triggered.connect(slot)
+            self.addAction(action)
+
+    def _activate_browse(self) -> None:
+        self._set_simple_section("browse")
+
+    def _activate_settings(self) -> None:
+        self._on_edit_run_settings()
+
+    def _activate_machine(self) -> None:
+        self._set_simple_section("machine")
+
+    def eventFilter(self, obj, event):
+        # QObject owns eventFilter earlier in the MRO than the mixins, so the
+        # drop handling lives here on the concrete window and delegates in.
+        if self._data_drop_event_filter(obj, event):
+            return True
+        # Observes rather than consumes: the splitter still has to lay itself
+        # out, this only re-divides it afterwards.
+        self._data_split_event_filter(obj, event)
+        self._video_split_event_filter(obj, event)
+        return super().eventFilter(obj, event)
 
     # --- teardown -----------------------------------------------------------
 
@@ -245,6 +337,8 @@ class DeepReefMapWindow(
             "_sys_timer",
             "_status_tick_timer",
             "_data_refresh_timer",
+            "_out_root_commit_timer",
+            "_storage_timer",
         ):
             timer = getattr(self, attr, None)
             if timer is not None:
@@ -281,6 +375,9 @@ class DeepReefMapWindow(
                 logger.debug("Survey store did not close cleanly", exc_info=True)
             self._survey_store_obj = None
 
+        # The pass that was running owns this and closes it when it unwinds, but
+        # the window can go first. A file handler left on the root logger keeps
+        # writing into a finished run's directory.
         handler = getattr(self, "_run_log_file_handler", None)
         if handler is not None:
             from deepreefmap_gui.system.log_view import close_run_log_file
@@ -289,18 +386,15 @@ class DeepReefMapWindow(
             self._run_log_file_handler = None
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt override)
-        # RunLoadingMixin._run_in_flight: a survey batch runs on _pipeline_thread
-        # too, so this one predicate covers both kinds of work.
+        # RunLoadingMixin._run_in_flight: the survey batch worker is what holds
+        # _pipeline_thread, so this asks whether a batch is still processing.
         if self._run_in_flight():
-            answer = QMessageBox.question(
+            if not confirm(
                 self,
                 "Quit DeepReefMap",
                 "A reconstruction is still running. Quitting stops it and the "
                 "run will be incomplete.\n\nQuit anyway?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if answer != QMessageBox.StandardButton.Yes:
+            ):
                 event.ignore()
                 return
             # Signalled, not joined. The worker threads are daemons, and a join
@@ -349,6 +443,42 @@ def prefer_portal_file_dialogs() -> None:
     os.environ["QT_QPA_PLATFORMTHEME"] = "xdgdesktopportal"
 
 
+def _install_crash_dialog() -> None:
+    """Route uncaught exceptions to a dialog as well as the log.
+
+    Without this an exception that escapes a slot prints to stderr and no
+    further. From a desktop launcher that is the session journal; in the
+    packaged Windows build bootstrap points stderr at os.devnull, so the app
+    misbehaves in complete silence. A field laptop has to be able to report what
+    went wrong without someone starting it from a terminal.
+    """
+
+    def show(exc_type: type[BaseException], exc: BaseException, tb: Any) -> None:
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc, tb)
+            return
+        logger.critical("Unhandled exception", exc_info=(exc_type, exc, tb))
+        if QApplication.instance() is None:
+            return
+        try:
+            box = QMessageBox(QMessageBox.Icon.Critical, "DeepReefMap", str(exc) or exc_type.__name__)
+            box.setInformativeText(
+                "The app hit a problem it did not expect. It may keep working; if "
+                "it does not, restart it and send the details below."
+            )
+            box.setDetailedText("".join(traceback.format_exception(exc_type, exc, tb)))
+            box.exec()
+        except Exception:
+            logger.exception("Could not show the crash dialog")
+
+    sys.excepthook = show
+    # A worker thread dying otherwise leaves no trace at all: threading prints
+    # to stderr, which in the packaged build goes nowhere.
+    threading.excepthook = lambda args: show(
+        args.exc_type, args.exc_value or args.exc_type(), args.exc_traceback
+    )
+
+
 def launch(classes_path: Path | None = None, view_run_dir: Path | None = None) -> None:
     from deepreefmap.config.classes import load_classes
 
@@ -384,9 +514,11 @@ def launch(classes_path: Path | None = None, view_run_dir: Path | None = None) -
     from importlib import resources
     icon_path = resources.files("deepreefmap_gui.resources").joinpath("icon.png")
     qt_app.setWindowIcon(QIcon(str(icon_path)))
+    _install_crash_dialog()
     classes_config = load_classes(classes_path)
     window = DeepReefMapWindow(classes_config, classes_path)
     window.show()
+    window.check_survey_database()
     if view_run_dir is not None:
         QTimer.singleShot(100, lambda: window._auto_load_run(view_run_dir))
 

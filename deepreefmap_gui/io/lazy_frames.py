@@ -15,7 +15,7 @@ import cv2
 import numpy as np
 
 if TYPE_CHECKING:
-    from deepreefmap.pipeline.artifacts import FrameBatch
+    pass
 
 
 class FrameAccessor(Protocol):
@@ -169,16 +169,3 @@ class LazyFrameBatch:
     @property
     def masks(self) -> list[np.ndarray]:
         return [f.keep_mask for f in self.frames]
-
-
-def lazy_frame_batch_from_run_dir(run_dir: Path, frame_batch: FrameBatch) -> LazyFrameBatch:
-    """Re-express an eager FrameBatch as a lazy one reading the run's PNGs."""
-    accessor = RunDirFrameAccessor(
-        run_dir,
-        frame_batch.frame_indices,
-        frame_batch.clip_counts,
-        frame_batch.image_size,
-    )
-    lazy = LazyFrameBatch(accessor, frame_batch.intrinsics)
-    lazy.gravity_vectors = frame_batch.gravity_vectors
-    return lazy

@@ -64,8 +64,10 @@ def fetch_releases(timeout: float = 8.0) -> list[dict] | None:
             })
         return records or None
     try:
-        req = urllib.request.Request(gh_releases_url(), headers={"Accept": "application/vnd.github+json"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        # S310: the URL is gh_releases_url(), built from the configured repo
+        # slug, not from anything a release payload can influence.
+        req = urllib.request.Request(gh_releases_url(), headers={"Accept": "application/vnd.github+json"})  # noqa: S310
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
             releases = json.load(resp)
         kept = [rel for rel in releases if rel.get("tag_name") and not rel.get("draft")]
         try:

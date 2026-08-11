@@ -5,8 +5,8 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
-from deepreefmap_gui.profiling.eta import StageRow, format_duration, format_remaining
 from deepreefmap_gui.core.theme import BORDER, GROOVE, PRIMARY, SUCCESS, TEXT_MUTED, WINDOW_TEXT
+from deepreefmap_gui.profiling.eta import StageRow, format_duration, format_remaining
 
 _STATE_COLOR = {"done": SUCCESS, "running": PRIMARY, "pending": TEXT_MUTED}
 _BAR_CELLS = 10  # width of the per-stage fill bar, in block glyphs
@@ -38,11 +38,11 @@ class HoverColumn(QWidget):
         self.hovered.emit(event.globalPosition())
         super().enterEvent(event)
 
-    def mouseMoveEvent(self, event) -> None:  # noqa: N802 (Qt override)
+    def mouseMoveEvent(self, event) -> None:
         self.hovered.emit(event.globalPosition())
         super().mouseMoveEvent(event)
 
-    def leaveEvent(self, event) -> None:  # noqa: N802 (Qt override)
+    def leaveEvent(self, event) -> None:
         self.hovered.emit(None)
         super().leaveEvent(event)
 

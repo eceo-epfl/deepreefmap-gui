@@ -20,26 +20,29 @@ POINTS_NLOGN = "points_nlogn"
 @dataclass(frozen=True)
 class StageSpec:
     key: str
-    label: str
+    label: str  # engineer name, kept for the hover breakdown and timing popup
     driver: str
     weight: float  # relative share used only as a first-run fallback prior
+    # Plain phrase for the status line, so a diver reads what is happening rather
+    # than a pipeline stage name. The engineer `label` stays for the breakdown.
+    plain: str
 
 
 # Coarse stages the user sees in the breakdown. Weights are the aggregated
 # `_RECON_PHASES` shares (gui/runs/progress.py) and are used only when there is no
 # per-machine history yet.
 STAGES: tuple[StageSpec, ...] = (
-    StageSpec("startup", "Startup", FIXED, 1.0),
-    StageSpec("preprocess", "Preprocess", FRAMES, 18.0),
-    StageSpec("mapping", "Mapping", FRAMES, 25.0),
-    StageSpec("cloud", "Cloud", POINTS_NLOGN, 13.0),
-    StageSpec("ortho", "Ortho", POINTS, 22.0),
-    StageSpec("save_view", "Save + view", POINTS, 7.0),
+    StageSpec("startup", "Startup", FIXED, 1.0, plain="Getting ready"),
+    StageSpec("preprocess", "Preprocess", FRAMES, 18.0, plain="Reading the video"),
+    StageSpec("mapping", "Mapping", FRAMES, 25.0, plain="Working out the 3D shape"),
+    StageSpec("cloud", "Cloud", POINTS_NLOGN, 13.0, plain="Building the point cloud"),
+    StageSpec("ortho", "Ortho", POINTS, 22.0, plain="Building the flat map"),
+    StageSpec("save_view", "Save + view", POINTS, 7.0, plain="Saving"),
     # The scene .zarr.zip now stores only the cloud index, so this is the index
     # build plus a ~30 MB write. Measured at 0.5s against runs of 186-585s on
     # this machine; it was 3.6-15.8s while the file also carried every frame.
     # Only a first-run prior either way -- recorded history overrides it.
-    StageSpec("scene_save", "Scene file", POINTS, 1.0),
+    StageSpec("scene_save", "Scene file", POINTS, 1.0, plain="Preparing for fast reopen"),
 )
 
 _STAGE_BY_KEY = {s.key: s for s in STAGES}
@@ -126,10 +129,10 @@ def stage_for_phase(phase_key: str) -> str | None:
     return _PHASE_TO_STAGE.get(phase_key)
 
 
-def stage_label_for_phase(phase_key: str) -> str | None:
-    """Human label of the coarse stage a fine phase belongs to (matches the popup)."""
+def stage_plain_label_for_phase(phase_key: str) -> str | None:
+    """Plain phrase for the coarse stage a fine phase belongs to (the status line)."""
     stage = _PHASE_TO_STAGE.get(phase_key)
-    return _STAGE_BY_KEY[stage].label if stage else None
+    return _STAGE_BY_KEY[stage].plain if stage else None
 
 
 def format_duration(seconds: float) -> str:
@@ -308,8 +311,8 @@ class RunEtaEstimator:
         """Remainder from this stage's own throughput, or None if not yet reliable.
 
         Purely measured, so it is safe to show on a first run. Evaluated against
-        the wall clock at query time — average time per unit of earned fraction,
-        scaled by the fraction left — so it counts down between sparse progress
+        the wall clock at query time (average time per unit of earned fraction,
+        scaled by the fraction left), so it counts down between sparse progress
         events and grows honestly when the stage stalls, instead of freezing at
         whatever the rate was at the last event.
         """
@@ -352,13 +355,22 @@ class RunEtaEstimator:
         return w * live + (1.0 - w) * prior
 
     def running_stage_label(self) -> str | None:
-        """Label of the coarse stage currently running, or None if none is."""
+        """Engineer label of the coarse stage currently running, or None if none is."""
+        spec = self._running_stage_spec()
+        return spec.label if spec is not None else None
+
+    def running_stage_plain_label(self) -> str | None:
+        """Plain phrase of the coarse stage currently running, for the status line."""
+        spec = self._running_stage_spec()
+        return spec.plain if spec is not None else None
+
+    def _running_stage_spec(self) -> StageSpec | None:
         # The furthest-along running stage wins: a late fold-back event (viewer setup
         # arriving after the scene-file save started) can leave an earlier stage
         # marked running, and the pipeline is sequential, so the later one is current.
         for spec in reversed(STAGES):
             if self._runs[spec.key].state == "running":
-                return spec.label
+                return spec
         return None
 
     def current_stage_remaining(self, now: float) -> float | None:

@@ -1,6 +1,6 @@
 [project]
 name = "deepreefmap-gui"
-version = "0.1.0"
+version = "0.3.0"
 description = "Desktop application for semantic 3D mapping of coral reefs with deepreefmap"
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
@@ -52,7 +52,7 @@ dependencies = [
   #   platformdirs  paths.py, imported by nearly every module
   #   numpy         io/scene_file.py, viewer/*, runs/loaded_run.py
   #   opencv-python form/video_scrub.py; matches what deepreefmap[gopro] resolves
-  #   huggingface-hub  models/manager.py — cache scan, auth and delete are ours
+  #   huggingface-hub  models/manager.py: cache scan, auth and delete are ours
   "platformdirs>=4.0",
   "numpy>=1.26",
   "opencv-python>=4.9",
@@ -79,6 +79,10 @@ dev = [
   # ci.yml would otherwise sit on GitHub's 6-hour job default.
   "pytest-timeout>=2.3",
   "pytest-cov>=5.0",
+  # Kept for the -n a machine with the memory for it can pass: the suite is
+  # mostly window builds, and each worker is a process with its own
+  # QApplication, its own torch and its own temp dirs.
+  "pytest-xdist>=3.6",
   "ruff>=0.12.0",
   "mypy>=2.0.0",
   "types-tqdm",
@@ -100,7 +104,11 @@ build-backend = "setuptools.build_meta"
 include = ["deepreefmap_gui*"]
 
 [tool.setuptools.package-data]
-"deepreefmap_gui.resources" = ["*.png", "fonts/*.ttf", "fonts/*.txt", "configs/*.yaml"]
+"deepreefmap_gui.resources" = [
+  "*.png", "*.icns", "fonts/*.ttf", "fonts/*.txt", "configs/*.yaml",
+  # The icon set, vendored so an offline laptop still has one.
+  "icons/*.svg", "icons/LICENSE",
+]
 
 [tool.uv]
 conflicts = [
@@ -145,10 +153,24 @@ testpaths = ["tests"]
 # test basenames need not be globally unique.
 # -ra surfaces the skip reasons, which matters because the torch importorskip in
 # tests/gui/conftest.py silently gates most of the GUI suite.
+# Serial by default. Each xdist worker is a process with its own QApplication
+# and its own torch, which is gigabytes apiece, so "one per core" is a memory
+# figure rather than a speed one: on a 32-core desktop -n auto swapped the
+# machine to death. Pass -n yourself when the machine can afford it; CI does,
+# sized for a hosted runner's memory.
 addopts = "--import-mode=importlib -ra --strict-markers --strict-config"
 # Puts tests/_factories.py on the path for the category subfolders that share it.
 pythonpath = ["tests"]
 timeout = 120
+# thread, not the signal default: a signal handler is Python-level, so it only
+# runs once the interpreter is back from C. A test parked in QDialog::exec()
+# never gets there and the timeout never fires -- CI sat on one for five hours.
+# The thread method dumps every stack and exits, naming the test.
+timeout_method = "thread"
+markers = [
+  "real_reveal: opt out of the conftest stub that keeps reveals off the desktop",
+  "real_modal: opt out of the conftest guard that blocks exec() on dialogs and menus",
+]
 # Scoped to our own package: VTK and numpy emit deprecations we don't control,
 # and drowning those would mean turning the filter off again.
 filterwarnings = [
@@ -172,6 +194,7 @@ extend-exclude = ["tests/e2e/_cache", "tests/e2e/_work"]
 # lock in behaviour rather than schedule a refactor.
 extend-select = [
   "E4", "E7", "E9", "W", "E501",
+  "I",       # import sorting: fully autofixable, so it stays sorted for free
   "A",       # builtin shadowing
   "ASYNC", "EXE", "FA", "INT", "SLOT", "TID", "YTT", "PYI",
   "B",       # bugbear: mutable defaults, loop-variable capture in closures
@@ -182,12 +205,21 @@ extend-select = [
   "FURB", "G", "ISC", "LOG", "PERF", "PIE", "Q", "RET", "SIM",
   "T20",     # stray print()
   "PLW", "PLC0207", "PLR1714", "PLR1730", "PLR5501",
+  "N",       # naming: Qt overrides are allowlisted below, not noqa'd per site
+  "S310",    # urlopen without a scheme check
+  "RUF100",  # unused noqa. Last, and only now: it can only see enabled rules,
+             # so turning it on before N and S310 would have deleted the
+             # comments documenting exactly those.
 ]
-# RUF100 (unused noqa) is deliberately NOT here yet. It only knows about enabled
-# rules, so turning it on before N and S would delete the `# noqa: N802 (Qt
-# override)` and `# noqa: S310` comments this codebase already carries — real
-# documentation, removed for being unenforced. It belongs with the exception
-# sweep, alongside N, S110, S112 and S310.
+# PLW1514 (open without an explicit encoding) is selected by the PLW above but
+# only fires under --preview. The tree is clean under it, so it starts green the
+# day it graduates rather than arriving as a backlog. Check with:
+#   uv run ruff check --preview --select PLW1514 deepreefmap_gui tests
+# Still deferred: S110 and S112 (try/except/pass and /continue). Each is a
+# judgement about whether a swallowed exception is deliberate, so they are being
+# handled per site rather than by a sweep, and the rule goes on when the count
+# reaches zero. S101 stays off for good: it is `assert`, which is what a test is
+# made of.
 extend-ignore = [
   # Suppressing an exception is sometimes right and sometimes a hidden bug; that
   # call needs a human, so it is being made per-site rather than by autofix.
@@ -197,6 +229,36 @@ extend-ignore = [
   # try/except inside a loop is how per-item failures are isolated here, which
   # is a correctness choice, not an oversight.
   "PERF203",
+]
+
+[tool.ruff.lint.pep8-naming]
+# Qt's method names are Qt's to spell, so an override cannot be renamed into
+# snake_case without silently ceasing to override anything. Declared once here
+# rather than carried as a `# noqa: N802` comment on each of the ~27 sites: the
+# vocabulary is closed, and a comment per site documents nothing the rule does
+# not already say.
+extend-ignore-names = [
+  "acceptProposedAction",
+  "cvtColor",
+  "eventFilter",
+  "hasUrls",
+  "leaveEvent",
+  "mimeData",
+  "mouseMoveEvent",
+  "mousePressEvent",
+  "mouseReleaseEvent",
+  "paintEvent",
+  "setBegin",
+  "setEnd",
+  "setText",
+  "showEvent",
+  "wheelEvent",
+  # N818 wants an Error suffix. These three are cancellations, not faults: they
+  # unwind a copy the user stopped, and are caught by name where they are
+  # raised. Renaming them would say something untrue about what they mean.
+  "PackCancelled",
+  "DownloadCancelled",
+  "InsufficientDiskSpace",
 ]
 
 # INP001 is deliberately absent: tests/ has no __init__.py by design (see the

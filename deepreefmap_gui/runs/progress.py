@@ -1,19 +1,44 @@
+"""The two progress bars, and the phase weights that make them mean something.
+
+A stage bar shows the step running now, a total bar shows the run. The total is weighted, not a
+count of steps, because the steps are nothing like equal: the PCA inside the ortho build can be
+most of the wall time on a large reef, while four viewer phases together are seconds. The weights
+in `_RECON_PHASES` and `_LOAD_PHASES` are measured shares, which is why the same phase key carries
+different weights in each: the scene-file write is a rounding error in a multi-minute run and a
+real fraction of a seconds-long load.
+
+Three rules the numbers exist to keep:
+
+- **Forward only.** `ProgressModel` promotes every phase it skipped past and never lowers a
+  percent, so a bar cannot rewind when a stage reports out of order.
+- **One continuous fill per stage the user recognises.** Mapping and cloud building are each
+  several sub-phases; `_subphase_spans` gives each a slice of the stage bar sized by the same
+  weights, so an indeterminate tail step holds at its slice start rather than leaving the stage
+  pinned at 100% while it is still working.
+- **100% means finished.** A phase weighted below the bar's rounding shows the run as complete
+  while the last write is still running, which is why `scene_save` carries more than its cost.
+
+The `_*_STAGE_TO_PHASE` tables are the seam with the library: the orchestrator and the run loader
+emit their own stage strings, and mapping them here (rather than renaming stages there) keeps a
+library change from silently freezing a bar. `profiling/eta.py` reads the same phases for the ETA.
+"""
+
 from __future__ import annotations
 
 import time
 
+from PySide6.QtCore import QTimer
+from PySide6.QtWidgets import QApplication
+
+from deepreefmap_gui.core.theme import PRIMARY
 from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.profiling.eta import (
     RunEtaEstimator,
     format_duration,
     format_remaining,
     stage_for_phase,
-    stage_label_for_phase,
+    stage_plain_label_for_phase,
 )
-from deepreefmap_gui.core.theme import PRIMARY
-
-from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QApplication
 
 
 class ProgressModel:
@@ -236,6 +261,21 @@ class ProgressBarsMixin(MixinBase):
             self._progress_stack.hovered.connect(self._on_total_bar_hover)
             self._hover_connected = True
 
+    def _progress_sinks(self) -> list:
+        """Every widget mirroring the run in flight.
+
+        The viewer's placeholder panel has one, and the Run
+        step's batch card, and a window under construction has neither.
+        """
+        return [
+            sink
+            for sink in (
+                getattr(self, "_progress_panel", None),
+                getattr(self, "_batch_progress", None),
+            )
+            if sink is not None
+        ]
+
     def _begin_progress(self, model: ProgressModel) -> None:
         """Switch the active progress model and light up both bars from zero."""
         self._connect_bar_hover()
@@ -277,8 +317,13 @@ class ProgressBarsMixin(MixinBase):
         return RunEtaEstimator(frames=0, priors=priors, expected_points=expected_points)
 
     def _set_progress_widgets_visible(self, visible: bool) -> None:
-        """Progress readouts belong to a run in flight; idle shows none of them."""
+        """Progress readouts belong to a run in flight; idle shows none of them.
+
+        The top bar holds nothing else, so it goes with them rather than sitting
+        empty above the work for the whole time nothing is running.
+        """
         self._progress_stack.setVisible(visible)
+        self._top_bar.setVisible(visible)
         self._eta_total_label.setVisible(visible)
         self._bottom_progress_bar.setVisible(visible)
 
@@ -304,9 +349,8 @@ class ProgressBarsMixin(MixinBase):
         self._status_count_text = ""
         self._status_phase_key = None
         self._stage_fill = {}
-        panel = getattr(self, "_progress_panel", None)
-        if panel is not None:
-            panel.set_idle("No run in progress.")
+        for sink in self._progress_sinks():
+            sink.set_idle("No run in progress.")
 
     def _render_status(self) -> None:
         """Recompose the status label: colored stage + label, then a metrics line."""
@@ -332,22 +376,23 @@ class ProgressBarsMixin(MixinBase):
             parts.append(f"{format_remaining(stage_left)} left")
         metrics = " · ".join(parts)
         # Color the active coarse stage so the left text names it (and the stage
-        # name is dropped from the bars). During a reconstruction take it from the
-        # estimator's running stage (monotonic), so a late viewer-setup event can't
-        # regress the token to a finished stage while a later save is still running.
-        # Fall back to the fine phase key when there is no estimator (cached load).
-        stage = est.running_stage_label() if est is not None else None
+        # name is dropped from the bars). Plain-language here so the diver reads
+        # what is happening. The engineer stage names stay in the hover breakdown.
+        # During a reconstruction take it from the estimator's running stage
+        # (monotonic), so a late viewer-setup event can't regress the token to a
+        # finished stage while a later save is still running. Fall back to the fine
+        # phase key when there is no estimator (cached load).
+        stage = est.running_stage_plain_label() if est is not None else None
         if not stage:
-            stage = stage_label_for_phase(getattr(self, "_status_phase_key", "") or "")
+            stage = stage_plain_label_for_phase(getattr(self, "_status_phase_key", "") or "")
         if stage:
             first = f'<b><span style="color:{PRIMARY}">{stage}</span></b> · {base}'
         else:
             first = base
         text = f"{first}<br>{metrics}" if metrics else first
         self._status_label.setText(text)
-        panel = getattr(self, "_progress_panel", None)
-        if panel is not None:
-            panel.set_status_html(text)
+        for sink in self._progress_sinks():
+            sink.set_status_html(text)
 
     def _render_eta(self) -> None:
         """Refresh the visible overall-estimate label and the breakdown popup."""
@@ -360,9 +405,9 @@ class ProgressBarsMixin(MixinBase):
         # means no trustworthy figure yet (a first run still calibrating).
         eta_text = f"{format_remaining(visible)} left" if visible is not None else "estimating…"
         self._eta_total_label.setText(eta_text)
-        panel = getattr(self, "_progress_panel", None)
-        if panel is not None:
-            panel.set_eta(eta_text)
+        for sink in self._progress_sinks():
+            sink.set_eta(eta_text)
+            sink.set_eta_seconds(visible)
         popup = getattr(self, "_timing_popup", None)
         if popup is not None and popup.isVisible():
             popup.set_rows(est.stage_rows(now), est.total_remaining_s(now), est.has_history)
@@ -471,9 +516,8 @@ class ProgressBarsMixin(MixinBase):
             self._total_progress_bar.setValue(pct)
             self._total_progress_bar.setEnabled(True)
             self._bottom_progress_bar.setValue(pct)
-            panel = getattr(self, "_progress_panel", None)
-            if panel is not None:
-                panel.set_percent(pct)
+            for sink in self._progress_sinks():
+                sink.set_percent(pct)
 
         if flush:
             QApplication.processEvents()

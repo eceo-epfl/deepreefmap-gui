@@ -1,15 +1,18 @@
-"""System tab: gauges tick only while visible, benchmark fills from the probe.
+"""The system panel: its gauges, its recorded history, and the memory grade.
 
 Colour assertions go through core.theme rather than hex literals, so a palette
 change moves the theme test and these together instead of failing here for a
 reason that has nothing to do with the panel.
+
+Where the panel is shown, and when its 1 Hz poll runs, belongs to Setup
+and is covered in tests/gui/test_machine_page.py.
 """
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from deepreefmap_gui.core.theme import BLOCK, UPDATE
-
-
 
 
 def _recorded_runs_text(window) -> str:
@@ -22,17 +25,6 @@ def _recorded_runs_text(window) -> str:
     parts += [w.text() for w in window._recorded_runs_container.findChildren(QLabel)]
     parts += [w.styleSheet() for w in window._recorded_runs_container.findChildren(QProgressBar)]
     return " ".join(parts)
-
-
-def test_system_tab_is_registered(window) -> None:
-    assert window._sidebar_tabs.tabText(window._TAB_SYSTEM) == "System"
-
-
-def test_gauge_timer_runs_only_on_the_system_tab(window) -> None:
-    window._on_sidebar_tab_changed(window._TAB_SYSTEM)
-    assert window._sys_timer.isActive()
-    window._on_sidebar_tab_changed(window._TAB_RUN)
-    assert not window._sys_timer.isActive()
 
 
 def test_gauges_reflect_a_sampled_utilisation(window, monkeypatch) -> None:
@@ -89,56 +81,73 @@ def _low_ram_profile(probe):
     )
 
 
-def test_memory_warning_shows_inline_notice_and_icon(window, monkeypatch) -> None:
+def _queue_pass(window, *, seconds: float, fps: int) -> None:
+    """Give the grade a pass to read: it sizes the longest one queued."""
+    window._survey_rows = [SimpleNamespace(begin_s=0.0, end_s=seconds)]
+    window._fps_spin.setValue(fps)
+
+
+def test_a_memory_risk_shows_the_capacity_readout(window, monkeypatch) -> None:
     import deepreefmap_gui.profiling.system_probe as probe
 
     monkeypatch.setattr(probe, "probe_system", lambda *a, **k: _low_ram_profile(probe))
-    window._video_duration_s = 378.0
-    window._fps_spin.setValue(5)
+    _queue_pass(window, seconds=378.0, fps=5)
     window._update_memory_profile_warning()
-    assert not window._memory_notice.isHidden()
-    assert not window._memory_warn_icon.isHidden()
-    # The icon tooltip is multiline rich text, not one long plain line.
-    assert "<br>" in window._memory_warn_icon.toolTip()
+
+    assert not window._capacity_advice.isHidden()
+    # A whole sentence in a narrow column, so it wraps rather than clipping.
+    assert window._capacity_advice.wordWrap()
+    # The pass is named in the units it was set up in.
+    assert "at 5 FPS" in window._capacity_caption.text()
+    # What the machine can do is stated whether or not the pass fits.
+    assert "can process about" in window._capacity_detail.text()
+    assert window._memory_advisory
 
 
-def test_memory_warning_hidden_without_a_video(window) -> None:
-    window._video_duration_s = None  # no frame count is knowable yet
-    window._update_memory_profile_warning()
-    assert window._memory_notice.isHidden()
-    assert window._memory_warn_icon.isHidden()
-
-
-def test_memory_icon_colour_tracks_warn_vs_block(window, monkeypatch) -> None:
+def test_the_readout_names_a_setting_that_would_fit(window, monkeypatch) -> None:
+    """A field worker needs a change to make, not only a number to read."""
     import deepreefmap_gui.profiling.system_probe as probe
 
-    window._video_duration_s = 378.0
-    window._fps_spin.setValue(5)
+    monkeypatch.setattr(probe, "probe_system", lambda *a, **k: _low_ram_profile(probe))
+    _queue_pass(window, seconds=1419.0, fps=5)
+    window._update_memory_profile_warning()
 
-    def profile(avail_gb, swap_gb):
+    advice = window._capacity_advice.text()
+    assert "FPS to" in advice or "trim" in advice
+
+
+def test_capacity_is_unavailable_until_a_pass_is_queued(window) -> None:
+    window._survey_rows = []  # no length is knowable yet
+    window._update_memory_profile_warning()
+
+    assert window._capacity_advice.isHidden()
+    assert window._memory_advisory == ""
+    assert "Add a pass" in window._capacity_detail.text()
+
+
+def test_the_capacity_colour_tracks_warn_against_block(window, monkeypatch) -> None:
+    """Amber and red have to stay distinguishable: one says the pass is close to
+    the limit, the other says it is expected to run out and stop."""
+    import deepreefmap_gui.profiling.system_probe as probe
+
+    def profile(total_gb):
         return probe.SystemProfile(
             os_name="Linux", os_release="x", cpu_logical=8, cpu_physical=4,
-            total_ram_bytes=32 * 1024**3, available_ram_bytes=avail_gb * 1024**3,
-            total_swap_bytes=swap_gb * 1024**3, free_swap_bytes=swap_gb * 1024**3,
+            total_ram_bytes=total_gb * 1024**3, available_ram_bytes=total_gb * 1024**3,
+            total_swap_bytes=0, free_swap_bytes=0,
             gpu=probe.GpuInfo(probe.GPU_NONE, "CPU only", None, None),
             disk_total_bytes=0, disk_free_bytes=0, disk_path="/",
         )
 
-    # Fits only with swap -> amber warn.
-    monkeypatch.setattr(probe, "probe_system", lambda *a, **k: profile(20, 30))
+    _queue_pass(window, seconds=378.0, fps=5)
+    monkeypatch.setattr(probe, "probe_system", lambda *a, **k: profile(40))
     window._update_memory_profile_warning()
-    assert UPDATE in window._memory_warn_icon.text()
+    assert UPDATE in window._capacity_advice.styleSheet()
+    assert BLOCK not in window._capacity_advice.styleSheet()
 
-    # Exceeds RAM and swap -> red block. The icon colour must change, not just the text.
-    monkeypatch.setattr(probe, "probe_system", lambda *a, **k: profile(6, 0))
+    monkeypatch.setattr(probe, "probe_system", lambda *a, **k: profile(22))
     window._update_memory_profile_warning()
-    assert BLOCK in window._memory_warn_icon.text()
-
-
-def test_memory_icon_click_opens_system_tab(window) -> None:
-    window._sidebar_tabs.setCurrentIndex(window._TAB_RUN)
-    window._memory_warn_icon.clicked.emit()
-    assert window._sidebar_tabs.currentIndex() == window._TAB_SYSTEM
+    assert BLOCK in window._capacity_advice.styleSheet()
 
 
 def test_recorded_runs_summary_shows_peak_and_risk(window, monkeypatch) -> None:

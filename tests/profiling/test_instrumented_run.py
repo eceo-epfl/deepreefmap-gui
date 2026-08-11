@@ -1,10 +1,10 @@
 """instrumented_reconstruction: the wrapper every run actually goes through.
 
-Called from form/batch.py, runs/loading.py and simple/batch.py, and previously
-untested end to end -- the existing tests all hand-build mark dicts and call
-durations_from_marks directly, which is how the missing ortho/save marks went
-unnoticed. These drive the real wrapper with a stubbed orchestrator and assert on
-what lands in run_manifest.json and the timing profile.
+Called from simple/batch.py, once per pass. The other timing tests hand-build
+mark dicts and call durations_from_marks directly, which is how the missing
+ortho/save marks went unnoticed. These drive the real wrapper with a stubbed
+orchestrator and assert on what lands in run_manifest.json and the timing
+profile.
 """
 
 from __future__ import annotations
@@ -19,13 +19,6 @@ from deepreefmap_gui.profiling.instrumentation import (
     apply_manifest_timings,
     instrumented_reconstruction,
 )
-
-
-@pytest.fixture
-def timings(tmp_path, monkeypatch):
-    path = tmp_path / "run_timings.json"
-    monkeypatch.setenv("DEEPREEFMAP_RUN_TIMINGS", str(path))
-    return path
 
 
 @pytest.fixture
@@ -182,6 +175,37 @@ def test_a_geometry_only_run_needs_no_writer(out_dir, timings, monkeypatch) -> N
 
     manifest = json.loads((out_dir / "run_manifest.json").read_text())
     assert "scene_save" not in manifest["stage_durations"]
+
+
+def test_quality_warnings_reach_the_manifest(out_dir, timings, monkeypatch) -> None:
+    """The live viewer's warning list is in memory and cleared by the next pass
+    of a batch, so the manifest is where a warning survives the night."""
+    warning = "Background class dominates 9/10 frames."
+
+    def run(*, viewer, output_dir, **_kwargs):
+        viewer.set_stage("preprocess", "warning", warning)
+        viewer.set_stage("preprocess", "warning", warning)  # repeats collapse
+        (output_dir / "run_manifest.json").write_text(json.dumps({"mode": "semantic"}))
+        viewer.set_data(frame_batch="frames")  # so the scene re-fold runs
+
+    monkeypatch.setattr("deepreefmap.pipeline.orchestrator.run_reconstruction", run)
+    instrumented_reconstruction(
+        output_dir=out_dir,
+        viewer=None,
+        # The scene re-fold rewrites the manifest, so warnings must survive it.
+        scene_writer=lambda _d, _data, _m: None,
+    )
+
+    manifest = json.loads((out_dir / "run_manifest.json").read_text())
+    assert manifest["quality_warnings"] == [warning]
+
+
+def test_a_clean_run_writes_no_quality_warnings_key(out_dir, timings, monkeypatch) -> None:
+    """An absent key reads as a clean run; an empty list would read as recorded."""
+    monkeypatch.setattr("deepreefmap.pipeline.orchestrator.run_reconstruction", _fake_run())
+    instrumented_reconstruction(output_dir=out_dir, viewer=None)
+    manifest = json.loads((out_dir / "run_manifest.json").read_text())
+    assert "quality_warnings" not in manifest
 
 
 def test_a_run_is_recorded_into_the_timing_profile(out_dir, timings, monkeypatch) -> None:

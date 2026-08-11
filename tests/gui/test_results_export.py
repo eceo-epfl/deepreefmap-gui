@@ -16,11 +16,10 @@ from pathlib import Path
 
 import numpy as np
 import yaml
-from PySide6.QtWidgets import QFileDialog
-
 from deepreefmap.config.classes import load_classes
 from deepreefmap.io.exports import save_ortho_grid
 from deepreefmap.pointcloud.grid_ortho import OrthoGrid
+from PySide6.QtWidgets import QFileDialog
 
 PUBLISHED_COVER = {
     "classes": {
@@ -70,7 +69,7 @@ def _load_published_run(window, tmp_path: Path) -> Path:
 
 
 def _fine_csv_fractions(path: Path) -> dict[str, float]:
-    with path.open() as fh:
+    with path.open(encoding="utf-8") as fh:
         return {row["name"]: float(row["fraction"]) for row in csv.DictReader(fh)}
 
 

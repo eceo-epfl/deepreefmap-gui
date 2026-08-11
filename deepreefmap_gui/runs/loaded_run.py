@@ -15,10 +15,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 import numpy as np
-
 from deepreefmap.config.classes import ClassConfig
-from deepreefmap.pipeline.artifacts import FrameBatch, MappingSequenceResult, SemanticPointCloud
 from deepreefmap.pipeline import resume as resume_mod
+from deepreefmap.pipeline.artifacts import FrameBatch, MappingSequenceResult, SemanticPointCloud
 from deepreefmap.pipeline.run_loader import (
     SEMANTIC_MODE,
     _world_points_fallback_warning,
@@ -144,7 +143,7 @@ def _load_from_scene_file(scene_path: Path, run_dir: Path) -> GuiLoadedRun | Non
 
     The scene file holds only what the run directory cannot cheaply reproduce.
     Frames come from the PNG caches and the mapping arrays from the npz, both
-    read-only and both cheaper than the copies the scene used to carry.
+    read-only and both cheaper than a copy inside the scene.
     """
     scene = load_scene_file(scene_path, run_dir=run_dir)
     if scene is None:
@@ -267,30 +266,6 @@ def write_scene_file(
     )
     prune_other_scene_files(run_dir, keep=out)
     return out
-
-
-def write_scene_file_from_run_data(
-    run_dir: Path, data: dict, manifest: dict, *, progress_cb: ProgressCB | None = None
-) -> Path | None:
-    """Write the scene file straight from a finished run's ``set_data`` payload.
-
-    ``manifest`` is the merged one, not the file on disk: the scene embeds it and
-    is read back in place of it, so it has to carry the run name and survey block.
-
-    Geometry-only runs carry no reference cloud and get no scene file.
-    """
-    cloud = data.get("reference_cloud")
-    if cloud is None or len(cloud) == 0:
-        return None
-    return write_scene_file(
-        run_dir,
-        manifest=manifest,
-        classes_config=data["classes_config"],
-        mapping_result=data["mapping_result"],
-        frame_batch=data["frame_batch"],
-        reference_cloud=cloud,
-        progress_cb=progress_cb,
-    )
 
 
 def generate_scene_file_async(

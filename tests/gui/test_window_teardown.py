@@ -7,7 +7,7 @@ and the run log file are held by plain attributes.
 Only two of those hold an OS resource today -- the SQLite connection and the log
 file. The accessor is closed on the same path because close() is part of the
 FrameAccessor protocol, and the window is the only thing that would release an
-implementation that did hold a handle. The fake below stands in for exactly that:
+implementation that did hold a handle. FakeAccessor stands in for exactly that:
 RunDirFrameAccessor.close() is a no-op, so a real one would assert nothing.
 
 The worker threads are deliberately signalled rather than joined -- see the
@@ -20,6 +20,7 @@ from __future__ import annotations
 import threading
 
 import pytest
+from _factories import FakeAccessor
 from PySide6.QtGui import QCloseEvent
 
 
@@ -27,14 +28,6 @@ class _FakeStore:
     def __init__(self):
         self.closed = False
         self.path = None
-
-    def close(self):
-        self.closed = True
-
-
-class _FakeAccessor:
-    def __init__(self):
-        self.closed = False
 
     def close(self):
         self.closed = True
@@ -59,7 +52,7 @@ def running_pipeline(window):
 
 
 def test_closing_releases_the_frame_accessor_and_the_survey_store(window):
-    accessor, store = _FakeAccessor(), _FakeStore()
+    accessor, store = FakeAccessor(), _FakeStore()
     window._scene_accessor = accessor
     window._survey_store_obj = store
 
@@ -125,7 +118,7 @@ def test_quitting_mid_run_asks_first(running_pipeline, monkeypatch, answer, shou
     from PySide6.QtWidgets import QMessageBox
 
     window = running_pipeline
-    accessor = _FakeAccessor()
+    accessor = FakeAccessor()
     window._scene_accessor = accessor
     asked: list[str] = []
 

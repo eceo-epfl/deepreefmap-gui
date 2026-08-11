@@ -1,6 +1,6 @@
 """Model catalogue, cache detection, and discovery.
 
-Covers deepreefmap_gui/models/manager.py (ALL_MODELS metadata, HF-cache status
+Covers deepreefmap_gui/models/cache.py (ALL_MODELS metadata, HF-cache status
 detection, prefetch guards) and deepreefmap_gui/models/families.py (synthesising
 ModelInfo from repo names, registry dispatch by family).
 """
@@ -10,9 +10,7 @@ from __future__ import annotations
 import json
 
 import pytest
-
-from deepreefmap_gui.models.families import synthesize_model_info
-from deepreefmap_gui.models.manager import ALL_MODELS, ModelInfo, register_discovered
+from _factories import repo_commit, write_cache_repo
 from deepreefmap.segmentation.dinov3_dpt import DinoV3DPTWrapper
 from deepreefmap.segmentation.registry import (
     create_segmentation_model,
@@ -21,6 +19,9 @@ from deepreefmap.segmentation.registry import (
     register_segmentation_model,
 )
 from deepreefmap.segmentation.segformer import SegformerWrapper
+
+from deepreefmap_gui.models.cache import ALL_MODELS, ModelInfo, register_discovered
+from deepreefmap_gui.models.families import synthesize_model_info
 
 
 def test_model_list_has_all_expected_models() -> None:
@@ -45,7 +46,7 @@ def test_model_gated_flag(name, gated) -> None:
 
 
 def test_cache_detection_returns_false_for_nonexistent() -> None:
-    from deepreefmap_gui.models.manager import ModelInfo, is_model_cached
+    from deepreefmap_gui.models.cache import ModelInfo, is_model_cached
 
     fake = ModelInfo(
         name="fake",
@@ -73,8 +74,9 @@ def test_dinov3_dpt_entries_include_facebook_backbone() -> None:
 
 
 def test_loger_entries_materialise_into_ckpts_dir() -> None:
-    from deepreefmap_gui.models.manager import MAPPING_MODELS
     from deepreefmap.mapping.registry import _LOGER_CKPTS
+
+    from deepreefmap_gui.models.cache import MAPPING_MODELS
 
     by_name = {m.name: m for m in MAPPING_MODELS}
     assert "loger" in by_name and "loger_star" in by_name
@@ -89,6 +91,39 @@ def test_loger_entries_materialise_into_ckpts_dir() -> None:
     assert star.materialise_to[
         "LoGeR_star/latest.pt"
     ] == _LOGER_CKPTS / "LoGeR_star" / "latest.pt"
+
+
+def test_resolve_model_versions_uses_the_source_commit_per_repo(tmp_path, monkeypatch) -> None:
+    """The recorded id is HuggingFace's own refs/main commit, not one we compute."""
+    from deepreefmap_gui.models import cache as model_manager
+    from deepreefmap_gui.models.cache import resolve_model_versions
+
+    cache = tmp_path / "hf"
+    monkeypatch.setattr(model_manager, "_HF_CACHE_ROOT", cache)
+
+    def write_ref(repo_id: str, commit: str) -> None:
+        ref = cache / f"models--{repo_id.replace('/', '--')}" / "refs" / "main"
+        ref.parent.mkdir(parents=True, exist_ok=True)
+        ref.write_text(commit)
+
+    write_ref("EPFL-ECEO/coralscapes-vit-s-dpt", "a" * 40)
+    write_ref("facebook/dinov3-vits16-pretrain-lvd1689m", "b" * 40)
+    write_ref("EPFL-ECEO/deepreefmap-sfm-net", "c" * 40)
+
+    versions = resolve_model_versions(["coralscapes-vit-s-dpt", "scsfmlearner"])
+    assert versions == {
+        "EPFL-ECEO/coralscapes-vit-s-dpt": "a" * 40,
+        "facebook/dinov3-vits16-pretrain-lvd1689m": "b" * 40,
+        "EPFL-ECEO/deepreefmap-sfm-net": "c" * 40,
+    }
+
+
+def test_resolve_model_versions_skips_unknown_and_uncached(tmp_path, monkeypatch) -> None:
+    from deepreefmap_gui.models import cache as model_manager
+    from deepreefmap_gui.models.cache import resolve_model_versions
+
+    monkeypatch.setattr(model_manager, "_HF_CACHE_ROOT", tmp_path / "empty")
+    assert resolve_model_versions(["not-a-model", "scsfmlearner"]) == {}
 
 
 def _write_snapshot(cache_root, repo_id, files):
@@ -111,8 +146,8 @@ def _write_snapshot(cache_root, repo_id, files):
 
 
 def test_is_model_cached_requires_materialised_destinations(tmp_path, monkeypatch) -> None:
-    from deepreefmap_gui.models import manager as model_manager
-    from deepreefmap_gui.models.manager import ModelInfo, is_model_cached
+    from deepreefmap_gui.models import cache as model_manager
+    from deepreefmap_gui.models.cache import ModelInfo, is_model_cached
 
     fake_cache = tmp_path / "hf"
     monkeypatch.setattr(model_manager, "_HF_CACHE_ROOT", fake_cache)
@@ -136,8 +171,8 @@ def test_is_model_cached_requires_materialised_destinations(tmp_path, monkeypatc
 def test_config_only_snapshot_reads_as_partial(tmp_path, monkeypatch) -> None:
     """A DPT head with only config.json (the crash-in-the-field state) must not
     read as cached: the custom loader named in config.json is missing."""
-    from deepreefmap_gui.models import manager as model_manager
-    from deepreefmap_gui.models.manager import ModelInfo, ModelStatus, is_model_cached, model_status
+    from deepreefmap_gui.models import cache as model_manager
+    from deepreefmap_gui.models.cache import ModelInfo, ModelStatus, is_model_cached, model_status
 
     fake_cache = tmp_path / "hf"
     monkeypatch.setattr(model_manager, "_HF_CACHE_ROOT", fake_cache)
@@ -173,8 +208,8 @@ def test_config_only_snapshot_reads_as_partial(tmp_path, monkeypatch) -> None:
 
 def test_metadata_only_snapshot_reads_as_absent(tmp_path, monkeypatch) -> None:
     """A stub with only README/LICENSE is 'not downloaded', not a repair case."""
-    from deepreefmap_gui.models import manager as model_manager
-    from deepreefmap_gui.models.manager import ModelInfo, ModelStatus, model_status
+    from deepreefmap_gui.models import cache as model_manager
+    from deepreefmap_gui.models.cache import ModelInfo, ModelStatus, model_status
 
     fake_cache = tmp_path / "hf"
     monkeypatch.setattr(model_manager, "_HF_CACHE_ROOT", fake_cache)
@@ -190,8 +225,8 @@ def test_metadata_only_snapshot_reads_as_absent(tmp_path, monkeypatch) -> None:
 
 
 def test_prefetch_refuses_when_disk_is_low(tmp_path, monkeypatch) -> None:
-    from deepreefmap_gui.models import manager as model_manager
-    from deepreefmap_gui.models.manager import (
+    from deepreefmap_gui.models import cache as model_manager
+    from deepreefmap_gui.models.cache import (
         InsufficientDiskSpace,
         ModelInfo,
         prefetch_model,
@@ -319,7 +354,7 @@ def test_silent_tqdm_reports_percent_without_opening_a_file() -> None:
     """
     import psutil
 
-    from deepreefmap_gui.models.manager import _make_silent_tqdm
+    from deepreefmap_gui.models.cache import _make_silent_tqdm
 
     seen: list[tuple[int, int]] = []
     proc = psutil.Process()
@@ -343,42 +378,22 @@ def test_silent_tqdm_reports_percent_without_opening_a_file() -> None:
 # listed both on its own and as the encoder a DPT head loads at first use.
 
 
-def _write_cache_repo_with_blobs(cache_root, repo_id, files):
+def _write_repo(cache_root, repo_id, files):
     """A cache repo with real blobs and snapshot symlinks, as scan_cache_dir expects.
 
-    The commit hash is derived from repo_id rather than fixed: delete_revisions
-    resolves a hash across the whole cache, so two repos sharing one would be
-    deleted together and which survives depends on scan order.
+    Each repo gets its own commit hash, which is what these tests turn on.
     """
-    import hashlib
-    import os
-
-    repo_dir = cache_root / f"models--{repo_id.replace('/', '--')}"
-    commit = hashlib.sha1(repo_id.encode()).hexdigest()
-    (repo_dir / "refs").mkdir(parents=True, exist_ok=True)
-    (repo_dir / "refs" / "main").write_text(commit)
-    blobs = repo_dir / "blobs"
-    blobs.mkdir(parents=True, exist_ok=True)
-    snap = repo_dir / "snapshots" / commit
-    snap.mkdir(parents=True, exist_ok=True)
-    for rel, content in files.items():
-        data = content if isinstance(content, bytes) else content.encode()
-        blob = blobs / hashlib.sha256(data).hexdigest()
-        blob.write_bytes(data)
-        dest = snap / rel
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        os.symlink(os.path.relpath(blob, dest.parent), dest)
-    return repo_dir
+    return write_cache_repo(cache_root, repo_id, files, commit=repo_commit(repo_id))
 
 
 @pytest.fixture
 def shared_repo_cache(tmp_path, monkeypatch):
     """Two installed models backed by one repo, each materialising its own file."""
-    from deepreefmap_gui.models import manager as model_manager
+    from deepreefmap_gui.models import cache as model_manager
 
     cache = tmp_path / "hf"
     monkeypatch.setattr(model_manager, "_HF_CACHE_ROOT", cache)
-    repo_dir = _write_cache_repo_with_blobs(
+    repo_dir = _write_repo(
         cache, "fake/shared", {"A/latest.pt": b"a-weights", "B/latest.pt": b"b-weights"}
     )
 
@@ -450,12 +465,12 @@ def test_a_sibling_that_is_not_installed_does_not_pin_the_repo(shared_repo_cache
 def test_a_materialised_file_two_entries_share_is_kept(tmp_path, monkeypatch) -> None:
     """Discovered models are built at run time, so two entries can name the same
     destination even though the shipped catalogue does not."""
-    from deepreefmap_gui.models import manager as model_manager
+    from deepreefmap_gui.models import cache as model_manager
 
     cache = tmp_path / "hf"
     monkeypatch.setattr(model_manager, "_HF_CACHE_ROOT", cache)
-    _write_cache_repo_with_blobs(cache, "fake/one", {"latest.pt": b"w"})
-    _write_cache_repo_with_blobs(cache, "fake/two", {"latest.pt": b"w"})
+    _write_repo(cache, "fake/one", {"latest.pt": b"w"})
+    _write_repo(cache, "fake/two", {"latest.pt": b"w"})
     dest = tmp_path / "ckpts" / "latest.pt"
     dest.parent.mkdir(parents=True)
     dest.write_bytes(b"materialised")

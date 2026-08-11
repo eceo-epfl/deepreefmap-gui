@@ -49,6 +49,26 @@ class SystemProfile:
         return asdict(self)
 
 
+def _cuda_vram(torch) -> tuple[int | None, int | None]:
+    """Total and free VRAM, or (None, None) where the build cannot report it.
+
+    ROCm builds do not all implement mem_get_info, and a card is still a card
+    without a byte count: this must not decide whether a GPU exists.
+    """
+    try:
+        free, total = torch.cuda.mem_get_info(0)
+        return int(total), int(free)
+    except Exception:
+        return None, None
+
+
+def _cuda_name(torch) -> str:
+    try:
+        return torch.cuda.get_device_name(0)
+    except Exception:
+        return "GPU"
+
+
 def _probe_gpu() -> GpuInfo:
     """Read GPU kind, name and (where it exists) VRAM, tolerating any failure."""
     # torch is imported lazily so the RAM/CPU/disk probe stays usable when torch is
@@ -59,11 +79,12 @@ def _probe_gpu() -> GpuInfo:
         return GpuInfo(GPU_NONE, "CPU only (torch unavailable)", None, None)
 
     try:
-        if torch.cuda.is_available():
-            free, total = torch.cuda.mem_get_info(0)
-            return GpuInfo(GPU_CUDA, torch.cuda.get_device_name(0), int(total), int(free))
+        cuda = torch.cuda.is_available()
     except Exception:
-        pass
+        cuda = False
+    if cuda:
+        total, free = _cuda_vram(torch)
+        return GpuInfo(GPU_CUDA, _cuda_name(torch), total, free)
     try:
         if torch.backends.mps.is_available():
             # Apple Silicon: the GPU draws from system RAM, so there is no
@@ -72,6 +93,12 @@ def _probe_gpu() -> GpuInfo:
     except Exception:
         pass
     return GpuInfo(GPU_NONE, "CPU only", None, None)
+
+
+def gpu_present() -> bool:
+    """Whether processing can use a card. The readiness row and the run gate both
+    ask this, so they cannot disagree about the same machine."""
+    return _probe_gpu().kind != GPU_NONE
 
 
 def probe_system(disk_path: Path | str | None = None) -> SystemProfile:
@@ -158,8 +185,14 @@ def sample_utilisation() -> Utilisation:
     )
 
 
-def format_bytes(n: int | None) -> str:
-    """Render a byte count as `3.4 GB` / `812 MB`, or a dash when unknown."""
+def format_bytes(n: float | None) -> str:
+    """Render a byte count as `3.4 GB` / `812 MB`, or a dash when unknown.
+
+    Binary units throughout, matching what an OS disk dialog reports. This is the
+    only byte formatter in the app on purpose: a second SI-based one meant the
+    Data panel showed a run as "4.29 GB" while the System panel showed the free
+    space it had to fit into as "4.0 GB", from the same byte count.
+    """
     if n is None:
         return "—"
     gb = n / 1024**3

@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from deepreefmap_gui.core.theme import FONT_SM_PT, PREVIEW_BG, TEXT_SECONDARY
 
 _FMT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 _DATEFMT = "%H:%M:%S"
@@ -85,10 +86,10 @@ class LogView(QWidget):
 
         font = QFont(MONO_FONT_FAMILY)
         font.setStyleHint(QFont.StyleHint.TypeWriter)
-        font.setPointSize(9)
+        font.setPointSize(FONT_SM_PT)
         self._text.setFont(font)
         self._text.setStyleSheet(
-            "QPlainTextEdit { background-color: #111; color: #ddd; }"
+            f"QPlainTextEdit {{ background-color: {PREVIEW_BG}; color: {TEXT_SECONDARY}; }}"
         )
         layout.addWidget(self._text, 1)
 
@@ -182,7 +183,9 @@ def open_run_log_file(run_dir: Path, level: int = logging.INFO) -> logging.FileH
     """
     run_dir.mkdir(parents=True, exist_ok=True)
     log_path = run_dir / "run.log"
-    fh = logging.FileHandler(log_path, mode="w", encoding="utf-8")
+    # Append: attempts get directories of their own now, but a legacy directory
+    # revisited must not lose the log of what happened to it before.
+    fh = logging.FileHandler(log_path, mode="a", encoding="utf-8")
     fh.setLevel(level)
     fh.setFormatter(logging.Formatter(_FMT, datefmt=_DATEFMT))
     logging.getLogger("deepreefmap").addHandler(fh)

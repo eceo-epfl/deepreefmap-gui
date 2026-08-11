@@ -44,10 +44,10 @@ def _current_env_dir() -> Path | None:
 
 
 def list_environments() -> list[Environment]:
-    """Every installed version's environment, newest-looking first.
+    """Every installed version's environment, the running one first.
 
-    Empty outside an installed binary (a dev checkout), so the System-tab section
-    hides just like the update controls do.
+    Empty outside an installed binary (a dev checkout), so the Updates-view
+    section hides just like the update controls do.
     """
     current = _current_env_dir()
     if current is None or not current.is_dir():
@@ -60,8 +60,11 @@ def list_environments() -> list[Environment]:
         environments.append(
             Environment(version=child.name, path=child, current=child == current)
         )
-    # Running env first, then the rest by name descending (a rough newest-first).
-    environments.sort(key=lambda e: (not e.current, e.version), reverse=False)
+    # Version dirs carry a build suffix (1.1.0+g81e7b5f), so this is a name
+    # order rather than a version one: it only has to be stable, and the running
+    # env is the one entry whose position says anything.
+    environments.sort(key=lambda e: e.version, reverse=True)
+    environments.sort(key=lambda e: not e.current)
     return environments
 
 
@@ -75,6 +78,11 @@ def env_disk_usage(env_dir: str | os.PathLike[str]) -> tuple[int, int]:
       is excluded too, which is rare.)
     - ``apparent``: each inode counted once, i.e. what ``du`` reports for the
       folder, shown as context for how much is shared with the cache.
+
+    On Windows ``os.lstat`` reports ``st_nlink == 1`` for everything, so the two
+    figures collapse and the caller's "shared with the cache" line reads 0. That
+    understates what is shared, never what deleting frees, so the number the user
+    acts on stays honest.
     """
     reclaimable = 0
     apparent = 0

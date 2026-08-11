@@ -1,38 +1,32 @@
-"""Run metadata formatting and the multi-line card delegate, shared by every
-widget that lists runs."""
+"""Run metadata formatting, shared by every widget that describes a run.
+
+Formatting only: the widgets that arrange these strings (the run table, the
+detail pane, the top banner) each own their own layout.
+"""
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QColor, QFont
-from PySide6.QtWidgets import (
-    QStyle,
-    QStyledItemDelegate,
-    QStyleOptionViewItem,
-)
-
 from deepreefmap_gui.core.theme import (
     BANNER_TEXT,
-    CARD_BG,
-    SELECTION_BG,
-    SURFACE_HI,
-    TEXT_DIM,
-    TEXT_MUTED,
-    TEXT_SECONDARY,
-    WINDOW_TEXT,
+    FONT_LG,
+    PRIMARY,
 )
 from deepreefmap_gui.profiling.eta import format_duration
-from deepreefmap_gui.survey.catalogue import run_duration_s
-
-RUN_META_ROLE = Qt.ItemDataRole.UserRole + 1
+from deepreefmap_gui.profiling.system_probe import format_bytes
+from deepreefmap_gui.survey.catalogue import RunEntry, run_duration_s
 
 _GEOMETRY_LABELS = {
     "world_points": "world points (full)",
     "depth_unprojection": "depth-unprojection",
 }
+
+# A column with nothing in it. The bare token, because test_design_system.py
+# fails any other spelling of an em dash in the tree.
+_MISSING = "—"
 
 
 def format_timestamp(value: object) -> str:
@@ -66,10 +60,28 @@ def related_run_counts(entries: list[tuple[Path, dict]]) -> dict[Path, int]:
     return counts
 
 
-def format_bytes(total: float) -> str:
-    if total >= 1e9:
-        return f"{total / 1e9:.2f} GB"
-    return f"{total / 1e6:.1f} MB"
+def geometry_label(manifest: dict) -> str:
+    """How a run got its 3D, and a warning when it fell back to depth.
+
+    A mapper that cannot solve world points estimates them by unprojecting
+    depth instead. The result is materially weaker and the manifest is the only
+    place that records which happened, so a run carrying the fallback says so
+    wherever it is described rather than reading like any other success.
+    """
+    source = manifest.get("geometry_source")
+    if not source:
+        return ""
+    label = _GEOMETRY_LABELS.get(source, str(source))
+    return f"⚠ {label}" if source == "depth_unprojection" else label
+
+
+def points_label(n: int) -> str:
+    """A point count at reading precision: "4.6M", "988k", "14"."""
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.0f}k"
+    return str(n)
 
 
 def format_disk_size(run_dir: Path) -> str | None:
@@ -114,26 +126,60 @@ def _disk_label(run_dir: Path, disk_bytes: int | None) -> str | None:
     return format_disk_size(run_dir)
 
 
-def format_run_metadata(
-    manifest: dict,
-    run_dir: Path,
-    *,
-    include_disk_size: bool,
-    disk_bytes: int | None = None,
-) -> str:
-    """Multi-line format used in tooltips and the sidebar Results block."""
+def _video_line(entry: RunEntry) -> str:
+    """The clip, with its checksum and size, and a count of any others."""
+    videos = entry.manifest.get("input_videos") or []
+    if not videos:
+        return _MISSING
+    details = video_details(entry.manifest, 0)
+    line = Path(videos[0]).name + (f" ({', '.join(details)})" if details else "")
+    if len(videos) > 1:
+        line += f" (+{len(videos) - 1} more)"
+    return line
+
+
+def _column_lines(entry: RunEntry) -> list[str]:
+    """One line per column the run table shows, present whether or not it has a value.
+
+    The tooltip is opened over a column in order to read that column, so a line
+    quietly missing is the one answer it must never give. These are labelled with
+    the column headings themselves, so what is being pointed at is obvious.
+    """
+    from deepreefmap_gui.survey import catalogue
+
+    manifest = entry.manifest
+    frames = manifest.get("frames_processed")
+    fps = manifest.get("fps")
+    return [
+        f"Status: {catalogue.entry_status(entry).capitalize()}",
+        f"Created: {format_timestamp(manifest.get('run_timestamp')) or _MISSING}",
+        f"Transect: {entry.transect_name or 'Not assigned yet'}",
+        # No column shows the session, so the tooltip is where it lives; in the
+        # always-shown block because its absence is a fact too.
+        f"Session: {entry.session_name or _MISSING}",
+        f"Video: {_video_line(entry)}",
+        f"Frames: {f'{int(frames):,}' if frames else _MISSING}"
+        + (f" @ {fps} fps" if frames and fps else ""),
+        f"Points: {f'{int(entry.points):,}' if entry.points else _MISSING}",
+        f"Runtime: {format_duration(entry.duration_s) if entry.duration_s else _MISSING}",
+        f"Size: {format_bytes(entry.size_bytes) if entry.size_bytes is not None else _MISSING}",
+    ]
+
+
+def _detail_lines(entry: RunEntry) -> list[str]:
+    """How the run was made. No column shows these, so they stay conditional:
+    "no camera profile recorded" is a real difference from "not applicable"."""
+    manifest = entry.manifest
     lines: list[str] = []
-    name = (manifest.get("name") or "").strip() or run_dir.name
-    lines.append(f"<b>{name}</b>  <i>({run_dir.name})</i>")
-    mode = manifest.get("mode")
-    if mode:
-        lines.append(f"Mode: {mode}")
-    seg = manifest.get("segmentation_model")
-    if seg:
-        lines.append(f"Segmentation: {seg}")
-    mapping = manifest.get("mapping_backend")
-    if mapping:
-        lines.append(f"Mapping: {mapping}")
+    # Later attempts carry their number in the dir name; the first says nothing.
+    attempt = re.search(r"__r(\d+)$", entry.dir_name)
+    if attempt:
+        lines.append(f"Attempt: {int(attempt.group(1))}")
+    for label, key in (("Mode", "mode"), ("Segmentation", "segmentation_model")):
+        if manifest.get(key):
+            lines.append(f"{label}: {manifest[key]}")
+    if manifest.get("mapping_backend"):
+        lines.append(f"Mapping: {manifest['mapping_backend']}")
     mopts = manifest.get("mapping_options") or {}
     if mopts.get("window_size") is not None:
         lines.append(
@@ -141,96 +187,64 @@ def format_run_metadata(
         )
     if manifest.get("refine_intrinsics_from_mapper"):
         lines.append("Intrinsics: refined from mapper")
-    geom = manifest.get("geometry_source")
+    geom = geometry_label(manifest)
     if geom:
-        lines.append(f"Geometry: {_GEOMETRY_LABELS.get(geom, geom)}")
-    profile = manifest.get("camera_profile")
-    if profile:
-        lines.append(f"Camera profile: {profile}")
-    frames = manifest.get("frames_processed")
-    if frames is not None:
-        fps = manifest.get("fps")
-        lines.append(f"Frames: {frames}" + (f" @ {fps} fps" if fps else ""))
+        lines.append(f"Geometry: {geom}")
+    if manifest.get("camera_profile"):
+        lines.append(f"Camera profile: {manifest['camera_profile']}")
     pw, ph = manifest.get("processing_width"), manifest.get("processing_height")
     if pw and ph:
         lines.append(f"Processing size: {pw}×{ph}")
-    sem_pts = manifest.get("semantic_reference_points")
-    if sem_pts:
-        lines.append(f"Semantic points: {int(sem_pts):,}")
     metric_pts = manifest.get("metric_points")
     if metric_pts:
         lines.append(f"Metric points: {int(metric_pts):,}")
-    for i, v in enumerate(manifest.get("input_videos") or []):
-        details = video_details(manifest, i)
-        suffix = f" ({', '.join(details)})" if details else ""
-        lines.append(f"Input: {Path(v).name}{suffix}")
     trim = format_trim_range(manifest)
     if trim:
         lines.append(f"Range: {trim}")
-    dur = run_duration_s(manifest)
-    if dur:
-        lines.append(f"Runtime: {format_duration(dur)}")
-    created = format_timestamp(manifest.get("run_timestamp"))
-    if created:
-        lines.append(f"Created: {created}")
-    if include_disk_size:
-        disk = _disk_label(run_dir, disk_bytes)
-        if disk:
-            lines.append(f"Disk: {disk}")
-    return "<br>".join(lines)
+    return lines
 
 
-def build_run_card_meta(manifest: dict, run_dir: Path, related_runs: int = 0) -> dict:
-    """Build a flat dict the card delegate uses to paint each run."""
-    name = (manifest.get("name") or "").strip() or run_dir.name
-    facts: list[str] = []
-    mode = manifest.get("mode")
-    if mode:
-        facts.append(mode)
-    frames = manifest.get("frames_processed")
-    if frames is not None:
-        fps = manifest.get("fps")
-        facts.append(f"{frames}f @ {fps}fps" if fps else f"{frames}f")
-    seg = manifest.get("segmentation_model")
-    if seg and seg != "__skip__":
-        facts.append(str(seg))
-    mapping = manifest.get("mapping_backend")
-    if mapping:
-        facts.append(str(mapping))
-    geom = manifest.get("geometry_source")
-    if str(mapping) in {"loger", "loger_star"} and geom:
-        facts.append("world-pts" if geom == "world_points" else "⚠ depth")
-    sem_pts = manifest.get("semantic_reference_points")
-    if sem_pts:
-        n = int(sem_pts)
-        if n >= 1_000_000:
-            facts.append(f"{n / 1_000_000:.1f}M pts")
-        elif n >= 1_000:
-            facts.append(f"{n / 1_000:.0f}k pts")
-        else:
-            facts.append(f"{n} pts")
-    trim = format_trim_range(manifest)
-    if trim:
-        facts.append(trim)
-    dur = run_duration_s(manifest)
-    if dur:
-        facts.append(format_duration(dur))
-    if related_runs:
-        facts.append(f"{related_runs} related run{'s' if related_runs > 1 else ''}")
-    videos = manifest.get("input_videos") or []
-    video_line = ""
-    if videos:
-        names = [Path(v).name for v in videos]
-        bits = [names[0], *video_details(manifest)]
-        video_line = f"📹 {'  ·  '.join(bits)}"
-        if len(names) > 1:
-            video_line += f" (+ {len(names) - 1} more)"
-    return {
-        "title": name,
-        "slug": "" if name == run_dir.name else f"({run_dir.name})",
-        "facts": "  ·  ".join(facts),
-        "video": video_line,
-    }
+def format_run_metadata(entry: RunEntry) -> str:
+    """A run's whole record, as the run table's tooltip.
+
+    Two blocks. First every column the table shows, always, so hovering a column
+    always has a line to point at. Then the facts no column has room for, which
+    are omitted when absent because their absence means something.
+    """
+    name = (entry.manifest.get("name") or "").strip() or entry.dir_name
+    # The folder only when it adds something: an unnamed run takes its timestamp
+    # as a name, so spelling both printed the same string twice.
+    header = f"<b>{name}</b>"
+    if name != entry.dir_name:
+        header += f"  <i>({entry.dir_name})</i>"
+    detail = _detail_lines(entry)
+    blocks = [header, *_column_lines(entry)]
+    if detail:
+        blocks.append("")
+        blocks.extend(detail)
+    return "<br>".join(blocks)
+
+
+def emphasise_line(metadata: str, label: str | None) -> str:
+    """Lift the one line a label names out of a run's metadata block.
+
+    A tooltip opened over the Video column lists a dozen facts, and the pointer
+    is already resting on the one the reader wants. Finding it again in the list
+    is work the interface can do for them.
+
+    Lifted rather than filtered: the surrounding facts are the reason the tooltip
+    is worth opening at all, so they stay exactly where they were and the eye is
+    pointed at one of them.
+    """
+    if not label:
+        return metadata
+    prefix = f"{label}:"
+    return "<br>".join(
+        f'<span style="color: {PRIMARY}"><b>{line}</b></span>'
+        if line.startswith(prefix)
+        else line
+        for line in metadata.split("<br>")
+    )
 
 
 def format_run_metadata_compact(
@@ -243,7 +257,7 @@ def format_run_metadata_compact(
     """Single-line wrapping format used in the inline top banner."""
     name = (manifest.get("name") or "").strip() or run_dir.name
     header = (
-        f'<b style="font-size:13px">{name}</b>'
+        f'<b style="font-size:{FONT_LG}">{name}</b>'
         f'&nbsp;<span style="color:#7a8a99">({run_dir.name})</span>'
     )
     facts: list[str] = []
@@ -289,170 +303,87 @@ def format_run_metadata_compact(
     return f"{header}&nbsp;&nbsp;{sep.join(facts)}"
 
 
-class RunCardDelegate(QStyledItemDelegate):
-    """Paints each run list item as a multi-line card with metadata."""
+def provenance_rows(manifest: dict) -> list[tuple[str, str]]:
+    """What produced a run's numbers, as detail-pane rows.
 
-    # Sizes are em multiples off QFontMetrics, not pixels, so the card tracks
-    # system DPI and font size on both Linux and Windows.
+    A cover figure is only usable if what made it can be named: the models, the
+    class taxonomy those models' outputs were grouped under, and whether the
+    settings deviated from the organisation standard. All three are already
+    recorded in every manifest by ``survey_manifest_block``; until now none of
+    them was shown anywhere, so a figure and its method lived in different files.
 
-    PAD_X_EMS = 0.8
-    PAD_Y_EMS = 0.35
-    GAP_EMS = 0.15
+    Omitted rather than filled with a placeholder when a manifest predates the
+    provenance block: "not recorded" and "nothing changed" are different claims,
+    and only one of them is true of an old run.
+    """
+    survey = manifest.get("survey")
+    provenance = survey.get("provenance") if isinstance(survey, dict) else None
+    if not isinstance(provenance, dict):
+        return []
 
-    @staticmethod
-    def _title_font(base: QFont) -> QFont:
-        f = QFont(base)
-        f.setBold(True)
-        return f
+    rows: list[tuple[str, str]] = []
+    models = " + ".join(
+        str(manifest[key])
+        for key in ("segmentation_model", "mapping_backend")
+        if manifest.get(key) and manifest.get(key) != "__skip__"
+    )
+    if models:
+        rows.append(("Models", models))
 
-    @staticmethod
-    def _slug_font(base: QFont) -> QFont:
-        f = QFont(base)
-        pt = base.pointSize() if base.pointSize() > 0 else 10
-        f.setPointSize(max(8, pt - 1))
-        return f
+    taxonomy = provenance.get("taxonomy_version")
+    taxonomy_hash = provenance.get("taxonomy_hash")
+    if taxonomy:
+        # The hash is what actually pins the grouping; the version is what a
+        # person can say out loud. Both, because a version can be edited in
+        # place and the hash is what would catch it.
+        label = str(taxonomy)
+        if taxonomy_hash:
+            label += f" · #{str(taxonomy_hash)[:8]}"
+        rows.append(("Taxonomy", label))
 
-    @staticmethod
-    def _facts_font(base: QFont) -> QFont:
-        return QFont(base)
+    config = provenance.get("config")
+    if isinstance(config, dict):
+        rows.append(("Settings", _settings_line(config)))
 
-    @staticmethod
-    def _video_font(base: QFont) -> QFont:
-        f = QFont(base)
-        pt = base.pointSize() if base.pointSize() > 0 else 10
-        f.setPointSize(max(8, pt - 1))
-        f.setItalic(True)
-        return f
+    versions = [
+        v for v in (manifest.get("deepreefmap_version"), provenance.get("gui_version")) if v
+    ]
+    if versions:
+        rows.append(("Version", " · ".join(str(v) for v in versions)))
+    return rows
 
-    def _layout(self, option: QStyleOptionViewItem, meta: dict, avail_w: int) -> dict:
-        base = option.font
-        title_fm = option.fontMetrics  # used for em sizing
-        em = max(1, title_fm.height())
-        pad_x = int(self.PAD_X_EMS * em)
-        pad_y = int(self.PAD_Y_EMS * em)
-        gap = int(self.GAP_EMS * em)
 
-        from PySide6.QtGui import QFontMetrics
+def _settings_line(config: dict) -> str:
+    """The preset a run used, and how far it strayed from it."""
+    from deepreefmap_gui.survey.preset import describe_keys
 
-        title_h = QFontMetrics(self._title_font(base)).height()
-        slug_h = QFontMetrics(self._slug_font(base)).height() if meta.get("slug") else 0
-        head_h = max(title_h, slug_h)
+    name = str(config.get("preset_name") or "Unnamed")
+    deviations = config.get("deviations")
+    if isinstance(deviations, dict) and deviations:
+        return f"{name}, changed: {describe_keys(list(deviations))}"
+    return f"{name}, as standard"
 
-        facts_text = meta.get("facts") or ""
-        facts_h = 0
-        if facts_text:
-            facts_fm = QFontMetrics(self._facts_font(base))
-            inner_w = max(40, avail_w - pad_x * 2)
-            facts_rect = facts_fm.boundingRect(
-                0, 0, inner_w, 10_000,
-                Qt.AlignmentFlag.AlignLeft | Qt.TextFlag.TextWordWrap,
-                facts_text,
-            )
-            facts_h = facts_rect.height()
 
-        video_text = meta.get("video") or ""
-        video_h = 0
-        if video_text:
-            video_h = QFontMetrics(self._video_font(base)).height()
+def summarise_run_provenance(run_dir_name: str, out_root: str) -> str:
+    """"coralscapes-vit-b-dpt + loger_star, taxonomy v1" for one run, or "".
 
-        total_h = pad_y * 2 + head_h
-        if facts_h:
-            total_h += gap + facts_h
-        if video_h:
-            total_h += gap + video_h
+    Short enough to sit on one line beside a cover figure, and specific enough
+    that two runs made differently do not read as the same measurement. Empty
+    when the manifest is unreadable or predates the provenance block.
+    """
+    import json
 
-        return {
-            "pad_x": pad_x, "pad_y": pad_y, "gap": gap,
-            "head_h": head_h, "title_h": title_h, "slug_h": slug_h,
-            "facts_h": facts_h, "video_h": video_h, "total_h": total_h,
-        }
-
-    def sizeHint(self, option: QStyleOptionViewItem, index) -> QSize:
-        meta = index.data(RUN_META_ROLE)
-        em = max(1, option.fontMetrics.height())
-        # Preferred width: ~32 chars of body text plus padding. The view can
-        # be wider; the layout will fill it. EM-based so it scales with DPI.
-        preferred_w = int(em * 24)
-        if meta is None:
-            # Placeholder row stays one line tall.
-            return QSize(preferred_w, em + int(self.PAD_Y_EMS * em) * 2)
-
-        # Use the actual viewport width when available; fall back to preferred.
-        avail_w = option.rect.width() if option.rect.width() > 0 else preferred_w
-        layout = self._layout(option, meta, avail_w)
-        return QSize(preferred_w, layout["total_h"])
-
-    def paint(self, painter, option: QStyleOptionViewItem, index) -> None:
-        meta = index.data(RUN_META_ROLE)
-        if meta is None:
-            super().paint(painter, option, index)
-            return
-
-        painter.save()
-
-        hovered = bool(option.state & QStyle.StateFlag.State_MouseOver)
-        selected = bool(option.state & QStyle.StateFlag.State_Selected)
-        if selected:
-            painter.fillRect(option.rect, QColor(SELECTION_BG))
-        elif hovered:
-            painter.fillRect(option.rect, QColor(SURFACE_HI))
-        else:
-            painter.fillRect(option.rect, QColor(CARD_BG))
-
-        layout = self._layout(option, meta, option.rect.width())
-        pad_x = layout["pad_x"]
-        pad_y = layout["pad_y"]
-        gap = layout["gap"]
-        r = option.rect.adjusted(pad_x, pad_y, -pad_x, -pad_y)
-
-        base = option.font
-
-        # Title.
-        title_font = self._title_font(base)
-        painter.setFont(title_font)
-        painter.setPen(QColor("white" if (hovered or selected) else WINDOW_TEXT))
-        title = meta.get("title", "")
-        title_fm = painter.fontMetrics()
-        title_w = title_fm.horizontalAdvance(title)
-        baseline = r.top() + title_fm.ascent()
-        painter.drawText(r.left(), baseline, title)
-
-        # Slug, drawn on the same baseline as the title (or hidden if no room).
-        slug = meta.get("slug", "")
-        if slug:
-            slug_font = self._slug_font(base)
-            painter.setFont(slug_font)
-            painter.setPen(QColor(TEXT_SECONDARY if (hovered or selected) else TEXT_MUTED))
-            slug_fm = painter.fontMetrics()
-            slug_x = r.left() + title_w + int(layout["title_h"] * 0.4)
-            slug_max_w = r.right() - slug_x
-            if slug_max_w > 0:
-                elided_slug = slug_fm.elidedText(slug, Qt.TextElideMode.ElideRight, slug_max_w)
-                painter.drawText(slug_x, baseline, elided_slug)
-
-        # Facts (word-wrapped block).
-        cursor_y = r.top() + layout["head_h"]
-        facts_text = meta.get("facts", "")
-        if facts_text:
-            cursor_y += gap
-            painter.setFont(self._facts_font(base))
-            painter.setPen(QColor(WINDOW_TEXT if (hovered or selected) else TEXT_SECONDARY))
-            facts_rect = type(r)(r.left(), cursor_y, r.width(), layout["facts_h"])
-            painter.drawText(
-                facts_rect,
-                Qt.AlignmentFlag.AlignLeft | Qt.TextFlag.TextWordWrap,
-                facts_text,
-            )
-            cursor_y += layout["facts_h"]
-
-        # Input video (single elided line).
-        video = meta.get("video", "")
-        if video:
-            cursor_y += gap
-            painter.setFont(self._video_font(base))
-            painter.setPen(QColor(TEXT_MUTED if (hovered or selected) else TEXT_DIM))
-            video_fm = painter.fontMetrics()
-            elided = video_fm.elidedText(video, Qt.TextElideMode.ElideMiddle, r.width())
-            painter.drawText(r.left(), cursor_y + video_fm.ascent(), elided)
-
-        painter.restore()
+    path = Path(out_root).expanduser() / run_dir_name / "run_manifest.json"
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(manifest, dict):
+        return ""
+    rows = dict(provenance_rows(manifest))
+    parts = [rows[key] for key in ("Models", "Taxonomy") if rows.get(key)]
+    if not parts:
+        return ""
+    # The taxonomy hash pins the grouping but is noise in a sentence; the
+    # version is the part a person can compare at a glance.
+    return f"{parts[0]}, taxonomy {parts[-1].split(' · ')[0]}" if len(parts) > 1 else parts[0]

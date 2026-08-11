@@ -1,5 +1,5 @@
-"""Main window assembly: creation, cache seeding on submit, updates tab,
-desktop entry controls."""
+"""Main window assembly: creation, cache seeding from the form's settings,
+updates tab, desktop entry controls."""
 
 from __future__ import annotations
 
@@ -12,8 +12,12 @@ def test_window_creates(window) -> None:
     assert window.windowTitle() == "DeepReefMap"
 
 
-def test_submit_seeds_cache_from_matching_prior_run(window, tmp_path) -> None:
+def test_a_pass_seeds_its_cache_from_a_matching_prior_run(window, tmp_path) -> None:
+    """The batch worker seeds each pass from the settings the form holds, so a
+    second attempt at the same clip reuses the frames the first one prepared."""
     from deepreefmap.pipeline import resume as resume_mod
+
+    from deepreefmap_gui.runs.seeding import seed_from_settings
 
     video = tmp_path / "clip.mp4"
     video.write_bytes(b"not really a video")
@@ -38,7 +42,9 @@ def test_submit_seeds_cache_from_matching_prior_run(window, tmp_path) -> None:
 
     out_dir = tmp_path / "runs" / "20260102-000000"
     out_dir.mkdir()
-    window._seed_run_cache(out_dir, video, None, None)
+    seed_from_settings(
+        out_dir, out_dir.parent, window._collect_run_settings(), [video], None, None
+    )
     assert (out_dir / "frames" / "000000.png").exists()
     sidecar = resume_mod.read_sidecar(out_dir, resume_mod.STAGE_PREPROCESS)
     assert sidecar is not None and sidecar["key"] == prep_key
@@ -62,29 +68,64 @@ def test_updates_tab_dev_mode_vs_installed(window) -> None:
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux-only feature")
-def test_desktop_entry_button_toggles_install(make_window, monkeypatch, tmp_path) -> None:
-    from deepreefmap_gui.packaging import desktop_entry
+def test_the_shortcut_row_adds_and_removes_the_entry(make_window, monkeypatch, tmp_path) -> None:
+    """Scenario: a bare Linux binary registering itself in the applications menu.
+
+    Expected behaviour: the readiness row carries the verb, and the entry it
+    reports on is the one on disk.
+    """
+    from deepreefmap_gui.packaging.shortcuts import _linux, install_shortcut, remove_shortcut
 
     monkeypatch.setenv("DEEPREEFMAP_MOCK_PYAPP", "1")
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
-    monkeypatch.setattr(desktop_entry, "_refresh_menu_database", lambda: None)
+    monkeypatch.setenv("DEEPREEFMAP_SHORTCUT_MANIFEST", str(tmp_path / "shortcut.json"))
+    monkeypatch.setattr(_linux, "_refresh_menu_database", lambda: None)
 
     window = make_window()
-    assert not window._desktop_entry_btn.isHidden()
-    assert window._desktop_entry_btn.text() == "Add to applications menu"
+    _icon, _detail, actions = window._setup_check_rows["shortcut"]
+    assert actions[0].text() == "Add"
 
-    window._on_toggle_desktop_entry()
-    assert desktop_entry.desktop_entry_installed()
-    assert window._desktop_entry_btn.text() == "Remove from applications menu"
+    install_shortcut()
+    window._shortcut_status_cache = None
+    window._refresh_readiness_view()
+    assert actions[0].text() == "Remove"
+    assert not actions[0].isHidden()
 
-    window._on_toggle_desktop_entry()
-    assert not desktop_entry.desktop_entry_installed()
-    assert window._desktop_entry_btn.text() == "Add to applications menu"
+    remove_shortcut()
+    window._shortcut_status_cache = None
+    window._refresh_readiness_view()
+    assert actions[0].text() == "Add"
 
 
-def test_desktop_entry_button_hidden_in_dev_mode(make_window, monkeypatch) -> None:
+def test_the_shortcut_row_is_advisory(make_window, monkeypatch, tmp_path) -> None:
+    """A missing applications-menu entry stops nothing, so it must not read as a
+    missing requirement or hold the Setup summary back."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    monkeypatch.setenv("DEEPREEFMAP_SHORTCUT_MANIFEST", str(tmp_path / "shortcut.json"))
+    monkeypatch.setenv("DEEPREEFMAP_MOCK_PYAPP", "1")
+    window = make_window()
+    checks = {c.key: c for c in window._current_setup_checks()}
+    assert checks["shortcut"].advisory
+    assert "requirement" not in checks["shortcut"].detail.lower()
+
+
+def test_the_shortcut_row_offers_no_action_from_a_source_checkout(
+    make_window, monkeypatch, tmp_path
+) -> None:
+    """Running from a checkout there is no installed program to point an entry
+    at, so the row explains itself instead of showing a button that fails."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    monkeypatch.setenv("DEEPREEFMAP_SHORTCUT_MANIFEST", str(tmp_path / "shortcut.json"))
     monkeypatch.delenv("DEEPREEFMAP_MOCK_PYAPP", raising=False)
     monkeypatch.delenv("PYAPP", raising=False)
+
     window = make_window()
-    assert window._desktop_entry_btn.isHidden()
+    window._refresh_readiness_view()
+
+    check = {c.key: c for c in window._current_setup_checks()}["shortcut"]
+    assert check.action_label == ""
+    assert "source checkout" in check.detail
+
+    _icon, _detail, actions = window._setup_check_rows["shortcut"]
+    assert actions[0].isHidden()
 

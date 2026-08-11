@@ -1,13 +1,19 @@
-from __future__ import annotations
+"""Opening a run that was already processed, and the controls that stop one.
 
-from deepreefmap_gui.core.window_protocol import MixinBase
+Loading is the read-only path: a cached run directory or a scene file goes out
+to a worker thread and comes back as a cloud on screen. The stop and pause
+controls sit here too, though they act on a run in flight, because they are the
+same two buttons: with no pipeline running, stop cancels a load instead.
+"""
+
+from __future__ import annotations
 
 import logging
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from deepreefmap_gui.system.log_view import close_run_log_file, open_run_log_file
+from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.profiling.eta import STAGE_MESSAGE_TO_PHASE as _STAGE_MESSAGE_TO_PHASE
 from deepreefmap_gui.runs.progress import _LOAD_STAGE_TO_PHASE
 
@@ -46,7 +52,7 @@ def _manifest_transect_crop(manifest: dict) -> TransectCropParams | None:
 
 
 class RunLoadingMixin(MixinBase):
-    """DeepReefMapWindow methods for submitting pipeline runs and loading cached runs."""
+    """DeepReefMapWindow methods for loading cached runs and driving the transport."""
 
     # Bumped per load so a result that arrives after a newer load started can be
     # told apart from the current one. Ordering is not enough on its own: a run
@@ -63,174 +69,35 @@ class RunLoadingMixin(MixinBase):
         self._reset_progress_bars()
         self._status_label.setText("Load cancelled.")
 
-    def _seed_run_cache(
-        self, out_dir: Path, video_path: Path, begin_s: float | None, end_s: float | None
-    ) -> None:
-        """Carry the resume cache from a matching prior run into this fresh dir."""
-        # GUI run names default to a timestamp, so no two runs share a directory and
-        # the orchestrator's always-on cache would never hit on its own.
-        try:
-            from deepreefmap.pipeline import resume as resume_mod
-
-            from deepreefmap_gui.runs.seeding import seed_run_dir_from_match
-
-            prep_key = resume_mod.preprocess_key(
-                video_paths=[video_path],
-                fps=self._fps_spin.value(),
-                begin_s=begin_s,
-                end_s=end_s,
-                camera_profile_name=self._profile_combo.currentText(),
-                segmentation_name=(
-                    "__skip__" if self._skip_seg_check.isChecked() else self._seg_combo.currentText()
-                ),
-                classes_path=self._classes_path,
-                processing_width=self._proc_width_spin.value(),
-                processing_height=self._proc_height_spin.value(),
-            )
-            seeded = seed_run_dir_from_match(out_dir, out_dir.parent, prep_key)
-        except Exception:
-            logger.warning("Cache seeding failed; running from scratch", exc_info=True)
-            return
-        if seeded is not None:
-            logger.info("Seeded cache from %s", seeded)
-
-    def _on_submit(self) -> None:
-        video = self._video_input.text().strip()
-        if not video:
-            self._status_label.setText("Error: video path is required.")
-            return
-        video_path = Path(video).expanduser()
-        if not video_path.exists():
-            self._status_label.setText(f"Error: file not found: {video_path}")
-            return
-
-        run_name = self._sanitize_run_name(self._run_name_input.text())
-        # Reflect the sanitised slug back so the user sees what's actually written.
-        if run_name != self._run_name_input.text():
-            self._run_name_input.setText(run_name)
-        out_dir = Path(self._out_root_input.text()).expanduser() / run_name
-        out_dir.mkdir(parents=True, exist_ok=True)
-
-        self._settings.setValue("last_video_path", str(video_path))
-        self._settings.setValue("output_root_dir", self._out_root_input.text())
-        self._settings.setValue("last_run_dir", str(out_dir))
-
-        begin_s, end_s = self._effective_time_range()
-        self._seed_run_cache(out_dir, video_path, begin_s, end_s)
-        kwargs = {
-            **self._collect_run_settings(),
-            "video_paths": [str(video_path)],
-            "output_dir": out_dir,
-            "run_name": run_name,
-            "transect_length": self._transect_length.value() or None,
-            "begin_s": begin_s,
-            "end_s": end_s,
-        }
-
-        self._set_form_enabled(False)
-        self._begin_progress(self._recon_model)
-        self._status_label.setText("Reconstruction starting…")
-        self._log_view.clear()
-        self._run_log_file_handler = open_run_log_file(out_dir)
-        self._log_view.set_current_log_path(out_dir / "run.log")
-        self._set_app_mode("RUNNING")
-        # Auto-open the bottom log panel so the user sees the stream live;
-        # they can collapse it afterwards via the Log button or close ×.
-        self._set_log_panel_visible(True)
-        # The run dir now exists, so the effective-path label can render its
-        # clickable file:// link.
-        self._update_effective_dir_label()
-
-        self._cancel_event = threading.Event()
-        self._pause_event = threading.Event()
-        self._pause_event.set()
-        self._begin_run_controls()
-
-        self._pipeline_thread = threading.Thread(
-            target=self._run_pipeline,
-            args=(kwargs, self._cancel_event, self._pause_event),
-            daemon=True,
-        )
-        self._pipeline_thread.start()
-
-    def _run_pipeline(
-        self,
-        kwargs: dict,
-        cancel_event: threading.Event,
-        pause_event: threading.Event,
-    ) -> None:
-        from deepreefmap.pipeline.orchestrator import ReconstructionCancelled
-
-        from deepreefmap_gui.profiling.instrumentation import instrumented_reconstruction
-
-        try:
-            instrumented_reconstruction(
-                viewer=self._viewer,
-                cancel_event=cancel_event,
-                pause_event=pause_event,
-                scene_writer=self._write_scene_file,
-                **kwargs,
-            )
-        except ReconstructionCancelled:
-            self._sig_pipeline_cancelled.emit()
-        except Exception as exc:
-            logger.exception("Reconstruction failed")
-            msg = str(exc)
-            if len(msg) > 300:
-                msg = msg[:300] + "..."
-            self._sig_pipeline_error.emit(msg)
-
-    def _write_scene_file(self, output_dir: Path, data: dict, manifest: dict) -> None:
-        """Write the finished run's scene file, reporting into the scene_save phase.
-
-        Runs on the pipeline thread inside instrumented_reconstruction, so the
-        stage is timed and its progress lands on the same bars the rest of the
-        run used. Doing it here rather than on the first load means a fresh run
-        opens by the fast path straight away.
-        """
-        from deepreefmap_gui.runs.loaded_run import write_scene_file_from_run_data
-
-        write_scene_file_from_run_data(
-            output_dir, data, manifest, progress_cb=self._sig_load_progress.emit
-        )
-
-    def _on_pipeline_error(self, msg: str) -> None:
-        self._status_label.setText(f"Failed: {msg}")
-        self._reset_progress_bars()
-        self._set_form_enabled(True)
-        self._end_run_controls()
-        close_run_log_file(self._run_log_file_handler)
-        self._run_log_file_handler = None
-        self._set_app_mode("SETUP")
-
-    def _on_pipeline_cancelled(self) -> None:
-        self._status_label.setText("Reconstruction stopped by user.")
-        self._reset_progress_bars()
-        self._set_form_enabled(True)
-        self._end_run_controls()
-        close_run_log_file(self._run_log_file_handler)
-        self._run_log_file_handler = None
-        self._set_app_mode("SETUP")
-
     def _run_in_flight(self) -> bool:
         thread = getattr(self, "_pipeline_thread", None)
         return thread is not None and thread.is_alive()
 
     def _end_run_controls(self) -> None:
-        """Return the transport controls to idle. Simple mode never shows start:
-        its wizard step is what launches a run."""
+        """Return the transport controls to idle. Start is never shown: the Run
+        step's own button is what launches a batch."""
         self._spinner_stop.setVisible(False)
         self._pause_btn.setVisible(False)
-        self._start_btn.setVisible(getattr(self, "_ui_mode", "advanced") != "simple")
+        self._set_storage_compact(False)
 
     def _begin_run_controls(self) -> None:
-        """Swap start for pause and the stop spinner while work is in flight."""
-        self._start_btn.setVisible(False)
+        """Raise pause and the stop spinner while work is in flight."""
         self._spinner_stop.set_stopping(False)
         self._spinner_stop.setVisible(True)
         self._pause_btn.setVisible(True)
         self._pause_btn.setEnabled(True)
         self._pause_btn.setChecked(False)
+        self._set_storage_compact(True)
+
+    def _set_storage_compact(self, running: bool) -> None:
+        """Narrow the storage bars to the drive being written to while a run works.
+
+        Free space matters most mid-run, so they stay rather than being hidden,
+        but four drives beside a live estimate is more than the row can hold.
+        """
+        bars = getattr(self, "_storage_bars", None)
+        if bars is not None:
+            bars.set_compact(running)
 
     def _on_stop_clicked(self) -> None:
         # The spinner is shared between a live pipeline run and a cached-run
@@ -244,10 +111,14 @@ class RunLoadingMixin(MixinBase):
         if not pipeline_running:
             self._cancel_load()
             return
-        if getattr(self, "_cancel_event", None) is not None:
-            self._cancel_event.set()
-        if getattr(self, "_pause_event", None) is not None:
-            self._pause_event.set()
+        cancel = getattr(self, "_cancel_event", None)
+        if cancel is not None:
+            cancel.set()
+        # Set, not cleared: a worker parked on the pause gate has to be released
+        # before it can observe the cancel it was just given.
+        pause = getattr(self, "_pause_event", None)
+        if pause is not None:
+            pause.set()
         self._spinner_stop.set_stopping(True)
         self._pause_btn.setEnabled(False)
         # Route through the status base text so the elapsed-time ticker keeps
@@ -271,44 +142,6 @@ class RunLoadingMixin(MixinBase):
             self._pause_btn.setIcon(pause_icon())
             self._pause_btn.setToolTip("Pause the reconstruction at the next safe checkpoint.")
             self._status_label.setText("Reconstruction resumed.")
-
-    def _set_form_enabled(self, enabled: bool) -> None:
-        for w in (
-            self._video_input, self._profile_combo, self._seg_combo,
-            self._map_combo, self._out_root_input, self._run_name_input,
-            self._fps_spin, self._begin_spin, self._end_spin,
-            self._transect_length, self._crop_width,
-            self._tsdf_check, self._skip_seg_check,
-            self._batch_btn,
-        ):
-            w.setEnabled(enabled)
-
-    def _effective_time_range(self) -> tuple[float | None, float | None]:
-        """Translate the spinboxes into (begin_s, end_s); None at either end means untrimmed."""
-        begin = float(self._begin_spin.value())
-        end = float(self._end_spin.value())
-        begin_arg: float | None = begin if begin > 0.0 else None
-        end_arg: float | None = end if end > 0.0 else None
-        # A full-length end drops to None so the orchestrator skips clamping and
-        # trusts ffmpeg.
-        if (
-            end_arg is not None
-            and self._video_duration_s is not None
-            and abs(end_arg - self._video_duration_s) < 1e-3
-        ):
-            end_arg = None
-        return begin_arg, end_arg
-
-    def _estimate_frame_count(self, fps: int) -> int | None:
-        """Frames this run will process; None when the duration is unknown, so callers skip."""
-        begin, end = self._effective_time_range()
-        begin = begin or 0.0
-        if end is None:
-            end = self._video_duration_s
-        if end is None:
-            return None
-        frames = int(max(0.0, end - begin) * max(1, fps))
-        return frames or None
 
     def _auto_load_run(self, run_dir: Path) -> None:
         self._load_cancelled = False
@@ -406,6 +239,7 @@ class RunLoadingMixin(MixinBase):
         generation: int,
     ) -> None:
         import time as _time
+
         from deepreefmap.pipeline.run_loader import GEOMETRY_ONLY_MODE
 
         _t0 = _time.monotonic()
@@ -530,6 +364,7 @@ class RunLoadingMixin(MixinBase):
             except Exception:
                 logger.exception("Failed to build ortho preview for cached run")
             self._results_group.setVisible(True)
+            self._results_empty.setVisible(False)
 
         _t6 = _time.monotonic()
         logger.info("[timing] ortho build: %.3fs", _t6 - _t5)
@@ -562,6 +397,10 @@ class RunLoadingMixin(MixinBase):
         log_path = run_dir / "run.log"
         self._log_view.set_current_log_path(log_path if log_path.exists() else None)
         self._set_app_mode("VIEWING")
+        # Every open path funnels through here (the run table, a dropped folder,
+        # --view, a finished batch), so View mode is entered once, at the point
+        # the cloud is actually on screen rather than when it was asked for.
+        self._enter_view_mode(run_dir)
 
 
     def _add_run_warning(self, message: str) -> None:

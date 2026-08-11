@@ -1,23 +1,38 @@
-"""Sidebar form panel and top toolbar construction for the main window."""
+"""The run form, the progress bar and the status strip.
+
+The form is never on screen as part of the window: it is built into a hidden
+holder and lent to the run settings dialog. Every setting a batch runs under
+lives in these widgets, and _collect_run_settings() reads exactly them, so the
+batch runs from what the dialog edited whether or not the dialog is open. What
+varies per pass (the clips, the trim, the transect) comes from the pass table on
+the Run step instead.
+"""
 
 from __future__ import annotations
-
-from deepreefmap_gui.core.window_protocol import MixinBase
 
 import logging
 import threading
 from pathlib import Path
 from typing import cast
 
-from PySide6.QtCore import QFileSystemWatcher, QSettings, QSize, QStandardPaths, Qt, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QIcon, QStandardItemModel
+from PySide6.QtCore import (
+    QFileSystemWatcher,
+    QSettings,
+    QSize,
+    QStandardPaths,
+    Qt,
+    QTimer,
+    QUrl,
+)
+from PySide6.QtGui import (
+    QDesktopServices,
+    QStandardItemModel,
+)
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QDialog,
     QDoubleSpinBox,
     QFileDialog,
-    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -25,96 +40,77 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QProgressBar,
     QPushButton,
-    QScrollArea,
     QSlider,
     QSpinBox,
     QStyle,
-    QTabWidget,
     QToolButton,
-    QToolTip,
     QVBoxLayout,
     QWidget,
 )
 
-from deepreefmap_gui.system.log_view import LogView, install_qt_log_handler
-from deepreefmap_gui.runs.progress import (
-    _LOAD_PHASES,
-    _RECON_PHASES,
-    ProgressModel,
-)
-from deepreefmap_gui.packaging.releases import current_version, pyapp_binary_path
+from deepreefmap_gui.core.icons import log_icon
+from deepreefmap_gui.core.spinner import SpinnerStopButton
+from deepreefmap_gui.core.storage_bar import StorageBars
 from deepreefmap_gui.core.theme import (
     BAR_HEIGHT,
     BLOCK,
     BORDER,
     BUTTON,
     CARD_BG,
+    FONT_SM,
+    FONT_XL,
     GUTTER,
-    LINK,
     PAGE_MARGIN,
     PREVIEW_BG,
     PRIMARY,
+    PRIMARY_DARK,
     RADIUS_SM,
+    SPACE_SM,
+    SPACE_XS,
+    SUCCESS,
     SURFACE_HI,
-    TEXT_DIM,
     TEXT_MUTED,
     TEXT_SECONDARY,
     UPDATE,
-    WARN_BG,
-    WARN_BORDER,
     WARN_TEXT,
+    WEIGHT_BOLD,
     bar_qss,
 )
-from deepreefmap_gui.core.spinner import SpinnerStopButton
-from deepreefmap_gui.form.time_edit import TimeSecondsEdit
+from deepreefmap_gui.core.widgets import (
+    EmptyState,
+    lent_panel_home,
+    muted_label,
+    utility_button_qss,
+    warning_banner_qss,
+)
+from deepreefmap_gui.core.window_protocol import MixinBase
+from deepreefmap_gui.packaging.releases import current_version, pyapp_binary_path
+from deepreefmap_gui.profiling.volumes import group_by_volume
+from deepreefmap_gui.runs.progress import (
+    _LOAD_PHASES,
+    _RECON_PHASES,
+    ProgressModel,
+)
 from deepreefmap_gui.runs.sunburst import SunburstWidget
 from deepreefmap_gui.runs.timing_popup import HoverColumn
-
-logger = logging.getLogger(__name__)
-
-
-class _InstantTipLabel(QLabel):
-    """A QLabel whose tooltip appears the instant the cursor enters, no delay."""
-
-    # Lets the whole label act as a button, so the glyph can be a color-honouring
-    # span: Qt paints anchor links in the palette color and ignores inline color.
-    clicked = Signal()
-
-    def enterEvent(self, event) -> None:  # noqa: N802 (Qt override)
-        if self.toolTip():
-            QToolTip.showText(event.globalPosition().toPoint(), self.toolTip(), self)
-        super().enterEvent(event)
-
-    def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt override)
-        self.clicked.emit()
-        super().mousePressEvent(event)
-
-
-def _probe_video_duration_s(video_path: str) -> float | None:
-    """Return seconds via cv2 frame count / fps, or None on failure."""
-    try:
-        import cv2
-
-        cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened():
-            return None
-        try:
-            frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-            fps = cap.get(cv2.CAP_PROP_FPS)
-        finally:
-            cap.release()
-        if not fps or fps <= 0 or not frames or frames <= 0:
-            return None
-        return float(frames) / float(fps)
-    except Exception:
-        logger.warning("Failed to probe video duration", exc_info=True)
-        return None
-
+from deepreefmap_gui.system.log_view import LogView, install_qt_log_handler
 
 # Transport controls sit in the bottom bar where they are the primary run
 # affordance, so they are larger than the old 40px top-bar cluster.
 _TRANSPORT_SIZE = 34
 _TRANSPORT_ICON = 28
+
+# Fill colours for the stacked progress pair. The total bar takes the darker
+# shade so the two are told apart where they meet.
+_STAGE_CHUNK = PRIMARY
+_TOTAL_CHUNK = PRIMARY_DARK
+
+# Slow enough to be free, often enough that a drive filling up during a long
+# batch shows before the run that fails on it.
+_STORAGE_REFRESH_MS = 15_000
+
+
+logger = logging.getLogger(__name__)
 
 
 def _separator() -> QWidget:
@@ -125,9 +121,9 @@ def _separator() -> QWidget:
 
 
 class FormPanelMixin(MixinBase):
-    """DeepReefMapWindow methods that build and drive the sidebar form panel + top toolbar."""
+    """DeepReefMapWindow methods that build and drive the run form and the status bars."""
 
-    def _build_form_panel(self) -> QWidget:
+    def _build_form_widgets(self) -> None:
         from deepreefmap.camera.intrinsics import available_profile_names
         from deepreefmap.mapping.registry import list_mapping_backends
         from deepreefmap.segmentation.registry import list_segmentation_models
@@ -138,16 +134,13 @@ class FormPanelMixin(MixinBase):
         documents = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)
         default_root = str(Path(documents or str(Path.home())) / "DeepReefMap")
 
-        panel = QWidget()
-        layout = QVBoxLayout(panel)
-        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-
         (
             setup_layout,
             viewer_layout,
             models_layout,
             system_layout,
-        ) = self._build_sidebar_tabs(layout)
+            updates_layout,
+        ) = self._build_panel_homes()
 
         self._build_deferred_top_bar_widgets(setup_layout)
         self._build_input_group(setup_layout, profiles)
@@ -155,159 +148,109 @@ class FormPanelMixin(MixinBase):
         self._build_output_group(setup_layout, default_root)
         self._build_advanced_toggle_and_notices(setup_layout)
         self._build_advanced_panel(setup_layout)
-        self._build_gated_and_batch_controls(setup_layout)
+        self._build_run_control_buttons()
+        self._build_gated_warning(setup_layout)
         self._build_run_warnings_and_log(viewer_layout)
         self._build_progress_widgets()
-        self._build_run_control_buttons()
-        self._build_viewer_controls_group(viewer_layout)
         self._build_results_group(viewer_layout)
-        self._build_models_tab(models_layout)
-        self._build_updates_section(system_layout)
+        self._build_models_panel(models_layout)
+        self._build_updates_section(updates_layout)
 
-        # Start in SETUP, no run loaded yet. The mode flips to RUNNING in
-        # _begin_pipeline_run and to VIEWING when a past run is selected or a
+        # Start in SETUP, no run loaded yet. The mode flips to RUNNING when a
+        # batch starts and to VIEWING when a past run is selected or a
         # reconstruction completes.
         self._set_app_mode("SETUP")
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(panel)
-        # NoFrame removes the QScrollArea's default beveled border so the
-        # sidebar blends into the main window instead of looking like a panel
-        # inside a panel.
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        # Every wide child word-wraps or elides, so a horizontal scrollbar would only
-        # flicker while the vertical one steals a few pixels. Force it off.
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        # Allow the user to drag the splitter to collapse the form down to a
-        # small minimum. Removing the hard min lets the 3D viewport take as
-        # much space as they want.
-        scroll.setMinimumWidth(0)
-        # DPI-aware preferred width for the initial splitter position. Font
-        # metrics scale with the system's display scaling, so this widens
-        # automatically on Hi-DPI / large-font setups instead of clipping.
-        # Room for a ~34-char label column plus the ~110px action buttons.
-        fm = panel.fontMetrics()
-        self._form_preferred_width = fm.horizontalAdvance("0") * 34 + 150
-        return scroll
+    def _build_panel_homes(self) -> tuple[QVBoxLayout, ...]:
+        """A permanent home for each panel that is shown somewhere else.
 
-    def _build_sidebar_tabs(self, layout: QVBoxLayout) -> tuple[QVBoxLayout, ...]:
-        # Advanced-mode sidebar tabs: Run (setup form / live log), Results
-        # (viewer controls + results panel for a loaded run), Models (HF auth +
-        # per-model download/delete), System (machine gauges + updates). Simple
-        # mode replaces this whole panel with full-page sections.
-        self._TAB_RUN = 0
-        self._TAB_RESULTS = 1
-        self._TAB_DATA = 2
-        self._TAB_MODELS = 3
-        # System hosts both the live machine gauges and the updates section.
-        self._TAB_SYSTEM = 4
-        self._sidebar_tabs = QTabWidget()
-        # Tabs expand to share the panel width equally so labels of different
-        # length (Run / Results / Models / Updates) end up the same visible width.
-        self._sidebar_tabs.tabBar().setExpanding(True)
-        self._sidebar_tabs.setStyleSheet(
-            "QTabBar::tab { min-width: 70px; padding: 6px 10px; }"
-        )
-        self._run_tab = QWidget()
-        run_layout = QVBoxLayout(self._run_tab)
-        run_layout.setContentsMargins(4, 6, 4, 4)
-        run_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self._viewer_tab = QWidget()
-        viewer_layout = QVBoxLayout(self._viewer_tab)
-        viewer_layout.setContentsMargins(4, 6, 4, 4)
-        viewer_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self._models_tab = QWidget()
-        models_layout = QVBoxLayout(self._models_tab)
-        models_layout.setContentsMargins(4, 6, 4, 4)
-        models_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        from deepreefmap_gui.system.panel import build_system_tab
+        None of these are on screen as built. The run form is lent to the run
+        settings dialog; the results, model, system and update panels are lent to
+        View mode and to Setup. Every one gets a holder of its own rather than
+        sharing a layout, because a panel handed back into a shared layout lands
+        wherever that layout happens to append it.
 
-        # The System tab hosts the gauges/benchmark first, with the updates section
-        # appended below into the same layout.
-        self._system_tab, system_layout = build_system_tab(self._sidebar_tabs)
-        # The Data tab holds the shared Data panel while in advanced mode;
-        # _host_data_panel moves the panel between here and the simple shell.
-        self._data_tab = QWidget()
-        data_layout = QVBoxLayout(self._data_tab)
-        data_layout.setContentsMargins(4, 6, 4, 4)
-        data_layout.addWidget(self._build_data_panel())
-        self._sidebar_tabs.addTab(self._run_tab, "Run")
-        self._sidebar_tabs.addTab(self._viewer_tab, "Results")
-        self._sidebar_tabs.addTab(self._data_tab, "Data")
-        self._sidebar_tabs.addTab(self._models_tab, "Models")
-        self._sidebar_tabs.addTab(self._system_tab, "System")
-        self._build_system_panel(system_layout)
-        # Results tab has nothing to show until a run loads, so disable it until
-        # _show_viewer_controls runs.
-        self._sidebar_tabs.setTabEnabled(self._TAB_RESULTS, False)
-        layout.addWidget(self._sidebar_tabs)
-
-        # Setup form is the only content on the Run tab. The live log lives in
-        # a separate bottom panel built by _build_log_panel and assembled into
-        # the main window's vertical splitter in app.py, so it stays visible
-        # alongside the form during a run instead of replacing it.
+        Parented to the window and hidden: a parentless widget made visible maps
+        itself as a top-level window, which flashes an empty titlebar on screen.
+        """
+        # The run form. RunSettingsDialog takes this page, wraps it in a scroll
+        # area and puts it back on close, by both exit paths. Without a holder
+        # that outlives the dialog the form would be left parented to something
+        # being destroyed, and every later _collect_run_settings() would raise
+        # on a deleted C++ object.
+        self._form_home = QWidget(self)
+        self._form_home.setVisible(False)
+        self._form_home_layout = QVBoxLayout(self._form_home)
+        self._form_home_layout.setContentsMargins(0, 0, 0, 0)
         self._setup_page = QWidget()
         setup_layout = QVBoxLayout(self._setup_page)
         setup_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         setup_layout.setContentsMargins(0, 0, 0, 0)
-        self._run_tab_layout = run_layout
-        run_layout.addWidget(self._setup_page)
+        self._form_home_layout.addWidget(self._setup_page)
+
+        # What a finished run produced: quality warnings, the ortho previews,
+        # benthic cover, the transect crop and the exports. Shown in View mode's
+        # info panel, beside the cloud they all describe.
+        self._results_page = QWidget()
+        results_layout = QVBoxLayout(self._results_page)
+        results_layout.setContentsMargins(0, 0, 0, 0)
+        results_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        self._models_home = QWidget(self)
+        self._models_home.setVisible(False)
+        models_layout = QVBoxLayout(self._models_home)
+        models_layout.setContentsMargins(0, 0, 0, 0)
+        models_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        self._system_home, self._system_page, system_layout = lent_panel_home(self)
+        self._build_system_panel(system_layout)
+        # The updater is a page of its own on Setup rather than a footnote under
+        # the gauges: it is the one thing there that changes the software itself.
+        self._updates_home, self._updates_page, updates_layout = lent_panel_home(self)
         return (
             setup_layout,
-            viewer_layout,
+            results_layout,
             models_layout,
             system_layout,
+            updates_layout,
         )
 
     def _build_deferred_top_bar_widgets(self, setup_layout: QVBoxLayout) -> None:
         # These widgets are owned by the top toolbar but constructed here so
         # initialisation code can reference them before the toolbar is laid out.
-        # "+" icon button on the far left of the top bar clears the loaded run
-        # in both modes.
-        from deepreefmap_gui.core.icons import plus_icon
-
-        self._new_run_btn = QPushButton()
-        self._new_run_btn.setIcon(plus_icon(20))
-        self._new_run_btn.setToolTip("Clear the loaded run")
-        self._new_run_btn.setFixedSize(28, 28)
-        self._new_run_btn.setProperty("pad", "none")
-        self._new_run_btn.clicked.connect(self._on_new_reconstruction)
 
         # Log toggle button, checkable so the pressed state mirrors panel
-        # visibility. Auto-opens when a run starts; user can collapse afterwards.
-        self._log_toggle_btn = QPushButton("Log")
+        # visibility. The panel is opened on request only: a batch reports
+        # itself on the Run step, and the log is for looking closer.
+        #
+        # A QToolButton carrying the shared utility stylesheet, because it sits
+        # in the header beside Setup and the two have to be the same
+        # control. A QPushButton on a hard-coded height was neither.
+        self._log_toggle_btn = QToolButton()
+        self._log_toggle_btn.setText("Log")
+        self._log_toggle_btn.setIcon(log_icon())
+        self._log_toggle_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self._log_toggle_btn.setToolTip("Show or hide the live log panel")
         self._log_toggle_btn.setCheckable(True)
-        self._log_toggle_btn.setFixedHeight(28)
+        self._log_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._log_toggle_btn.setStyleSheet(utility_button_qss())
         self._log_toggle_btn.toggled.connect(self._set_log_panel_visible)
 
         self._warnings_label_running = QLabel("")
         self._warnings_label_running.setWordWrap(True)
         self._warnings_label_running.setTextFormat(Qt.TextFormat.RichText)
         self._warnings_label_running.setStyleSheet(
-            f"background-color: {WARN_BG}; color: {WARN_TEXT};"
-            f" border: 1px solid {WARN_BORDER}; padding: 6px; border-radius: 3px;"
+            warning_banner_qss()
         )
         self._warnings_label_running.setVisible(False)
         setup_layout.addWidget(self._warnings_label_running)
 
     def _build_input_group(self, setup_layout: QVBoxLayout, profiles: list[str]) -> None:
+        """How the footage is read: which lens it was shot through, and how
+        densely it is sampled. Both are settings the whole batch shares; the
+        clips themselves come from the pass table on the Run step."""
         input_group = QGroupBox("Input")
         ig = QVBoxLayout(input_group)
-
-        # Wrapped in a container so the simple-mode settings dialog can hide
-        # every per-run input in one go; the pass table supplies them there.
-        self._video_row_widget = QWidget()
-        video_row = QHBoxLayout(self._video_row_widget)
-        video_row.setContentsMargins(0, 0, 0, 0)
-        self._video_input = QLineEdit()
-        self._video_input.setPlaceholderText("Path to video file")
-        browse_btn = QPushButton("Browse")
-        browse_btn.clicked.connect(self._browse_video)
-        video_row.addWidget(self._video_input, 1)
-        video_row.addWidget(browse_btn)
-        ig.addWidget(self._video_row_widget)
 
         profile_fps_row = QHBoxLayout()
         profile_fps_row.setContentsMargins(0, 0, 0, 0)
@@ -329,42 +272,36 @@ class FormPanelMixin(MixinBase):
         fps_col.addWidget(self._fps_spin)
         profile_fps_row.addLayout(fps_col)
         ig.addLayout(profile_fps_row)
-
-        self._range_row_widget = QWidget()
-        range_row = QHBoxLayout(self._range_row_widget)
-        range_row.setContentsMargins(0, 0, 0, 0)
-        begin_col = QVBoxLayout()
-        begin_col.setContentsMargins(0, 0, 0, 0)
-        begin_col.addWidget(QLabel("Begin (s)"))
-        self._begin_spin = TimeSecondsEdit()
-        begin_col.addWidget(self._begin_spin)
-        range_row.addLayout(begin_col, 1)
-
-        end_col = QVBoxLayout()
-        end_col.setContentsMargins(0, 0, 0, 0)
-        end_col.addWidget(QLabel("End (s)"))
-        self._end_spin = TimeSecondsEdit()
-        end_col.addWidget(self._end_spin)
-        range_row.addLayout(end_col, 1)
-
-        # Sits with Begin/End: it is the visual way to set exactly these two.
-        self._scrub_btn = QPushButton()
-        self._scrub_btn.setIcon(QIcon.fromTheme(
-            "video-x-generic",
-            self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay),
-        ))
-        self._scrub_btn.setIconSize(QSize(18, 18))
-        # Square, exactly the spinbox height, so the row reads as one unit.
-        side = self._end_spin.sizeHint().height()
-        self._scrub_btn.setFixedSize(side, side)
-        self._scrub_btn.setToolTip("Preview the video and drag handles to set Begin/End")
-        self._scrub_btn.setEnabled(False)
-        self._scrub_btn.clicked.connect(self._open_scrub_dialog)
-        range_row.addWidget(self._scrub_btn, 0, Qt.AlignmentFlag.AlignBottom)
-        ig.addWidget(self._range_row_widget)
-
-        self._video_duration_s: float | None = None
+        self._build_capacity_readout(ig)
         setup_layout.addWidget(input_group)
+
+    def _build_capacity_readout(self, ig: QVBoxLayout) -> None:
+        """How much of the machine the longest queued pass would use.
+
+        Sits with FPS because frame rate and trim are the two controls that move
+        it; the system panel can only report the machine, not change the run.
+        """
+        from deepreefmap_gui.core.widgets import MeterBar
+
+        ig.addSpacing(SPACE_SM)
+        self._capacity_caption = QLabel()
+        self._capacity_caption.setStyleSheet(f"color: {TEXT_MUTED}; font-size: {FONT_SM};")
+        ig.addWidget(self._capacity_caption)
+
+        self._capacity_bar = MeterBar()
+        ig.addWidget(self._capacity_bar)
+
+        self._capacity_detail = QLabel()
+        self._capacity_detail.setWordWrap(True)
+        self._capacity_detail.setStyleSheet(f"color: {TEXT_MUTED}; font-size: {FONT_SM};")
+        ig.addWidget(self._capacity_detail)
+
+        self._capacity_advice = QLabel()
+        self._capacity_advice.setWordWrap(True)
+        self._capacity_advice.setTextFormat(Qt.TextFormat.RichText)
+        self._capacity_advice.setVisible(False)
+        self._capacity_advice.linkActivated.connect(lambda _: self._reveal_memory_detail())
+        ig.addWidget(self._capacity_advice)
 
     def _build_model_selection_group(
         self, setup_layout: QVBoxLayout, seg_models: list[str], map_backends: list[str]
@@ -417,27 +354,21 @@ class FormPanelMixin(MixinBase):
 
     def _build_output_group(self, setup_layout: QVBoxLayout, default_root: str) -> None:
         output_group = QGroupBox("Output")
+        # Not a setting: it is the root a whole survey lands under, which is a
+        # property of this computer. The run settings dialog hides the group
+        # whole for that reason, which also keeps it from rendering as an empty
+        # titled frame once Setup has borrowed the controls out of it.
+        self._output_group = output_group
         og = QVBoxLayout(output_group)
 
-        from datetime import datetime
-
-        self._run_name_widget = QWidget()
-        run_name_col = QVBoxLayout(self._run_name_widget)
-        run_name_col.setContentsMargins(0, 0, 0, 0)
-        run_name_col.addWidget(QLabel("Run name"))
-        self._run_name_input = QLineEdit(datetime.now().strftime("%Y%m%d-%H%M%S"))  # noqa: DTZ005 (local time is intended: this is a user-facing default name)
-        self._run_name_input.setPlaceholderText("Friendly name (e.g. barrier-reef-2026-05-20)")
-        run_name_col.addWidget(self._run_name_input)
-        og.addWidget(self._run_name_widget)
-
-        self._effective_dir_label = QLabel("")
-        self._effective_dir_label.setStyleSheet(f"color: {TEXT_DIM};")
-        self._effective_dir_label.setWordWrap(True)
-        self._effective_dir_label.setTextFormat(Qt.TextFormat.RichText)
-        self._effective_dir_label.setOpenExternalLinks(True)
-        og.addWidget(self._effective_dir_label)
-
         style = self.style()
+        # Wrapped in one widget so it can be lent to Setup, which is
+        # where the output root is edited. Offering a second place to change it
+        # would invite two answers to one question.
+        self._out_root_widget = QWidget()
+        out_root_layout = QVBoxLayout(self._out_root_widget)
+        out_root_layout.setContentsMargins(0, 0, 0, 0)
+        out_root_layout.setSpacing(SPACE_XS)
         label_row = QHBoxLayout()
         label_row.setContentsMargins(0, 0, 0, 0)
         label_row.setSpacing(4)
@@ -448,10 +379,11 @@ class FormPanelMixin(MixinBase):
         root_open_btn.setIcon(arrow_right_icon(18))
         root_open_btn.setFixedSize(26, 24)
         root_open_btn.setToolTip("Open output root in file manager")
+        root_open_btn.setAccessibleName("Open output root in file manager")
         root_open_btn.clicked.connect(self._open_output_root)
         label_row.addWidget(root_open_btn)
         label_row.addStretch(1)
-        og.addLayout(label_row)
+        out_root_layout.addLayout(label_row)
 
         input_row = QHBoxLayout()
         input_row.setContentsMargins(0, 0, 0, 0)
@@ -463,6 +395,7 @@ class FormPanelMixin(MixinBase):
         root_browse_btn.setIconSize(QSize(18, 18))
         root_browse_btn.setFixedSize(28, 28)
         root_browse_btn.setToolTip("Browse for output root folder…")
+        root_browse_btn.setAccessibleName("Browse for output root folder")
         root_browse_btn.clicked.connect(self._browse_output_root)
         input_row.addWidget(root_browse_btn)
         root_default_btn = QPushButton()
@@ -470,9 +403,19 @@ class FormPanelMixin(MixinBase):
         root_default_btn.setIconSize(QSize(18, 18))
         root_default_btn.setFixedSize(28, 28)
         root_default_btn.setToolTip("Reset to <Documents>/DeepReefMap")
+        root_default_btn.setAccessibleName("Reset the output root to its default")
         root_default_btn.clicked.connect(self._reset_output_root_to_default)
         input_row.addWidget(root_default_btn)
-        og.addLayout(input_row)
+        out_root_layout.addLayout(input_row)
+        # An empty holder rather than the group itself, so the controls can be
+        # lent to Setup and handed back to the same place. The advanced
+        # form and the machine page describe one folder, so they share one set
+        # of widgets rather than each carrying their own.
+        self._out_root_home = QWidget()
+        out_root_home_layout = QVBoxLayout(self._out_root_home)
+        out_root_home_layout.setContentsMargins(0, 0, 0, 0)
+        out_root_home_layout.addWidget(self._out_root_widget)
+        og.addWidget(self._out_root_home)
 
         setup_layout.addWidget(output_group)
 
@@ -482,27 +425,14 @@ class FormPanelMixin(MixinBase):
         setup_layout.addWidget(self._advanced_toggle)
         self._vram_notice = QLabel()
         self._vram_notice.setWordWrap(True)
-        self._vram_notice.setStyleSheet(f"color: {UPDATE}; font-size: 11px; margin: 2px 0 4px 0;")
+        self._vram_notice.setStyleSheet(f"color: {UPDATE}; font-size: {FONT_SM}; margin: 2px 0 4px 0;")
         self._vram_notice.setVisible(False)
         setup_layout.addWidget(self._vram_notice)
 
-        # System-RAM grade, shown inline like the VRAM notice above so it is a
-        # visible indicator (not just the compact icon by the play button). Links
-        # to the System tab. Anything that changes the projected frame count
-        # re-grades the run.
-        self._memory_notice = QLabel()
-        self._memory_notice.setWordWrap(True)
-        self._memory_notice.setStyleSheet(f"color: {UPDATE}; font-size: 11px; margin: 2px 0 4px 0;")
-        self._memory_notice.setVisible(False)
-        self._memory_notice.linkActivated.connect(
-            lambda _: self._sidebar_tabs.setCurrentIndex(self._TAB_SYSTEM)
-        )
-        setup_layout.addWidget(self._memory_notice)
+        # System-RAM grade, shown inline like the VRAM notice above, and linked
+        # through to the readiness rows that repeat it in plainer words. Anything
+        # that changes the projected frame count re-grades the run.
         self._fps_spin.valueChanged.connect(self._update_memory_profile_warning)
-        self._begin_spin.valueChanged.connect(self._update_memory_profile_warning)
-        self._end_spin.valueChanged.connect(self._update_memory_profile_warning)
-        self._begin_spin.valueChanged.connect(self._on_begin_time_committed)
-        self._end_spin.valueChanged.connect(self._on_end_time_committed)
 
     def _build_advanced_panel(self, setup_layout: QVBoxLayout) -> None:
         self._advanced_panel = QWidget()
@@ -517,18 +447,8 @@ class FormPanelMixin(MixinBase):
         setup_layout.addWidget(self._advanced_panel)
 
     def _build_advanced_transect_crop(self, adv_layout: QVBoxLayout) -> None:
-        self._transect_length_widget = QWidget()
-        length_col = QVBoxLayout(self._transect_length_widget)
-        length_col.setContentsMargins(0, 0, 0, 0)
-        length_col.addWidget(QLabel("Transect length (m), 0 disables"))
-        self._transect_length = QDoubleSpinBox()
-        self._transect_length.setRange(0.0, 100.0)
-        self._transect_length.setDecimals(2)
-        self._transect_length.setSingleStep(0.1)
-        self._transect_length.setValue(0.0)
-        self._transect_length.setSuffix(" m")
-        length_col.addWidget(self._transect_length)
-        adv_layout.addWidget(self._transect_length_widget)
+        # Width only. A pass takes its transect length from the transect it was
+        # assigned to on the Plan step, so there is nothing here to set it with.
         adv_layout.addWidget(QLabel("Crop width (m), 0 disables"))
         self._crop_width = QDoubleSpinBox()
         self._crop_width.setRange(0.0, 50.0)
@@ -582,7 +502,7 @@ class FormPanelMixin(MixinBase):
             "DPT models have no internal resize, so non-native resolution may reduce accuracy."
         )
         self._dpt_resolution_warning.setWordWrap(True)
-        self._dpt_resolution_warning.setStyleSheet(f"color: {UPDATE}; font-size: 11px;")
+        self._dpt_resolution_warning.setStyleSheet(f"color: {UPDATE}; font-size: {FONT_SM};")
         self._dpt_resolution_warning.setVisible(False)
         adv_layout.addWidget(self._dpt_resolution_warning)
 
@@ -604,7 +524,7 @@ class FormPanelMixin(MixinBase):
         adv_layout.addWidget(self._batch_size_spin)
         self._vram_auto_label = QLabel()
         self._vram_auto_label.setWordWrap(True)
-        self._vram_auto_label.setStyleSheet(f"color: {UPDATE}; font-size: 11px;")
+        self._vram_auto_label.setStyleSheet(f"color: {UPDATE}; font-size: {FONT_SM};")
         adv_layout.addWidget(self._vram_auto_label)
         self._reset_defaults_btn = QPushButton("Reset to defaults")
         self._reset_defaults_btn.clicked.connect(self._reset_advanced_defaults)
@@ -680,6 +600,7 @@ class FormPanelMixin(MixinBase):
         scs_ckpt_btn.setIconSize(QSize(18, 18))
         scs_ckpt_btn.setFixedSize(28, 28)
         scs_ckpt_btn.setToolTip("Browse for a SCSfMLearner .pt checkpoint…")
+        scs_ckpt_btn.setAccessibleName("Browse for a SCSfMLearner checkpoint")
         scs_ckpt_btn.clicked.connect(self._browse_scs_checkpoint)
         scs_ckpt_row.addWidget(scs_ckpt_btn)
         scs_layout.addLayout(scs_ckpt_row)
@@ -715,6 +636,7 @@ class FormPanelMixin(MixinBase):
         loger_ckpt_btn.setIconSize(QSize(18, 18))
         loger_ckpt_btn.setFixedSize(28, 28)
         loger_ckpt_btn.setToolTip("Browse for a LoGeR .pt checkpoint…")
+        loger_ckpt_btn.setAccessibleName("Browse for a LoGeR checkpoint")
         loger_ckpt_btn.clicked.connect(self._browse_loger_checkpoint)
         loger_ckpt_row.addWidget(loger_ckpt_btn)
         loger_layout.addLayout(loger_ckpt_row)
@@ -723,33 +645,14 @@ class FormPanelMixin(MixinBase):
         self._loger_panel.setVisible(False)
         adv_layout.addWidget(self._loger_panel)
 
-    def _build_gated_and_batch_controls(self, setup_layout: QVBoxLayout) -> None:
+    def _build_gated_warning(self, setup_layout: QVBoxLayout) -> None:
         self._gated_warning = QLabel()
         self._gated_warning.setWordWrap(True)
         self._gated_warning.setTextFormat(Qt.TextFormat.RichText)
         self._gated_warning.setOpenExternalLinks(True)
-        self._gated_warning.setStyleSheet(
-            f"background-color: {WARN_BG}; color: {WARN_TEXT};"
-            f" border: 1px solid {WARN_BORDER}; padding: 6px; border-radius: 3px;"
-            " font-size: 11px;"
-        )
+        self._gated_warning.setStyleSheet(warning_banner_qss() + f" font-size: {FONT_SM};")
         self._gated_warning.setVisible(False)
         setup_layout.addWidget(self._gated_warning)
-
-        # Start moved to the top-bar run cluster (self._start_btn); the form keeps
-        # only the hint explaining why start is unavailable.
-        self._batch_btn = QPushButton("Batch reconstruction…")
-        self._batch_btn.setToolTip(
-            "Run a CSV of reconstructions sequentially. "
-            "Columns: videos, timestamps (begin-end seconds), transect_length, crop_width."
-        )
-        self._batch_btn.clicked.connect(self._on_batch_clicked)
-        setup_layout.addWidget(self._batch_btn)
-
-        self._submit_hint = QLabel("")
-        self._submit_hint.setWordWrap(True)
-        self._submit_hint.setStyleSheet("color: #c84; font-style: italic;")
-        setup_layout.addWidget(self._submit_hint)
 
     def _build_run_warnings_and_log(self, viewer_layout: QVBoxLayout) -> None:
         # Sticky banner for non-fatal quality warnings emitted during a run
@@ -761,8 +664,7 @@ class FormPanelMixin(MixinBase):
         self._warnings_label.setWordWrap(True)
         self._warnings_label.setTextFormat(Qt.TextFormat.RichText)
         self._warnings_label.setStyleSheet(
-            f"background-color: {WARN_BG}; color: {WARN_TEXT};"
-            f" border: 1px solid {WARN_BORDER}; padding: 6px; border-radius: 3px;"
+            warning_banner_qss()
         )
         self._warnings_label.setVisible(False)
         self._run_warnings: list[str] = []
@@ -775,15 +677,14 @@ class FormPanelMixin(MixinBase):
         self._log_view = LogView()
 
         # The log handler streams every deepreefmap.* log line into the panel.
-        # A per-run FileHandler is opened/closed in _begin_pipeline_run and
-        # cleanup paths.
+        # A per-run FileHandler, when one is open, is closed on the run's
+        # completion paths and again on window teardown.
         self._qt_log_handler = install_qt_log_handler()
         self._qt_log_handler.line_signal.connect(self._log_view.append_line)
-        self._run_log_file_handler = None
 
     def _build_progress_widgets(self) -> None:
         # Status label and progress bar are owned by the top toolbar but
-        # constructed here so they exist before _recompute_submit_state runs.
+        # constructed here so they exist before anything reports into them.
         self._status_label = QLabel("Ready.")
         self._status_label.setWordWrap(True)
 
@@ -791,8 +692,6 @@ class FormPanelMixin(MixinBase):
         # so the two percentages read as a unit at half the width. Bar text is
         # hidden to avoid cramped labels: the numbers live in the status text, the
         # overall-estimate label, and the hover breakdown. Empty when idle.
-        _STAGE_CHUNK = PRIMARY
-        _TOTAL_CHUNK = "#3574b0"  # darker PRIMARY, unique to the stacked total bar
         self._progress_bar = QProgressBar()
         self._progress_bar.setRange(0, 100)
         self._progress_bar.setValue(0)
@@ -820,8 +719,7 @@ class FormPanelMixin(MixinBase):
 
         # Overall (all-stages) remaining estimate, kept visible rather than buried
         # in the hover breakdown.
-        self._eta_total_label = QLabel("")
-        self._eta_total_label.setStyleSheet(f"color: {TEXT_MUTED};")
+        self._eta_total_label = muted_label("")
         self._eta_total_label.setMinimumWidth(78)
 
         self._recon_model = ProgressModel(_RECON_PHASES)
@@ -830,16 +728,10 @@ class FormPanelMixin(MixinBase):
 
     def _build_run_control_buttons(self) -> None:
         # Transport controls live at the bottom-right of the window, next to the
-        # progress bar they drive. Play shows in SETUP (advanced only), pause and
-        # the animated stop-spinner while a run is in flight.
-        from deepreefmap_gui.core.icons import pause_icon, play_icon
-
-        self._start_btn = QPushButton()
-        self._start_btn.setIcon(play_icon(_TRANSPORT_ICON))
-        self._start_btn.setToolTip("Start reconstruction")
-        self._start_btn.setFixedSize(_TRANSPORT_SIZE, _TRANSPORT_SIZE)
-        self._start_btn.setProperty("pad", "none")
-        self._start_btn.clicked.connect(self._on_submit)
+        # progress bar they drive. They belong with the progress bar they
+        # interrupt, and only exist while a run is in flight. Starting one is not
+        # here: the Run step's own button launches the batch.
+        from deepreefmap_gui.core.icons import pause_icon
 
         self._pause_btn = QPushButton()
         self._pause_btn.setProperty("pad", "none")
@@ -848,6 +740,7 @@ class FormPanelMixin(MixinBase):
             "Pause at the next safe checkpoint. Long mapping passes may take "
             "time to respond."
         )
+        self._pause_btn.setAccessibleName("Pause the reconstruction")
         self._pause_btn.setCheckable(True)
         self._pause_btn.setFixedSize(_TRANSPORT_SIZE, _TRANSPORT_SIZE)
         self._pause_btn.setVisible(False)
@@ -857,86 +750,10 @@ class FormPanelMixin(MixinBase):
         self._spinner_stop.setVisible(False)
         self._spinner_stop.clicked.connect(self._on_stop_clicked)
 
-    def _build_viewer_controls_group(self, viewer_layout: QVBoxLayout) -> None:
-        self._viewer_controls_group = QGroupBox("Viewer controls")
-        self._viewer_controls_group.setVisible(False)
-        vc_layout = QVBoxLayout(self._viewer_controls_group)
-
-        self._semantic_check = QCheckBox("Semantic colors")
-        self._semantic_check.setChecked(True)
-        self._semantic_check.toggled.connect(self._on_viewer_control_changed)
-        vc_layout.addWidget(self._semantic_check)
-
-        self._accumulate_check = QCheckBox("Accumulate frames")
-        self._accumulate_check.setChecked(True)
-        self._accumulate_check.toggled.connect(self._on_viewer_control_changed)
-        vc_layout.addWidget(self._accumulate_check)
-
-        # The frustum toggle lives in the canvas overlay (_build_pick_mode_overlay).
-
-        vc_layout.addWidget(QLabel("Point size"))
-        self._point_size_spin = QDoubleSpinBox()
-        self._point_size_spin.setRange(0.5, 20.0)
-        self._point_size_spin.setValue(2.0)
-        self._point_size_spin.setSingleStep(0.5)
-        self._point_size_spin.valueChanged.connect(self._on_viewer_control_changed)
-        vc_layout.addWidget(self._point_size_spin)
-
-        self._confidence_box = QWidget()
-        conf_layout = QVBoxLayout(self._confidence_box)
-        conf_layout.setContentsMargins(0, 0, 0, 0)
-        conf_layout.addWidget(QLabel("Min confidence (%)"))
-        self._confidence_slider = QSlider(Qt.Orientation.Horizontal)
-        self._confidence_slider.setRange(0, 100)
-        self._confidence_slider.setValue(0)
-        self._confidence_slider.valueChanged.connect(self._on_viewer_control_changed)
-        conf_layout.addWidget(self._confidence_slider)
-        vc_layout.addWidget(self._confidence_box)
-
-        self._frame_slider = self._viewer.frame_slider
-        self._frame_slider.valueChanged.connect(self._on_viewer_control_changed)
-
-        play_row = QHBoxLayout()
-        self._play_check = QCheckBox("Play")
-        self._play_check.toggled.connect(self._on_play_toggled)
-        play_row.addWidget(self._play_check)
-        play_row.addWidget(QLabel("FPS:"))
-        self._play_fps_spin = QSpinBox()
-        self._play_fps_spin.setRange(1, 60)
-        self._play_fps_spin.setValue(8)
-        self._play_fps_spin.valueChanged.connect(self._on_play_fps_changed)
-        play_row.addWidget(self._play_fps_spin)
-        vc_layout.addLayout(play_row)
-
-        follow_row = QHBoxLayout()
-        self._follow_camera_check = QCheckBox("Follow camera")
-        self._follow_camera_check.toggled.connect(self._on_follow_camera_changed)
-        follow_row.addWidget(self._follow_camera_check)
-        self._view_from_camera_btn = QPushButton("Snap")
-        self._view_from_camera_btn.setToolTip("Snap the 3D view to the current frame's camera")
-        self._view_from_camera_btn.clicked.connect(self._on_view_from_camera)
-        follow_row.addWidget(self._view_from_camera_btn)
-        vc_layout.addLayout(follow_row)
-
-        vc_layout.addWidget(QLabel("Camera backoff (m)"))
-        self._camera_backoff_spin = QDoubleSpinBox()
-        self._camera_backoff_spin.setRange(0.0, 5.0)
-        self._camera_backoff_spin.setSingleStep(0.1)
-        self._camera_backoff_spin.setValue(0.5)
-        self._camera_backoff_spin.valueChanged.connect(self._on_follow_camera_changed)
-        vc_layout.addWidget(self._camera_backoff_spin)
-
-        # Results tab: viewer controls + results panel. The tab itself is
-        # disabled until a run is loaded (greyed out and unclickable), so no
-        # empty-state placeholder is needed inside. addStretch is appended at
-        # the end after the results group is added below.
-        viewer_layout.addWidget(self._viewer_controls_group)
-
     def _build_results_group(self, viewer_layout: QVBoxLayout) -> None:
         # The legend lives as a floating overlay on the 3D canvas; this dict
         # is populated by _build_legend and queried by _enabled_class_set.
         self._legend_toggles: dict[int, QCheckBox] = {}
-        self._legend_solo_buttons: dict[int, QToolButton] = {}
         # Legend sort state: column "selected" (visibility), "name", or "size",
         # plus a direction. _legend_order_cache lets _apply_legend_sort skip
         # reflows when the resulting order is unchanged.
@@ -954,12 +771,12 @@ class FormPanelMixin(MixinBase):
         self._ortho_rgb_preview = QLabel("RGB ortho")
         self._ortho_rgb_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._ortho_rgb_preview.setMinimumSize(160, 100)
-        self._ortho_rgb_preview.setStyleSheet(f"background-color: {PREVIEW_BG}; color: #666;")
+        self._ortho_rgb_preview.setStyleSheet(f"background-color: {PREVIEW_BG}; color: {TEXT_MUTED};")
         ortho_row.addWidget(self._ortho_rgb_preview, 1)
         self._ortho_seg_preview = QLabel("Seg ortho")
         self._ortho_seg_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._ortho_seg_preview.setMinimumSize(160, 100)
-        self._ortho_seg_preview.setStyleSheet(f"background-color: {PREVIEW_BG}; color: #666;")
+        self._ortho_seg_preview.setStyleSheet(f"background-color: {PREVIEW_BG}; color: {TEXT_MUTED};")
         ortho_row.addWidget(self._ortho_seg_preview, 1)
         res_layout.addLayout(ortho_row)
 
@@ -1033,10 +850,23 @@ class FormPanelMixin(MixinBase):
         exports_grid.addWidget(self._export_frame_btn, 2, 1)
         res_layout.addLayout(exports_grid)
         viewer_layout.addWidget(self._results_group)
+
+        # The group above is hidden until a run loads, which left this tab a
+        # blank rectangle -- the one panel in the app that said nothing at all
+        # about why it was empty.
+        self._results_empty = EmptyState(
+            "No run loaded",
+            "Start a run, or open a finished one from Browse, to see its ortho, "
+            "benthic cover and exports here.",
+        )
+        viewer_layout.addWidget(self._results_empty, 1)
         viewer_layout.addStretch()
 
-    def _build_models_tab(self, models_layout: QVBoxLayout) -> None:
-        models_group = QGroupBox("Models")
+    def _build_models_panel(self, models_layout: QVBoxLayout) -> None:
+        # Untitled: Setup's view switch already says Models above it,
+        # and a frame whose caption repeats the control that reached it says
+        # nothing twice.
+        models_group = QGroupBox()
         self._models_layout = QVBoxLayout(models_group)
 
         auth_row = QHBoxLayout()
@@ -1060,7 +890,7 @@ class FormPanelMixin(MixinBase):
 
         # Model library: reveal the cache folder, and export/import portable model
         # packs so offline field laptops can be provisioned from a USB stick without
-        # re-downloading. Logic lives in models/library.py + models/library_ui.py.
+        # re-downloading. Logic lives in models/packs.py + models/packs_ui.py.
         lib_row = QHBoxLayout()
         lib_row.setContentsMargins(0, 0, 0, 0)
         lib_row.setSpacing(6)
@@ -1116,14 +946,21 @@ class FormPanelMixin(MixinBase):
         self._map_combo.currentTextChanged.connect(self._on_required_models_changed)
         self._map_combo.currentTextChanged.connect(self._on_mapping_backend_changed)
         self._skip_seg_check.toggled.connect(self._on_required_models_changed)
-        self._video_input.textChanged.connect(self._recompute_submit_state)
-        self._video_input.editingFinished.connect(self._on_video_input_committed)
         self._out_root_input.textChanged.connect(self._on_output_root_changed)
-        self._run_name_input.textChanged.connect(self._on_run_name_changed)
 
-        # Watch the output root directory so the Data section reflects new
-        # manifests appearing on disk (e.g. a sibling process completes a run)
-        # in addition to user edits of the path text.
+        # Editing the output root is debounced because the expensive half of
+        # reacting to it walks the tree and opens a SurveyStore, and SurveyStore
+        # creates its database under whatever path it is handed. Run per
+        # keystroke, that leaves a survey.db under every prefix of what the user
+        # typed on the way to the path they meant.
+        self._out_root_commit_timer = QTimer(self)
+        self._out_root_commit_timer.setSingleShot(True)
+        self._out_root_commit_timer.setInterval(300)
+        self._out_root_commit_timer.timeout.connect(self._commit_output_root)
+
+        # Watch the output root directory so Browse reflects new manifests
+        # appearing on disk (e.g. a sibling process completes a run) in addition
+        # to user edits of the path text.
         self._out_root_watcher = QFileSystemWatcher(self)
         self._out_root_watcher.directoryChanged.connect(self._on_out_root_dir_changed)
 
@@ -1139,36 +976,22 @@ class FormPanelMixin(MixinBase):
         self._ortho_crop_refresh_pending = False
 
         self._settings = QSettings("ECEO", "deepreefmap")
-        last_video = cast(str, self._settings.value("last_video_path", "", type=str))
-        if last_video and Path(last_video).exists():
-            self._video_input.setText(last_video)
-            self._auto_probe_video_duration(last_video)
         saved_root = cast(str, self._settings.value("output_root_dir", "", type=str))
         if saved_root:
             self._out_root_input.setText(saved_root)
-        self._update_effective_dir_label()
         self._refresh_data_manager()
         self._update_out_root_watch()
-        self._recompute_submit_state()
 
-        # Past runs are listed in the top-bar combo newest-first; the user
-        # can click one to load. We don't auto-load on startup so the app
-        # opens instantly. A stale half-finished last_run_dir is cleared so
-        # it doesn't appear at the top of the combo as the most recent entry
-        # only to error out on click.
-        last_run = cast(str, self._settings.value("last_run_dir", "", type=str))
-        if last_run:
-            last_run_path = Path(last_run)
-            if not ((last_run_path / "run_manifest.json").exists()
-                    and (last_run_path / "mapping_outputs.npz").exists()):
-                self._settings.remove("last_run_dir")
-        # Models groupbox lives in its own sidebar tab so the Run tab stays
-        # focused on the setup form. The inline status icons next to the
-        # seg/mapping dropdowns surface state without forcing the user to
-        # switch tabs for common cases.
+        # The inline status icons next to the seg/mapping dropdowns surface
+        # state without forcing the user to leave the form for common cases.
+        #
+        # The group is the only child of the tab, which is what lets
+        # _host_machine_panels lend it to Setup and take it back: the tab
+        # top-aligns its contents already, so there is no trailing stretch for a
+        # returning widget to land underneath.
         self._models_group = models_group
+        self._models_page = models_group
         models_layout.addWidget(models_group)
-        models_layout.addStretch()
         threading.Thread(target=self._refresh_model_status, daemon=True).start()
 
     def _build_updates_section(self, updates_layout: QVBoxLayout) -> None:
@@ -1189,40 +1012,40 @@ class FormPanelMixin(MixinBase):
         update_row.addWidget(self._update_btn)
         updates_layout.addLayout(update_row)
         self._update_show_all = QCheckBox("Show older versions (rollback)")
+        self._update_show_all.setToolTip(
+            "An older version may not be able to open surveys this one has "
+            "already saved. A backup is taken before rolling back."
+        )
         self._update_show_all.setVisible(False)
         self._update_show_all.toggled.connect(self._on_toggle_show_all_versions)
         updates_layout.addWidget(self._update_show_all)
         self._available_releases: list[dict] = []
         self._current_version_str = current_version()
 
-        # Linux menu integration. Windows/macOS get shortcuts from their
-        # installers; on Linux the bare binary registers itself on demand. The
-        # entry points at the current binary path, which the in-app updater
-        # swaps in place, so it survives updates and rollbacks.
-        from deepreefmap_gui.packaging.desktop_entry import desktop_entry_supported
+        # Applications-menu integration is a Setup readiness row rather than a
+        # button here: whether the app is in the menu is a fact about this
+        # machine, alongside its graphics card and its disk, and a row can say
+        # "installed by the installer" where a button could only offer to
+        # remove someone else's shortcut.
 
-        self._desktop_entry_btn = QPushButton()
-        self._desktop_entry_btn.clicked.connect(self._on_toggle_desktop_entry)
-        self._desktop_entry_btn.setVisible(
-            desktop_entry_supported() and pyapp_binary_path() is not None
-        )
-        self._refresh_desktop_entry_button()
-        updates_layout.addWidget(self._desktop_entry_btn)
-
-        self._build_storage_section(updates_layout)
+        self._build_env_section(updates_layout)
 
         threading.Thread(target=self._check_for_update, daemon=True).start()
 
         updates_layout.addStretch()
 
-    def _build_storage_section(self, layout: QVBoxLayout) -> None:
-        """Per-version environments (with real, hardlink-aware sizes) and the model
-        cache total. Only shown when running from an installed binary; environments
-        are never pruned automatically, they are managed here by hand.
+    def _build_env_section(self, layout: QVBoxLayout) -> None:
+        """Per-version environments and the model cache total, under Setup's
+        Updates view: what an install or a rollback leaves behind belongs beside
+        the control that puts it there.
+
+        Nothing to say outside an installed binary, so a dev checkout gets no
+        section at all. Environments are never pruned automatically; this is the
+        only thing that deletes one.
         """
         if pyapp_binary_path() is None:
             return
-        layout.addWidget(QLabel("<b>Storage</b>"))
+        layout.addWidget(QLabel("<b>Installed versions</b>"))
         caption = QLabel(
             "Each version keeps its own environment. Sizes are what deleting frees; "
             "most of an environment is shared with the package cache."
@@ -1241,11 +1064,13 @@ class FormPanelMixin(MixinBase):
         self._model_cache_label.setWordWrap(True)
         self._model_cache_label.setStyleSheet(f"color: {TEXT_MUTED};")
         layout.addWidget(self._model_cache_label)
-        self._models_tab_btn = QPushButton("Manage models in the Models tab")
-        self._models_tab_btn.clicked.connect(self._go_to_models_tab)
-        layout.addWidget(self._models_tab_btn)
+        self._manage_models_btn = QPushButton("Manage models")
+        self._manage_models_btn.clicked.connect(
+            lambda: self._set_machine_view("models")
+        )
+        layout.addWidget(self._manage_models_btn)
 
-        self._refresh_storage()
+        self._refresh_envs()
 
     def _build_top_bar(self) -> QWidget:
         bar = QWidget()
@@ -1259,37 +1084,18 @@ class FormPanelMixin(MixinBase):
         h = QHBoxLayout(bar)
         h.setContentsMargins(PAGE_MARGIN, 6, PAGE_MARGIN, 6)
         h.setSpacing(GUTTER)
-
-        # The "+" reset is the leftmost element and shows in both modes; the
-        # 3D preview toggle lives on the viewer itself (wired in app.py).
-        h.addWidget(self._new_run_btn)
-        h.addWidget(self._build_mode_toggle())
-        h.addWidget(self._log_toggle_btn)
-
         h.addStretch(1)
 
-        # The stage/total bars keep their home here for the hover breakdown, but
-        # only while a run is in flight; _begin_progress and _reset_progress_bars
-        # drive their visibility.
+        # The stage/total bars, and nothing else. The log toggle and Setup live
+        # in the workspace header and the memory advisory on Setup's button; a
+        # batch of passes has no single loaded run to clear, so there is no "+".
+        # A whole band of chrome for one button was not worth its
+        # height, so the bar goes with them and comes back only while a run is
+        # in flight, which _set_progress_widgets_visible drives.
         self._progress_stack.setVisible(False)
         h.addWidget(self._progress_stack)
-
-        # Memory-risk icon. Hidden when the run fits; a click jumps to the System
-        # tab. Its tooltip shows on the instant of hover (no delay) and word-wraps.
-        # The run is never gated on it.
-        self._memory_warn_icon = _InstantTipLabel()
-        self._memory_warn_icon.setVisible(False)
-        self._memory_warn_icon.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._memory_warn_icon.setText(f'<span style="color:{BLOCK}; font-size:16px;">&#9888;</span>')
-        self._memory_warn_icon.clicked.connect(
-            lambda: self._sidebar_tabs.setCurrentIndex(self._TAB_SYSTEM)
-        )
-        h.addWidget(self._memory_warn_icon)
-
-        # The form (fps, resolution, any restored video duration) is already built,
-        # so grade the run once now to flag the icon on startup, not just on edit.
-        # Mode init happens in app.py once the left stack and splitter exist.
-        self._update_memory_profile_warning()
+        bar.setVisible(False)
+        self._top_bar = bar
         return bar
 
     def _build_bottom_bar(self) -> QWidget:
@@ -1323,13 +1129,93 @@ class FormPanelMixin(MixinBase):
         row.setSpacing(GUTTER)
         self._status_label.setStyleSheet(f"color: {TEXT_SECONDARY};")
         row.addWidget(self._status_label, 1)
+        # Storage rides on this row rather than a band of its own: the bars are
+        # BAR_HEIGHT tall inside a row already twice that, so the one number
+        # that can stop a run mid-dive costs no height to keep on screen.
+        self._storage_bars = StorageBars()
+        # Pressing a drive asks the window to go to its page; the window decides
+        # where that lands and says afterwards which button is lit.
+        self._storage_bars.volume_clicked.connect(self._open_storage_page)
+        row.addWidget(self._storage_bars)
         self._eta_total_label.setVisible(False)
         row.addWidget(self._eta_total_label)
-        row.addWidget(self._start_btn)
+        # No prospective command here. Runs are launched as a batch of passes
+        # off the survey plan, so a command naming one video and one output
+        # directory describes a run nobody is about to start. Browse keeps the
+        # retrospective one, built from each run's own manifest.
         row.addWidget(self._pause_btn)
         row.addWidget(self._spinner_stop)
         outer.addLayout(row)
+
+        # Free space moves without the app touching anything, so the bars are
+        # polled rather than only refreshed on the events that grow them.
+        self._storage_timer = QTimer(self)
+        self._storage_timer.setInterval(_STORAGE_REFRESH_MS)
+        self._storage_timer.timeout.connect(self._refresh_storage_bars)
+        self._storage_timer.start()
+        self._refresh_storage_bars()
         return bar
+
+    def _refresh_storage_bars(self) -> None:
+        """Re-measure the drives this survey uses, off the thread painting them.
+
+        ``disk_usage`` blocks for seconds on a mount that has gone away, which in
+        the field is a card reader somebody unplugged, so the snapshot is taken
+        here and the measuring happens on a worker.
+        """
+        if getattr(self, "_storage_scan_running", False):
+            return
+        bars = getattr(self, "_storage_bars", None)
+        if bars is None:
+            return
+
+        videos: list[tuple[str, int | None]] = []
+        store = self._try_survey_store()
+        if store is not None:
+            try:
+                videos = [(v.path, v.size_bytes) for v in store.list_videos()]
+            except Exception:
+                logger.exception("Could not read the clip library for the storage bars")
+        field = getattr(self, "_out_root_input", None)
+        if field is None:
+            return
+        root = Path(field.text()).expanduser()
+        # The output root goes in at zero bytes so its drive is listed even
+        # before anything has been written to it: it is the drive whose free
+        # space decides whether the next run can start.
+        outputs: list[tuple[str, int | None]] = [(str(root), 0)]
+        outputs += [
+            (str(root / name), size) for name, size in getattr(self, "_run_size_cache", {}).items()
+        ]
+
+        self._storage_scan_running = True
+        threading.Thread(
+            target=self._scan_storage, args=(videos, outputs), name="storage-scan", daemon=True
+        ).start()
+
+    def _scan_storage(
+        self, videos: list[tuple[str, int | None]], outputs: list[tuple[str, int | None]]
+    ) -> None:
+        try:
+            # Only clips that are actually there: a file on an unplugged drive
+            # takes up none of the space being reported.
+            present = [(path, size) for path, size in videos if Path(path).is_file()]
+            volumes = group_by_volume(present, outputs)
+        except Exception:
+            logger.exception("Could not measure the survey's drives")
+            volumes = []
+        try:
+            self._sig_storage_usage.emit(volumes)
+        except (RuntimeError, TypeError):
+            # A scan outlives a window closed while a mount was answering slowly,
+            # and by then there is no C++ object left to deliver to.
+            logger.debug("The window closed before its drives were measured")
+
+    def _apply_storage_usage(self, volumes: object) -> None:
+        self._storage_scan_running = False
+        bars = getattr(self, "_storage_bars", None)
+        if bars is not None and isinstance(volumes, list):
+            bars.set_volumes(volumes)
 
     def _build_log_panel(self) -> QWidget:
         """Bottom-of-window panel hosting the live log."""
@@ -1346,7 +1232,7 @@ class FormPanelMixin(MixinBase):
         close_btn.setToolTip("Hide log panel")
         close_btn.setProperty("pad", "none")
         close_btn.setStyleSheet(
-            "QPushButton { font-size: 14px; font-weight: bold; padding: 0;"
+            f"QPushButton {{ font-size: {FONT_XL}; font-weight: {WEIGHT_BOLD}; padding: 0;"
             f" border: 1px solid {BORDER}; border-radius: {RADIUS_SM}px;"
             f" background: {BUTTON}; }}"
             f" QPushButton:hover {{ background: {SURFACE_HI}; }}"
@@ -1388,8 +1274,8 @@ class FormPanelMixin(MixinBase):
         """Every run_reconstruction kwarg the form controls, minus the per-run
         inputs (video, output dir, run name, trim, transect length).
 
-        Both the advanced Start button and simple mode's survey batches build
-        their run from this, so a setting cannot apply in one mode only.
+        Every pass in a survey batch builds its run from this, so a setting
+        edited in the dialog reaches all of them or none.
         """
         settings: dict = {
             "fps": self._fps_spin.value(),
@@ -1514,71 +1400,107 @@ class FormPanelMixin(MixinBase):
         self._update_dpt_warning()
         self._update_memory_profile_warning()
 
+    def _current_fit(self):
+        """Grade the longest queued pass against this machine, or None.
+
+        None when nothing is queued or the probe fails; callers fall back to
+        reporting the machine's capacity without a run to compare it to.
+        """
+        from deepreefmap_gui.profiling.memory_estimate import fit_for_pass
+        from deepreefmap_gui.profiling.run_history import history_key, load_expected_peaks
+        from deepreefmap_gui.profiling.system_probe import probe_system
+
+        seconds = self._simple_peak_seconds()
+        if not seconds:
+            return None
+        fps = self._fps_spin.value()
+        w, h = self._proc_width_spin.value(), self._proc_height_spin.value()
+        mapping = self._map_combo.currentText()
+        seg = self._seg_combo.currentText()
+        return fit_for_pass(
+            probe_system(),
+            seconds=seconds,
+            fps=fps,
+            width=w,
+            height=h,
+            mapping_backend=mapping,
+            seg_model=seg,
+            batch_size=self._batch_size_spin.value(),
+            recorded=load_expected_peaks(history_key(mapping, seg, w, h, fps)),
+        )
+
     def _update_memory_profile_warning(self) -> None:
-        """Grade the configured run and show the memory notice + play-button icon."""
+        """Refresh the capacity readout and the advisory Setup reads from it."""
         # Advisory only: a warn or block grade never gates the run.
-        icon = getattr(self, "_memory_warn_icon", None)
-        notice = getattr(self, "_memory_notice", None)
-        if icon is None or notice is None:  # top bar / form not built yet
+        if getattr(self, "_capacity_bar", None) is None:  # form not built yet
             return
-
-        def hide() -> None:
-            icon.setVisible(False)
-            notice.setVisible(False)
-
         try:
-            from deepreefmap_gui.profiling.run_history import history_key, load_expected_peaks
-            from deepreefmap_gui.profiling.memory_estimate import estimate_peak_bytes, preflight_check
-            from deepreefmap_gui.profiling.system_probe import format_bytes, probe_system
-
-            fps = self._fps_spin.value()
-            frames = self._estimate_frame_count(fps)
-            if not frames:
-                hide()
-                return
-            w, h = self._proc_width_spin.value(), self._proc_height_spin.value()
-            mapping = self._map_combo.currentText()
-            seg = self._seg_combo.currentText()
-            est = estimate_peak_bytes(
-                frames, w, h, mapping, seg,
-                recorded=load_expected_peaks(history_key(mapping, seg, w, h, fps)),
-            )
-            profile = probe_system()
-            verdict = preflight_check(profile, est)
+            fit = self._current_fit()
         except Exception:
-            hide()
+            fit = None
+        self._paint_capacity_readout(fit)
+        self._memory_advisory = self._memory_advisory_text(fit)
+        self._refresh_machine_button()
+        self._refresh_readiness_view()
+
+    def _memory_advisory_text(self, fit) -> str:
+        """What Setup says about memory: how many passes, not which one.
+
+        Each cart row carries its own grade on its settings button, where the
+        frame rate or the resolution that caused it is a click away. What is
+        left for Setup is the count, which is what tells you whether to go and
+        look at all.
+        """
+        if fit is None or fit.fits:
+            return ""
+        try:
+            over = self._rows_over_memory()
+        except Exception:
+            over = 0
+        if over > 1:
+            return f"{over} passes need more memory than this machine can give a run."
+        return fit.headline
+
+    def _paint_capacity_readout(self, fit) -> None:
+        """Show the longest pass against what this machine can give one run."""
+        from deepreefmap_gui.profiling.memory_estimate import format_duration
+        from deepreefmap_gui.profiling.system_probe import format_bytes
+
+        if fit is None:
+            self._capacity_caption.setText("Memory needed")
+            self._capacity_bar.set_unavailable()
+            self._capacity_detail.setText("Add a pass to see what it would need.")
+            self._capacity_advice.setVisible(False)
             return
-        if verdict.level == "ok":
-            hide()
+
+        colour = {"ok": SUCCESS, "warn": UPDATE, "block": BLOCK}[fit.level]
+        budget = fit.verdict.budget.ram_bytes
+        need = fit.verdict.cost.ram_bytes
+        self._capacity_caption.setText(
+            f"Longest pass: {format_duration(fit.seconds)} at {fit.fps} FPS"
+        )
+        self._capacity_bar.set_level(100.0 * need / budget if budget else 0.0, colour)
+        self._capacity_detail.setText(
+            f"Needs about {format_bytes(need)} of the {format_bytes(budget)} "
+            f"this machine can give one run. It can process about "
+            f"{format_duration(fit.max_seconds)} at {fit.fps} FPS."
+        )
+        if fit.fits:
+            self._capacity_advice.setVisible(False)
             return
-
-        color = BLOCK if verdict.level == "block" else UPDATE
-        headline = f"Crash risk: {verdict.risk}"
-        cap_word = "RAM + swap" if profile.free_swap_bytes else "RAM"
-
-        # Inline notice: concise, always-visible indicator in the form.
-        notice.setStyleSheet(f"color: {color}; font-size: 11px; margin: 2px 0 4px 0;")
-        notice.setText(
-            f"{headline}: ~{format_bytes(verdict.ram_need_bytes)} "
-            f"({verdict.percent:.0f}% of {cap_word}). "
-            f'<a href="#system" style="color:{color};">System tab</a>'
+        self._capacity_advice.setStyleSheet(f"color: {colour}; font-size: {FONT_SM};")
+        self._capacity_advice.setText(
+            f"<b>{fit.headline}.</b> {fit.advice} "
+            f'<a href="#system" style="color:{colour};">Setup</a>'
         )
-        notice.setVisible(True)
-
-        # Icon by the play button: a plain span so the color tracks the grade
-        # (amber warn / red block); the tooltip word-wraps into multiple lines.
-        icon.setText(f'<span style="color:{color}; font-size:16px;">&#9888;</span>')
-        icon.setToolTip(
-            f"<b>{headline}</b><br>{verdict.message}<br><i>The run will proceed anyway.</i>"
-        )
-        icon.setVisible(True)
+        self._capacity_advice.setVisible(True)
 
     def _update_gated_warning(self) -> None:
         seg_name = self._seg_combo.currentText()
         if self._skip_seg_check.isChecked():
             self._gated_warning.setVisible(False)
             return
-        from deepreefmap_gui.models.manager import DPT_BACKBONE_MAP
+        from deepreefmap_gui.models.cache import DPT_BACKBONE_MAP
 
         backbone_name = DPT_BACKBONE_MAP.get(seg_name)
         if not backbone_name:
@@ -1610,13 +1532,13 @@ class FormPanelMixin(MixinBase):
         elif logged_in:
             msg = (
                 f"<b>{seg_name}</b> uses gated repos that must be downloaded first. "
-                f"Accept the license on each repo page and download via the "
-                f"Models tab: {links}"
+                f"Accept the license on each repo page and download under "
+                f"Models: {links}"
             )
         else:
             msg = (
                 f"<b>{seg_name}</b> requires Hugging Face login. "
-                f"Log in on the Models tab, then accept each repo's license "
+                f"Log in under Models, then accept each repo's license "
                 f"and download: {links}"
             )
         self._gated_warning.setText(msg)
@@ -1631,111 +1553,33 @@ class FormPanelMixin(MixinBase):
         self._rr_override_spin.setValue(0.0)
 
     def _gpu_available(self) -> bool:
+        from deepreefmap_gui.profiling.system_probe import gpu_present
+
         cached = getattr(self, "_gpu_available_cache", None)
         if cached is None:
-            try:
-                from deepreefmap.device import resolve_device
-
-                cached = resolve_device().type != "cpu"
-            except Exception:
-                cached = False
+            cached = gpu_present()
             self._gpu_available_cache = cached
         return cached
 
-    def _recompute_submit_state(self) -> None:
-        reasons: list[str] = []
-        video = self._video_input.text().strip()
-        if not video:
-            reasons.append("pick a video file")
-        elif not Path(video).exists():
-            reasons.append("video file not found")
-        if not self._out_root_input.text().strip():
-            reasons.append("set an output root")
-        if not self._run_name_input.text().strip():
-            reasons.append("set a run name")
+    def _gpu_only_mapper(self) -> str:
+        """The chosen mapping method when it needs a card this machine lacks.
 
-        if not self._last_model_states:
-            reasons.append("checking model availability…")
-        else:
-            cached_names = {info.name for info, cached in self._last_model_states if cached}
-            missing = [m for m in sorted(self._required_model_names()) if m not in cached_names]
-            if missing:
-                reasons.append(f"download required model{'s' if len(missing) > 1 else ''}: {', '.join(missing)}")
+        The Run step's gate and the setup step's readiness row both read this,
+        so a CPU-only laptop cannot be told it is fine by one and blocked by
+        the other.
+        """
+        from deepreefmap_gui.models.cache import GPU_ONLY_BACKENDS
 
-        if self._map_combo.currentText() in ("loger", "loger_star") and not self._gpu_available():
-            reasons.append("LoGeR needs a GPU (none detected)")
+        mapping = self._map_combo.currentText()
+        if mapping in GPU_ONLY_BACKENDS and not self._gpu_available():
+            return mapping
+        return ""
 
-        ok = not reasons
-        self._start_btn.setEnabled(ok)
-        reason_text = "Cannot start: " + "; ".join(reasons) + "." if reasons else ""
-        # The play button greys out and its tooltip carries the reason; the form
-        # keeps the full-text hint for discoverability.
-        self._start_btn.setToolTip(reason_text or "Start reconstruction")
-        self._submit_hint.setText(reason_text)
-
-        self._update_gated_warning()
     def _open_output_dir(self) -> None:
         d = getattr(self, "_results_output_dir", None) or self._viewer._output_dir
         if d and Path(d).exists():
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(d)))
 
-
-    def _browse_video(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Select video", "", "Video files (*.mp4 *.MP4 *.avi *.mov *.mkv);;All files (*)"
-        )
-        if path:
-            self._video_input.setText(path)
-            self._auto_probe_video_duration(path)
-
-    def _on_begin_time_committed(self, value: float) -> None:
-        # end == 0.0 means "untrimmed/unknown" (see _effective_time_range).
-        if self._end_spin.value() > 0.0 and value > self._end_spin.value():
-            self._begin_spin.setValue(self._end_spin.value())
-
-    def _on_end_time_committed(self, value: float) -> None:
-        if value > 0.0 and value < self._begin_spin.value():
-            self._end_spin.setValue(self._begin_spin.value())
-
-    def _auto_probe_video_duration(self, video_path: str) -> None:
-        """Probe with cv2 and fill the End field so the user has a sane default."""
-        duration = _probe_video_duration_s(video_path)
-        if duration is None:
-            return
-        self._video_duration_s = duration
-        self._scrub_btn.setEnabled(True)
-        self._end_spin.setMaximum(duration)
-        self._begin_spin.setMaximum(duration)
-        self._begin_spin.setValue(0.0)
-        self._end_spin.setValue(duration)
-        # Duration just became known, so the run's frame count (and therefore
-        # its memory grade) is finally computable.
-        self._update_memory_profile_warning()
-
-    def _on_video_input_committed(self) -> None:
-        """Probe duration if the user typed/pasted a path bypassing Browse."""
-        path = self._video_input.text().strip()
-        if path and Path(path).exists():
-            self._auto_probe_video_duration(path)
-
-    def _open_scrub_dialog(self) -> None:
-        """Preview the video and write the scrubbed range into the spinboxes."""
-        from deepreefmap_gui.form.video_scrub import VideoScrubDialog
-
-        path = self._video_input.text().strip()
-        if not path or not Path(path).exists() or self._video_duration_s is None:
-            return
-        dialog = VideoScrubDialog(
-            path,
-            self._video_duration_s,
-            begin_s=float(self._begin_spin.value()),
-            end_s=float(self._end_spin.value()),
-            parent=self,
-        )
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            begin, end = dialog.time_range()
-            self._begin_spin.setValue(begin)
-            self._end_spin.setValue(end)
 
     def _browse_output_root(self) -> None:
         path = QFileDialog.getExistingDirectory(
@@ -1762,27 +1606,11 @@ class FormPanelMixin(MixinBase):
         cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", name.strip())
         return cleaned.strip("._-") or datetime.now().strftime("%Y%m%d-%H%M%S")  # noqa: DTZ005 (local time is intended: this is a user-facing default name)
 
-    def _effective_run_dir(self) -> Path:
-        root = Path(self._out_root_input.text()).expanduser()
-        name = self._sanitize_run_name(self._run_name_input.text())
-        return root / name
-
-    def _update_effective_dir_label(self) -> None:
-        try:
-            target = self._effective_run_dir()
-        except Exception:
-            self._effective_dir_label.setText("")
-            return
-        if target.exists():
-            self._effective_dir_label.setText(
-                f'→ <a href="file://{target}" style="color:{LINK};">{target}</a>'
-            )
-        else:
-            self._effective_dir_label.setText(f"→ {target}")
-
     def _on_output_root_changed(self, _text: str = "") -> None:
-        self._update_effective_dir_label()
-        self._recompute_submit_state()
+        self._out_root_commit_timer.start()
+
+    def _commit_output_root(self) -> None:
+        """Persist the root and rescan it, once the path has stopped changing."""
         self._settings.setValue("output_root_dir", self._out_root_input.text())
         self._refresh_data_manager()
         self._update_out_root_watch()
@@ -1802,7 +1630,3 @@ class FormPanelMixin(MixinBase):
         root = Path(self._out_root_input.text()).expanduser()
         if root.exists() and root.is_dir():
             self._out_root_watcher.addPath(str(root))
-
-    def _on_run_name_changed(self, _text: str = "") -> None:
-        self._update_effective_dir_label()
-        self._recompute_submit_state()

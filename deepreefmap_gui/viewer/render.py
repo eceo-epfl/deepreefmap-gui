@@ -8,13 +8,11 @@ import numpy as np
 
 if TYPE_CHECKING:
     import pyvista as pv
-
-
-def _to_rgba(rgb: np.ndarray) -> np.ndarray:
-    f = np.ascontiguousarray(rgb, dtype=np.float32)
-    if f.max() > 1.0:
-        f = f / 255.0
-    return np.column_stack([f, np.ones(len(f), dtype=np.float32)])
+    from deepreefmap.pipeline.artifacts import (
+        FrameBatch,
+        MappingSequenceResult,
+        PreparedFrame,
+    )
 
 
 def _colorize_seg(labels: np.ndarray, class_colors: dict[int, tuple[int, int, int]]) -> np.ndarray:
@@ -45,6 +43,49 @@ def _colorize_depth(depth: np.ndarray) -> np.ndarray:
     return out
 
 
+class FrameLookup:
+    """Resolves a frame index to what the image panel draws, for one scene.
+
+    The prepared frames and the mapping rows are both keyed by frame index
+    rather than by timeline position, and neither is guaranteed to hold every
+    index the other does. Held per scene rather than resolved per call because
+    the panel composes a frame on every timeline tick, and searching both
+    sequences each time made scrubbing quadratic in the run's frame count.
+    """
+
+    def __init__(self, frame_batch: FrameBatch, mapping_result: MappingSequenceResult) -> None:
+        self._frame_batch = frame_batch
+        self._mapping_result = mapping_result
+        self._frames = {int(f.frame_index): f for f in frame_batch.frames}
+        indices = np.asarray(mapping_result.frame_indices, dtype=np.int32).reshape(-1)
+        self._rows = {int(fid): i for i, fid in enumerate(indices.tolist())}
+
+    def built_from(self, frame_batch: FrameBatch, mapping_result: MappingSequenceResult) -> bool:
+        """True when this lookup was built from exactly these two objects."""
+        return frame_batch is self._frame_batch and mapping_result is self._mapping_result
+
+    def frame_views(self, frame_idx: int) -> tuple[PreparedFrame, np.ndarray, np.ndarray] | None:
+        """The frame, its RGB image, and its depth colorized at the RGB's size.
+
+        None when the frame is missing from either sequence: with nothing to
+        draw, both compositors leave the panel showing the previous frame. The
+        frame itself comes back for the caller that goes on to colorize labels.
+        """
+        import cv2
+
+        frame = self._frames.get(int(frame_idx))
+        row = self._rows.get(int(frame_idx))
+        if frame is None or row is None:
+            return None
+        rgb = np.asarray(frame.image_rgb, dtype=np.uint8)
+        depth = np.asarray(self._mapping_result.depth_maps[row], dtype=np.float32)
+        h, w = rgb.shape[:2]
+        depth_color = _colorize_depth(
+            cv2.resize(depth, (w, h), interpolation=cv2.INTER_NEAREST),
+        )
+        return frame, rgb, depth_color
+
+
 def _build_frustum_lines(pose_w_c: np.ndarray, fov_y: float, aspect: float, scale: float = 0.04) -> np.ndarray:
     hy = np.tan(fov_y / 2) * scale
     hx = hy * aspect
@@ -54,7 +95,9 @@ def _build_frustum_lines(pose_w_c: np.ndarray, fov_y: float, aspect: float, scal
         [hx, hy, scale],
         [-hx, hy, scale],
     ], dtype=np.float64)
-    R = pose_w_c[:3, :3]
+    # R and t, not rotation/translation: the pose maths reads as the textbook
+    # formula it is, and every reference writes it this way.
+    R = pose_w_c[:3, :3]  # noqa: N806
     t = pose_w_c[:3, 3]
     corners_world = (R @ corners_cam.T).T + t
     origin = t

@@ -40,6 +40,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "LEGACY_SCENE_SUFFIXES",
     "SCENE_FILE_SUFFIX",
     "FrameAccessor",
     "LazyFrameBatch",
@@ -108,7 +109,7 @@ def scene_file_name(manifest: dict[str, Any] | None = None, run_dir: Path | None
     return safe + SCENE_FILE_SUFFIX
 
 
-_LEGACY_SUFFIXES = (".drm.zarr.zip",)
+LEGACY_SCENE_SUFFIXES = (".drm.zarr.zip",)
 
 
 def find_scene_file(run_dir: Path) -> Path | None:
@@ -116,7 +117,7 @@ def find_scene_file(run_dir: Path) -> Path | None:
     candidates = sorted(run_dir.glob("*" + SCENE_FILE_SUFFIX))
     if candidates:
         return candidates[0]
-    for suffix in _LEGACY_SUFFIXES:
+    for suffix in LEGACY_SCENE_SUFFIXES:
         legacy = sorted(run_dir.glob("*" + suffix))
         if legacy:
             return legacy[0]
@@ -132,7 +133,7 @@ def prune_other_scene_files(run_dir: Path, *, keep: Path) -> None:
     nothing the pipeline produced can match: the run directory is read-only to
     everything here except the scene file itself.
     """
-    for suffix in (SCENE_FILE_SUFFIX, *_LEGACY_SUFFIXES):
+    for suffix in (SCENE_FILE_SUFFIX, *LEGACY_SCENE_SUFFIXES):
         for path in run_dir.glob("*" + suffix):
             if path == keep:
                 continue
@@ -216,7 +217,10 @@ def save_scene_file(
     progress_cb: ProgressCB | None = None,
 ) -> None:
     import zarr
-    from numcodecs import JSON as JSONCodec
+
+    # numcodecs spells the class JSON; aliased so it does not read as the json
+    # module two lines below, and PascalCase because it is a class.
+    from numcodecs import JSON as JSONCodec  # noqa: N811
 
     def _emit(stage: str, cur: int, tot: int) -> None:
         if progress_cb is not None:
@@ -283,7 +287,9 @@ def save_scene_file(
 
 
 def _save_classes(root, classes_config: "ClassConfig") -> None:
-    from numcodecs import JSON as JSONCodec
+    # numcodecs spells the class JSON; aliased so it does not read as the json
+    # module two lines below, and PascalCase because it is a class.
+    from numcodecs import JSON as JSONCodec  # noqa: N811
 
     g = root.require_group("classes")
     ids = np.array([c.id for c in classes_config.classes], dtype=np.int32)

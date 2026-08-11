@@ -7,8 +7,9 @@ from pathlib import Path
 
 from PySide6.QtGui import QColor
 
-from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.core.theme import UPDATE
+from deepreefmap_gui.core.widgets import confirm
+from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.packaging.releases import (
     current_version,
     fetch_releases,
@@ -28,6 +29,10 @@ _UPDATE_ACCENT = QColor(UPDATE)
 class VersionCheckMixin(MixinBase):
     """DeepReefMapWindow methods for checking GitHub releases and installing updates."""
 
+    # The newest release worth offering, or "" when this is already it. Read by
+    # the Setup button, which paints its own slot for it.
+    _update_available: str = ""
+
     def _check_for_update(self) -> None:
         current = current_version()
         releases = fetch_releases()
@@ -35,20 +40,13 @@ class VersionCheckMixin(MixinBase):
         self._sig_update_check_done.emit(current, releases, pyapp_bin)
 
     def _set_updates_tab_alert(self, latest: str | None) -> None:
-        """Flag the System tab (which hosts updates) amber when `latest` is available.
+        """Say a release is waiting, wherever the running interface can show it.
 
-        Passing None clears the alert and restores the default tab style.
+        The Setup button carries a slot for it, so a release waiting is
+        visible without opening anything. Passing None clears it.
         """
-        bar = self._sidebar_tabs.tabBar()
-        idx = self._TAB_SYSTEM
-        if latest is None:
-            bar.setTabText(idx, "System")
-            bar.setTabTextColor(idx, QColor())  # invalid color falls back to theme default
-            self._sidebar_tabs.setTabToolTip(idx, "")
-            return
-        bar.setTabText(idx, "System ●")
-        bar.setTabTextColor(idx, _UPDATE_ACCENT)
-        self._sidebar_tabs.setTabToolTip(idx, f"Version {latest} is available")
+        self._update_available = latest or ""
+        self._refresh_machine_button()
 
     def _apply_update_check(self, current: str, releases: list[dict] | None, pyapp_bin: str | None) -> None:
         self._current_version_str = current
@@ -120,7 +118,10 @@ class VersionCheckMixin(MixinBase):
         if not has_items:
             self._update_status_label.setText("Up to date.")
         elif include_older:
-            self._update_status_label.setText("Pick a version to install or roll back to:")
+            self._update_status_label.setText(
+                "Pick a version to install or roll back to. Rolling back may make "
+                "surveys created by this version unreadable until you upgrade again:"
+            )
         else:
             self._update_status_label.setText(
                 f"Latest: <b>{release_version(selectable[0])}</b>. Pick a version to install:"
@@ -130,10 +131,11 @@ class VersionCheckMixin(MixinBase):
         if self._available_releases:
             self._populate_update_versions()
 
-    # --- Storage manager (System tab) ----------------------------------------
-    # Environments are never pruned automatically. This is where the user sees
-    # each version's real (hardlink-aware) footprint and deletes the ones they no
-    # longer want. Models are shown too, but managed on the Models tab.
+    # --- Installed environments ----------------------------------------------
+    # Each version keeps its own PyApp environment and none of them are pruned
+    # automatically, so this is where a version's real footprint is shown and
+    # where one is deleted. Models are sized here too, but managed on Setup's
+    # Models view.
 
     @staticmethod
     def _format_size(num_bytes: int) -> str:
@@ -142,12 +144,12 @@ class VersionCheckMixin(MixinBase):
             return f"{gb:.1f} GB"
         return f"{num_bytes // 1024**2} MB"
 
-    def _refresh_storage(self) -> None:
+    def _refresh_envs(self) -> None:
         import threading
 
-        threading.Thread(target=self._measure_storage, daemon=True).start()
+        threading.Thread(target=self._measure_envs, daemon=True).start()
 
-    def _measure_storage(self) -> None:
+    def _measure_envs(self) -> None:
         """Off-thread: each version env's real size, plus the model-cache total."""
         from deepreefmap_gui.packaging.environments import env_disk_usage, list_environments
 
@@ -169,14 +171,14 @@ class VersionCheckMixin(MixinBase):
         try:
             from huggingface_hub import scan_cache_dir
 
-            from deepreefmap_gui.models.manager import hf_cache_root
+            from deepreefmap_gui.models.cache import hf_cache_root
 
             info["model_bytes"] = scan_cache_dir(cache_dir=hf_cache_root()).size_on_disk
         except Exception:
             logger.debug("Model cache scan failed", exc_info=True)
-        self._sig_storage_done.emit(info)
+        self._sig_envs_done.emit(info)
 
-    def _apply_storage(self, info: dict) -> None:
+    def _apply_envs(self, info: dict) -> None:
         from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QWidget
 
         layout = self._env_list_layout
@@ -196,7 +198,10 @@ class VersionCheckMixin(MixinBase):
             real = self._format_size(env["reclaimable"])
             shared = self._format_size(max(env["apparent"] - env["reclaimable"], 0))
             running = " (running)" if env["current"] else ""
-            label = QLabel(f"<b>{env['version']}</b>{running} — {real} on disk, {shared} shared with the cache")
+            label = QLabel(
+                f"<b>{env['version']}</b>{running}: {real} on disk, "
+                f"{shared} shared with the cache"
+            )
             label.setWordWrap(True)
             row_layout.addWidget(label, 1)
             if not env["current"]:
@@ -212,62 +217,68 @@ class VersionCheckMixin(MixinBase):
             self._model_cache_label.setText("Downloaded models: size unavailable.")
         else:
             self._model_cache_label.setText(
-                f"Downloaded models: <b>{self._format_size(model_bytes)}</b> "
-                "(manage on the Models tab)"
+                f"Downloaded models: <b>{self._format_size(model_bytes)}</b>"
             )
 
     def _on_delete_environment(self, path: str, version: str) -> None:
-        from PySide6.QtWidgets import QMessageBox
-
         from deepreefmap_gui.packaging.environments import delete_environment
 
-        confirm = QMessageBox.question(
+        if not confirm(
             self,
             "Delete environment",
             f"Delete the environment for version {version}?\n\n"
             "Its unique files are freed now. If you install or roll back to this "
             "version later, it is rebuilt from the package cache (no large download "
             "when the cache is warm).",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if confirm != QMessageBox.StandardButton.Yes:
+        ):
             return
         try:
             delete_environment(path)
         except (OSError, ValueError):
             logger.exception("Failed to delete environment %s", path)
-        self._refresh_storage()
+        self._refresh_envs()
 
-    def _go_to_models_tab(self) -> None:
-        self._sidebar_tabs.setCurrentIndex(self._TAB_MODELS)
+    def _confirm_downgrade(self, target: str) -> bool:
+        """Warn before rolling back, and take a backup that makes it reversible.
 
-    def _refresh_desktop_entry_button(self) -> None:
-        from deepreefmap_gui.packaging.desktop_entry import desktop_entry_installed
+        Going back is not symmetric with going forward. Migrations only run one
+        way, so an older build refuses a survey database a newer one has already
+        migrated. The backup written here is what its recovery dialog offers to
+        restore, and it is taken before anything is swapped -- a warning that
+        only warns would leave the user to find out afterwards.
+        """
+        current_v = parse_version(self._current_version_str)
+        target_v = parse_version(target)
+        if current_v is None or target_v is None or target_v >= current_v:
+            return True
 
-        if desktop_entry_installed():
-            self._desktop_entry_btn.setText("Remove from applications menu")
-        else:
-            self._desktop_entry_btn.setText("Add to applications menu")
+        from deepreefmap_gui.survey.backup import write_backup
+        from deepreefmap_gui.survey.health import inspect_survey_db
+        from deepreefmap_gui.survey.store import SURVEY_DB_NAME
 
-    def _on_toggle_desktop_entry(self) -> None:
-        from deepreefmap_gui.packaging.desktop_entry import (
-            desktop_entry_installed,
-            install_desktop_entry,
-            remove_desktop_entry,
+        db_path = Path(self._out_root_input.text()).expanduser() / SURVEY_DB_NAME
+        health = inspect_survey_db(db_path)
+        saved = (
+            write_backup(db_path, health.db_version)
+            if health.db_version is not None
+            else None
         )
-
-        try:
-            if desktop_entry_installed():
-                remove_desktop_entry()
-            else:
-                pyapp_bin = pyapp_binary_path()
-                if pyapp_bin is None:
-                    return
-                install_desktop_entry(pyapp_bin)
-        except OSError:
-            logger.exception("Desktop entry update failed")
-        self._refresh_desktop_entry_button()
+        where = (
+            f"A copy of this survey has been saved as {saved.name}, which "
+            f"version {target} can restore."
+            if saved is not None
+            else "No survey database was found in the current output folder to copy."
+        )
+        return confirm(
+            self,
+            "Roll back to an older version",
+            f"Version {target} is older than the version running now "
+            f"({self._current_version_str}).\n\n"
+            f"Surveys created or opened by this version may use a database "
+            f"format {target} cannot read. If that happens it will offer to "
+            f"restore a backup or rebuild from your run folders.\n\n"
+            f"{where}\n\nRoll back to {target}?",
+        )
 
     def _on_update(self) -> None:
         from deepreefmap_gui.update.dialog import UpdateProgressDialog
@@ -284,9 +295,10 @@ class VersionCheckMixin(MixinBase):
             logger.warning("Selected release has no metadata")
             return
         version = release_version(release)
-        # A kept binary older than the current one rolls back offline; anything
-        # else downloads. parse_version guards against a rollback attempt on a
-        # version whose binary is not actually on disk.
+        if not self._confirm_downgrade(version):
+            return
+        # A kept binary rolls back offline; anything else downloads. The backup
+        # _confirm_downgrade just took is what makes either direction reversible.
         rollback = version in self._locally_kept_versions()
         self._update_btn.setEnabled(False)
         try:

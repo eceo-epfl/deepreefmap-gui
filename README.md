@@ -1,12 +1,9 @@
 # DeepReefMap GUI
+The desktop application for [deepreefmap](https://github.com/eceo-epfl/deepreefmap): 3D semantic mapping of coral reefs from dive footage.
 
-**Native desktop app for [deepreefmap](https://github.com/eceo-epfl/deepreefmap): rapid 3D semantic mapping of coral reefs.**
+## Getting started
 
-A PySide6 application with a VTK point cloud viewer, live reconstruction progress, survey planning, batch processing, model management, and in-app updates. All reconstruction runs in the deepreefmap library; this repository is the interface.
-
-## Install
-
-Grab the latest build for your platform from the [releases page](https://github.com/eceo-epfl/deepreefmap-gui/releases).
+Download the build for your platform from the [releases page](https://github.com/eceo-epfl/deepreefmap-gui/releases).
 
 | Platform | File | Variants |
 |---|---|---|
@@ -14,24 +11,48 @@ Grab the latest build for your platform from the [releases page](https://github.
 | macOS (Apple Silicon) | `deepreefmap-gui-macos-arm64-<version>.dmg` | |
 | Linux | `deepreefmap-gui-linux-x64-<version>` | `-cu130` for RTX 50-series, `-rocm` for AMD |
 
-On macOS the app is unsigned, so the first launch needs System Settings > Privacy & Security > "Open Anyway". On Linux, `chmod +x` the binary and run it. The first launch installs a private Python environment (several GB); after that, update or roll back from the Updates tab.
+macOS builds are unsigned, so the first launch needs System Settings > Privacy & Security > "Open Anyway"; Linux builds need `chmod +x`. The first launch provisions its own Python environment (several GB). Updates and rollbacks are under Setup.
+
+Four destinations, none a prerequisite for another. **Transects** are the lines you survey, with the cover and repeatability their repeat passes agree on. **Videos** is the footage itself, grouped by the day it was shot: every clip, what has been cut from it, and whether the file is still where you left it. **Cart** queues sections for the next session and runs them: add them from anywhere in the app, then Start processing checks the cart out as a session, and reruns land beside their originals in Browse. **Browse** is everything produced so far, grouped by session, transect or run. **Setup** covers whether the laptop can process a dive, the models installed on it, and what it is doing while it runs. Models are downloaded there, or imported from a USB pack for machines that stay offline; the `coralscapes-*` models need a free Hugging Face account.
+
+## Glossary
+
+Footage:
+
+- **Video (clip)**: a file off the camera, listed under Videos. Identity is its content hash, so a moved file is still the same clip. GoPro chapters of one recording are separate files, one swim.
+- **Section (pass)**: a cutout of a video, the unit everything else works on. Identity is `video + start/end time + direction`. One traversal of a transect, when there is one.
+- **Gravity**: the `GRAV` stream a GoPro records beside the footage, which the mapping backends use to stand a reconstruction upright. Read from the file's own index on import, so Videos says yes, no, or nothing at all where it could not be read.
+- **Transect**: a named tape line with GPS endpoints, tape length and depth. Optional on a section; without one the run is unscaled and skipped by the repeatability comparison.
+
+Queueing:
+
+- **Cart**: the newest un-started session, filled from anywhere via Add to cart. The header's Cart button counts it.
+- **Checkout**: Start processing. Turns the cart into an order by placing a run for every queued section.
+- **Order**: a started session. Membership is closed; the only mid-run controls are pause, cancel, and Hold on a section the worker has not reached.
+- **Next session**: the cart assembled while an order runs, under its own divider on the Cart page. Startable once the order finishes.
+- **Held**: a section kept in its session but skipped when processing starts.
+
+Results:
+
+- **Run**: one reconstruction of one section, in its own directory. A rerun is a second run of the same section; repeats are the reproducibility data.
+- **Attempt**: one run among several of the same section, numbered by its directory suffix (`__r02`, `__r03`, ...) and listed under the section node in Browse.
+- **Session**: the set of runs placed together, usually a dive or a day. A run records its session; a section only records where it was first catalogued.
+
+## Settings
+
+Runs are configured from a preset YAML, `deepreefmap_gui/resources/configs/survey_preset.yaml`. `segmentation_name` picks the segmentation model (`coralscapes-vit-{s,b,l}-dpt`, `segformer-b{2,5}`) and `mapping_name` the reconstruction backend (`loger_star` and `loger` need a GPU, `scsfmlearner` runs on CPU). Transect length and time trim come from the survey database, not the preset. To standardise several machines on one configuration, point them at a shared copy with `DEEPREEFMAP_SURVEY_PRESET`; the file's header comment covers the rest.
 
 ## Development
 
-deepreefmap resolves from the git commit pinned in `pyproject.toml`, so no separate checkout is needed.
+deepreefmap resolves from the commit pinned in `pyproject.toml`, so no separate checkout is needed.
 
 ```bash
-uv sync --extra dev
+uv sync --extra dev          # add --extra cu126, cu130 or rocm for GPU
 uv run deepreefmap-gui
+uv run pytest                # xvfb-run -a uv run pytest if the viewer tests crash headless
 ```
 
-GPU variants: `--extra cu126` (up to RTX 40-series), `--extra cu130` (RTX 50-series), `--extra rocm` (AMD, Linux only).
-
-Run the tests with `uv run pytest`. The viewer tests need a real OpenGL context; if they crash under the `offscreen` Qt platform, use `xvfb-run -a uv run pytest`.
-
-## Build
-
-`scripts/build.sh` (Linux/macOS) and `scripts/build.ps1` (Windows) wrap `uv build` and [PyApp](https://github.com/ofek/pyapp) into a self-provisioning binary. Shared settings live in `scripts/build_config.env`.
+`scripts/build.sh` (Linux/macOS) and `scripts/build.ps1` (Windows) produce the release binaries.
 
 ## License
 

@@ -2,7 +2,7 @@
 
 Scenario: a dependency the app imports but does not declare resolves anyway,
 because something else in the tree happens to pull it in. Expected behaviour: the
-packaged binary must not depend on that coincidence — an upstream change should
+packaged binary must not depend on that coincidence, because an upstream change should
 break resolution at install time, not raise ImportError on a field laptop.
 
 Only module-level imports are checked. Importing torch, vtkmodules and friends

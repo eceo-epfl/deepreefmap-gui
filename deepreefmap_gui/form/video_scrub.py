@@ -6,7 +6,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QImage, QMouseEvent, QPainter, QPaintEvent, QPen, QPixmap
 from PySide6.QtWidgets import (
     QDialog,
@@ -14,11 +14,21 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QSizePolicy,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
-from deepreefmap_gui.core.theme import BORDER, CARD_BG, PREVIEW_BG, PRIMARY, PRIMARY_DARK, SLIDER_HANDLE
+from deepreefmap_gui.core.icons import pause_icon, play_icon
+from deepreefmap_gui.core.theme import (
+    BORDER,
+    CARD_BG,
+    PREVIEW_BG,
+    PRIMARY,
+    PRIMARY_DARK,
+    SLIDER_HANDLE,
+)
+from deepreefmap_gui.core.widgets import ok_cancel_row
 
 # 10 ms ticks: fine enough to trim by eye, coarse enough for int slider ranges.
 _TICKS_PER_S = 100
@@ -29,23 +39,50 @@ def _format_time(seconds: float) -> str:
 
 
 class RangeSlider(QWidget):
-    """Two handles on one groove; begin and end clamp against each other."""
+    """Two handles on one groove; begin and end clamp against each other.
+
+    Without handles it is a position bar: the groove and a playhead, which is
+    what a preview needs, since a range nothing reads would only invite a trim
+    that goes nowhere.
+    """
 
     begin_changed = Signal(int)
     end_changed = Signal(int)
+    playhead_moved = Signal(int)
 
     _HANDLE_W = 18
     _HANDLE_H = 26
     _GROOVE_H = 10
 
-    def __init__(self, maximum: int, begin: int, end: int, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        maximum: int,
+        begin: int,
+        end: int,
+        parent: QWidget | None = None,
+        *,
+        handles: bool = True,
+    ) -> None:
         super().__init__(parent)
         self._max = max(1, maximum)
         self._begin = max(0, min(begin, self._max))
         self._end = max(self._begin, min(end, self._max))
         self._active: str | None = None
+        self._handles = handles
+        self._playhead: int | None = None
         self.setMinimumHeight(34)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def playhead(self) -> int | None:
+        return self._playhead
+
+    def set_playhead(self, tick: int | None) -> None:
+        """Show where playback has reached, or nothing when it is not playing."""
+        if tick is not None:
+            tick = max(0, min(int(tick), self._max))
+        if tick != self._playhead:
+            self._playhead = tick
+            self.update()
 
     def maximum(self) -> int:
         return self._max
@@ -83,6 +120,10 @@ class RangeSlider(QWidget):
         if event.button() != Qt.MouseButton.LeftButton:
             return
         x = event.position().x()
+        if not self._handles:
+            self._active = "playhead"
+            self._drag_to(x)
+            return
         d_begin = abs(x - self._tick_to_x(self._begin))
         d_end = abs(x - self._tick_to_x(self._end))
         # On a tie (overlapping handles) the click side picks the handle, so
@@ -106,6 +147,9 @@ class RangeSlider(QWidget):
             self.setBegin(tick)
         elif self._active == "end":
             self.setEnd(tick)
+        elif self._active == "playhead":
+            self.set_playhead(tick)
+            self.playhead_moved.emit(max(0, min(tick, self._max)))
 
     def paintEvent(self, event: QPaintEvent) -> None:
         painter = QPainter(self)
@@ -120,23 +164,38 @@ class RangeSlider(QWidget):
         painter.setBrush(QColor(CARD_BG))
         painter.drawRoundedRect(groove, radius, radius)
 
-        bx = self._tick_to_x(self._begin)
-        ex = self._tick_to_x(self._end)
-        selected = QRectF(bx, cy - radius, ex - bx, self._GROOVE_H)
-        painter.setPen(QPen(QColor(PRIMARY_DARK)))
-        painter.setBrush(QColor(PRIMARY))
-        painter.drawRoundedRect(selected, radius, radius)
+        if self._handles:
+            bx = self._tick_to_x(self._begin)
+            ex = self._tick_to_x(self._end)
+            selected = QRectF(bx, cy - radius, ex - bx, self._GROOVE_H)
+            painter.setPen(QPen(QColor(PRIMARY_DARK)))
+            painter.setBrush(QColor(PRIMARY))
+            painter.drawRoundedRect(selected, radius, radius)
 
-        painter.setPen(QPen(QColor(PRIMARY_DARK), 2))
-        painter.setBrush(QColor(SLIDER_HANDLE))
-        for x in (bx, ex):
-            handle = QRectF(x - self._HANDLE_W / 2, cy - self._HANDLE_H / 2,
-                            self._HANDLE_W, self._HANDLE_H)
-            painter.drawRoundedRect(handle, 4, 4)
+            painter.setPen(QPen(QColor(PRIMARY_DARK), 2))
+            painter.setBrush(QColor(SLIDER_HANDLE))
+            for x in (bx, ex):
+                handle = QRectF(x - self._HANDLE_W / 2, cy - self._HANDLE_H / 2,
+                                self._HANDLE_W, self._HANDLE_H)
+                painter.drawRoundedRect(handle, 4, 4)
+
+        if self._playhead is not None:
+            px = self._tick_to_x(self._playhead)
+            painter.setPen(QPen(QColor(SLIDER_HANDLE), 2))
+            painter.drawLine(QPointF(px, cy - self._HANDLE_H / 2), QPointF(px, cy + self._HANDLE_H / 2))
 
 
 class VideoScrubDialog(QDialog):
-    """Modal picker for (begin_s, end_s), previewing the video while scrubbing."""
+    """Modal picker for (begin_s, end_s), previewing the video while scrubbing.
+
+    With ``trim=False`` it is a player instead: no handles, no range, just the
+    clip and a playhead.
+
+    Playback decodes through the same ``cv2`` capture the preview uses, rather
+    than a second media stack. That decoder is already proven on the H.265 GoPro
+    footage this app is pointed at, it needs no audio device, and a play timer
+    reading frames is something the tests can drive.
+    """
 
     def __init__(
         self,
@@ -145,13 +204,23 @@ class VideoScrubDialog(QDialog):
         begin_s: float = 0.0,
         end_s: float | None = None,
         parent: QWidget | None = None,
+        *,
+        fps: float | None = None,
+        trim: bool = True,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Select time range")
+        self._trim = trim
+        name = Path(video_path).name
+        self.setWindowTitle("Select time range" if trim else f"Preview {name}")
         self.setModal(True)
 
         self._duration_s = float(duration_s)
         self._cap = cv2.VideoCapture(str(video_path))
+        # Sequential reads at the clip's own rate. Faster than 50 fps is more
+        # frames than a preview can show, and every one of them costs a decode.
+        self._play_timer = QTimer(self)
+        self._play_timer.setInterval(max(20, round(1000.0 / (fps or 30.0))))
+        self._play_timer.timeout.connect(self._advance_frame)
         # Latest requested preview time; QTimer coalesces bursts of slider
         # moves so only the newest position pays the keyframe-decode cost.
         self._pending_s: float | None = None
@@ -165,7 +234,7 @@ class VideoScrubDialog(QDialog):
         self._preview = QLabel()
         self._preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._preview.setMinimumSize(560, 315)
-        self._preview.setStyleSheet(f"background: {PREVIEW_BG}; border: 1px solid #444;")
+        self._preview.setStyleSheet(f"background: {PREVIEW_BG}; border: 1px solid {BORDER};")
         layout.addWidget(self._preview, 1)
 
         max_tick = max(1, round(self._duration_s * _TICKS_PER_S))
@@ -176,12 +245,18 @@ class VideoScrubDialog(QDialog):
 
         row = QHBoxLayout()
         row.setSpacing(10)
+        self._play_btn = QToolButton()
+        self._play_btn.setIcon(play_icon())
+        self._play_btn.setToolTip("Play")
+        self._play_btn.clicked.connect(self._toggle_play)
         self._begin_readout = QLabel()
         self._end_readout = QLabel()
         for readout in (self._begin_readout, self._end_readout):
             readout.setStyleSheet('font-family: "JetBrains Mono"; min-width: 150px;')
+            readout.setVisible(trim)
         self._begin_readout.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self._range_slider = RangeSlider(max_tick, begin_tick, end_tick)
+        self._range_slider = RangeSlider(max_tick, begin_tick, end_tick, handles=trim)
+        row.addWidget(self._play_btn)
         row.addWidget(self._begin_readout)
         row.addWidget(self._range_slider, 1)
         row.addWidget(self._end_readout)
@@ -189,13 +264,14 @@ class VideoScrubDialog(QDialog):
 
         self._range_slider.begin_changed.connect(self._on_begin_changed)
         self._range_slider.end_changed.connect(self._on_end_changed)
+        self._range_slider.playhead_moved.connect(self._on_playhead_moved)
 
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        if trim:
+            layout.addWidget(ok_cancel_row(self))
+        else:
+            buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+            buttons.rejected.connect(self.reject)
+            layout.addWidget(buttons)
 
         self.resize(720, 480)
         self._update_readouts()
@@ -203,9 +279,9 @@ class VideoScrubDialog(QDialog):
 
     def time_range(self) -> tuple[float, float]:
         """(begin_s, end_s), snapping the end to the probed duration at the slider max."""
-        # The snap only reaches _effective_time_range() intact for durations the
-        # form's 2dp end spinbox can hold, so an untrimmed run is not guaranteed to
-        # read as full length. Harmless: a sub-10ms trim drops no frame at <=60fps.
+        # The slider is quantised to 10 ms, so an untrimmed pass is not
+        # guaranteed to read as exactly full length. Harmless: a sub-10ms trim
+        # drops no frame at <=60fps.
         begin = self._range_slider.begin() / _TICKS_PER_S
         if self._range_slider.end() >= self._range_slider.maximum():
             return begin, self._duration_s
@@ -224,7 +300,55 @@ class VideoScrubDialog(QDialog):
         self._begin_readout.setText(f"Begin {_format_time(begin)}")
         self._end_readout.setText(f"End {_format_time(end)}")
 
+    def _on_playhead_moved(self, tick: int) -> None:
+        self._request_preview(tick / _TICKS_PER_S)
+
+    def is_playing(self) -> bool:
+        return self._play_timer.isActive()
+
+    def _toggle_play(self) -> None:
+        if self.is_playing():
+            self._pause()
+        else:
+            self._play()
+
+    def _play(self) -> None:
+        if not self._cap.isOpened():
+            return
+        # One seek, then sequential reads. Seeking per frame is what makes cv2
+        # playback stutter, since each seek decodes forward from a keyframe.
+        self._cap.set(cv2.CAP_PROP_POS_MSEC, self._playhead_s() * 1000.0)
+        self._play_btn.setIcon(pause_icon())
+        self._play_btn.setToolTip("Pause")
+        self._play_timer.start()
+
+    def _pause(self) -> None:
+        self._play_timer.stop()
+        self._play_btn.setIcon(play_icon())
+        self._play_btn.setToolTip("Play")
+
+    def _playhead_s(self) -> float:
+        """Where playback starts: wherever it stopped, else the start of the range."""
+        tick = self._range_slider.playhead()
+        begin, end = self.time_range()
+        if tick is None or not begin <= tick / _TICKS_PER_S < end:
+            return begin
+        return tick / _TICKS_PER_S
+
+    def _advance_frame(self) -> None:
+        ok, frame = self._cap.read()
+        if not ok or frame is None:
+            self._pause()
+            return
+        at_s = self._cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
+        self._range_slider.set_playhead(round(at_s * _TICKS_PER_S))
+        self._paint_preview(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        if at_s >= self.time_range()[1]:
+            self._pause()
+
     def _request_preview(self, t_s: float) -> None:
+        # Scrubbing moves the capture, so it cannot share it with playback.
+        self._pause()
         self._pending_s = t_s
         self._seek_timer.start()
 
@@ -252,6 +376,7 @@ class VideoScrubDialog(QDialog):
 
     def done(self, result: int) -> None:
         # Covers accept, reject, and window close alike.
+        self._play_timer.stop()
         if self._cap.isOpened():
             self._cap.release()
         super().done(result)
