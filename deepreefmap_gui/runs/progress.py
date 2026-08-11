@@ -26,6 +26,7 @@ library change from silently freezing a bar. `profiling/eta.py` reads the same p
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass, field
 
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
@@ -39,6 +40,21 @@ from deepreefmap_gui.profiling.eta import (
     stage_for_phase,
     stage_plain_label_for_phase,
 )
+
+
+@dataclass
+class RunProgress:
+    """Where the run in flight has got to, as numbers rather than as widgets.
+
+    Holding it here lets the one funnel in `_apply_progress` feed the queue row,
+    the bottom bar and the hover breakdown without knowing which of them exist.
+    """
+
+    stage_percent: int | None = None  # None while a step reports no fraction
+    total_percent: int = 0
+    # Per coarse stage, so a stage reported as several sub-phases reads as one
+    # continuous fill rather than several resets.
+    stage_fill: dict[str, float] = field(default_factory=dict)
 
 
 class ProgressModel:
@@ -254,13 +270,6 @@ class ProgressBarsMixin(MixinBase):
             self._timing_popup = popup
         return popup
 
-    def _connect_bar_hover(self) -> None:
-        # The bar column reports hover so the breakdown can follow the cursor.
-        # Connected once, before any hover can fire.
-        if not getattr(self, "_hover_connected", False):
-            self._progress_stack.hovered.connect(self._on_total_bar_hover)
-            self._hover_connected = True
-
     def _progress_sinks(self) -> list:
         """Every widget mirroring the run in flight.
 
@@ -277,22 +286,15 @@ class ProgressBarsMixin(MixinBase):
         ]
 
     def _begin_progress(self, model: ProgressModel) -> None:
-        """Switch the active progress model and light up both bars from zero."""
-        self._connect_bar_hover()
+        """Switch the active progress model and start the run from zero."""
         model.reset()
         self._active_progress_model = model
-        self._progress_bar.setRange(0, 100)
-        self._progress_bar.setValue(0)
-        self._progress_bar.setEnabled(True)
-        self._total_progress_bar.setRange(0, 100)
-        self._total_progress_bar.setValue(0)
-        self._total_progress_bar.setEnabled(True)
+        self._run_progress = RunProgress()
         self._set_progress_widgets_visible(True)
         self._status_base_text = ""
         self._status_count_text = ""
         self._status_phase_key = None
         self._status_phase_started = time.monotonic()
-        self._stage_fill: dict[str, float] = {}
         # ETA only applies to a reconstruction; a cached-run load has its own model.
         self._eta = self._new_run_estimator() if model is self._recon_model else None
         self._ensure_status_tick_timer().start()
@@ -317,23 +319,12 @@ class ProgressBarsMixin(MixinBase):
         return RunEtaEstimator(frames=0, priors=priors, expected_points=expected_points)
 
     def _set_progress_widgets_visible(self, visible: bool) -> None:
-        """Progress readouts belong to a run in flight; idle shows none of them.
-
-        The top bar holds nothing else, so it goes with them rather than sitting
-        empty above the work for the whole time nothing is running.
-        """
-        self._progress_stack.setVisible(visible)
-        self._top_bar.setVisible(visible)
+        """Progress readouts belong to a run in flight; idle shows none of them."""
         self._eta_total_label.setVisible(visible)
         self._bottom_progress_bar.setVisible(visible)
 
-    def _reset_progress_bars(self) -> None:
-        self._progress_bar.setRange(0, 100)
-        self._progress_bar.setValue(0)
-        self._progress_bar.setEnabled(False)
-        self._total_progress_bar.setRange(0, 100)
-        self._total_progress_bar.setValue(0)
-        self._total_progress_bar.setEnabled(False)
+    def _reset_progress(self) -> None:
+        self._run_progress = RunProgress()
         self._bottom_progress_bar.setValue(0)
         self._eta_total_label.setText("")
         self._set_progress_widgets_visible(False)
@@ -348,7 +339,6 @@ class ProgressBarsMixin(MixinBase):
         self._status_base_text = ""
         self._status_count_text = ""
         self._status_phase_key = None
-        self._stage_fill = {}
         for sink in self._progress_sinks():
             sink.set_idle("No run in progress.")
 
@@ -412,18 +402,39 @@ class ProgressBarsMixin(MixinBase):
         if popup is not None and popup.isVisible():
             popup.set_rows(est.stage_rows(now), est.total_remaining_s(now), est.has_history)
 
-    def _on_total_bar_hover(self, global_pos) -> None:
+    def _hide_timing_popup(self) -> None:
+        popup = getattr(self, "_timing_popup", None)
+        if popup is not None:
+            popup.hide()
+
+    def _on_queue_row_hover(self, table_row: int, global_rect) -> None:
+        """Show the stage-by-stage breakdown for the row being processed.
+
+        Only that row: the breakdown describes the run in flight, and shown
+        against a queued or finished row it would be a plausible reading of the
+        wrong pass, which is worse than showing nothing.
+        """
         est = getattr(self, "_eta", None)
-        if global_pos is None or est is None:
-            popup = getattr(self, "_timing_popup", None)
-            if popup is not None:
-                popup.hide()
+        if est is None or global_rect is None or table_row < 0:
+            self._hide_timing_popup()
+            return
+        if table_row != self._running_table_row():
+            self._hide_timing_popup()
             return
         popup = self._ensure_timing_popup()
         now = time.monotonic()
         popup.set_rows(est.stage_rows(now), est.total_remaining_s(now), est.has_history)
-        popup.move(int(global_pos.x()) + 14, int(global_pos.y()) + 16)
+        self._anchor_timing_popup(global_rect)
         popup.show()
+
+    def _anchor_timing_popup(self, global_rect) -> None:
+        """Place the breakdown against the row, and on the screen."""
+        from deepreefmap_gui.core.hover_card import place_near_widget
+
+        popup = self._ensure_timing_popup()
+        place_near_widget(
+            popup, self._survey_pass_table, anchor_rect=global_rect, prefer="below"
+        )
 
     def _apply_progress(
         self,
@@ -453,10 +464,7 @@ class ProgressBarsMixin(MixinBase):
             lo, hi = span
             within = min(1.0, current / total) if total > 0 else 0.0
             combined = 100.0 * (lo + (hi - lo) * within)
-            fills = getattr(self, "_stage_fill", None)
-            if fills is None:
-                fills = {}
-                self._stage_fill = fills
+            fills = self._run_progress.stage_fill
             stage_combined = max(fills.get(coarse, 0.0), combined)
             fills[coarse] = stage_combined
 
@@ -475,13 +483,12 @@ class ProgressBarsMixin(MixinBase):
             else:
                 est.update(phase_key, current, total, now)
 
-        # The bars carry no text (the stage name is colored in the status line);
-        # they only show fill. Indeterminate for total <= 0. The frame count is
-        # kept out of the base text so it can sit on the metrics line.
+        # Stage fill as a percentage, or None where the step reports no fraction
+        # at all. The frame count is kept out of the base text so it can sit on
+        # the metrics line rather than in the middle of the label.
+        run = self._run_progress
         if stage_combined is not None:
-            if self._progress_bar.minimum() != 0 or self._progress_bar.maximum() != 100:
-                self._progress_bar.setRange(0, 100)
-            self._progress_bar.setValue(int(round(stage_combined)))
+            run.stage_percent = int(round(stage_combined))
             self._status_base_text = label
             # Only the per-item loop carries a meaningful count; the tail sub-phases
             # report raw point totals or nothing and would read as noise.
@@ -489,22 +496,18 @@ class ProgressBarsMixin(MixinBase):
                 f"{current}/{total}" if phase_key in _COUNTED_SUBPHASES and total > 1 else ""
             )
         elif total > 1:
-            if self._progress_bar.minimum() != 0 or self._progress_bar.maximum() != total:
-                self._progress_bar.setRange(0, total)
-            self._progress_bar.setValue(current)
+            run.stage_percent = int(round(100.0 * current / total))
             self._status_base_text = label
             self._status_count_text = f"{current}/{total}"
         elif total == 1:
-            self._progress_bar.setRange(0, 1)
-            self._progress_bar.setValue(1)
+            run.stage_percent = 100
             self._status_base_text = label
             self._status_count_text = ""
         else:
-            self._progress_bar.setRange(0, 0)
+            run.stage_percent = None
             self._status_base_text = label
             self._status_count_text = ""
         self._render_status()
-        self._progress_bar.setEnabled(True)
 
         if self._active_progress_model is not None:
             pct = self._active_progress_model.update(
@@ -512,9 +515,7 @@ class ProgressBarsMixin(MixinBase):
                 current if total > 0 else 0,
                 total if total > 0 else 1,
             )
-            self._total_progress_bar.setRange(0, 100)
-            self._total_progress_bar.setValue(pct)
-            self._total_progress_bar.setEnabled(True)
+            self._run_progress.total_percent = pct
             self._bottom_progress_bar.setValue(pct)
             for sink in self._progress_sinks():
                 sink.set_percent(pct)

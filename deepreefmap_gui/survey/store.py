@@ -353,6 +353,17 @@ _MIGRATIONS: list[Migration] = [
         ALTER TABLE transect_pass_new RENAME TO transect_pass;
         """,
     ),
+    # A section's own name, as opposed to its run directory's. Not backfilled:
+    # empty means unnamed, and the default is produced on read.
+    #
+    # After the rebuild in 9, which lists its columns and would drop this.
+    Migration(
+        10,
+        "sections carry a name of their own",
+        """
+        ALTER TABLE transect_pass ADD COLUMN label TEXT NOT NULL DEFAULT '';
+        """,
+    ),
 ]
 
 

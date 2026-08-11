@@ -212,6 +212,10 @@ MENU_REMOVE_FROM_CART = "Take out of the cart"
 MENU_RETRIM = "Adjust trim…"
 MENU_REASSIGN = "Change transect…"
 MENU_OPEN_TRANSECT = "Show on the Transects page"
+# An unfiled section has no transect to show, but the page is still where one is
+# drawn or imported, so the action goes there and says that instead of greying
+# out and leaving no way to reach it.
+MENU_OPEN_TRANSECTS_PAGE = "Open the Transects page"
 MENU_DELETE = "Delete section"
 NO_TRANSECT_TOOLTIP = "This section is not filed against a transect."
 RETRIM_TOOLTIP = "Move this section's window."
@@ -1347,8 +1351,9 @@ class SectionRow(QWidget):
         # The one action with nowhere on the row to live: it leaves the page
         # altogether, which is not something a row's own buttons should look
         # like they do.
-        open_transect = menu.addAction(MENU_OPEN_TRANSECT)
-        open_transect.setEnabled(bool(self.transect_id))
+        open_transect = menu.addAction(
+            MENU_OPEN_TRANSECT if self.transect_id else MENU_OPEN_TRANSECTS_PAGE
+        )
         if not self.transect_id:
             open_transect.setToolTip(NO_TRANSECT_TOOLTIP)
         open_transect.triggered.connect(

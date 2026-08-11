@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from deepreefmap_gui.core.icons import ICON_SM, check_icon, copy_icon
+from deepreefmap_gui.core.icons import ICON_SM, check_icon, copy_icon, log_icon
 from deepreefmap_gui.core.image_view import ClickableLabel, ImageDialog
 from deepreefmap_gui.core.theme import (
     FONT_LG_PT,
@@ -267,6 +267,10 @@ class RunDetailPanel(DetailCard):
     """A titled card describing the selected run."""
 
     open_requested = Signal()
+    # The run directory whose run.log to show. A separate signal from
+    # open_requested because the runs whose log matters most are the ones that
+    # cannot be opened at all.
+    log_requested = Signal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -327,7 +331,16 @@ class RunDetailPanel(DetailCard):
         )
         self.copy_command_btn.clicked.connect(self._copy_command)
         self.copy_command_btn.setVisible(False)
-        self.add_actions(self.open_btn, self.copy_command_btn)
+
+        # A run that failed leaves one truncated line on its record and the whole
+        # story in its log. This is the only way to that story: the other route
+        # is loading the run, which is the thing that cannot be done.
+        self.log_btn = QPushButton("Show log")
+        self.log_btn.setIcon(log_icon())
+        self.log_btn.setToolTip("Show this run's log, including why it stopped")
+        self.log_btn.clicked.connect(self._request_log)
+        self.log_btn.setVisible(False)
+        self.add_actions(self.open_btn, self.log_btn, self.copy_command_btn)
         self._entry: RunEntry | None = None
 
     def set_open_action_visible(self, visible: bool) -> None:
@@ -338,6 +351,10 @@ class RunDetailPanel(DetailCard):
             and self._entry is not None
             and not (self._entry.incomplete or self._entry.data_missing)
         )
+
+    def _request_log(self) -> None:
+        if self._entry is not None:
+            self.log_requested.emit(self._entry.run_dir)
 
     def _copy_command(self) -> None:
         from deepreefmap_gui.runs.run_command import command_from_manifest
@@ -383,6 +400,10 @@ class RunDetailPanel(DetailCard):
         self.open_btn.setVisible(
             self._open_action_allowed and not (entry.incomplete or entry.data_missing)
         )
+        # Offered for any run that kept one, whatever its status: run.log is kept
+        # through every storage-cleanup tier, so a run whose outputs were cleared
+        # away still has its record.
+        self.log_btn.setVisible((entry.run_dir / "run.log").exists())
         self._show_ortho(entry.run_dir, entry.display_name)
 
     def _show_ortho(self, run_dir: Path, title: str) -> None:

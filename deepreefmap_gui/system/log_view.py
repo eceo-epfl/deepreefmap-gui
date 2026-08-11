@@ -18,6 +18,9 @@ from PySide6.QtWidgets import (
 )
 
 from deepreefmap_gui.core.theme import FONT_SM_PT, PREVIEW_BG, TEXT_SECONDARY
+from deepreefmap_gui.core.widgets import muted_label
+
+logger = logging.getLogger(__name__)
 
 _FMT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 _DATEFMT = "%H:%M:%S"
@@ -55,11 +58,19 @@ class QtLogHandler(logging.Handler):
 
 
 class LogView(QWidget):
-    """Collapsible log panel with an Open log file button."""
+    """Collapsible log panel: the live log, or a finished run's log file.
+
+    The live log is in memory and belongs to this session. `show_file` puts a
+    stored run.log in the same panel rather than handing it to whatever the
+    desktop opens .log files with.
+    """
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._current_log_path: Path | None = None
+        # The live log's own file, held while a stored one is on screen.
+        self._live_log_path: Path | None = None
+        self._showing_file = False
         self._build()
 
     def _build(self) -> None:
@@ -69,7 +80,15 @@ class LogView(QWidget):
 
         toolbar = QHBoxLayout()
         toolbar.setContentsMargins(0, 0, 0, 0)
+        # Says which log is on screen, because a stored one and the live one look
+        # identical once they are both just lines of text.
+        self._heading = muted_label("")
+        toolbar.addWidget(self._heading)
         toolbar.addStretch(1)
+        self._live_btn = QPushButton("Back to the live log")
+        self._live_btn.clicked.connect(self.show_live)
+        self._live_btn.setVisible(False)
+        toolbar.addWidget(self._live_btn)
         self._open_log_btn = QPushButton("Open log file")
         self._open_log_btn.clicked.connect(self._open_current_log)
         self._open_log_btn.setEnabled(False)
@@ -94,6 +113,10 @@ class LogView(QWidget):
         layout.addWidget(self._text, 1)
 
     def append_line(self, text: str) -> None:
+        # A stored log is a fixed thing to read; live lines arriving under it
+        # would interleave this session's work with another run's record.
+        if self._showing_file:
+            return
         # Auto-scroll only when the viewport is already at the bottom so the
         # user can scroll up to read earlier output without being yanked back.
         scrollbar = self._text.verticalScrollBar()
@@ -108,6 +131,39 @@ class LogView(QWidget):
     def set_current_log_path(self, path: Path | None) -> None:
         self._current_log_path = path
         self._open_log_btn.setEnabled(path is not None)
+
+    def show_file(self, path: Path, *, title: str = "") -> bool:
+        """Read a stored run.log into the panel. False if there is nothing to read.
+
+        The last _MAX_LINES of it: a long run's log is megabytes, the panel holds
+        a bounded number of lines anyway, and what went wrong is at the end.
+        """
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            logger.warning("Could not read the run log at %s", path, exc_info=True)
+            return False
+        lines = text.splitlines()
+        # Remembered so going back restores it: the live log has its own current
+        # file while a run is going, and leaving a stored run's path behind
+        # pointed "Open log file" at the wrong run entirely.
+        if not self._showing_file:
+            self._live_log_path = self._current_log_path
+        self._showing_file = True
+        self._text.setPlainText("\n".join(lines[-_MAX_LINES:]))
+        self._text.verticalScrollBar().setValue(self._text.verticalScrollBar().maximum())
+        self._heading.setText(f"Log of {title or path.parent.name}")
+        self._live_btn.setVisible(True)
+        self.set_current_log_path(path)
+        return True
+
+    def show_live(self) -> None:
+        """Go back to this session's own log, and to its own log file."""
+        self._showing_file = False
+        self._text.clear()
+        self._heading.setText("")
+        self._live_btn.setVisible(False)
+        self.set_current_log_path(self._live_log_path)
 
     def _open_current_log(self) -> None:
         if self._current_log_path is None:

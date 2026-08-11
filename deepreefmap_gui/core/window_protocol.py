@@ -42,11 +42,13 @@ if TYPE_CHECKING:
     from deepreefmap_gui.models.packs_ui import PackProgressDialog
     from deepreefmap_gui.notify.center import NotificationCenter
     from deepreefmap_gui.notify.widgets import BellButton, NotificationPopover
+    from deepreefmap_gui.profiling.batch_estimate import BatchPrediction
     from deepreefmap_gui.profiling.eta import RunEtaEstimator
-    from deepreefmap_gui.runs.progress import ProgressModel
+    from deepreefmap_gui.runs.progress import ProgressModel, RunProgress
     from deepreefmap_gui.runs.run_table import RunTable
     from deepreefmap_gui.runs.sunburst import SunburstWidget
-    from deepreefmap_gui.runs.timing_popup import HoverColumn, TimingPopup
+    from deepreefmap_gui.runs.timing_popup import TimingPopup
+    from deepreefmap_gui.simple.batch import PassTable
     from deepreefmap_gui.simple.cart import CartButton
     from deepreefmap_gui.simple.section_state import SectionState
     from deepreefmap_gui.survey.health import SurveyDbHealth
@@ -86,6 +88,9 @@ if TYPE_CHECKING:
         _notify_bell: BellButton
         _notify_popover: NotificationPopover | None
         _survey_rows: list
+        # Which section Videos has picked out. Read by the navigation history,
+        # which restores the selection as well as the page.
+        _selected_pass_id: str | None
         _survey_preset: dict | None
         _active_preset: ActivePreset | None
         _survey_cancel_event: threading.Event | None
@@ -94,6 +99,9 @@ if TYPE_CHECKING:
         # its mixin, which mypy cannot infer an element type for on its own.
         _survey_transects: list
         _survey_batch: SurveyBatch | None
+        # The queue's predicted cost, keyed on the shape of the queue that
+        # produced it: recomputed on every row mutation, and it reads a file.
+        _batch_prediction_cache: tuple[tuple, BatchPrediction] | None
         _survey_running_batch: SurveyBatch | None
         _cart_button: CartButton
         _analysis_covers: list
@@ -267,12 +275,12 @@ if TYPE_CHECKING:
         _models_grid: QGridLayout
         _simple_stack: QStackedWidget
         _work_hsplitter: QSplitter
-        _progress_bar: QProgressBar
-        _total_progress_bar: QProgressBar
+        _run_progress: RunProgress
         _bottom_progress_bar: QProgressBar
+        # Built by the cart, read by the progress mixin: the running pass reports
+        # on its own row, and the stage breakdown is anchored to that row's cell.
+        _survey_pass_table: PassTable
         _log_toggle_btn: QToolButton
-        _top_bar: QWidget
-        _progress_stack: HoverColumn
         _eta_total_label: QLabel
         _eta: RunEtaEstimator | None
         _timing_popup: TimingPopup
@@ -292,6 +300,7 @@ if TYPE_CHECKING:
         _sig_qc_render_done = Signal(bool, str)
         _sig_discovery_done = Signal(object, object)
         _sig_survey_progress = Signal(int, int, str)
+        _sig_survey_pass_done = Signal(int, float)
         _sig_survey_done = Signal(int, int, str)
         _sig_run_sizes_done = Signal(object)
         _sig_clip_links_done = Signal(object)
@@ -367,7 +376,7 @@ if TYPE_CHECKING:
         def _hide_run_meta_banner(self) -> None: ...  # PastRunsMixin
         def _refresh_run_warnings_view(self) -> None: ...  # ViewerControlsMixin
         def _required_model_names(self) -> set[str]: ...  # ModelManagementMixin
-        def _reset_progress_bars(self) -> None: ...  # ProgressBarsMixin
+        def _reset_progress(self) -> None: ...  # ProgressBarsMixin
         def _snapshot_form_settings(self) -> dict[str, Any]: ...  # InterfaceShellMixin
         def _restore_form_settings(self, snapshot: dict[str, Any]) -> None: ...  # InterfaceShellMixin
         def _collect_preset_from_form(self) -> dict[str, Any]: ...  # InterfaceShellMixin
@@ -413,10 +422,13 @@ if TYPE_CHECKING:
         def _download_model(self, model_name: str) -> None: ...  # ModelManagementMixin
         def _set_simple_section(self, name: str) -> None: ...  # InterfaceShellMixin
         def _current_section(self) -> str: ...  # InterfaceShellMixin
+        def _set_log_panel_visible(self, visible: bool) -> None: ...  # RunFormPanelMixin
+        def _table_row_of(self, model_index: int) -> int: ...  # SimpleBatchMixin
+        def _running_table_row(self) -> int: ...  # SimpleBatchMixin
+        def _on_queue_row_hover(self, table_row: int, global_rect) -> None: ...  # ProgressBarsMixin
 
         def _enter_view_mode(self, run_dir: Path) -> None: ...  # InterfaceShellMixin
         def _go_to_section(self, name: str) -> None: ...  # InterfaceShellMixin
-        def _set_navigation_enabled(self, enabled: bool) -> None: ...  # InterfaceShellMixin
         def _update_work_area(self) -> None: ...  # InterfaceShellMixin
         def _survey_store(self) -> SurveyStore: ...  # InterfaceShellMixin
         def _try_survey_store(self) -> SurveyStore | None: ...  # InterfaceShellMixin
@@ -429,6 +441,9 @@ if TYPE_CHECKING:
         def _open_transect_page(self, transect_id: object = None) -> None: ...  # SimplePlanMixin
         def _refresh_cart_marks(self) -> None: ...  # VideoLibraryMixin
         def _open_section_in_videos(self, pass_id: uuid.UUID) -> None: ...  # VideoLibraryMixin
+        def _select_section(self, pass_id: str) -> bool: ...  # VideoLibraryMixin
+        def _transect_name_for(self, transect_id: object) -> str | None: ...  # VideoLibraryMixin
+        def _selected_transect_id(self) -> uuid.UUID | None: ...  # SimplePlanMixin
         def _refresh_survey_analysis(self) -> None: ...  # SimpleAnalysisMixin
         def _refresh_survey_batch_tab(self) -> None: ...  # SimpleBatchMixin
         def _add_pass_to_cart(self, pass_id: uuid.UUID) -> None: ...  # SimpleBatchMixin

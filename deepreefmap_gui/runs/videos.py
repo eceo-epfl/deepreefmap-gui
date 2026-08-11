@@ -196,17 +196,16 @@ class VideoLibraryMixin(MixinBase):
         self._video_list.section_reassign.connect(self._on_section_reassign)
         self._video_list.section_delete.connect(self._on_section_delete)
         self._video_list.section_open_transect.connect(self._open_transect_page)
-        # Dropping footage in is the fastest way to fill a library, and the one
-        # feature nothing else on the page advertises, so the list says so.
-        self._video_list.setAcceptDrops(True)
-        self._video_list.installEventFilter(self)
-        self._video_list.viewport().setAcceptDrops(True)
-        self._video_list.viewport().installEventFilter(self)
         self._video_stack = QStackedWidget()
         self._video_stack.addWidget(self._video_list)
         self._video_stack.addWidget(
             EmptyState("No footage yet", "Drop clips here, or use Add videos…")
         )
+        # The stack, not the list inside it: Qt finds a drop target by walking up
+        # from the widget under the cursor, and an empty library hides the list
+        # behind the empty state that advertises the drop.
+        self._video_stack.setAcceptDrops(True)
+        self._video_stack.installEventFilter(self)
         column_layout.addWidget(self._video_stack, 1)
         split.addWidget(column)
 
@@ -575,15 +574,18 @@ class VideoLibraryMixin(MixinBase):
         # relocate, so its link state is worth a fresh stat.
         self._recheck_clip_link(video_id)
 
-    def _select_section(self, pass_id: str) -> None:
+    def _select_section(self, pass_id: str) -> bool:
         """Show one cut, wherever it was picked: the tree, the clip card, the strip.
 
         One entry point for all three so they cannot disagree about what is
         selected, and so a span click opens the clip it belongs to.
+
+        Answers False for a section that is no longer there, which is how going
+        back to a deleted one is told from going back to a live one.
         """
         clip = self._clip_for_pass(pass_id)
         if clip is None:
-            return
+            return False
         self._selected_pass_id = pass_id
         self._video_list.expand(str(clip.video.id))
         self._video_list.set_selected_section(pass_id)
@@ -593,6 +595,7 @@ class VideoLibraryMixin(MixinBase):
         self._video_detail.select_section(pass_id)
         self._fill_section_detail(clip, pass_id)
         self._video_list.reveal(pass_id)
+        return True
 
     def _open_section_in_videos(self, pass_id: uuid.UUID) -> None:
         """Edit a section where a section is defined.
@@ -731,9 +734,12 @@ class VideoLibraryMixin(MixinBase):
             self._select_section(str(already.id))
             return
         assign = self._transect_picker(store)
-        if assign.exec() != QDialog.DialogCode.Accepted:
+        accepted = assign.exec() == QDialog.DialogCode.Accepted
+        # Leaving for the Transects page is not cancelling: the window is already
+        # chosen, so the section is written unfiled and filed later.
+        if not accepted and not assign.left_for_page:
             return
-        transect_id, direction = assign.choice()
+        transect_id, direction = assign.choice() if accepted else (None, "forward")
         pass_ = TransectPass(
             transect_id=transect_id,
             video_id=clip.video.id,
@@ -743,7 +749,8 @@ class VideoLibraryMixin(MixinBase):
         )
         store.add_pass(pass_)
         self._refresh_video_library()
-        self._select_section(str(pass_.id))
+        if accepted:
+            self._select_section(str(pass_.id))
 
     def _cart_pass_ids(self) -> set[str]:
         """The current cart's passes, read once per repaint.
@@ -868,9 +875,10 @@ class VideoLibraryMixin(MixinBase):
     def _transect_picker(self, store, **kwargs):
         """The map-and-list dialog both filing steps use, wired to the page.
 
-        Its arrow leaves for the Transects page, which means abandoning the
-        section being filed: the dialog rejects itself, so nothing is half
-        applied on the way out.
+        Its arrow leaves for the Transects page, rejecting the dialog on the way
+        so no choice made in it is half applied. Whether the section survives the
+        trip is the caller's business: a section being reassigned already exists,
+        and one being cut is written unfiled rather than thrown away.
         """
         from deepreefmap_gui.simple.transect_picker import TransectPickerDialog
 

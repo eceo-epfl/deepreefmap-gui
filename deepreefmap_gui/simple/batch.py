@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -13,7 +14,7 @@ from functools import partial
 from pathlib import Path
 
 from deepreefmap.pipeline.artifacts import ReconstructionCancelled
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QRect, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QGuiApplication
 from PySide6.QtWidgets import (
     QDialog,
@@ -31,6 +32,7 @@ from PySide6.QtWidgets import (
 )
 
 from deepreefmap_gui.core.icons import ICON_SM, close_icon, grip_icon
+from deepreefmap_gui.core.reveal import reveal_in_file_manager
 from deepreefmap_gui.core.theme import (
     ERROR,
     GUTTER,
@@ -38,6 +40,7 @@ from deepreefmap_gui.core.theme import (
     SPACE_SM,
     TEXT_DIM,
     TEXT_MUTED,
+    UPDATE,
     WARN_BG,
     WARN_BORDER,
     WARN_TEXT,
@@ -95,6 +98,8 @@ logger = logging.getLogger(__name__)
 
 (
     _COL_HANDLE,
+    # What this section is called. Takes the stretch the clip name had.
+    _COL_NAME,
     _COL_VIDEO,
     _COL_RECORDED,
     _COL_LENGTH,
@@ -102,7 +107,7 @@ logger = logging.getLogger(__name__)
     _COL_SETTINGS,
     _COL_STATUS,
     _COL_ACTION,
-) = range(8)
+) = range(9)
 
 # What will happen to a pass when processing next starts. Every row is in
 # exactly one of these, and the table is grouped in this order. NEXT holds the
@@ -163,29 +168,38 @@ def _diagnose_failure(text: str) -> str:
     return _one_sentence(text) or "The run failed. No cause was recorded."
 
 
-def _median_pass_seconds() -> float | None:
-    """What one pass has typically cost on this machine, or None with no history.
+_SESSION_NAME_TOOLTIP = (
+    "What to call this set of passes, usually a dive or a day. Every run records "
+    "it, so Browse can group them and a copied output folder can be traced back."
+)
 
-    Rough on purpose: the median of every recorded run, not of runs matching the
-    current config, so a first-ever run says nothing rather than guessing.
+
+def _unused_batch_name(wanted: str, taken: set[str]) -> str:
+    """`wanted`, or the first "(2)", "(3)"… nobody else has.
+
+    Sessions are told apart by name on the page and in the run archive, so two
+    of them called the same thing cannot be told apart at all.
     """
-    import statistics
+    if wanted not in taken:
+        return wanted
+    n = 2
+    while f"{wanted} ({n})" in taken:
+        n += 1
+    return f"{wanted} ({n})"
 
-    from deepreefmap_gui.profiling.run_history import summarise_recorded_runs
 
-    seconds = [r["run_seconds"] for r in summarise_recorded_runs() if r.get("run_seconds")]
-    return statistics.median(seconds) if seconds else None
+def _rough_batch_time(total_seconds: float | None) -> str | None:
+    """A plain "about N hours" for a session that has not started yet.
 
-
-def _rough_batch_time(pass_count: int) -> str | None:
-    """A plain "about N hours" for a session that has not started yet."""
-    median = _median_pass_seconds()
-    if median is None:
+    Takes the predicted total rather than a pass count: a queue of thirty-second
+    sections and a queue of ten-minute ones are not the same evening, and
+    counting passes said they were.
+    """
+    if not total_seconds:
         return None
-    total = median * pass_count
-    if total < 5400:
-        return f"about {max(1, round(total / 60))} minutes"
-    hours = round(total / 3600)
+    if total_seconds < 5400:
+        return f"about {max(1, round(total_seconds / 60))} minutes"
+    hours = round(total_seconds / 3600)
     return f"about {hours} hour{'' if hours == 1 else 's'}"
 
 
@@ -289,10 +303,10 @@ def _clip_time(mtime: str | None) -> str:
     return stamp.strftime("%H:%M")
 
 
-def _clip_length(duration_s: float | None) -> str:
-    if not duration_s or duration_s <= 0:
+def _span_length(seconds: float | None) -> str:
+    if not seconds or seconds <= 0:
         return "length unknown"
-    total = int(round(duration_s))
+    total = int(round(seconds))
     return f"{total}s" if total < 60 else f"{total // 60}m {total % 60:02d}s"
 
 
@@ -340,6 +354,9 @@ class _PassRow:
     direction: str = "forward"
     transect_id: uuid.UUID | None = None
     pass_id: uuid.UUID | None = None
+    # The section's own name. Empty means it has never been renamed, and the
+    # generated default stands in.
+    label: str = ""
     # What this pass alone changes about the session's settings, as stored on
     # its cart row. Empty for a pass that runs on the session's settings.
     overrides: dict = field(default_factory=dict)
@@ -370,6 +387,9 @@ class _SurveyJob:
     transect: Transect | None
     videos: list[VideoAsset]
     dir_name: str
+    # What the survey calls this section, which is what the run is reported and
+    # read back under. The directory keeps its own unique, filesystem-safe name.
+    label: str = ""
     # The run kwargs and the configuration identity for this pass alone, both
     # read off the form at checkout with the row's overrides applied. Per job
     # rather than per batch, because a row may run on settings of its own.
@@ -386,6 +406,11 @@ class PassTable(QTableWidget):
     """
 
     rows_moved = Signal(int, int)
+    # Row under the cursor and its status cell in global coordinates, or
+    # (-1, None) when the pointer is elsewhere. A table has no per-cell hover
+    # signal of its own, and the breakdown has to be anchored to the row it
+    # describes rather than left to float wherever the pointer happens to be.
+    status_hovered = Signal(int, object)
 
     def __init__(self, columns: int, parent: QWidget | None = None) -> None:
         super().__init__(0, columns, parent)
@@ -393,6 +418,23 @@ class PassTable(QTableWidget):
         self.setDragDropOverwriteMode(False)
         self.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.verticalHeader().setSectionsMovable(False)
+        self.setMouseTracking(True)
+        self.viewport().setMouseTracking(True)
+
+    def mouseMoveEvent(self, event) -> None:
+        super().mouseMoveEvent(event)
+        index = self.indexAt(event.position().toPoint())
+        if not index.isValid() or index.column() != _COL_STATUS:
+            self.status_hovered.emit(-1, None)
+            return
+        rect = self.visualRect(index)
+        self.status_hovered.emit(
+            index.row(), QRect(self.viewport().mapToGlobal(rect.topLeft()), rect.size())
+        )
+
+    def leaveEvent(self, event) -> None:
+        super().leaveEvent(event)
+        self.status_hovered.emit(-1, None)
 
     def dropEvent(self, event) -> None:  # noqa: N802 (Qt override)
         source = self.currentRow()
@@ -409,6 +451,10 @@ class PassTable(QTableWidget):
 
 class SimpleBatchMixin(MixinBase):
     """DeepReefMapWindow methods for the Process destination."""
+
+    # Set while the table is being filled, because filling a cell emits the same
+    # signal a rename does.
+    _survey_table_rebuilding: bool = False
 
     def _build_simple_run_page(self) -> QWidget:
         """Process: the session's passes, and what will be done to them."""
@@ -451,11 +497,7 @@ class SimpleBatchMixin(MixinBase):
         # tooltip says what the name is actually for. It is written into every
         # run's manifest, which is what lets a copied output folder rebuild the
         # session it came from, and it is what groups those runs in Browse.
-        self._survey_batch_name.setToolTip(
-            "What to call this set of passes, usually a dive or a day. Every run "
-            "records it, so Browse can group them and a copied output folder can "
-            "be traced back."
-        )
+        self._survey_batch_name.setToolTip(_SESSION_NAME_TOOLTIP)
         name_row.addWidget(self._survey_batch_name, 1)
         self._survey_clear_cart_btn = QPushButton("Clear cart")
         self._survey_clear_cart_btn.setToolTip(
@@ -467,7 +509,9 @@ class SimpleBatchMixin(MixinBase):
         header_layout.addLayout(name_row)
         # Only while an order runs and a next cart exists: names where new
         # additions are going, since the table above belongs to the order.
-        self._survey_next_cart_label = muted_label("")
+        self._survey_next_cart_label = QLabel("")
+        self._survey_next_cart_label.setWordWrap(True)
+        self._survey_next_cart_label.setStyleSheet(f"color: {UPDATE};")
         self._survey_next_cart_label.setVisible(False)
         header_layout.addWidget(self._survey_next_cart_label)
 
@@ -499,17 +543,17 @@ class SimpleBatchMixin(MixinBase):
         header_layout.addLayout(preset_row)
         layout.addWidget(header_card)
 
-        # Where the run reports itself now that the Run step has no viewer beside
-        # it. Hidden until a batch starts: an idle card is a row of blanks.
+        # The session total. Built here because the table below is wired to it,
+        # but added under that table: it is the sum of those rows, and each row
+        # carries its own progress now.
         self._batch_progress = BatchProgressCard()
         self._batch_progress.pass_percent_changed.connect(self._on_pass_percent)
-        self._batch_progress.setVisible(False)
-        layout.addWidget(self._batch_progress)
 
         # One column per heading, counted from the headings themselves: a table
         # built wider than its labels ends with columns Qt names "9" and "10".
         headings = [
             "",
+            "Name",
             "Clip",
             "Recorded",
             "Length",
@@ -529,6 +573,14 @@ class SimpleBatchMixin(MixinBase):
         self._survey_pass_table.setItemDelegateForColumn(_COL_STATUS, StatusPillDelegate(self))
         self._survey_pass_table.itemSelectionChanged.connect(self._recompute_row_actions)
         self._survey_pass_table.rows_moved.connect(self._on_survey_rows_moved)
+        # The running row's percentage is a summary; hovering it gives the
+        # stage-by-stage detail that used to live in the window's top corner.
+        self._survey_pass_table.status_hovered.connect(self._on_queue_row_hover)
+        # Scrolling moves the rows out from under a popup anchored to one of
+        # them, which would leave the breakdown pointing at a different pass.
+        self._survey_pass_table.verticalScrollBar().valueChanged.connect(
+            lambda _value: self._on_queue_row_hover(-1, None)
+        )
         # Seeing the result is what you actually want after processing, so the
         # row you processed opens it. Only the plain-item columns get the signal;
         # the rest hold cell widgets that eat the click.
@@ -537,6 +589,12 @@ class SimpleBatchMixin(MixinBase):
         # the full text so it can be pasted into a bug report.
         self._survey_pass_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._survey_pass_table.customContextMenuRequested.connect(self._on_survey_pass_menu)
+        # The Name cell is the only editable one; every other cell clears
+        # ItemIsEditable, so opening the triggers here reaches that column alone.
+        self._survey_pass_table.setEditTriggers(
+            QTableWidget.EditTrigger.DoubleClicked | QTableWidget.EditTrigger.EditKeyPressed
+        )
+        self._survey_pass_table.itemChanged.connect(self._on_survey_name_edited)
         h_header = self._survey_pass_table.horizontalHeader()
         # This table cannot sort by a header click: half its columns are cell
         # widgets Qt's sort will not move, the groups sit under spanned heading
@@ -544,11 +602,13 @@ class SimpleBatchMixin(MixinBase):
         # position. The order it does have is the one the rows are dragged into.
         h_header.setSectionsClickable(False)
         h_header.setHighlightSections(False)
-        h_header.setSectionResizeMode(_COL_VIDEO, QHeaderView.ResizeMode.Stretch)
-        # The clip name stretches; the rest are sized to what they hold, so a
+        h_header.setSectionResizeMode(_COL_NAME, QHeaderView.ResizeMode.Stretch)
+        # The name stretches; the rest are sized to what they hold, so a clip, a
         # transect name, a time and a status pill all read without clipping.
         for column, width in (
             (_COL_HANDLE, 22),
+            # Enough for GX010001.MP4 and a chapter count after it.
+            (_COL_VIDEO, 170),
             (_COL_RECORDED, 80),
             (_COL_LENGTH, 80),
             # Transect, direction and window on one button: they are one thing,
@@ -557,7 +617,9 @@ class SimpleBatchMixin(MixinBase):
             (_COL_SECTION, 280),
             # Wide enough for "Default settings", the longest label it takes.
             (_COL_SETTINGS, 130),
-            (_COL_STATUS, 110),
+            # Wide enough for "Running 100%": the running row carries its own
+            # percentage, which is where a pass's progress is read now.
+            (_COL_STATUS, 150),
             (_COL_ACTION, 34),
         ):
             self._survey_pass_table.setColumnWidth(column, width)
@@ -576,6 +638,7 @@ class SimpleBatchMixin(MixinBase):
         )
         passes_card, passes_layout = section_card("Passes")
         passes_layout.addWidget(self._survey_table_stack, 1)
+        passes_layout.addWidget(self._batch_progress)
         # How much of the batch is behind you. Sits with the table rather than in
         # the status bar because it is what you read before deciding to stop.
         self._survey_standing_label = QLabel("")
@@ -850,6 +913,9 @@ class SimpleBatchMixin(MixinBase):
         # A cart minted under a started order must not inherit its name.
         if not name or (batch is not None and name == batch.name):
             name = datetime.now().strftime("%Y-%m-%d")  # noqa: DTZ005 (local time is intended: this is a user-facing default name)
+        # The date fallback is what the running order was probably named after,
+        # so uniqueness is enforced against every session rather than one.
+        name = _unused_batch_name(name, {b.name for b in store.list_batches()})
         cart = SurveyBatch(name=name)
         # Name the configuration on the batch too, so a folder rebuilt from
         # manifests alone still knows which settings the day was run under.
@@ -1013,21 +1079,35 @@ class SimpleBatchMixin(MixinBase):
                 direction=pass_.direction,
                 transect_id=pass_.transect_id,
                 pass_id=pass_.id,
+                label=pass_.label,
                 overrides=dict(overrides.get(pass_.id, {})),
             ))
         return rows
 
     def _refresh_next_cart_label(self, cart: SurveyBatch | None) -> None:
-        """Name the pending cart while an order runs, under the order's name."""
+        """Say which session an addition joins while another one is running.
+
+        The table holds rows from two sessions at that point, told apart only by
+        a group heading under one name field.
+        """
         if cart is None:
             self._survey_next_cart_label.setVisible(False)
+            self._survey_batch_name.setReadOnly(False)
+            self._survey_batch_name.setToolTip(_SESSION_NAME_TOOLTIP)
             return
         count = len(self._survey_store().list_batch_items(cart.id))
         self._survey_next_cart_label.setText(
-            f"Next session '{cart.name}': {passes_phrase(count)} queued. "
-            "Starts once this one finishes."
+            f"Adding to <b>{cart.name}</b>, which starts once this session "
+            f"finishes. {passes_phrase(count)} queued so far."
         )
         self._survey_next_cart_label.setVisible(True)
+        # The field names the session being processed, and editing it while
+        # additions go to a different one renames the wrong thing.
+        self._survey_batch_name.setReadOnly(True)
+        self._survey_batch_name.setToolTip(
+            "The session being processed. The next one is named when this "
+            "finishes."
+        )
 
     def _refresh_survey_transect_names(self) -> None:
         """Re-read the transects and repaint the names the rows show.
@@ -1111,6 +1191,16 @@ class SimpleBatchMixin(MixinBase):
         A batch left running overnight is read at a glance from the groups: what
         is still to run, and what is already finished.
         """
+        # The rows the breakdown could be anchored to are about to be replaced.
+        self._on_queue_row_hover(-1, None)
+        # Filling cells emits itemChanged, which is also how a rename arrives.
+        self._survey_table_rebuilding = True
+        try:
+            self._rebuild_survey_table_rows()
+        finally:
+            self._survey_table_rebuilding = False
+
+    def _rebuild_survey_table_rows(self) -> None:
         table = self._survey_pass_table
         keep = set(self._selected_survey_rows())
         current = self._model_index(table.currentRow())
@@ -1194,6 +1284,15 @@ class SimpleBatchMixin(MixinBase):
         handle.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
         table.setItem(index, _COL_HANDLE, handle)
 
+        # The one editable cell: everything else is a fact about the footage or
+        # the settings.
+        name_item = QTableWidgetItem(self._row_label(row))
+        name_item.setToolTip(
+            "What this section is called. Double-click to rename it; the run's "
+            "folder keeps its own name."
+        )
+        table.setItem(index, _COL_NAME, name_item)
+
         video_item = QTableWidgetItem(_clip_name(row.videos))
         video_item.setToolTip(_clip_tooltip(row.videos))
         video_item.setFlags(video_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -1204,9 +1303,15 @@ class SimpleBatchMixin(MixinBase):
         recorded_item.setForeground(QColor(TEXT_MUTED))
         table.setItem(index, _COL_RECORDED, recorded_item)
 
-        length_item = QTableWidgetItem(_clip_length(row.total_duration_s()))
+        # The section, not the clip: this is what decides the pass's runtime and
+        # its memory.
+        length_item = QTableWidgetItem(_span_length(row.end_s - row.begin_s))
         length_item.setFlags(length_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         length_item.setForeground(QColor(TEXT_MUTED))
+        length_item.setToolTip(
+            f"Section length. The clip it is cut from runs "
+            f"{_span_length(row.total_duration_s())}."
+        )
         table.setItem(index, _COL_LENGTH, length_item)
 
         table.setCellWidget(index, _COL_SECTION, self._section_cell(row))
@@ -1463,8 +1568,9 @@ class SimpleBatchMixin(MixinBase):
             settings.get("preprocess_batch_size") or self._batch_size_spin.value()
         )
         try:
+            machine = probe_system() if profile is None else profile
             return fit_for_pass(
-                probe_system() if profile is None else profile,
+                machine,
                 seconds=seconds,
                 fps=fps,
                 width=width,
@@ -1472,12 +1578,148 @@ class SimpleBatchMixin(MixinBase):
                 mapping_backend=mapping,
                 seg_model=seg,
                 batch_size=batch_size,
-                recorded=load_expected_peaks(history_key(mapping, seg, width, height, fps)),
+                recorded=load_expected_peaks(
+                    history_key(mapping, seg, width, height, fps),
+                    gpu_name=machine.gpu.name,
+                    batch_size=batch_size,
+                ),
             )
         except Exception:
             # The grade is advice. A probe that cannot answer must not stop the
             # table from painting.
             return None
+
+    def _row_for_pass(self, pass_id) -> _PassRow | None:
+        return next((row for row in self._survey_rows if row.pass_id == pass_id), None)
+
+    def _row_label(self, row: _PassRow) -> str:
+        """What this section is called: its own name, or the generated default.
+
+        The default is produced on read, so an unnamed row follows the current
+        generator rather than carrying an older one.
+        """
+        from deepreefmap_gui.survey.labels import pass_label
+
+        stored = (getattr(row, "label", "") or "").strip()
+        if stored:
+            return stored
+        subject = row.transect_id
+        peers = [r for r in self._survey_rows if r.transect_id == subject] if subject else [
+            r for r in self._survey_rows if r.transect_id is None and r.video.id == row.video.id
+        ]
+        number = next((i for i, r in enumerate(peers, start=1) if r is row), 1)
+        return pass_label(
+            row,
+            transect_name=self._transect_name_for(subject) if subject else None,
+            clip_name=row.video.file_name,
+            number=number,
+        )
+
+    def _on_survey_name_edited(self, item) -> None:
+        """Commit a renamed section, refusing a name another one already has."""
+        from deepreefmap_gui.survey.labels import taken_labels, unique_label
+
+        if item.column() != _COL_NAME or self._survey_table_rebuilding:
+            return
+        index = self._model_index(item.row())
+        if index is None:
+            return
+        row = self._survey_rows[index]
+        store = self._try_survey_store()
+        if store is None or row.pass_id is None:
+            return
+        pass_ = store.get_pass(row.pass_id)
+        if pass_ is None:
+            return
+        wanted = item.text().strip()
+        if not wanted:
+            # An emptied field is a request for the default back, not a request
+            # for a nameless section.
+            pass_.label = ""
+        else:
+            pass_.label = unique_label(
+                wanted, taken_labels(store.list_passes(), exclude=row.pass_id)
+            )
+            if pass_.label != wanted:
+                self._status_label.setText(
+                    f"Another section is already called {wanted!r}; "
+                    f"this one is {pass_.label!r}."
+                )
+        store.update_pass(pass_)
+        row.label = pass_.label
+        self._rebuild_survey_table()
+
+    def _pass_spec(self, row: _PassRow):
+        """What this row will run, in the terms its runtime depends on.
+
+        Reads the settings exactly as _row_fit does, so the time estimate and the
+        memory grade are answering about the same run.
+        """
+        from deepreefmap_gui.profiling.batch_estimate import PassSpec
+
+        seconds = row.end_s - row.begin_s
+        settings = self._row_settings(row)
+        fps = int(settings.get("fps") or self._fps_spin.value())
+        # Zero frames rather than dropped: BatchEtaTracker indexes by job
+        # position, so a dropped spec shifts every later pass out of step.
+        return PassSpec(
+            key=str(row.pass_id),
+            frames=int(max(0.0, seconds) * max(1, fps)),
+            mapping_backend=str(settings.get("mapping_name") or self._map_combo.currentText()),
+            seg_model=str(settings.get("segmentation_name") or self._seg_combo.currentText()),
+            width=int(settings.get("processing_width") or self._proc_width_spin.value()),
+            height=int(settings.get("processing_height") or self._proc_height_spin.value()),
+            fps=max(1, fps),
+        )
+
+    def _survey_pass_specs(self, rows: list[_PassRow | None] | None = None) -> list:
+        """One spec per row, in row order, including the ones that cannot be costed.
+
+        A row with no pass or no window becomes a zero-frame spec, which
+        predict_batch reports as unknown.
+        """
+        from deepreefmap_gui.profiling.batch_estimate import PassSpec
+
+        if rows is None:
+            rows = list(self._survey_remaining_rows())
+        specs = []
+        for index, row in enumerate(rows):
+            spec = self._pass_spec(row) if row is not None else None
+            specs.append(
+                spec
+                if spec is not None
+                else PassSpec(
+                    key=f"unknown-{index}",
+                    frames=0,
+                    mapping_backend="",
+                    seg_model="",
+                    width=0,
+                    height=0,
+                    fps=1,
+                )
+            )
+        return specs
+
+    def _survey_batch_prediction(self, rows: list[_PassRow | None] | None = None):
+        """What the queued passes are expected to cost, cached on their shape.
+
+        Every row mutation funnels through _recompute_survey_start, and this reads
+        a JSON profile off disk, so the cache is load-bearing rather than an
+        optimisation.
+        """
+        from deepreefmap_gui.profiling.batch_estimate import predict_batch
+
+        specs = self._survey_pass_specs(rows)
+        signature = tuple(
+            (s.key, s.frames, s.mapping_backend, s.seg_model, s.width, s.height, s.fps)
+            for s in specs
+        )
+        cached = getattr(self, "_batch_prediction_cache", None)
+        if cached is not None and cached[0] == signature:
+            return cached[1]
+        prediction = predict_batch(specs)
+        self._batch_prediction_cache = (signature, prediction)
+        return prediction
 
     def _refresh_settings_cells(self) -> None:
         """Repaint every row's settings button, probing the machine once."""
@@ -1844,6 +2086,12 @@ class SimpleBatchMixin(MixinBase):
         # The per-row memory grade, which the session's settings change: a lower
         # frame rate here can put every warned row back inside the machine.
         self._refresh_settings_cells()
+        # And what the queue as it now stands would cost. Answered before Start
+        # rather than after it: how long the evening is decides whether to run
+        # the batch at all, or to trim it first.
+        if not self._survey_worker_running:
+            self._batch_progress.set_batch_plan(self._survey_batch_prediction())
+            self._batch_progress.set_idle("No batch in progress.")
         # Keep the summary label on the same source as the gate and the run: all
         # three derive from the form, so the label cannot claim settings the run
         # would not use.
@@ -2014,7 +2262,7 @@ class SimpleBatchMixin(MixinBase):
 
         from deepreefmap_gui.profiling.system_probe import format_bytes
 
-        time_str = _rough_batch_time(pass_count)
+        time_str = _rough_batch_time(self._survey_batch_prediction().total_s)
         opening = f"{pass_count} pass{'' if pass_count == 1 else 'es'} queued"
         opening += f", {time_str}." if time_str else "."
         return confirm(
@@ -2102,6 +2350,7 @@ class SimpleBatchMixin(MixinBase):
                 transect=transect,
                 videos=list(row.videos),
                 dir_name=dir_name,
+                label=self._row_label(row),
                 settings=settings,
                 config=config,
             ))
@@ -2114,9 +2363,11 @@ class SimpleBatchMixin(MixinBase):
         self._survey_running_index = None
         # Held apart from _survey_batch, which a cart minted mid-run takes over.
         self._survey_running_batch = batch
-        self._batch_progress.set_batch_plan(len(jobs), _median_pass_seconds())
+        # Predicted in job order, so the tracker's index matches the worker's.
+        self._batch_progress.set_batch_plan(
+            self._survey_batch_prediction([self._row_for_pass(job.pass_.id) for job in jobs])
+        )
         self._batch_progress.set_idle("Starting…")
-        self._batch_progress.setVisible(True)
         self._survey_worker_running = True
         # Share the window's cancel and pause events so the bottom-bar transport
         # controls drive a survey batch exactly as they drive a single run.
@@ -2126,7 +2377,6 @@ class SimpleBatchMixin(MixinBase):
         self._pause_event.set()
         self._survey_start_btn.setEnabled(False)
         self._begin_run_controls()
-        self._set_navigation_enabled(False)
         self._recompute_row_actions()
         self._refresh_survey_pass_statuses()
         self._set_app_mode("RUNNING")
@@ -2230,9 +2480,18 @@ class SimpleBatchMixin(MixinBase):
                     # clip, which is the only thing it has to be recognised by.
                     label = job.transect.name if job.transect else job.videos[0].file_name
                     self._sig_survey_progress.emit(index, len(jobs), label)
+                    pass_started = time.monotonic()
                     store.set_run_status(job.run.id, "running")
                     out_dir = out_root / job.dir_name
                     out_dir.mkdir(parents=True, exist_ok=True)
+                    # Before anything else in the pass can fail: a pass that dies
+                    # early is the one whose log gets read.
+                    log_handler = open_run_log_file(out_dir)
+                    # Published on the window as well as held here, so closing
+                    # the window mid-pass detaches it. The handler is on the
+                    # root logger, and one left attached goes on writing into a
+                    # run directory nothing is running in any more.
+                    self._run_log_file_handler = log_handler
                     # A retry gets a fresh directory; seeding hard-links
                     # prepared frames from any sibling with the same clip and
                     # settings, earlier attempts of this pass included.
@@ -2251,24 +2510,15 @@ class SimpleBatchMixin(MixinBase):
                             f"Pass {index} of {len(jobs)}: reusing prepared frames "
                             "from an earlier attempt."
                         )
-                    # A log file per pass, beside the outputs it describes. The
-                    # live log view is in memory and a batch runs unattended for
-                    # hours, so without this a pass that failed overnight leaves
-                    # nothing to read in the morning. RunDetailPanel already
-                    # looks for run.log here.
-                    log_handler = open_run_log_file(out_dir)
-                    # Published on the window as well as held here, so closing
-                    # the window mid-pass detaches it. The handler is on the
-                    # root logger, and one left attached goes on writing into a
-                    # run directory nothing is running in any more.
-                    self._run_log_file_handler = log_handler
                     instrumented_reconstruction(
                         video_paths=[video.path for video in job.videos],
                         output_dir=out_dir,
                         transect_length=job.transect.length_m if job.transect else None,
                         begin_s=job.pass_.begin_s,
                         end_s=job.pass_.end_s,
-                        run_name=job.dir_name,
+                        # The name, not the folder: the manifest carries this and
+                        # Browse reads the finished run back under it.
+                        run_name=job.label or job.dir_name,
                         viewer=self._viewer,
                         cancel_event=cancel_event,
                         pause_event=pause_event,
@@ -2282,6 +2532,9 @@ class SimpleBatchMixin(MixinBase):
                     )
                     store.set_run_status(job.run.id, "succeeded")
                     ok += 1
+                    # Only a pass that ran to the end says anything about what
+                    # the rest of the batch will cost.
+                    self._sig_survey_pass_done.emit(index, time.monotonic() - pass_started)
                 except ReconstructionCancelled:
                     store.set_run_status(job.run.id, "cancelled")
                 except Exception as exc:
@@ -2314,6 +2567,10 @@ class SimpleBatchMixin(MixinBase):
         self._survey_running_index = index - 1
         self._refresh_survey_pass_statuses()
 
+    def _on_survey_pass_done(self, index: int, seconds: float) -> None:
+        """Fold a finished pass's real cost into the session estimate."""
+        self._batch_progress.pass_finished(index, seconds)
+
     def _on_survey_done(self, ok: int, total: int, last_error: str) -> None:
         self._survey_worker_running = False
         # These passes are the newest evidence of what a run costs, so both
@@ -2321,13 +2578,12 @@ class SimpleBatchMixin(MixinBase):
         # footage capacity on disk, and the memory grade, which reads the peaks
         # the batch just recorded instead of an analytic guess.
         self._footage_rate_cache = None
+        self._batch_prediction_cache = None
         self._update_memory_profile_warning()
         self._end_run_controls()
-        self._set_navigation_enabled(True)
-        self._reset_progress_bars()
+        self._reset_progress()
         for sink in self._progress_sinks():
             sink.clear_batch_context()
-        self._batch_progress.setVisible(False)
         self._survey_running_index = None
         self._survey_job_pass_ids = []
         self._recompute_row_actions()
@@ -2402,18 +2658,25 @@ class SimpleBatchMixin(MixinBase):
         self._go_to_section("browse")
         self._focus_browse_on_session(batch.id)
 
-    def _running_status_item(self) -> QTableWidgetItem | None:
-        """The status cell of the pass being processed, if one is."""
+    def _running_table_row(self) -> int:
+        """Which table row the pass being processed sits on, or -1 if none is.
+
+        The running index counts jobs, not model rows: the table is grouped and
+        reorderable, so the two only coincide by accident.
+        """
         index = self._survey_running_index
         if index is None or not 0 <= index < len(self._survey_job_pass_ids):
-            return None
+            return -1
         pass_id = self._survey_job_pass_ids[index]
         for model_index, row in enumerate(self._survey_rows):
-            if row.pass_id != pass_id:
-                continue
-            table_row = self._table_row_of(model_index)
-            return None if table_row < 0 else self._survey_pass_table.item(table_row, _COL_STATUS)
-        return None
+            if row.pass_id == pass_id:
+                return self._table_row_of(model_index)
+        return -1
+
+    def _running_status_item(self) -> QTableWidgetItem | None:
+        """The status cell of the pass being processed, if one is."""
+        table_row = self._running_table_row()
+        return None if table_row < 0 else self._survey_pass_table.item(table_row, _COL_STATUS)
 
     def _on_pass_percent(self, percent: int) -> None:
         """Move the running row's own progress, so the queue shows where it is."""
@@ -2423,6 +2686,7 @@ class SimpleBatchMixin(MixinBase):
             return
         item.setData(PASS_PERCENT_ROLE, percent)
         item.setText(f"Running {percent}%")
+        item.setToolTip("Hover for the stage-by-stage breakdown of this pass.")
 
     def _refresh_survey_pass_statuses(self) -> None:
         store = self._try_survey_store()
@@ -2516,9 +2780,38 @@ class SimpleBatchMixin(MixinBase):
         error = self._survey_pass_error(self._survey_rows[index])
         if error:
             menu.addAction("Copy error details", partial(self._copy_pass_error, error))
+        # The row carries one truncated line of the failure; the log carries the
+        # traceback, and the run that could not be loaded is exactly the one
+        # whose log cannot be reached by opening it.
+        run_dir = self._survey_pass_run_dir(self._survey_rows[index])
+        if run_dir is not None:
+            if (run_dir / "run.log").exists():
+                menu.addAction("Show the run log", partial(self._show_pass_log, run_dir))
+            menu.addAction("Show the run folder", partial(reveal_in_file_manager, run_dir))
         if menu.isEmpty():
             return
         menu.exec(self._survey_pass_table.viewport().mapToGlobal(pos))
+
+    def _survey_pass_run_dir(self, row: _PassRow) -> Path | None:
+        """Where this pass's latest run wrote, whether or not it finished."""
+        if row.pass_id is None:
+            return None
+        try:
+            runs = self._survey_store().runs_for_pass(row.pass_id)
+        except Exception:
+            return None
+        if not runs:
+            return None
+        out_root = Path(self._out_root_input.text()).expanduser()
+        run_dir = out_root / runs[-1].run_dir_name
+        return run_dir if run_dir.is_dir() else None
+
+    def _show_pass_log(self, run_dir: Path) -> None:
+        """Put that run's log in the log panel and open it."""
+        if not self._log_view.show_file(run_dir / "run.log", title=run_dir.name):
+            self._status_label.setText(f"Could not read the log in {run_dir.name}.")
+            return
+        self._set_log_panel_visible(True)
 
     def _copy_pass_error(self, error: str) -> None:
         QGuiApplication.clipboard().setText(error)

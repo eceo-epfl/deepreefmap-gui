@@ -73,7 +73,7 @@ def test_update_progress_zero_total_is_indeterminate(make_window) -> None:
     window._on_viewer_status(
         "update_progress", stage="outputs", current=0, total=0, message="Computing PCA projection"
     )
-    assert window._progress_bar.maximum() == 0
+    assert window._run_progress.stage_percent is None
     assert "Computing PCA projection" in window._status_label.text()
 
 
@@ -85,7 +85,7 @@ def test_mapping_zero_total_holds_the_continuous_bar(make_window) -> None:
     window._on_viewer_status(
         "update_progress", stage="mapping", current=0, total=0, message="LoGeR inference"
     )
-    assert window._progress_bar.maximum() == 100
+    assert window._run_progress.stage_percent is not None
     assert "LoGeR inference" in window._status_label.text()
 
 
@@ -97,16 +97,15 @@ def test_cloud_subphases_hold_one_continuous_bar(make_window) -> None:
     window._on_viewer_status(
         "update_progress", stage="outputs", current=10, total=10, message="Building semantic cloud"
     )
-    assert window._progress_bar.maximum() == 100
-    filled = window._progress_bar.value()
+    filled = window._run_progress.stage_percent
+    assert filled is not None
     assert 0 < filled < 100  # not pinned at 100 when the cheap loop ends
     # The indeterminate lexsort holds a determinate bar advanced to its slice, so
     # the stage never reads as finished while it is still working.
     window._on_viewer_status(
         "set_stage", stage="outputs", status="running", message="Applying replacement radius"
     )
-    assert window._progress_bar.maximum() == 100
-    assert window._progress_bar.value() >= filled
+    assert window._run_progress.stage_percent >= filled
 
 
 def test_transport_controls_appear_only_while_a_run_is_in_flight(make_window) -> None:
@@ -128,9 +127,9 @@ def test_bars_carry_no_text_and_overall_estimate_is_visible(make_window, monkeyp
     # Isolate the profile so the total slot's first-run state is deterministic.
     monkeypatch.setenv("DEEPREEFMAP_RUN_TIMINGS", str(tmp_path / "none.json"))
     window = make_window()
-    # The bars are graphical only; the numbers live in the status text and label.
-    assert not window._progress_bar.isTextVisible()
-    assert not window._total_progress_bar.isTextVisible()
+    # The strip at the foot is graphical only; the numbers live in the status
+    # text, the estimate label and the queue row.
+    assert not window._bottom_progress_bar.isTextVisible()
 
     clock = [0.0]
     monkeypatch.setattr(progress_mod.time, "monotonic", lambda: clock[0])
@@ -145,8 +144,19 @@ def test_bars_carry_no_text_and_overall_estimate_is_visible(make_window, monkeyp
     assert "left" in window._eta_total_label.text()
 
 
+def _cell_rect():
+    from PySide6.QtCore import QPoint, QRect, QSize
+
+    return QRect(QPoint(80, 120), QSize(110, 24))
+
+
+def _hover_running_row(window, table_row: int = 0) -> None:
+    """Hover the status cell of the pass in flight, as the table's signal does."""
+    window._running_table_row = lambda: table_row
+    window._on_queue_row_hover(table_row, _cell_rect())
+
+
 def test_first_run_popup_hides_future_estimates_but_shows_measured(make_window, monkeypatch, tmp_path) -> None:
-    from PySide6.QtCore import QPointF
 
     import deepreefmap_gui.runs.progress as progress_mod
 
@@ -160,15 +170,13 @@ def test_first_run_popup_hides_future_estimates_but_shows_measured(make_window, 
     window._apply_progress("mapping", "Mapping", current=1, total=100)
     clock[0] = 20.0
     window._apply_progress("mapping", "Mapping", current=25, total=100)
-    window._on_total_bar_hover(QPointF(50.0, 50.0))
+    _hover_running_row(window)
     text = window._timing_popup._label.text()
     assert "learning timings" in text
     assert "running" in text and "left" in text
 
 
 def test_hover_popup_builds_rows_from_estimator(make_window, monkeypatch) -> None:
-    from PySide6.QtCore import QPointF
-
     import deepreefmap_gui.runs.progress as progress_mod
 
     window = make_window()
@@ -178,10 +186,25 @@ def test_hover_popup_builds_rows_from_estimator(make_window, monkeypatch) -> Non
     window._apply_progress("preprocess", "Preprocess", current=1, total=10)
     clock[0] += 30.0
     window._apply_progress("mapping", "Mapping", current=2, total=10)
-    window._on_total_bar_hover(QPointF(50.0, 50.0))
+    _hover_running_row(window)
     assert window._timing_popup.isVisible()
-    window._on_total_bar_hover(None)
+    window._on_queue_row_hover(-1, None)
     assert not window._timing_popup.isVisible()
+
+
+def test_the_breakdown_only_describes_the_row_being_processed(make_window) -> None:
+    """Anchored to another row it would be a plausible reading of the wrong pass."""
+    window = make_window()
+    window._begin_progress(window._recon_model)
+    window._apply_progress("mapping", "Mapping", current=2, total=10)
+    window._running_table_row = lambda: 0
+
+    # Not merely hidden: hovering another row never builds the popup at all.
+    window._on_queue_row_hover(1, _cell_rect())
+    assert getattr(window, "_timing_popup", None) is None
+
+    window._on_queue_row_hover(0, _cell_rect())
+    assert window._timing_popup.isVisible()
 
 
 def test_progress_readouts_are_hidden_until_a_run_starts(window) -> None:
@@ -189,23 +212,22 @@ def test_progress_readouts_are_hidden_until_a_run_starts(window) -> None:
 
     Expected behaviour: nothing reports progress until there is progress.
     """
-    assert not window._progress_stack.isVisibleTo(window)
     assert not window._bottom_progress_bar.isVisibleTo(window)
     assert not window._eta_total_label.isVisibleTo(window)
 
     window._begin_progress(window._recon_model)
-    assert window._progress_stack.isVisibleTo(window)
     assert window._bottom_progress_bar.isVisibleTo(window)
+    assert window._eta_total_label.isVisibleTo(window)
 
-    window._reset_progress_bars()
-    assert not window._progress_stack.isVisibleTo(window)
+    window._reset_progress()
     assert not window._bottom_progress_bar.isVisibleTo(window)
+    assert not window._eta_total_label.isVisibleTo(window)
 
 
 def test_bottom_bar_mirrors_total_progress(window) -> None:
     window._begin_progress(window._recon_model)
     window._apply_progress("preprocess", "Preprocess", current=5, total=10)
-    assert window._bottom_progress_bar.value() == window._total_progress_bar.value()
+    assert window._bottom_progress_bar.value() == window._run_progress.total_percent
 
 
 def test_status_and_transport_live_in_the_bottom_bar(window) -> None:
@@ -235,7 +257,7 @@ def test_mapping_detail_bar_never_regresses_across_substeps(window) -> None:
     values = []
     for phase, cur, tot in reports:
         window._apply_progress(phase, phase, current=cur, total=tot)
-        values.append(window._progress_bar.value())
+        values.append(window._run_progress.stage_percent)
 
     assert values == sorted(values)      # never snaps back
     assert values[3] == values[2]        # transfer holds at inference's end

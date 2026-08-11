@@ -44,7 +44,7 @@ def test_each_load_takes_a_new_generation(loading_window, tmp_path):
 def test_a_superseded_load_does_not_apply(loading_window, tmp_path, monkeypatch):
     window = loading_window
     applied: list[str] = []
-    monkeypatch.setattr(window, "_reset_progress_bars", lambda: applied.append("reset"))
+    monkeypatch.setattr(window, "_reset_progress", lambda: applied.append("reset"))
 
     stale = _generation_of(window, tmp_path)
     _generation_of(window, tmp_path)
@@ -63,7 +63,7 @@ def test_the_current_load_still_applies(loading_window, tmp_path, monkeypatch):
     """The guard must not reject the load the window is actually waiting on."""
     window = loading_window
     reached: list[str] = []
-    monkeypatch.setattr(window, "_reset_progress_bars", lambda: reached.append("reset"))
+    monkeypatch.setattr(window, "_reset_progress", lambda: reached.append("reset"))
 
     generation = _generation_of(window, tmp_path)
     window._load_cancelled = True

@@ -72,15 +72,17 @@ def test_this_machine_lights_no_destination(window):
     assert not any(b.isChecked() for b in window._simple_nav_buttons.values())
 
 
-def test_browse_stays_reachable_while_a_batch_runs(window):
-    """A batch takes tens of minutes; reading finished runs meanwhile is the point.
+def test_every_destination_stays_reachable_while_a_batch_runs(window):
+    """A batch takes tens of minutes, and that time is what the other pages are for.
 
-    Process is where the batch reports itself and Browse is where finished work
-    lives, so only Transects is locked: editing a transect mid-batch would never
-    reach the pass in flight.
+    Planning the next transect is the case that used to be refused, and it is
+    the one that has to work: a transect cannot be filed against without being
+    reachable, and a job carries the transect it was checked out with.
     """
-    window._set_navigation_enabled(False)
-    assert not window._simple_nav_buttons["transects"].isEnabled()
+    window._survey_worker_running = True
+
+    assert window._simple_nav_buttons["transects"].isEnabled()
+    assert window._simple_nav_buttons["videos"].isEnabled()
     assert window._simple_nav_buttons["process"].isEnabled()
     assert window._simple_nav_buttons["browse"].isEnabled()
 
@@ -187,11 +189,16 @@ def test_starting_is_named_for_what_it_does(window):
     assert text.startswith(("Start processing", "Continue processing"))
 
 
-def test_navigation_locks_while_a_run_is_in_flight(window):
-    window._set_navigation_enabled(False)
-    assert not window._simple_nav_buttons["transects"].isEnabled()
-    window._set_navigation_enabled(True)
-    assert window._simple_nav_buttons["transects"].isEnabled()
+def test_navigation_stays_open_while_a_run_is_in_flight(window):
+    """Nothing a destination edits can reach a pass already checked out."""
+    window._survey_worker_running = True
+    window._set_app_mode("RUNNING")
+
+    for name, button in window._simple_nav_buttons.items():
+        assert button.isEnabled(), name
+
+    window._set_simple_section("transects")
+    assert window._current_section() == "transects"
 
 
 def test_a_quiet_header_leaves_the_bell_dark(window):

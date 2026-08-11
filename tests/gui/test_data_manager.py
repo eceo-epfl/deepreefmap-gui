@@ -463,6 +463,27 @@ def test_incomplete_run_is_listed_distinctly_and_deletable(out_root, make_window
     assert not crashed.exists()
 
 
+def test_a_run_that_cannot_be_opened_can_still_be_read(out_root, make_window):
+    """An incomplete run has no outputs to load, and its log is the only account.
+
+    The one path that pointed the panel at a run.log ran after a run loaded, so
+    it never fired for the runs whose log is worth reading.
+    """
+    crashed = out_root / "crashed"
+    crashed.mkdir(parents=True)
+    (crashed / "run.log").write_text("Traceback: it stopped here", encoding="utf-8")
+    window = make_window()
+
+    select_run(window, row_of(window, "crashed"))
+    detail = window._run_detail
+    assert detail.log_btn.isVisibleTo(detail)
+    assert not detail.open_btn.isVisibleTo(detail)
+
+    detail.log_btn.click()
+
+    assert "it stopped here" in window._log_view._text.toPlainText()
+
+
 # --- T1.7 multi-select actions ---
 
 

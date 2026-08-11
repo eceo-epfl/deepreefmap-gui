@@ -19,9 +19,10 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from PySide6.QtCore import QSize, Qt
+from PySide6.QtCore import QEvent, QSize, Qt
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
+    QAbstractSpinBox,
     QButtonGroup,
     QCheckBox,
     QComboBox,
@@ -32,10 +33,12 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSpinBox,
     QStackedWidget,
+    QTextEdit,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -71,7 +74,12 @@ from deepreefmap_gui.simple.section_state import (
     videos_state,
 )
 from deepreefmap_gui.survey.catalogue import LINK_MISSING
-from deepreefmap_gui.survey.health import SurveyDbHealth, SurveyDbState, inspect_survey_db
+from deepreefmap_gui.survey.health import (
+    SETTLED,
+    SurveyDbHealth,
+    SurveyDbState,
+    inspect_survey_db,
+)
 from deepreefmap_gui.survey.models.notification import WARNING as NOTIFY_WARNING
 from deepreefmap_gui.survey.preset import (
     ActivePreset,
@@ -90,6 +98,12 @@ logger = logging.getLogger(__name__)
 # Peers, not steps. None is a prerequisite for another: a pass with no transect
 # processes perfectly well, so ordering them as a sequence would claim a
 # dependency the gate does not enforce.
+#
+# Every one of them stays reachable while a batch runs. A batch takes tens of
+# minutes, and planning the next transect or reading a finished run is exactly
+# what that time is for; each job carries its own snapshot of the settings and
+# the transect it was checked out with, so nothing edited here reaches the pass
+# in flight. The few actions that would are refused where they are taken.
 #
 # Videos leads because it is where a day starts and where most of it is spent:
 # the footage comes off the camera, sections are cut from it, and the cart is
@@ -722,18 +736,102 @@ class InterfaceShellMixin(MixinBase):
             self._refresh_notification_bell()
 
     def _go_to_section(self, name: str) -> None:
-        self._set_simple_section(name)
+        """Follow a link to another destination, remembering where it came from.
 
-    def _set_navigation_enabled(self, enabled: bool) -> None:
-        """A batch in flight owns the queue it is working, so editing it is out.
-
-        Only Transects is locked. Process is where the batch reports itself, and
-        Browse stays reachable throughout: a batch takes tens of minutes and
-        looking at what finished earlier is exactly what you want to do while it
-        runs. Opening a run from there is refused separately, so the live run
-        keeps the viewer.
+        The one entry point that records history. Choosing a destination from the
+        header does not: that is a fresh start, not a step to unwind.
         """
-        self._simple_nav_buttons["transects"].setEnabled(enabled)
+        self._remember_place()
+        self._set_simple_section(name)
+        self._remember_place()
+
+    # --- Back and forward ----------------------------------------------------
+
+    def _navigation_history(self):
+        history = getattr(self, "_nav_history", None)
+        if history is None:
+            from deepreefmap_gui.simple.navigation import NavigationHistory
+
+            history = NavigationHistory()
+            self._nav_history = history
+        return history
+
+    def _current_place(self):
+        from deepreefmap_gui.simple.navigation import Place
+
+        return Place(self._current_section(), self._current_selection())
+
+    def _current_selection(self) -> str | None:
+        """What is picked out on the page now, so returning restores it too."""
+        section = self._current_section()
+        if section == "videos":
+            return self._selected_pass_id
+        if section == "transects":
+            chosen = self._selected_transect_id()
+            return str(chosen) if chosen is not None else None
+        return None
+
+    def _remember_place(self) -> None:
+        if getattr(self, "_nav_restoring", False):
+            return
+        self._navigation_history().push(self._current_place())
+
+    def _go_back(self) -> bool:
+        return self._follow(self._navigation_history().back)
+
+    def _go_forward(self) -> bool:
+        return self._follow(self._navigation_history().forward)
+
+    def _follow(self, step) -> bool:
+        """Take a history step, skipping any whose target has since gone."""
+        history = self._navigation_history()
+        place = step()
+        while place is not None and not self._restore_place(place):
+            place = history.drop_current()
+        return place is not None
+
+    def _restore_place(self, place) -> bool:
+        """Go back to a remembered place. False when it is no longer there."""
+        if place.section not in SIMPLE_SECTIONS:
+            return False
+        self._nav_restoring = True
+        try:
+            self._set_simple_section(place.section)
+            if place.selection is None:
+                return True
+            if place.section == "videos":
+                return self._select_section(place.selection)
+            if place.section == "transects":
+                self._open_transect_page(place.selection)
+        finally:
+            self._nav_restoring = False
+        return True
+
+    def _navigation_event_filter(self, obj, event) -> bool:
+        """Back and forward, from the mouse's side buttons or Alt+arrow.
+
+        Filtered rather than overridden: the press lands on whichever child
+        widget is under the cursor. A text field has first claim on Alt+Left, so
+        the shortcut stands down for whatever the key was headed to.
+        """
+        etype = event.type()
+        if etype == QEvent.Type.MouseButtonPress:
+            if event.button() == Qt.MouseButton.BackButton:
+                return self._go_back()
+            if event.button() == Qt.MouseButton.ForwardButton:
+                return self._go_forward()
+            return False
+        if etype != QEvent.Type.KeyPress:
+            return False
+        if not event.modifiers() & Qt.KeyboardModifier.AltModifier:
+            return False
+        if isinstance(obj, (QLineEdit, QAbstractSpinBox, QTextEdit, QPlainTextEdit)):
+            return False
+        if event.key() == Qt.Key.Key_Left:
+            return self._go_back()
+        if event.key() == Qt.Key.Key_Right:
+            return self._go_forward()
+        return False
 
     def _on_simple_nav_toggled(self, name: str, checked: bool) -> None:
         if checked:
@@ -898,7 +996,13 @@ class InterfaceShellMixin(MixinBase):
             and health.state is SurveyDbState.OK
         ):
             return open_store
-        if health is not None and health.path == db_path and not health.openable:
+        # Only a settled verdict is taken on trust: an unwritable location or a
+        # corrupt file can be fixed while the app is open.
+        if (
+            health is not None
+            and health.path == db_path
+            and health.state in SETTLED
+        ):
             return None
         health = inspect_survey_db(db_path)
         if not health.openable:

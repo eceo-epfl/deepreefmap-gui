@@ -124,6 +124,9 @@ class DeepReefMapWindow(
     _sig_qc_render_done = Signal(bool, str)
     _sig_discovery_done = Signal(object, object)
     _sig_survey_progress = Signal(int, int, str)
+    # One-based pass index and what it really cost, so the session estimate is
+    # corrected by the batch it is estimating rather than only by past ones.
+    _sig_survey_pass_done = Signal(int, float)
     _sig_survey_done = Signal(int, int, str)
     _sig_run_sizes_done = Signal(object)
     _sig_clip_links_done = Signal(object)
@@ -163,6 +166,7 @@ class DeepReefMapWindow(
         self._sig_scene_file_done.connect(self._on_scene_file_done)
         self._sig_discovery_done.connect(self._on_discovery_done)
         self._sig_survey_progress.connect(self._on_survey_progress)
+        self._sig_survey_pass_done.connect(self._on_survey_pass_done)
         self._sig_survey_done.connect(self._on_survey_done)
         self._sig_run_sizes_done.connect(self._apply_run_sizes)
         self._sig_clip_links_done.connect(self._apply_clip_link_states)
@@ -213,7 +217,6 @@ class DeepReefMapWindow(
         # out before the widgets they reference exist.
         self._build_form_widgets()
         self._capture_form_defaults()
-        top_bar = self._build_top_bar()
         log_panel = self._build_log_panel()
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -261,7 +264,6 @@ class DeepReefMapWindow(
         central_layout = QVBoxLayout(central)
         central_layout.setContentsMargins(0, 0, 0, 0)
         central_layout.setSpacing(0)
-        central_layout.addWidget(top_bar)
         # Spans the window rather than riding in the simple shell, which View
         # mode squeezes to nothing to give the viewport the full width.
         central_layout.addWidget(self._view_bar)
@@ -316,6 +318,8 @@ class DeepReefMapWindow(
         # QObject owns eventFilter earlier in the MRO than the mixins, so the
         # drop handling lives here on the concrete window and delegates in.
         if self._data_drop_event_filter(obj, event):
+            return True
+        if self._navigation_event_filter(obj, event):
             return True
         # Observes rather than consumes: the splitter still has to lay itself
         # out, this only re-divides it afterwards.

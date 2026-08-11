@@ -90,9 +90,9 @@ from deepreefmap_gui.runs.progress import (
     _LOAD_PHASES,
     _RECON_PHASES,
     ProgressModel,
+    RunProgress,
 )
 from deepreefmap_gui.runs.sunburst import SunburstWidget
-from deepreefmap_gui.runs.timing_popup import HoverColumn
 from deepreefmap_gui.system.log_view import LogView, install_qt_log_handler
 
 # Transport controls sit in the bottom bar where they are the primary run
@@ -423,14 +423,9 @@ class FormPanelMixin(MixinBase):
         self._advanced_toggle = QCheckBox("Advanced settings")
         self._advanced_toggle.toggled.connect(self._on_advanced_toggled)
         setup_layout.addWidget(self._advanced_toggle)
-        self._vram_notice = QLabel()
-        self._vram_notice.setWordWrap(True)
-        self._vram_notice.setStyleSheet(f"color: {UPDATE}; font-size: {FONT_SM}; margin: 2px 0 4px 0;")
-        self._vram_notice.setVisible(False)
-        setup_layout.addWidget(self._vram_notice)
 
-        # System-RAM grade, shown inline like the VRAM notice above, and linked
-        # through to the readiness rows that repeat it in plainer words. Anything
+        # The capacity readout below is the only memory verdict, linked through
+        # to the readiness rows that repeat it in plainer words. Anything
         # that changes the projected frame count re-grades the run.
         self._fps_spin.valueChanged.connect(self._update_memory_profile_warning)
 
@@ -509,8 +504,8 @@ class FormPanelMixin(MixinBase):
         self._resolution_preset_combo.currentTextChanged.connect(
             self._on_resolution_preset_changed
         )
-        self._proc_width_spin.valueChanged.connect(self._update_vram_warning)
-        self._proc_height_spin.valueChanged.connect(self._update_vram_warning)
+        self._proc_width_spin.valueChanged.connect(self._on_processing_settings_changed)
+        self._proc_height_spin.valueChanged.connect(self._on_processing_settings_changed)
 
     def _build_advanced_batch_and_radius(self, adv_layout: QVBoxLayout) -> None:
         adv_layout.addWidget(QLabel("Segmentation batch size"))
@@ -520,7 +515,7 @@ class FormPanelMixin(MixinBase):
         self._batch_size_spin.setToolTip(
             "Frames segmented per GPU batch. Lower values use less VRAM."
         )
-        self._batch_size_spin.valueChanged.connect(self._update_vram_warning)
+        self._batch_size_spin.valueChanged.connect(self._on_processing_settings_changed)
         adv_layout.addWidget(self._batch_size_spin)
         self._vram_auto_label = QLabel()
         self._vram_auto_label.setWordWrap(True)
@@ -529,7 +524,7 @@ class FormPanelMixin(MixinBase):
         self._reset_defaults_btn = QPushButton("Reset to defaults")
         self._reset_defaults_btn.clicked.connect(self._reset_advanced_defaults)
         adv_layout.addWidget(self._reset_defaults_btn)
-        self._update_vram_warning()
+        self._on_processing_settings_changed()
         adv_layout.addWidget(QLabel("Grid bins (ortho resolution)"))
         self._grid_bins_spin = QSpinBox()
         self._grid_bins_spin.setRange(100, 10000)
@@ -688,34 +683,9 @@ class FormPanelMixin(MixinBase):
         self._status_label = QLabel("Ready.")
         self._status_label.setWordWrap(True)
 
-        # Stage bar (top) + total bar (bottom) stacked in one compact hover column
-        # so the two percentages read as a unit at half the width. Bar text is
-        # hidden to avoid cramped labels: the numbers live in the status text, the
-        # overall-estimate label, and the hover breakdown. Empty when idle.
-        self._progress_bar = QProgressBar()
-        self._progress_bar.setRange(0, 100)
-        self._progress_bar.setValue(0)
-        self._progress_bar.setTextVisible(False)
-        self._progress_bar.setFixedHeight(BAR_HEIGHT)
-        self._progress_bar.setStyleSheet(bar_qss(_STAGE_CHUNK))
-
-        self._total_progress_bar = QProgressBar()
-        self._total_progress_bar.setRange(0, 100)
-        self._total_progress_bar.setValue(0)
-        self._total_progress_bar.setTextVisible(False)
-        self._total_progress_bar.setFixedHeight(BAR_HEIGHT)
-        self._total_progress_bar.setStyleSheet(bar_qss(_TOTAL_CHUNK))
-
-        self._progress_stack = HoverColumn()
-        self._progress_stack.setFixedWidth(150)
-        _stack_layout = QVBoxLayout(self._progress_stack)
-        _stack_layout.setContentsMargins(0, 0, 0, 0)
-        _stack_layout.setSpacing(2)
-        _stack_layout.addWidget(self._progress_bar)
-        _stack_layout.addWidget(self._total_progress_bar)
-        # Bars pass hover through to the column so the breakdown follows the mouse.
-        self._progress_bar.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        self._total_progress_bar.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        # Where the run has got to, as numbers: the running pass reports on its
+        # own queue row, and the strip at the foot carries whatever is running.
+        self._run_progress = RunProgress()
 
         # Overall (all-stages) remaining estimate, kept visible rather than buried
         # in the hover breakdown.
@@ -1072,32 +1042,6 @@ class FormPanelMixin(MixinBase):
 
         self._refresh_envs()
 
-    def _build_top_bar(self) -> QWidget:
-        bar = QWidget()
-        # The hairline on the inner edge is what makes the darker work area
-        # between the two bars read as recessed rather than as more chrome.
-        bar.setStyleSheet(
-            f"QWidget {{ background-color: {CARD_BG}; }}"
-            f" QWidget#topBar {{ border-bottom: 1px solid {BORDER}; }}"
-        )
-        bar.setObjectName("topBar")
-        h = QHBoxLayout(bar)
-        h.setContentsMargins(PAGE_MARGIN, 6, PAGE_MARGIN, 6)
-        h.setSpacing(GUTTER)
-        h.addStretch(1)
-
-        # The stage/total bars, and nothing else. The log toggle and Setup live
-        # in the workspace header and the memory advisory on Setup's button; a
-        # batch of passes has no single loaded run to clear, so there is no "+".
-        # A whole band of chrome for one button was not worth its
-        # height, so the bar goes with them and comes back only while a run is
-        # in flight, which _set_progress_widgets_visible drives.
-        self._progress_stack.setVisible(False)
-        h.addWidget(self._progress_stack)
-        bar.setVisible(False)
-        self._top_bar = bar
-        return bar
-
     def _build_bottom_bar(self) -> QWidget:
         """Full-width status and progress strip, the way a desktop app reports work.
 
@@ -1345,7 +1289,7 @@ class FormPanelMixin(MixinBase):
         if preset != "Custom":
             self._apply_resolution_preset(preset)
         self._update_dpt_warning()
-        self._update_vram_warning()
+        self._on_processing_settings_changed()
 
     def _on_resolution_preset_changed(self, preset: str) -> None:
         is_custom = preset == "Custom"
@@ -1354,7 +1298,7 @@ class FormPanelMixin(MixinBase):
         if not is_custom:
             self._apply_resolution_preset(preset)
         self._update_dpt_warning()
-        self._update_vram_warning()
+        self._on_processing_settings_changed()
 
     def _apply_resolution_preset(self, preset: str) -> None:
         nw, nh = self._native_resolution
@@ -1374,29 +1318,12 @@ class FormPanelMixin(MixinBase):
         show = self._is_dpt_model and (current_w != nw or current_h != nh)
         self._dpt_resolution_warning.setVisible(show)
 
-    def _update_vram_warning(self) -> None:
-        w = self._proc_width_spin.value()
-        h = self._proc_height_spin.value()
-        batch = self._batch_size_spin.value()
-        try:
-            from deepreefmap.device import estimate_segmentation_batch_size, resolve_device
+    def _on_processing_settings_changed(self) -> None:
+        """Re-grade, and repaint everything that reads the grade.
 
-            suggested = estimate_segmentation_batch_size(resolve_device(), w, h)
-        except Exception:
-            suggested = 4
-        if batch > suggested:
-            self._vram_auto_label.setText(
-                f"Batch size {batch} may exceed available VRAM at {w}×{h}. "
-                f"Suggested for your GPU: {suggested}."
-            )
-            self._vram_auto_label.setVisible(True)
-            self._vram_notice.setText(
-                "VRAM warning: check batch size in advanced settings."
-            )
-            self._vram_notice.setVisible(True)
-        else:
-            self._vram_auto_label.setVisible(False)
-            self._vram_notice.setVisible(False)
+        One memory model answers for both resources, so the batch-size hint comes
+        from the same grade as the capacity readout.
+        """
         self._update_dpt_warning()
         self._update_memory_profile_warning()
 
@@ -1417,16 +1344,25 @@ class FormPanelMixin(MixinBase):
         w, h = self._proc_width_spin.value(), self._proc_height_spin.value()
         mapping = self._map_combo.currentText()
         seg = self._seg_combo.currentText()
+        batch_size = self._batch_size_spin.value()
+        profile = probe_system()
         return fit_for_pass(
-            probe_system(),
+            profile,
             seconds=seconds,
             fps=fps,
             width=w,
             height=h,
             mapping_backend=mapping,
             seg_model=seg,
-            batch_size=self._batch_size_spin.value(),
-            recorded=load_expected_peaks(history_key(mapping, seg, w, h, fps)),
+            batch_size=batch_size,
+            # The card and the batch size qualify the VRAM half of the history:
+            # a peak from another machine's GPU, or from a different batch size,
+            # would move a fixed term it says nothing about.
+            recorded=load_expected_peaks(
+                history_key(mapping, seg, w, h, fps),
+                gpu_name=profile.gpu.name,
+                batch_size=batch_size,
+            ),
         )
 
     def _update_memory_profile_warning(self) -> None:
@@ -1471,20 +1407,33 @@ class FormPanelMixin(MixinBase):
             self._capacity_bar.set_unavailable()
             self._capacity_detail.setText("Add a pass to see what it would need.")
             self._capacity_advice.setVisible(False)
+            self._vram_auto_label.setVisible(False)
             return
 
         colour = {"ok": SUCCESS, "warn": UPDATE, "block": BLOCK}[fit.level]
-        budget = fit.verdict.budget.ram_bytes
-        need = fit.verdict.cost.ram_bytes
+        # Whichever resource decided the verdict is the one the bar measures. A
+        # bar drawn against RAM under a headline about the graphics card reads
+        # as comfortable while the run is refused.
+        verdict = fit.verdict
+        need, budget = verdict.need_bytes, verdict.budget_bytes
+        resource = "graphics memory" if verdict.limit.startswith("vram") else "memory"
         self._capacity_caption.setText(
             f"Longest pass: {format_duration(fit.seconds)} at {fit.fps} FPS"
         )
         self._capacity_bar.set_level(100.0 * need / budget if budget else 0.0, colour)
-        self._capacity_detail.setText(
-            f"Needs about {format_bytes(need)} of the {format_bytes(budget)} "
-            f"this machine can give one run. It can process about "
-            f"{format_duration(fit.max_seconds)} at {fit.fps} FPS."
+        detail = (
+            f"Needs about {format_bytes(need)} of the {format_bytes(budget)} of "
+            f"{resource} this machine can give one run."
         )
+        # A fixed cost does not fit at any length, so quoting one would only say
+        # the run is impossible twice.
+        if not verdict.limit_is_fixed:
+            detail += (
+                f" It can process about {format_duration(fit.max_seconds)} "
+                f"at {fit.fps} FPS."
+            )
+        self._capacity_detail.setText(detail)
+        self._paint_batch_size_hint(fit)
         if fit.fits:
             self._capacity_advice.setVisible(False)
             return
@@ -1494,6 +1443,23 @@ class FormPanelMixin(MixinBase):
             f'<a href="#system" style="color:{colour};">Setup</a>'
         )
         self._capacity_advice.setVisible(True)
+
+    def _paint_batch_size_hint(self, fit) -> None:
+        """Say what the batch size would have to be, when it is what decides.
+
+        Beside the control it names, in Advanced. Silent otherwise: the batch
+        size reaches the card only through the segmentation term, so on a run
+        the mapping backend already dominates it changes nothing.
+        """
+        if fit.suggested_batch_size is None:
+            self._vram_auto_label.setVisible(False)
+            return
+        w, h = self._proc_width_spin.value(), self._proc_height_spin.value()
+        self._vram_auto_label.setText(
+            f"Batch size {self._batch_size_spin.value()} does not fit this card "
+            f"at {w}×{h}. {fit.suggested_batch_size} does."
+        )
+        self._vram_auto_label.setVisible(True)
 
     def _update_gated_warning(self) -> None:
         seg_name = self._seg_combo.currentText()

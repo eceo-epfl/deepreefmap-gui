@@ -66,7 +66,7 @@ class RunLoadingMixin(MixinBase):
         # arrives. The thread is a daemon and will exit with the process.
         self._load_cancelled = True
         self._spinner_stop.setVisible(False)
-        self._reset_progress_bars()
+        self._reset_progress()
         self._status_label.setText("Load cancelled.")
 
     def _run_in_flight(self) -> bool:
@@ -148,8 +148,8 @@ class RunLoadingMixin(MixinBase):
         self._load_generation += 1
         self._status_label.setText(f"Loading run from {run_dir.name}…")
         self._begin_progress(self._load_model)
-        # Indeterminate per-step bar until the first stage callback arrives.
-        self._progress_bar.setRange(0, 0)
+        # No stage fraction until the first stage callback arrives.
+        self._run_progress.stage_percent = None
         self._spinner_stop.set_stopping(False)
         self._spinner_stop.setVisible(True)
         threading.Thread(
@@ -222,7 +222,7 @@ class RunLoadingMixin(MixinBase):
         return True
 
     def _on_scene_file_done(self) -> None:
-        self._reset_progress_bars()
+        self._reset_progress()
 
     def _on_load_progress(self, stage: str, cur: int, tot: int) -> None:
         if self._load_cancelled:
@@ -256,7 +256,7 @@ class RunLoadingMixin(MixinBase):
         self._spinner_stop.setVisible(False)
 
         if self._load_cancelled:
-            self._reset_progress_bars()
+            self._reset_progress()
             if result is not None and result.scene_accessor is not None:
                 result.scene_accessor.close()
             return
@@ -264,7 +264,7 @@ class RunLoadingMixin(MixinBase):
         run_dir = Path(run_dir_str)
         if error or result is None:
             self._status_label.setText(f"Error loading run: {error}")
-            self._reset_progress_bars()
+            self._reset_progress()
             return
 
         if hasattr(self, "_scene_accessor") and self._scene_accessor is not None:
@@ -371,7 +371,7 @@ class RunLoadingMixin(MixinBase):
 
         self._apply_progress("viewer_finalise", "Finalising viewer", 1, 1)
         if not self._start_deferred_scene_file(run_dir, result):
-            self._reset_progress_bars()
+            self._reset_progress()
 
         self._active_run_dir = run_dir
         self._active_run_manifest = result.manifest

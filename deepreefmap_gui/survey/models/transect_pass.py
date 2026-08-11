@@ -34,6 +34,10 @@ class TransectPass:
     direction: str = "forward"
     batch_id: uuid.UUID | None = None
     notes: str = ""
+    # What a person calls this section. Empty means nobody has named it, which
+    # reads as the generated default rather than as a blank -- storing the
+    # generated text would freeze today's generator into every old row.
+    label: str = ""
     extra_video_ids: list[uuid.UUID] = field(default_factory=list)
     id: uuid.UUID = field(default_factory=uuid.uuid4)
     created_at: str = field(default_factory=utc_now_iso)

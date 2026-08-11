@@ -25,6 +25,7 @@ from deepreefmap_gui.runs.video_rows import (
     MENU_DELETE_UNUSED,
     MENU_HIDE,
     MENU_OPEN_TRANSECT,
+    MENU_OPEN_TRANSECTS_PAGE,
     MENU_REASSIGN,
     MENU_RETRIM,
     MENU_UNHIDE,
@@ -515,16 +516,21 @@ def test_a_carted_or_run_section_says_so_in_the_button_it_would_use() -> None:
     assert row.delete_btn.toolTip() == DELETE_BLOCKED_TOOLTIP
 
 
-def test_only_a_filed_section_can_be_shown_on_the_transects_page() -> None:
+def test_an_unfiled_section_still_reaches_the_transects_page() -> None:
+    """The page is where a transect is drawn, so it cannot need one to be opened."""
     entry = make_entry(windows=((0.0, 30.0),))
     listing = make_list(entry)
     row = listing.sections()[str(entry.passes[0].id)]
-
-    assert not action(row.menu(), MENU_OPEN_TRANSECT).isEnabled()
-
-    row.section.transect_id = uuid.uuid4()
     seen: list[str] = []
     listing.section_open_transect.connect(seen.append)
+
+    unfiled = action(row.menu(), MENU_OPEN_TRANSECTS_PAGE)
+    assert unfiled.isEnabled()
+    unfiled.trigger()
+    assert seen == [""]
+
+    row.section.transect_id = uuid.uuid4()
+    seen.clear()
     action(row.menu(), MENU_OPEN_TRANSECT).trigger()
 
     assert seen == [str(row.section.transect_id)]

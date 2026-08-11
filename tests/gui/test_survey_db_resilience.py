@@ -204,3 +204,46 @@ def test_recovering_reopens_the_survey(make_window, rolled_back_root, monkeypatc
     assert inspect_survey_db(rolled_back_root / SURVEY_DB_NAME).openable
     window._refresh_readiness_view()
     assert {c.key: c for c in window._current_setup_checks()}["survey"].ok
+
+
+def test_a_corrupt_database_replaced_on_disk_is_noticed(
+    make_window, corrupt_root, monkeypatch
+):
+    """Scenario: the file is fixed while the app is open.
+
+    Expected behaviour: the app notices. A verdict about the world around the
+    file, rather than about the file's schema stamp, stops being true without
+    anything in the app changing -- a drive plugged back in, a share that comes
+    back read-write, a corrupt file replaced. Caching those left the app on a
+    verdict it could not get out of without a restart.
+    """
+    window = _window_on(make_window, corrupt_root, monkeypatch)
+    assert window._try_survey_store() is None
+    assert window._survey_db_health().state is SurveyDbState.CORRUPT
+
+    path = corrupt_root / SURVEY_DB_NAME
+    path.unlink()
+    SurveyStore(path).close()
+
+    assert window._try_survey_store() is not None
+
+
+def test_a_rolled_back_database_is_not_re_inspected_on_every_ask(
+    make_window, rolled_back_root, monkeypatch
+):
+    """A schema stamp cannot change while the file does not, so it is taken on trust."""
+    from deepreefmap_gui.survey import health as health_mod
+
+    window = _window_on(make_window, rolled_back_root, monkeypatch)
+    assert window._try_survey_store() is None
+
+    calls = []
+    real = health_mod.inspect_survey_db
+    monkeypatch.setattr(
+        "deepreefmap_gui.simple.mode.inspect_survey_db",
+        lambda p: calls.append(p) or real(p),
+    )
+    for _ in range(5):
+        assert window._try_survey_store() is None
+
+    assert calls == []

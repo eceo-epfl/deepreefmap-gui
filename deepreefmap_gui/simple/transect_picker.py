@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from deepreefmap_gui.core.icons import ICON_SM, crosshair_icon
 from deepreefmap_gui.core.theme import ERROR, SPACE_SM, TREE_ROW_PAD_V
 from deepreefmap_gui.core.widgets import muted_label
 from deepreefmap_gui.map.overlays import OverlayTransect, transect_overlays
@@ -56,11 +57,40 @@ LIST_WIDTH = 240
 
 DRAW_HINT = "Click the start of the tape on the map, then its end."
 DRAW_HINT_END = "Now click the end of the tape."
+DRAW_HINT_DONE = "Save transect files it, and this section with it."
+
+# What the map is, said where the map is. Nothing else on this dialog announces
+# that it can be clicked, and a map that only responds once a button has been
+# pressed reads as a picture until then.
+MAP_HINT = "Transects are the lines on this map. Click one to file this section against it."
+MAP_HINT_EMPTY = "No transects yet. New transect… draws one on the map."
+
+# A choice made here is not a commitment. Said plainly, because filing a section
+# is the step people hesitate over, and both halves of it are undoable from a
+# page that is one click away.
+EDIT_LATER_NOTE = (
+    "Both can be changed later: a transect's ends, depth and notes on the "
+    "Transects page, and which transect this section belongs to from Videos."
+)
+
+NEW_TRANSECT_TOOLTIP = (
+    "Draw a transect on the map: click its start, then its end. The tape length "
+    "and the name can be typed beside it."
+)
 
 OPEN_PAGE_LABEL = "Open in Transects ↗"
 OPEN_PAGE_TOOLTIP = (
     "Leave this dialog and show the transect on the Transects page, where the "
     "ends can be dragged and the depth and notes filled in."
+)
+
+# With nothing picked the arrow still goes somewhere, and says so: the page is
+# where transects are imported from a CSV or GPX file, which is how most surveys
+# get theirs. The section is kept unfiled rather than discarded on the way.
+OPEN_PAGE_EMPTY_LABEL = "Transects page ↗"
+OPEN_PAGE_EMPTY_TOOLTIP = (
+    "Leave this dialog and open the Transects page, where transects are drawn "
+    "or imported. This section is kept, unfiled, and can be filed afterwards."
 )
 
 
@@ -99,17 +129,29 @@ class TransectPickerDialog(QDialog):
         self._transects: list[Transect] = []
         self._drawing = False
         self._pending_start: tuple[float, float] | None = None
+        # The arrow rejects the dialog on its way out, which is indistinguishable
+        # from Cancel to the caller. This is what tells them apart, so a section
+        # cut but not yet filed can be kept rather than lost on the trip.
+        self.left_for_page = False
         self.setWindowTitle("File this section")
 
         layout = QVBoxLayout(self)
         top = QHBoxLayout()
         top.setSpacing(SPACE_SM)
 
+        # The hint sits under the map rather than in the side column: it is
+        # about the map, and it is the only thing that says the map is a control.
+        map_column = QVBoxLayout()
+        map_column.setSpacing(SPACE_SM)
         self.map = SlippyMapWidget()
         self.map.setMinimumSize(MAP_SIZE)
         self.map.transect_clicked.connect(self._on_map_transect_clicked)
         self.map.map_clicked.connect(self._on_map_clicked)
-        top.addWidget(self.map, 1)
+        map_column.addWidget(self.map, 1)
+        self.map_hint = muted_label("")
+        self.map_hint.setWordWrap(True)
+        map_column.addWidget(self.map_hint)
+        top.addLayout(map_column, 1)
 
         side = QVBoxLayout()
         side.setSpacing(SPACE_SM)
@@ -132,6 +174,10 @@ class TransectPickerDialog(QDialog):
         buttons_row.setSpacing(SPACE_SM)
         self.new_btn = QPushButton("New transect…")
         self.new_btn.setProperty("quiet", "true")
+        # The same crosshair the Transects page draws with, so the two read as
+        # one action in two places rather than two ways of doing something.
+        self.new_btn.setIcon(crosshair_icon(ICON_SM))
+        self.new_btn.setToolTip(NEW_TRANSECT_TOOLTIP)
         self.new_btn.clicked.connect(self._start_new_transect)
         buttons_row.addWidget(self.new_btn)
         self.open_btn = QPushButton(OPEN_PAGE_LABEL)
@@ -181,6 +227,11 @@ class TransectPickerDialog(QDialog):
         self.end_input = QLineEdit()
         self.end_input.setPlaceholderText("-17.5010, 177.1010")
         form.addRow("End point", self.end_input)
+        # Directly under the two boxes it is filling, which is where the eye
+        # already is once drawing has started.
+        self.draw_hint = muted_label("")
+        self.draw_hint.setWordWrap(True)
+        form.addRow(self.draw_hint)
         self.length_input = QDoubleSpinBox()
         self.length_input.setRange(0.0, 10_000.0)
         self.length_input.setSuffix(" m")
@@ -222,7 +273,8 @@ class TransectPickerDialog(QDialog):
         # of doing this on a map is that nobody has to type a coordinate.
         self.map.set_pick_mode(True)
         self.map.set_pending_start(None)
-        self.note.setText(DRAW_HINT)
+        self.draw_hint.setText(DRAW_HINT)
+        self.map_hint.setText(DRAW_HINT)
         self.name_input.setFocus()
 
     def _end_new_transect(self) -> None:
@@ -232,6 +284,7 @@ class TransectPickerDialog(QDialog):
         self.new_btn.setEnabled(True)
         self.map.set_pick_mode(False)
         self.map.set_pending_start(None)
+        self.draw_hint.setText("")
         self._refresh_note()
 
     def _save_new_transect(self) -> None:
@@ -266,12 +319,14 @@ class TransectPickerDialog(QDialog):
             self._pending_start = (lat, lon)
             self.start_input.setText(f"{lat:.6f}, {lon:.6f}")
             self.map.set_pending_start((lat, lon))
-            self.note.setText(DRAW_HINT_END)
+            self.draw_hint.setText(DRAW_HINT_END)
+            self.map_hint.setText(DRAW_HINT_END)
             return
         self.end_input.setText(f"{lat:.6f}, {lon:.6f}")
         self.map.set_pending_start(None)
         self._pending_start = None
-        self.note.setText("Save transect files it, and this section with it.")
+        self.draw_hint.setText(DRAW_HINT_DONE)
+        self.map_hint.setText(DRAW_HINT_DONE)
 
     def _on_map_transect_clicked(self, transect_id: str) -> None:
         if self._drawing:
@@ -358,15 +413,27 @@ class TransectPickerDialog(QDialog):
         if self._drawing:
             return
         transect = self.selected_transect()
-        self.open_btn.setEnabled(transect is not None)
-        self.note.setText(UNASSIGNED_NOTE if transect is None else "")
+        self.open_btn.setText(OPEN_PAGE_LABEL if transect else OPEN_PAGE_EMPTY_LABEL)
+        self.open_btn.setToolTip(
+            OPEN_PAGE_TOOLTIP if transect else OPEN_PAGE_EMPTY_TOOLTIP
+        )
+        self.map_hint.setText(MAP_HINT if self._transects else MAP_HINT_EMPTY)
+        # The standing note always says the choice is reversible; being
+        # unassigned is the extra thing worth saying when nothing is picked.
+        parts = [UNASSIGNED_NOTE] if transect is None else []
+        parts.append(EDIT_LATER_NOTE)
+        self.note.setText(" ".join(parts))
 
     def _on_open_page(self) -> None:
-        """Hand the transect to the page that can do everything to it."""
+        """Hand the transect to the page that can do everything to it.
+
+        Open with nothing picked too. A survey with no transects yet is exactly
+        when somebody needs that page, and refusing the trip until one exists
+        made the way to make one the one thing that could not be reached.
+        """
         transect_id = self.selected_transect_id()
-        if transect_id is None:
-            return
-        self.open_transect_requested.emit(str(transect_id))
+        self.left_for_page = True
+        self.open_transect_requested.emit("" if transect_id is None else str(transect_id))
         self.reject()
 
     # --- the answer ----------------------------------------------------------

@@ -10,16 +10,17 @@ from deepreefmap.pipeline.orchestrator import ReconstructionCancelled
 from PySide6.QtWidgets import QMessageBox
 
 from deepreefmap_gui.core.widgets import PASS_PERCENT_ROLE
+from deepreefmap_gui.profiling import batch_estimate
 from deepreefmap_gui.simple.batch import (
     _COL_ACTION,
     _COL_LENGTH,
+    _COL_NAME,
     _COL_RECORDED,
     _COL_SECTION,
     _COL_SETTINGS,
     _COL_STATUS,
     _COL_VIDEO,
     _diagnose_failure,
-    _median_pass_seconds,
     _rough_batch_time,
 )
 from deepreefmap_gui.simple.batch_progress import BatchProgressCard
@@ -35,20 +36,15 @@ def test_diagnose_failure_speaks_plainly_and_advises():
     assert _diagnose_failure("") == "The run failed. No cause was recorded."
 
 
-def test_rough_batch_time_is_silent_without_history(monkeypatch):
-    monkeypatch.setattr(
-        "deepreefmap_gui.profiling.run_history.summarise_recorded_runs", list
-    )
-    assert _rough_batch_time(10) is None
+def test_rough_batch_time_is_silent_without_a_prediction():
+    """No history for these models is no basis for a number."""
+    assert _rough_batch_time(None) is None
+    assert _rough_batch_time(0) is None
 
 
-def test_rough_batch_time_scales_with_the_pass_count(monkeypatch):
-    monkeypatch.setattr(
-        "deepreefmap_gui.profiling.run_history.summarise_recorded_runs",
-        lambda: [{"run_seconds": 1200.0}],
-    )
-    assert _rough_batch_time(1) == "about 20 minutes"
-    assert _rough_batch_time(6) == "about 2 hours"
+def test_rough_batch_time_reads_the_predicted_total():
+    assert _rough_batch_time(1200.0) == "about 20 minutes"
+    assert _rough_batch_time(7200.0) == "about 2 hours"
 
 
 @pytest.fixture
@@ -79,7 +75,7 @@ def test_every_column_of_the_cart_is_named(batch_window):
         table.horizontalHeaderItem(column).text()
         for column in range(table.columnCount())
     ]
-    assert named == ["", "Clip", "Recorded", "Length", "Transect + section",
+    assert named == ["", "Name", "Clip", "Recorded", "Length", "Transect + section",
                      "Settings", "Status", ""]
     # Centred: a heading names a column rather than starting it.
     assert table.horizontalHeader().defaultAlignment() & Qt.AlignmentFlag.AlignHCenter
@@ -316,7 +312,10 @@ def test_run_batch_records_success_and_links_manifest(
     # run_name and the survey block are no longer passed to run_reconstruction;
     # they land in the manifest instrumented_reconstruction writes afterward.
     manifest = json.loads((kwargs["output_dir"] / "run_manifest.json").read_text())
-    assert manifest["name"] == kwargs["output_dir"].name
+    # The name is the section's, not the folder's: a directory has to be unique
+    # and filesystem-safe and reads like it, and this is what Browse shows.
+    assert manifest["name"] == batch_window._row_label(batch_window._survey_rows[0])
+    assert manifest["name"] != kwargs["output_dir"].name
     survey = manifest["survey"]
     assert survey["transect"]["name"] == "T1"
     assert survey["pass"]["direction"] == "forward"
@@ -1363,13 +1362,26 @@ def test_the_clip_reads_as_a_name_a_time_and_a_length(batch_window, tmp_path, mo
 
 
 def test_unreadable_clip_metadata_says_so():
-    from deepreefmap_gui.simple.batch import _clip_length, _clip_name, _clip_time
+    from deepreefmap_gui.simple.batch import _clip_name, _clip_time, _span_length
     from deepreefmap_gui.survey.models import VideoAsset
 
     asset = VideoAsset(file_name="clip.mp4", path="/data/clip.mp4")
     assert _clip_name([asset]) == "clip.mp4"
     assert _clip_time(asset.mtime) == "time unknown"
-    assert _clip_length(asset.duration_s) == "length unknown"
+    assert _span_length(asset.duration_s) == "length unknown"
+
+
+def test_the_length_is_the_section_not_the_clip(batch_window, tmp_path, monkeypatch):
+    """Two sections of one clip differ by it, and the pass costs what it spans."""
+    add_video(batch_window, tmp_path, monkeypatch, name="GX010002.MP4", duration_s=298.0)
+    row = batch_window._survey_rows[0]
+    row.begin_s, row.end_s = 22.0, 58.0
+    batch_window._rebuild_survey_table()
+
+    table = batch_window._survey_pass_table
+    cell = table.item(batch_window._table_row_of(0), _COL_LENGTH)
+    assert cell.text() == "36s"
+    assert "4m 58s" in cell.toolTip()
 
 
 def test_sort_by_time_orders_the_day_as_it_happened(batch_window, tmp_path, monkeypatch):
@@ -1677,50 +1689,66 @@ def test_the_cart_badge_counts_next_session_rows_mid_run(
     batch_window._survey_running_batch = None
 
 
-def test_median_pass_seconds_is_silent_without_history(monkeypatch):
-    monkeypatch.setattr(
-        "deepreefmap_gui.profiling.run_history.summarise_recorded_runs", list
+def _plan(*seconds_each):
+    """A prediction of N passes, each expected to cost the seconds given."""
+    from deepreefmap_gui.profiling.batch_estimate import BatchPrediction, PassPrediction
+
+    passes = [
+        PassPrediction(key=str(i), seconds=value, basis="exact")
+        for i, value in enumerate(seconds_each)
+    ]
+    return BatchPrediction(
+        passes=passes,
+        total_s=sum(v for v in seconds_each if v is not None) or None,
+        predicted_count=sum(1 for v in seconds_each if v is not None),
+        unknown_count=sum(1 for v in seconds_each if v is None),
     )
-    assert _median_pass_seconds() is None
 
 
 def test_batch_card_spans_the_passes_still_queued():
-    """Scenario: pass 2 of 10 is half done, and a pass has historically cost 20 min.
+    """Scenario: pass 2 of 10 is half done, and each pass is predicted at 20 min.
 
     Expected behaviour: the estimate covers the eight passes after this one, not
     just the remainder of the one in flight.
     """
     card = BatchProgressCard()
-    card.set_batch_plan(10, 1200.0)
+    card.set_batch_plan(_plan(*[1200.0] * 10))
     card.set_batch_context(2, 10, "North_reef")
     card.set_percent(50)
     card.set_eta_seconds(600.0)
     assert card.batch_remaining_s() == 600.0 + 8 * 1200.0
 
 
-def test_batch_card_infers_a_pass_cost_without_history():
-    """A first-ever batch has no median, so the pass in flight supplies the scale."""
+def test_the_queue_is_costed_before_the_batch_starts():
+    """How long the evening is decides whether to run the batch or trim it first."""
     card = BatchProgressCard()
-    card.set_batch_plan(4, None)
-    card.set_batch_context(1, 4, "North_reef")
-    card.set_percent(50)
-    card.set_eta_seconds(300.0)
-    # Half a pass has 300s left, so a whole one is 600s, and three follow it.
-    assert card.batch_remaining_s() == 300.0 + 3 * 600.0
+    card.set_batch_plan(_plan(600.0, 300.0, 900.0))
+    assert card.batch_remaining_s() == 1800.0
 
 
-def test_batch_card_says_nothing_too_early():
+def test_a_pass_costing_more_than_predicted_lengthens_the_rest():
+    """The batch corrects its own estimate, once per pass rather than per tick."""
     card = BatchProgressCard()
-    card.set_batch_plan(4, None)
-    card.set_batch_context(1, 4, "North_reef")
+    card.set_batch_plan(_plan(100.0, 100.0, 100.0))
+    card.set_batch_context(1, 3, "North_reef")
+    card.pass_finished(1, 200.0)
+    card.set_batch_context(2, 3, "South_reef")
+
+    # Twice as slow as predicted, so the two remaining passes are 200s each.
+    assert card.batch_remaining_s() == 400.0
+
+
+def test_batch_card_says_nothing_without_a_basis():
+    card = BatchProgressCard()
+    card.set_batch_plan(_plan(None, None))
+    card.set_batch_context(1, 2, "North_reef")
     card.set_percent(1)
-    card.set_eta_seconds(300.0)
     assert card.batch_remaining_s() is None
 
 
 def test_batch_card_counts_the_last_pass_alone():
     card = BatchProgressCard()
-    card.set_batch_plan(3, 1200.0)
+    card.set_batch_plan(_plan(1200.0, 1200.0, 1200.0))
     card.set_batch_context(3, 3, "North_reef")
     card.set_eta_seconds(90.0)
     assert card.batch_remaining_s() == 90.0
@@ -1862,7 +1890,16 @@ def test_passes_queued_mid_run_land_in_the_next_session(
     headings = group_headings(batch_window)
     assert any(h.startswith("Next session") for h in headings)
     assert not batch_window._survey_next_cart_label.isHidden()
-    assert "Next session" in batch_window._survey_next_cart_label.text()
+    # The label names the session an addition joins and says when it will run.
+    # It is the only statement that the table holds rows from two sessions.
+    said = batch_window._survey_next_cart_label.text()
+    assert batch_window._survey_batch.name in said
+    assert "starts once this session finishes" in said
+    # Two sessions with one name cannot be told apart by a label that names one.
+    assert batch_window._survey_batch.name != order.name
+    # The field still names the order being processed, so it cannot be edited
+    # into renaming the wrong session.
+    assert batch_window._survey_batch_name.isReadOnly()
     # The pending cart never leaks into what the running order will process.
     assert len(batch_window._survey_remaining_rows()) == 1
 
@@ -1909,3 +1946,181 @@ def test_a_moved_clip_relinks_on_readd(batch_window, tmp_path, monkeypatch):
     assert len(store.list_videos()) == 1
     assert store.list_videos()[0].id == first_id
     assert "Relinked 1 known clip" in batch_window._status_label.text()
+
+
+def test_a_pass_that_dies_early_still_leaves_a_log(
+    batch_window, tmp_path, out_root, monkeypatch, qapp
+):
+    """The log used to open after seeding, so a failure there wrote nothing.
+
+    A pass that dies early is the one whose log somebody goes looking for.
+    """
+    def fail_seeding(*args, **kwargs):
+        raise RuntimeError("seeding blew up")
+
+    monkeypatch.setattr("deepreefmap_gui.runs.seeding.seed_from_settings", fail_seeding)
+    add_video(batch_window, tmp_path, monkeypatch)
+    assign_transect(batch_window, 0)
+    batch_window._on_survey_start()
+    await_batch(batch_window, qapp)
+
+    logs = list(out_root.glob("*/run.log"))
+    assert len(logs) == 1
+    assert "seeding blew up" in logs[0].read_text()
+
+
+def test_a_failed_pass_offers_its_log_and_its_folder(
+    batch_window, tmp_path, out_root, monkeypatch, qapp
+):
+    """The row carries one truncated line; the log carries the traceback."""
+    def fail(**kwargs):
+        raise RuntimeError("mapping blew up")
+
+    monkeypatch.setattr("deepreefmap.pipeline.orchestrator.run_reconstruction", fail)
+    add_video(batch_window, tmp_path, monkeypatch)
+    assign_transect(batch_window, 0)
+    batch_window._on_survey_start()
+    await_batch(batch_window, qapp)
+
+    run_dir = batch_window._survey_pass_run_dir(batch_window._survey_rows[0])
+    assert run_dir is not None and (run_dir / "run.log").exists()
+
+    batch_window._show_pass_log(run_dir)
+    assert "mapping blew up" in batch_window._log_view._text.toPlainText()
+    assert run_dir.name in batch_window._log_view._heading.text()
+
+
+def test_the_live_log_is_not_interleaved_with_a_stored_one(qapp, tmp_path):
+    """Two runs' records in one pane read as one, and neither would be true."""
+    from deepreefmap_gui.system.log_view import LogView
+
+    stored = tmp_path / "run.log"
+    stored.write_text("what the failed run said\n", encoding="utf-8")
+    view = LogView()
+    view.show_file(stored, title="run-a")
+
+    view.append_line("a line from this session")
+    assert "a line from this session" not in view._text.toPlainText()
+
+    view.show_live()
+    view.append_line("a line from this session")
+    assert view._text.toPlainText().strip() == "a line from this session"
+
+
+def test_going_back_to_the_live_log_stops_offering_the_other_runs_file(qapp, tmp_path):
+    """"Open log file" hands the path to the desktop, so a stale one opens the wrong run."""
+    from deepreefmap_gui.system.log_view import LogView
+
+    live = tmp_path / "live" / "run.log"
+    live.parent.mkdir()
+    live.write_text("live\n", encoding="utf-8")
+    stored = tmp_path / "old" / "run.log"
+    stored.parent.mkdir()
+    stored.write_text("old\n", encoding="utf-8")
+
+    view = LogView()
+    view.set_current_log_path(live)
+    view.show_file(stored, title="old")
+    assert view._current_log_path == stored
+
+    view.show_live()
+    assert view._current_log_path == live
+
+
+def test_the_session_estimate_reads_each_section_length(batch_window, tmp_path, monkeypatch):
+    """A queue of short sections is not the same evening as a queue of long ones.
+
+    Costing by pass count answered the same for both, which is what made the
+    figure useless for deciding whether to start a batch before dinner.
+    """
+    add_video(batch_window, tmp_path, monkeypatch, name="GX010001.MP4", duration_s=600.0)
+    add_video(batch_window, tmp_path, monkeypatch, name="GX010002.MP4", duration_s=600.0)
+    short, long = batch_window._survey_rows
+    short.begin_s, short.end_s = 0.0, 30.0
+    long.begin_s, long.end_s = 0.0, 600.0
+
+    specs = {s.key: s for s in batch_window._survey_pass_specs()}
+    assert len(specs) == 2
+    frames = sorted(s.frames for s in specs.values())
+    assert frames[1] == frames[0] * 20
+
+
+def test_the_prediction_is_recomputed_only_when_the_queue_changes(
+    batch_window, tmp_path, monkeypatch
+):
+    """It reads a file, and every row mutation funnels through the recompute."""
+    add_video(batch_window, tmp_path, monkeypatch)
+    calls = []
+    real = batch_estimate.predict_batch
+    monkeypatch.setattr(
+        batch_estimate, "predict_batch", lambda specs, **kw: calls.append(1) or real(specs, **kw)
+    )
+    batch_window._batch_prediction_cache = None
+
+    batch_window._survey_batch_prediction()
+    batch_window._survey_batch_prediction()
+    assert len(calls) == 1
+
+    batch_window._survey_rows[0].end_s = 12.0
+    batch_window._survey_batch_prediction()
+    assert len(calls) == 2
+
+
+# --- What a section is called ---
+
+
+def test_a_staged_section_is_named_without_anyone_typing(batch_window, tmp_path, monkeypatch):
+    """A folder called Evan_1__p01__a3f9c2d1 is a fine directory and a poor name."""
+    add_video(batch_window, tmp_path, monkeypatch)
+    assign_transect(batch_window, 0)
+
+    table = batch_window._survey_pass_table
+    shown = table.item(batch_window._table_row_of(0), _COL_NAME).text()
+
+    assert shown
+    assert "__p" not in shown
+    assert "pass" in shown.lower()
+
+
+def test_renaming_a_section_persists(batch_window, tmp_path, monkeypatch):
+    add_video(batch_window, tmp_path, monkeypatch)
+    row = batch_window._survey_rows[0]
+    table = batch_window._survey_pass_table
+
+    table.item(batch_window._table_row_of(0), _COL_NAME).setText("North wall drift")
+
+    stored = batch_window._survey_store().get_pass(row.pass_id)
+    assert stored.label == "North wall drift"
+    assert table.item(batch_window._table_row_of(0), _COL_NAME).text() == "North wall drift"
+
+
+def test_two_sections_cannot_share_a_name(batch_window, tmp_path, monkeypatch):
+    """Two rows called the same thing cannot be told apart when one of them fails."""
+    add_video(batch_window, tmp_path, monkeypatch, name="GX010001.MP4")
+    add_video(batch_window, tmp_path, monkeypatch, name="GX010002.MP4")
+    table = batch_window._survey_pass_table
+
+    table.item(batch_window._table_row_of(0), _COL_NAME).setText("Same name")
+    table.item(batch_window._table_row_of(1), _COL_NAME).setText("Same name")
+
+    labels = [
+        batch_window._survey_store().get_pass(r.pass_id).label
+        for r in batch_window._survey_rows
+    ]
+    assert labels == ["Same name", "Same name 2"]
+    assert "already called" in batch_window._status_label.text()
+
+
+def test_clearing_the_name_restores_the_generated_one(batch_window, tmp_path, monkeypatch):
+    """An emptied field asks for the default back, not for a nameless section."""
+    add_video(batch_window, tmp_path, monkeypatch)
+    assign_transect(batch_window, 0)
+    table = batch_window._survey_pass_table
+    generated = table.item(batch_window._table_row_of(0), _COL_NAME).text()
+
+    table.item(batch_window._table_row_of(0), _COL_NAME).setText("Something else")
+    table.item(batch_window._table_row_of(0), _COL_NAME).setText("")
+
+    row = batch_window._survey_rows[0]
+    assert batch_window._survey_store().get_pass(row.pass_id).label == ""
+    assert table.item(batch_window._table_row_of(0), _COL_NAME).text() == generated

@@ -376,8 +376,9 @@ class BrowseMixin(MixinBase):
         runs_layout.addLayout(actions)
 
         # A shared drop handler queues dropped videos as passes and opens a
-        # dropped run folder, rather than three widgets each learning to drop.
-        for widget in (self._data_run_table, self._data_tree):
+        # dropped run folder. The stacks, not the views inside them: with nothing
+        # listed both swap to an empty state, and a hidden view takes no drops.
+        for widget in (self._data_run_stack, self._data_tree_stack):
             widget.setAcceptDrops(True)
             widget.installEventFilter(self)
         self._data_split.addWidget(runs_card)
@@ -396,6 +397,7 @@ class BrowseMixin(MixinBase):
         # button belongs where the deciding happens.
         self._run_detail.set_open_action_visible(True)
         self._run_detail.open_requested.connect(self._on_data_open_clicked)
+        self._run_detail.log_requested.connect(self._show_run_log)
         self._data_detail_stack.addWidget(self._run_detail)
 
         # A summary and a way through, not a second chart. The transect's cover
@@ -1310,15 +1312,33 @@ class BrowseMixin(MixinBase):
         self._gate_data_row_actions(self._fill_data_row_actions(menu))
         menu.exec(self._data_run_table.mapToGlobal(pos))
 
+    def _show_run_log(self, run_dir) -> None:
+        """Put a stored run's log in the log panel and open it.
+
+        Works on a run that cannot be loaded, which is the point: an incomplete
+        run has no outputs to open and its log is the only account of why.
+        """
+        from pathlib import Path
+
+        run_dir = Path(run_dir)
+        if not self._log_view.show_file(run_dir / "run.log", title=run_dir.name):
+            self._status_label.setText(f"Could not read the log in {run_dir.name}.")
+            return
+        self._set_log_panel_visible(True)
+
     # --- Drag and drop ---
 
     def _data_drop_event_filter(self, obj, event) -> bool:
-        """Filter file drops on the run list, group tree and pass table.
+        """Filter file drops on the run list, the group tree and the clip library.
 
-        One handler serves all three rather than subclassing each widget. Video
+        One handler serves them all rather than subclassing each widget. Video
         files queue as passes; a run folder opens. Returns True when the event is
         consumed. DeepReefMapWindow.eventFilter calls this, because QObject owns
         eventFilter earlier in the MRO than this mixin.
+
+        The cart table is deliberately absent: its dropEvent reads currentRow()
+        as the source of an internal move, so a file dropped on it would reorder
+        the session instead of importing anything.
         """
         etype = event.type()
         if etype in (QEvent.Type.DragEnter, QEvent.Type.DragMove):

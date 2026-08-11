@@ -3,7 +3,18 @@
 import pytest
 from _factories import make_transect
 
-from deepreefmap_gui.simple.transect_picker import TransectPickerDialog
+from deepreefmap_gui.simple.transect_picker import (
+    DRAW_HINT,
+    DRAW_HINT_DONE,
+    DRAW_HINT_END,
+    EDIT_LATER_NOTE,
+    MAP_HINT,
+    MAP_HINT_EMPTY,
+    OPEN_PAGE_EMPTY_LABEL,
+    OPEN_PAGE_LABEL,
+    UNASSIGNED_NOTE,
+    TransectPickerDialog,
+)
 from deepreefmap_gui.survey.store import SurveyStore
 
 pytestmark = pytest.mark.usefixtures("qapp")
@@ -122,11 +133,79 @@ def test_the_arrow_hands_the_transect_to_the_page_and_stands_down(store):
     assert dialog.result() == int(TransectPickerDialog.DialogCode.Rejected)
 
 
-def test_the_arrow_is_dead_while_nothing_is_picked(store):
+def test_the_arrow_opens_the_page_with_nothing_picked(store):
+    """A survey with no transects is when that page is needed most.
+
+    The arrow used to be dead until something was picked, which made the page
+    that transects are drawn and imported on unreachable from the one dialog
+    that asks for a transect.
+    """
+    dialog = TransectPickerDialog(None, store)
+    seen: list[str] = []
+    dialog.open_transect_requested.connect(seen.append)
+
+    assert dialog.open_btn.isEnabled()
+    dialog.open_btn.click()
+
+    assert seen == [""]
+    assert dialog.left_for_page
+    assert dialog.result() == int(TransectPickerDialog.DialogCode.Rejected)
+
+
+def test_the_arrow_names_where_it_goes(store):
+    """It leads somewhere different with a transect picked than without one."""
     store.add_transect(make_transect("T1"))
     dialog = TransectPickerDialog(None, store)
 
-    assert not dialog.open_btn.isEnabled()
+    assert dialog.open_btn.text() == OPEN_PAGE_EMPTY_LABEL
+    assert "kept, unfiled" in dialog.open_btn.toolTip()
 
     dialog.list.setCurrentRow(1)
-    assert dialog.open_btn.isEnabled()
+
+    assert dialog.open_btn.text() == OPEN_PAGE_LABEL
+    assert "ends can be dragged" in dialog.open_btn.toolTip()
+
+
+def test_the_map_says_it_can_be_clicked_before_anything_is_armed(store):
+    """Nothing else on this dialog announces the map is a control.
+
+    Picking only becomes visible once "New transect…" arms it, so until then a
+    map with lines on it reads as a picture of where the survey is.
+    """
+    dialog = TransectPickerDialog(None, store)
+    assert dialog.map_hint.text() == MAP_HINT_EMPTY
+
+    store.add_transect(make_transect("T1"))
+    dialog = TransectPickerDialog(None, store)
+    assert dialog.map_hint.text() == MAP_HINT
+    assert "Click one" in dialog.map_hint.text()
+
+
+def test_drawing_says_which_click_comes_next(store):
+    dialog = TransectPickerDialog(None, store)
+    dialog._start_new_transect()
+    assert dialog.draw_hint.text() == DRAW_HINT
+
+    dialog._on_map_clicked(-17.5, 177.1)
+    assert dialog.draw_hint.text() == DRAW_HINT_END
+
+    dialog._on_map_clicked(-17.51, 177.11)
+    assert dialog.draw_hint.text() == DRAW_HINT_DONE
+
+    dialog._end_new_transect()
+    assert dialog.draw_hint.text() == ""
+    assert dialog.map_hint.text() == MAP_HINT_EMPTY
+
+
+def test_filing_a_section_says_it_can_be_undone(store):
+    """The hesitation this dialog causes is about permanence, so it answers it."""
+    transect = make_transect("T1")
+    store.add_transect(transect)
+    dialog = TransectPickerDialog(None, store)
+
+    assert EDIT_LATER_NOTE in dialog.note.text()
+    assert UNASSIGNED_NOTE in dialog.note.text()
+
+    dialog.list.setCurrentRow(1)
+    assert EDIT_LATER_NOTE in dialog.note.text()
+    assert UNASSIGNED_NOTE not in dialog.note.text()

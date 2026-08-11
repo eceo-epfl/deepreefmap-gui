@@ -44,6 +44,11 @@ UNOPENABLE = (
     SurveyDbState.UNWRITABLE,
 )
 
+# Of those, the ones a caller may cache. A schema stamp cannot change while the
+# file does not; the rest are about the world around the file and change without
+# it, so caching them strands the app on a verdict that is no longer true.
+SETTLED = (SurveyDbState.TOO_NEW, SurveyDbState.TOO_OLD)
+
 
 @dataclass(frozen=True)
 class SurveyDbHealth:

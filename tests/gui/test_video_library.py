@@ -997,3 +997,95 @@ def test_dropping_a_clip_on_the_list_imports_it(window, tmp_path, monkeypatch):
 
     window._handle_data_drop([clip])
     assert added == [str(clip)]
+
+
+def test_a_fresh_install_accepts_dropped_clips(window, tmp_path, monkeypatch):
+    """The empty state says "Drop clips here", and used not to mean it.
+
+    The drop handler was attached to the clip list, which is hidden behind the
+    empty state while the library is empty. Qt looks for a drop target by walking
+    up from the widget under the cursor and never descends into a hidden sibling,
+    so the one install being told to drop footage in was the one that could not.
+    """
+    window._rebuild_video_list()
+    shown = window._video_stack.currentWidget()
+    assert shown is not window._video_list  # the empty state is what is on screen
+
+    # Qt starts at the widget under the cursor and walks up until something
+    # accepts drops, so at least one ancestor of what is on screen has to. The
+    # handler is the window's, reached through installEventFilter.
+    target = shown
+    while target is not None and not target.acceptDrops():
+        target = target.parentWidget()
+
+    assert target is not None, "nothing above the empty state accepts a dropped clip"
+    assert target.isVisible() or target is window._video_stack
+
+
+def test_leaving_for_the_transects_page_keeps_the_section(window, tmp_path, monkeypatch):
+    """The arrow's tooltip promises the section is kept, unfiled.
+
+    Written against the caller rather than the dialog: the dialog sets the flag
+    correctly and always did, and a test that only checked the dialog passed
+    while the section was being thrown away.
+    """
+    from PySide6.QtWidgets import QDialog
+
+    store = window._survey_store()
+    clip_path = write_test_mp4(tmp_path / "GX010042.MP4")
+    _seed_at(store, "GX010042.MP4", clip_path)
+
+    monkeypatch.setattr(
+        "deepreefmap_gui.form.video_scrub.VideoScrubDialog.exec",
+        lambda self: QDialog.DialogCode.Accepted,
+    )
+    monkeypatch.setattr(
+        "deepreefmap_gui.form.video_scrub.VideoScrubDialog.time_range",
+        lambda self: (11.0, 47.0),
+    )
+
+    def leave_for_page(self):
+        # What pressing the arrow does: mark the exit and reject.
+        self.left_for_page = True
+        return QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(
+        "deepreefmap_gui.simple.transect_picker.TransectPickerDialog.exec", leave_for_page
+    )
+
+    show_videos(window)
+    resolve_links(window)
+    select_clip(window, "GX010042.MP4")
+    window._on_video_new_section()
+
+    passes = store.list_passes()
+    assert [(p.begin_s, p.end_s, p.transect_id) for p in passes] == [(11.0, 47.0, None)]
+
+
+def test_cancelling_the_picker_still_cuts_nothing(window, tmp_path, monkeypatch):
+    """Keeping the section on the way out must not turn Cancel into a save."""
+    from PySide6.QtWidgets import QDialog
+
+    store = window._survey_store()
+    clip_path = write_test_mp4(tmp_path / "GX010043.MP4")
+    _seed_at(store, "GX010043.MP4", clip_path)
+
+    monkeypatch.setattr(
+        "deepreefmap_gui.form.video_scrub.VideoScrubDialog.exec",
+        lambda self: QDialog.DialogCode.Accepted,
+    )
+    monkeypatch.setattr(
+        "deepreefmap_gui.form.video_scrub.VideoScrubDialog.time_range",
+        lambda self: (1.0, 9.0),
+    )
+    monkeypatch.setattr(
+        "deepreefmap_gui.simple.transect_picker.TransectPickerDialog.exec",
+        lambda self: QDialog.DialogCode.Rejected,
+    )
+
+    show_videos(window)
+    resolve_links(window)
+    select_clip(window, "GX010043.MP4")
+    window._on_video_new_section()
+
+    assert store.list_passes() == []
