@@ -33,7 +33,3 @@ def shortcut_manifest_path() -> Path:
         return Path(override)
     return Path(platformdirs.user_data_dir("deepreefmap", appauthor=False)) / "shortcut.json"
 
-
-def env_prune_marker_path() -> Path:
-    """Marker from the retired prune mechanism, kept so the launch-time sweep can unlink it."""
-    return Path(platformdirs.user_data_dir("deepreefmap", appauthor=False)) / "pending_env_prune.json"

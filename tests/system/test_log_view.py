@@ -1,8 +1,4 @@
-"""The stdout/stderr shim that pipes library output into the in-app log.
-
-Previously in tests/packaging/test_binary_swap.py, which does drive
-provision_env's line streaming but is not where system/log_view.py belongs.
-"""
+"""The stdout/stderr shim that pipes library output into the in-app log."""
 
 from __future__ import annotations
 

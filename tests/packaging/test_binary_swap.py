@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -197,50 +196,21 @@ def test_env_is_healthy_detects_missing_and_intact(tmp_path) -> None:
     assert env_is_healthy(purelib) is False
 
 
-def test_prune_stale_envs_keeps_current_and_newest_fallback(tmp_path, monkeypatch) -> None:
+def test_self_restore_invokes_pyapp_self_restore(monkeypatch) -> None:
     from deepreefmap_gui.packaging import binary_swap
 
-    pyapp_root = tmp_path / "pyapp" / "deepreefmap" / "hash"
-    oldest_env = pyapp_root / "1.0.0"
-    old_env = pyapp_root / "1.1.0+gaaa"
-    newest_stale_env = pyapp_root / "1.1.0+gbbb"
-    current_env = pyapp_root / "1.1.0+gccc"
-    for age, env in enumerate([newest_stale_env, old_env, oldest_env]):
-        (env / "python").mkdir(parents=True)
-        stamp = time.time() - age * 1000
-        os.utime(env, (stamp, stamp))
-    (current_env / "python").mkdir(parents=True)
-
-    marker = tmp_path / "pending_env_prune.json"
-    marker.write_text("{}")  # leftover from the retired marker mechanism
-    monkeypatch.setattr("deepreefmap_gui.paths.env_prune_marker_path", lambda: marker)
-
-    removed = binary_swap.prune_stale_envs(current_prefix=current_env / "python")
-
-    assert sorted(removed) == sorted([oldest_env, old_env])
-    assert not oldest_env.exists()
-    assert not old_env.exists()
-    assert newest_stale_env.exists()  # offline rollback target
-    assert current_env.exists()
-    assert not marker.exists()
-
-
-def test_prune_stale_envs_refuses_paths_outside_pyapp(tmp_path, monkeypatch) -> None:
-    from deepreefmap_gui.packaging import binary_swap
-
+    calls = []
     monkeypatch.setattr(
-        "deepreefmap_gui.paths.env_prune_marker_path",
-        lambda: tmp_path / "absent.json",
+        binary_swap.subprocess, "run", lambda cmd, check: calls.append((cmd, check))
     )
-    current = tmp_path / "not-pyapp" / "1.1.0"
-    victim = tmp_path / "not-pyapp" / "1.0.0"
-    (current / "python").mkdir(parents=True)
-    (victim / "python").mkdir(parents=True)
+    assert binary_swap.self_restore("/path/bin") is True
+    assert calls == [(["/path/bin", "self", "restore"], True)]
 
-    removed = binary_swap.prune_stale_envs(current_prefix=current / "python")
+    def boom(cmd, check):
+        raise OSError("restore failed")
 
-    assert removed == []
-    assert victim.exists()  # guard kept us from deleting outside a pyapp dir
+    monkeypatch.setattr(binary_swap.subprocess, "run", boom)
+    assert binary_swap.self_restore("/path/bin") is False
 
 
 def test_perform_update_downloads_and_swaps(tmp_path, monkeypatch) -> None:
@@ -283,9 +253,9 @@ def test_perform_update_downloads_and_swaps(tmp_path, monkeypatch) -> None:
     assert any("Replacing binary" in line for line in lines)
 
 
-def test_update_then_prune_end_to_end(tmp_path, monkeypatch) -> None:
-    """The container e2e as a fast headless test: real download + swap, then
-    the launch-time sweep drops the old env with the shared uv cache intact."""
+def test_update_keeps_the_outgoing_binary_for_rollback(tmp_path) -> None:
+    """A real download + swap that also keeps the old binary under previous/, the
+    fast headless stand-in for the update half of the e2e."""
     from deepreefmap_gui.packaging import binary_swap
 
     payload = b"NEW-BINARY-BYTES"
@@ -304,26 +274,6 @@ def test_update_then_prune_end_to_end(tmp_path, monkeypatch) -> None:
     port = server.server_address[1]
     threading.Thread(target=server.handle_request, daemon=True).start()
 
-    # PyApp layout: .../pyapp/deepreefmap/<hash>/<version>/python
-    pyapp_root = tmp_path / "pyapp" / "deepreefmap" / "hash"
-    oldest_env = pyapp_root / "1.0.0"
-    old_env = pyapp_root / "1.1.0"
-    new_env = pyapp_root / "1.2.0"
-    for age, env in enumerate([old_env, oldest_env]):
-        (env / "python").mkdir(parents=True)
-        stamp = time.time() - age * 1000
-        os.utime(env, (stamp, stamp))
-    (new_env / "python").mkdir(parents=True)
-    uv_cache = tmp_path / ".cache" / "uv"  # shared cache must survive the prune
-    uv_cache.mkdir(parents=True)
-
-    monkeypatch.setattr(
-        "deepreefmap_gui.paths.env_prune_marker_path",
-        lambda: tmp_path / "pending_env_prune.json",
-    )
-    # While the old version runs, sys.prefix points into its env.
-    monkeypatch.setattr(binary_swap.sys, "prefix", str(old_env / "python"))
-
     asset = binary_swap.resolve_asset_name()
     release = {
         "tag_name": "v1.2.0",
@@ -333,82 +283,20 @@ def test_update_then_prune_end_to_end(tmp_path, monkeypatch) -> None:
     target.write_bytes(b"OLD-BINARY")
 
     try:
-        binary_swap.perform_update(release, target, "1.2.0")
+        binary_swap.perform_update(release, target, "1.2.0", current_version="1.1.0")
     finally:
         server.server_close()
 
     assert target.read_bytes() == payload  # swapped in place
-
-    # The new version's first launch prunes old envs, keeping one fallback.
-    removed = binary_swap.prune_stale_envs(current_prefix=str(new_env / "python"))
-
-    assert removed == [oldest_env]
-    assert not oldest_env.exists()
-    assert old_env.exists()  # offline rollback target
-    assert new_env.exists()
-    assert uv_cache.exists()
+    # The outgoing binary is kept so a rollback to 1.1.0 needs no download.
+    assert binary_swap.available_previous_versions(target) == {
+        "1.1.0": binary_swap.previous_dir(target) / "deepreefmap-1.1.0"
+    }
 
 
-def test_self_restore_invokes_pyapp_self_restore(monkeypatch) -> None:
-    from deepreefmap_gui.packaging import binary_swap
-
-    calls = []
-    monkeypatch.setattr(
-        binary_swap.subprocess, "run", lambda cmd, check: calls.append((cmd, check))
-    )
-    assert binary_swap.self_restore("/path/bin") is True
-    assert calls == [(["/path/bin", "self", "restore"], True)]
-
-    def boom(cmd, check):
-        raise OSError("restore failed")
-
-    monkeypatch.setattr(binary_swap.subprocess, "run", boom)
-    assert binary_swap.self_restore("/path/bin") is False
-
-
-def _fake_binary(tmp_path: Path, body: str) -> Path:
-    script = tmp_path / "deepreefmap-fake"
-    script.write_text("#!/bin/sh\n" + body)
-    script.chmod(0o755)
-    return script
-
-
-@pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX shell fake binary")
-def test_provision_env_streams_cleaned_lines(tmp_path) -> None:
-    binary = _fake_binary(
-        tmp_path,
-        r"""
-[ "$1" = "self" ] && [ "$2" = "restore" ] || exit 2
-printf '==> Installing deepreefmap\n'
-printf 'downloading \033[32mtorch\033[0m\n'
-printf 'progress 10%%\rprogress 100%%\n'
-printf 'stderr line\n' >&2
-""",
-    )
-    lines: list[str] = []
-    assert binary_swap.provision_env(binary, line_cb=lines.append) is True
-    assert "==> Installing deepreefmap" in lines
-    assert "downloading torch" in lines
-    assert "progress 100%" in lines
-    assert "stderr line" in lines
-    assert not any("\x1b" in line or "\r" in line for line in lines)
-
-
-@pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX shell fake binary")
-def test_provision_env_failure_returns_false(tmp_path) -> None:
-    binary = _fake_binary(tmp_path, "printf 'boom\\n'\nexit 1\n")
-    lines: list[str] = []
-    assert binary_swap.provision_env(binary, line_cb=lines.append) is False
-    assert any("retried on next launch" in line for line in lines)
-
-
-def test_provision_env_missing_binary_returns_false(tmp_path) -> None:
-    lines: list[str] = []
-    assert binary_swap.provision_env(tmp_path / "missing", line_cb=lines.append) is False
-    assert any("retried on next launch" in line for line in lines)
-
-
-def test_perform_update_provisions_after_swap(tmp_path, monkeypatch) -> None:
+def test_perform_update_swaps_without_provisioning(tmp_path, monkeypatch) -> None:
+    """Provisioning now happens in the pre-Python launcher, so the update path
+    downloads, keeps the old binary, and swaps -- nothing more."""
     calls: list[str] = []
     monkeypatch.setattr(binary_swap, "resolve_asset_name", lambda: "asset")
     monkeypatch.setattr(binary_swap, "find_asset_url", lambda release, name: "http://x")
@@ -421,13 +309,91 @@ def test_perform_update_provisions_after_swap(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(
         binary_swap, "replace_binary", lambda target, src: calls.append("replace")
     )
-    monkeypatch.setattr(
-        binary_swap,
-        "provision_env",
-        lambda path, line_cb=None: calls.append("provision") or True,
+
+    target = tmp_path / "bin"
+    target.write_bytes(b"OLD")
+    binary_swap.perform_update(
+        {"tag_name": "v9.9.9"}, target, "9.9.9", current_version="9.8.0"
     )
-    binary_swap.perform_update({"tag_name": "v9.9.9"}, tmp_path / "bin", "9.9.9")
-    assert calls == ["download", "replace", "provision"]
+
+    assert calls == ["download", "replace"]
+    assert "provision" not in calls
+    assert binary_swap.available_previous_versions(target) == {
+        "9.8.0": binary_swap.previous_dir(target) / "bin-9.8.0"
+    }
+
+
+# --- retained binaries and offline rollback -----------------------------------
+
+
+def test_retain_previous_binary_names_by_version(tmp_path) -> None:
+    target = tmp_path / "deepreefmap-gui-linux-x64"
+    target.write_bytes(b"v1")
+    kept = binary_swap.retain_previous_binary(target, "1.1.0")
+    assert kept == tmp_path / "previous" / "deepreefmap-gui-linux-x64-1.1.0"
+    assert kept.read_bytes() == b"v1"
+
+
+def test_retain_previous_binary_preserves_exe_suffix(tmp_path) -> None:
+    target = tmp_path / "deepreefmap-gui-windows-x64.exe"
+    target.write_bytes(b"v1")
+    kept = binary_swap.retain_previous_binary(target, "1.1.0")
+    assert kept.name == "deepreefmap-gui-windows-x64-1.1.0.exe"
+
+
+def test_retain_previous_binary_skips_when_no_version(tmp_path) -> None:
+    target = tmp_path / "bin"
+    target.write_bytes(b"v1")
+    assert binary_swap.retain_previous_binary(target, None) is None
+    assert not binary_swap.previous_dir(target).exists()
+
+
+def test_available_previous_versions_round_trips(tmp_path) -> None:
+    target = tmp_path / "deepreefmap-gui-linux-x64"
+    target.write_bytes(b"cur")
+    binary_swap.retain_previous_binary(target, "1.0.0")
+    binary_swap.retain_previous_binary(target, "1.1.0")
+    found = binary_swap.available_previous_versions(target)
+    assert set(found) == {"1.0.0", "1.1.0"}
+
+
+def test_prune_previous_binaries_caps_the_ring(tmp_path) -> None:
+    target = tmp_path / "bin"
+    target.write_bytes(b"cur")
+    for i, v in enumerate(["1.0.0", "1.1.0", "1.2.0", "1.3.0"]):
+        kept = binary_swap.retain_previous_binary(target, v)
+        stamp = time.time() + i  # newer versions get newer mtimes
+        os.utime(kept, (stamp, stamp))
+    removed = binary_swap.prune_previous_binaries(target, keep=2)
+    remaining = set(binary_swap.available_previous_versions(target))
+    assert remaining == {"1.2.0", "1.3.0"}
+    assert len(removed) == 2
+
+
+def test_perform_rollback_uses_a_kept_binary_offline(tmp_path) -> None:
+    target = tmp_path / "deepreefmap-gui-linux-x64"
+    target.write_bytes(b"NEW")
+    # A prior update kept the 1.0.0 binary.
+    previous = binary_swap.previous_dir(target)
+    previous.mkdir()
+    (previous / "deepreefmap-gui-linux-x64-1.0.0").write_bytes(b"OLD")
+
+    lines: list[str] = []
+    binary_swap.perform_rollback(
+        target, "1.0.0", current_version="1.1.0", line_cb=lines.append
+    )
+
+    assert target.read_bytes() == b"OLD"  # rolled back with no download
+    # The kept 1.0.0 binary survives for a repeat rollback, and 1.1.0 is now kept.
+    found = binary_swap.available_previous_versions(target)
+    assert set(found) == {"1.0.0", "1.1.0"}
+
+
+def test_perform_rollback_without_a_kept_binary_raises(tmp_path) -> None:
+    target = tmp_path / "deepreefmap-gui-linux-x64"
+    target.write_bytes(b"NEW")
+    with pytest.raises(binary_swap.BinarySwapError, match="No locally kept binary"):
+        binary_swap.perform_rollback(target, "0.9.0")
 
 
 # --- a download that does not finish ------------------------------------

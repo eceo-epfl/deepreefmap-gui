@@ -84,11 +84,24 @@ class VersionCheckMixin(MixinBase):
         )
         self._populate_update_versions()
 
+    def _locally_kept_versions(self) -> set[str]:
+        """Versions whose binary is on disk, so rollback needs no download."""
+        from deepreefmap_gui.packaging.binary_swap import available_previous_versions
+
+        pyapp_bin = pyapp_binary_path()
+        if pyapp_bin is None:
+            return set()
+        try:
+            return set(available_previous_versions(pyapp_bin))
+        except OSError:
+            return set()
+
     def _populate_update_versions(self) -> None:
         current = self._current_version_str
         include_older = self._update_show_all.isChecked()
         selectable = selectable_releases(self._available_releases, current, include_older)
         current_v = parse_version(current)
+        kept = self._locally_kept_versions()
         self._update_version_combo.clear()
         for rel in selectable:
             version = release_version(rel)
@@ -96,7 +109,9 @@ class VersionCheckMixin(MixinBase):
             marker = ""
             if current_v is not None and rv is not None:
                 marker = " ↑" if rv > current_v else " ↓"
-            self._update_version_combo.addItem(f"{version}{marker}", rel)
+            # A kept binary rolls back with no download.
+            kept_marker = " (kept)" if version in kept else ""
+            self._update_version_combo.addItem(f"{version}{marker}{kept_marker}", rel)
         has_items = self._update_version_combo.count() > 0
         self._update_version_combo.setVisible(has_items)
         self._update_btn.setVisible(has_items)
@@ -115,6 +130,113 @@ class VersionCheckMixin(MixinBase):
     def _on_toggle_show_all_versions(self, _checked: bool) -> None:
         if self._available_releases:
             self._populate_update_versions()
+
+    # --- Installed environments ----------------------------------------------
+    # Each version keeps its own PyApp environment and none of them are pruned
+    # automatically, so this is where a version's real footprint is shown and
+    # where one is deleted. Models are sized here too, but managed on Setup's
+    # Models view.
+
+    @staticmethod
+    def _format_size(num_bytes: int) -> str:
+        gb = num_bytes / 1024**3
+        if gb >= 1:
+            return f"{gb:.1f} GB"
+        return f"{num_bytes // 1024**2} MB"
+
+    def _refresh_envs(self) -> None:
+        import threading
+
+        threading.Thread(target=self._measure_envs, daemon=True).start()
+
+    def _measure_envs(self) -> None:
+        """Off-thread: each version env's real size, plus the model-cache total."""
+        from deepreefmap_gui.packaging.environments import env_disk_usage, list_environments
+
+        info: dict = {"environments": [], "model_bytes": None}
+        try:
+            for env in list_environments():
+                reclaimable, apparent = env_disk_usage(env.path)
+                info["environments"].append(
+                    {
+                        "version": env.version,
+                        "path": str(env.path),
+                        "current": env.current,
+                        "reclaimable": reclaimable,
+                        "apparent": apparent,
+                    }
+                )
+        except OSError:
+            logger.debug("Environment scan failed", exc_info=True)
+        try:
+            from huggingface_hub import scan_cache_dir
+
+            from deepreefmap_gui.models.cache import hf_cache_root
+
+            info["model_bytes"] = scan_cache_dir(cache_dir=hf_cache_root()).size_on_disk
+        except Exception:
+            logger.debug("Model cache scan failed", exc_info=True)
+        self._sig_envs_done.emit(info)
+
+    def _apply_envs(self, info: dict) -> None:
+        from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QWidget
+
+        layout = self._env_list_layout
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget() if item is not None else None
+            if widget is not None:
+                widget.deleteLater()
+
+        environments = info.get("environments", [])
+        if not environments:
+            layout.addWidget(QLabel("No installed environments found."))
+        for env in environments:
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            real = self._format_size(env["reclaimable"])
+            shared = self._format_size(max(env["apparent"] - env["reclaimable"], 0))
+            running = " (running)" if env["current"] else ""
+            label = QLabel(
+                f"<b>{env['version']}</b>{running}: {real} on disk, "
+                f"{shared} shared with the cache"
+            )
+            label.setWordWrap(True)
+            row_layout.addWidget(label, 1)
+            if not env["current"]:
+                delete_btn = QPushButton("Delete")
+                delete_btn.clicked.connect(
+                    lambda _c=False, p=env["path"], v=env["version"]: self._on_delete_environment(p, v)
+                )
+                row_layout.addWidget(delete_btn)
+            layout.addWidget(row)
+
+        model_bytes = info.get("model_bytes")
+        if model_bytes is None:
+            self._model_cache_label.setText("Downloaded models: size unavailable.")
+        else:
+            self._model_cache_label.setText(
+                f"Downloaded models: <b>{self._format_size(model_bytes)}</b>"
+            )
+
+    def _on_delete_environment(self, path: str, version: str) -> None:
+        from deepreefmap_gui.packaging.environments import delete_environment
+
+        if not confirm(
+            self,
+            "Delete environment",
+            f"Delete the environment for version {version}?\n\n"
+            "Its unique files are freed now. If you install or roll back to this "
+            "version later, it is rebuilt from the package cache (no large download "
+            "when the cache is warm).",
+        ):
+            return
+        try:
+            delete_environment(path)
+        except (OSError, ValueError):
+            logger.exception("Failed to delete environment %s", path)
+        self._refresh_envs()
 
     def _confirm_downgrade(self, target: str) -> bool:
         """Warn before rolling back, and take a backup that makes it reversible.
@@ -175,12 +297,17 @@ class VersionCheckMixin(MixinBase):
         version = release_version(release)
         if not self._confirm_downgrade(version):
             return
+        # A kept binary rolls back offline; anything else downloads. The backup
+        # _confirm_downgrade just took is what makes either direction reversible.
+        rollback = version in self._locally_kept_versions()
         self._update_btn.setEnabled(False)
         try:
             dialog = UpdateProgressDialog(
                 target_version=version,
                 release=release,
                 binary_path=Path(pyapp_bin),
+                current_version=self._current_version_str,
+                rollback=rollback,
                 parent=self,
             )
             dialog.run()

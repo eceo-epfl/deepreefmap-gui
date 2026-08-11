@@ -84,7 +84,7 @@ from deepreefmap_gui.core.widgets import (
     warning_banner_qss,
 )
 from deepreefmap_gui.core.window_protocol import MixinBase
-from deepreefmap_gui.packaging.releases import current_version
+from deepreefmap_gui.packaging.releases import current_version, pyapp_binary_path
 from deepreefmap_gui.profiling.volumes import group_by_volume
 from deepreefmap_gui.runs.progress import (
     _LOAD_PHASES,
@@ -1028,9 +1028,49 @@ class FormPanelMixin(MixinBase):
         # "installed by the installer" where a button could only offer to
         # remove someone else's shortcut.
 
+        self._build_env_section(updates_layout)
+
         threading.Thread(target=self._check_for_update, daemon=True).start()
 
         updates_layout.addStretch()
+
+    def _build_env_section(self, layout: QVBoxLayout) -> None:
+        """Per-version environments and the model cache total, under Setup's
+        Updates view: what an install or a rollback leaves behind belongs beside
+        the control that puts it there.
+
+        Nothing to say outside an installed binary, so a dev checkout gets no
+        section at all. Environments are never pruned automatically; this is the
+        only thing that deletes one.
+        """
+        if pyapp_binary_path() is None:
+            return
+        layout.addWidget(QLabel("<b>Installed versions</b>"))
+        caption = QLabel(
+            "Each version keeps its own environment. Sizes are what deleting frees; "
+            "most of an environment is shared with the package cache."
+        )
+        caption.setWordWrap(True)
+        caption.setStyleSheet(f"color: {TEXT_MUTED};")
+        layout.addWidget(caption)
+
+        self._env_list_container = QWidget()
+        self._env_list_layout = QVBoxLayout(self._env_list_container)
+        self._env_list_layout.setContentsMargins(0, 0, 0, 0)
+        self._env_list_layout.addWidget(QLabel("Measuring environments…"))
+        layout.addWidget(self._env_list_container)
+
+        self._model_cache_label = QLabel("Measuring downloaded models…")
+        self._model_cache_label.setWordWrap(True)
+        self._model_cache_label.setStyleSheet(f"color: {TEXT_MUTED};")
+        layout.addWidget(self._model_cache_label)
+        self._manage_models_btn = QPushButton("Manage models")
+        self._manage_models_btn.clicked.connect(
+            lambda: self._set_machine_view("models")
+        )
+        layout.addWidget(self._manage_models_btn)
+
+        self._refresh_envs()
 
     def _build_top_bar(self) -> QWidget:
         bar = QWidget()

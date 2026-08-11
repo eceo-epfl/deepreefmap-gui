@@ -47,12 +47,26 @@ def _lines(dialog) -> list[str]:
 # --- what the worker thread dispatches to -------------------------------
 
 
-def test_the_worker_runs_the_real_update(dialog, monkeypatch) -> None:
-    """Guarantee the Install button's worker is wired to perform_update()."""
+def test_the_worker_runs_the_real_update(qapp, tmp_path, monkeypatch) -> None:
+    """Guarantee the Install button's worker is wired to perform_update(), and that
+    it threads current_version through -- that argument is what retains the outgoing
+    binary for rollback, so a dropped one silently breaks rollback (see the e2e)."""
+    monkeypatch.delenv("DEEPREEFMAP_MOCK_PYAPP", raising=False)
+    binary = tmp_path / "deepreefmap-gui"
+    binary.write_bytes(b"OLD")
+    dialog = update_dialog.UpdateProgressDialog(
+        target_version="1.2.0",
+        release={"tag_name": "v1.2.0", "assets": []},
+        binary_path=binary,
+        current_version="1.1.0",
+    )
     calls: dict[str, object] = {}
 
-    def fake_perform_update(release, binary_path, target_version, progress_cb=None, line_cb=None):
+    def fake_perform_update(
+        release, binary_path, target_version, current_version=None, progress_cb=None, line_cb=None
+    ):
         calls["args"] = (release, binary_path, target_version)
+        calls["current_version"] = current_version
         if line_cb is not None:
             line_cb("working")
 
@@ -63,7 +77,38 @@ def test_the_worker_runs_the_real_update(dialog, monkeypatch) -> None:
 
     assert calls["args"][1] == dialog._binary_path
     assert calls["args"][2] == "1.2.0"
-    assert outcomes == [(True, "Installed 1.2.0. Click Relaunch.")]
+    assert calls["current_version"] == "1.1.0"
+    assert outcomes == [(True, "Installed 1.2.0. Restart to apply.")]
+
+
+def test_a_rollback_uses_the_kept_binary_and_never_downloads(qapp, tmp_path, monkeypatch) -> None:
+    """The rollback path swaps in a locally kept binary; it must not call
+    perform_update (which downloads)."""
+    binary = tmp_path / "deepreefmap-gui"
+    binary.write_bytes(b"NEW")
+    d = update_dialog.UpdateProgressDialog(
+        target_version="1.0.0",
+        release={"tag_name": "v1.0.0", "assets": []},
+        binary_path=binary,
+        current_version="1.2.0",
+        rollback=True,
+    )
+    monkeypatch.setattr(
+        update_dialog, "perform_update", lambda *a, **k: pytest.fail("rollback must not download")
+    )
+    rolled: dict[str, object] = {}
+
+    def fake_rollback(binary_path, target_version, current_version=None, line_cb=None):
+        rolled["to"] = target_version
+        rolled["from"] = current_version
+
+    monkeypatch.setattr(update_dialog, "perform_rollback", fake_rollback)
+    outcomes = _outcomes(d)
+
+    d._worker_main()
+
+    assert rolled == {"to": "1.0.0", "from": "1.2.0"}
+    assert outcomes == [(True, "Rolled back to 1.0.0. Restart to apply.")]
 
 
 def test_the_mock_environment_never_touches_the_real_binary(dialog, monkeypatch) -> None:

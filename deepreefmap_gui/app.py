@@ -130,6 +130,9 @@ class DeepReefMapWindow(
     _sig_videos_probed = Signal(object)
     _sig_storage_usage = Signal(object)
     _sig_storage_page = Signal(object)
+    # Installed versions of the app, not the user's run data: the three storage
+    # signals above measure drives, this one measures PyApp environments.
+    _sig_envs_done = Signal(object)
     _sig_shortcut_done = Signal(object)
     # What a worker thread has to say, as data: a new kind of message should not
     # need a new signal here.
@@ -145,6 +148,7 @@ class DeepReefMapWindow(
 
         self._sig_update_check_done.connect(self._apply_update_check)
         self._sig_shortcut_done.connect(self._on_shortcut_done)
+        self._sig_envs_done.connect(self._apply_envs)
         self._sig_model_status_done.connect(self._apply_model_status)
         # The lambda is load-bearing, not noise: _status_label is built later, by
         # _build_form_widgets(). Binding self._status_label.setText here would

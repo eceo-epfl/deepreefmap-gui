@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
 from deepreefmap_gui.core.theme import ERROR
 from deepreefmap_gui.packaging.binary_swap import (
     BinarySwapError,
+    perform_rollback,
     perform_update,
 )
 
@@ -57,16 +58,21 @@ class UpdateProgressDialog(QDialog):
         target_version: str,
         release: dict,
         binary_path: Path,
+        current_version: str | None = None,
+        rollback: bool = False,
         parent=None,
     ) -> None:
         super().__init__(parent)
         self._target_version = target_version
         self._release = release
         self._binary_path = Path(binary_path)
+        self._current_version = current_version
+        self._rollback = rollback
         self._worker: threading.Thread | None = None
         self._success = False
 
-        self.setWindowTitle(f"Installing deepreefmap {target_version}")
+        verb = "Rolling back to" if rollback else "Installing"
+        self.setWindowTitle(f"{verb} deepreefmap {target_version}")
         self.setModal(True)
         self.setMinimumWidth(560)
 
@@ -165,14 +171,31 @@ class UpdateProgressDialog(QDialog):
             self._sig_done.emit(False, f"Update failed: {exc!r}")
 
     def _run_real(self) -> None:
+        if self._rollback:
+            # The binary is already on disk; no download, no change plan to fetch.
+            self._sig_line.emit(f"Rolling back to {self._target_version} from the local copy…")
+            perform_rollback(
+                self._binary_path,
+                self._target_version,
+                current_version=self._current_version,
+                line_cb=self._sig_line.emit,
+            )
+            self._sig_done.emit(
+                True, f"Rolled back to {self._target_version}. Restart to apply."
+            )
+            return
+
         perform_update(
             self._release,
             self._binary_path,
             self._target_version,
+            current_version=self._current_version,
             progress_cb=self._sig_progress.emit,
             line_cb=self._sig_line.emit,
         )
-        self._sig_done.emit(True, f"Installed {self._target_version}. Click Relaunch.")
+        self._sig_done.emit(
+            True, f"Installed {self._target_version}. Restart to apply."
+        )
 
     def _run_mock(self) -> None:
         script = [

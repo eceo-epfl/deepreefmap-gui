@@ -51,11 +51,14 @@ Name: "{userprograms}\DeepReefMap"; Filename: "{app}\deepreefmap-gui.exe"; IconF
 Name: "{userdesktop}\DeepReefMap"; Filename: "{app}\deepreefmap-gui.exe"; IconFilename: "{app}\icon.ico"; Tasks: desktopicon
 
 [Run]
-; Provision the Python environment during install so the first launch is
-; instant and console-free. `self restore` is PyApp-internal and installs the
-; env fresh. Inno ignores the exit code, so an offline install still completes
+; Provision the Python environment during install so the first launch is instant
+; and console-free. `__provision__` runs the launcher, which installs this
+; version's env (pulling wheels from the uv cache) only if it is not already
+; present, then exits without opening the GUI. It is non-destructive: re-running
+; the installer over an existing version reuses that env instead of wiping and
+; rebuilding it. Inno ignores the exit code, so an offline install still completes
 ; and the first launch provisions silently instead (hidden console).
-Filename: "{app}\deepreefmap-gui.exe"; Parameters: "self restore"; StatusMsg: "Setting up Python environment (this may take several minutes)..."; Flags: runhidden waituntilterminated
+Filename: "{app}\deepreefmap-gui.exe"; Parameters: "__provision__"; StatusMsg: "Setting up Python environment (this may take several minutes)..."; Flags: runhidden waituntilterminated
 Filename: "{app}\deepreefmap-gui.exe"; Description: "Launch DeepReefMap"; Flags: nowait postinstall skipifsilent
 
 [Code]
@@ -89,11 +92,15 @@ begin
     // / "pyapp" / <project_name> / <distribution_id> / <version>.
     DelTree(ExpandConstant('{localappdata}\pyapp\deepreefmap-gui'), True, True, True);
 
-    if MsgBox('Also remove downloaded AI models (several GB, re-downloadable)?'
+    if MsgBox('Also remove downloaded AI models and the package cache'
+              + ' (several GB, re-downloadable)?'
               + #13#10 + 'Reconstruction outputs in Documents\DeepReefMap are kept either way.',
               mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then begin
       // LoGeR checkpoints + app data (platformdirs user_data_dir("deepreefmap")).
       DelTree(ExpandConstant('{localappdata}\deepreefmap'), True, True, True);
+      // The uv download cache. Left in place it is a multi-GB orphan; it is the
+      // rollback substrate, so it is only removed on this opt-in uninstall path.
+      DelTree(ExpandConstant('{localappdata}\uv\cache'), True, True, True);
       // Hugging Face cache entries for the model repos the app downloads.
       DeleteHfCacheModels('models--EPFL-ECEO--*');
       DeleteHfCacheModels('models--facebook--dinov3*');

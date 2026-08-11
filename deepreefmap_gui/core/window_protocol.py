@@ -31,6 +31,7 @@ if TYPE_CHECKING:
         QStackedWidget,
         QToolButton,
         QTreeWidget,
+        QVBoxLayout,
         QWidget,
     )
 
@@ -145,6 +146,7 @@ if TYPE_CHECKING:
         # --- buttons -----------------------------------------------------
         _setup_shortcut_btn: QPushButton
         _setup_survey_btn: QPushButton
+        _manage_models_btn: QPushButton
         _discover_btn: QPushButton
         # Built by the run form, read by the Models tab. Its readers keep their
         # hasattr guards: _refresh_model_status runs from a daemon thread and can
@@ -191,6 +193,7 @@ if TYPE_CHECKING:
         _capacity_detail: QLabel
         _capacity_advice: QLabel
         _status_label: QLabel
+        _model_cache_label: QLabel
         _update_status_label: QLabel
         _update_version_label: QLabel
         _warnings_label: QLabel
@@ -198,6 +201,8 @@ if TYPE_CHECKING:
 
         # --- run form, borrowed by the run settings dialog ------------------
         _setup_page: QWidget
+        _env_list_container: QWidget
+        _env_list_layout: QVBoxLayout
 
         # --- data section --------------------------------------------------
         _data_panel: QWidget
@@ -293,6 +298,7 @@ if TYPE_CHECKING:
         _sig_videos_probed = Signal(object)
         _sig_storage_usage = Signal(object)
         _sig_storage_page = Signal(object)
+        _sig_envs_done = Signal(object)
         _sig_shortcut_done = Signal(object)
         _sig_notify = Signal(object)
 
@@ -324,6 +330,12 @@ if TYPE_CHECKING:
         def _refresh_system_gauges(self) -> None: ...  # SystemPanelMixin
         def _update_memory_profile_warning(self) -> None: ...  # FormPanelMixin
         def _check_for_update(self) -> None: ...  # VersionCheckMixin
+        def _measure_envs(self) -> None: ...  # VersionCheckMixin
+        def _refresh_envs(self) -> None: ...  # VersionCheckMixin
+        def _apply_envs(self, info: dict) -> None: ...  # VersionCheckMixin
+        def _on_delete_environment(  # VersionCheckMixin
+            self, path: str, version: str
+        ) -> None: ...
         def _clear_run_warnings(self) -> None: ...  # RunLoadingMixin
         def _collect_run_settings(self) -> dict: ...  # FormPanelMixin
         def _update_gated_warning(self) -> None: ...  # FormPanelMixin
