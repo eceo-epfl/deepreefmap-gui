@@ -198,6 +198,18 @@ WEIGHT_BOLD = 700
 # is worth reading rather than a label restating a button.
 TOOLTIP_DELAY_MS = 400
 
+# The drive card is a panel, not a label: it covers the row above the drive
+# button and takes a moment to read, so crossing the foot of the window on the
+# way to something else must not raise it. Longer than a tooltip for that
+# reason, and short enough that deliberately resting on a drive still answers.
+CARD_HOVER_DELAY_MS = 650
+
+# How often a raised card re-checks that the cursor is still on it or on the
+# control that raised it. A frameless tooltip window sitting under the pointer
+# can swallow the button's leave event, which leaves the card up with nothing
+# to dismiss it.
+CARD_HOVER_GUARD_MS = 200
+
 
 class _AppStyle(QProxyStyle):
     """Fusion, with a tooltip that wakes up sooner. See TOOLTIP_DELAY_MS."""

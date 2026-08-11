@@ -195,12 +195,76 @@ def test_the_card_carries_the_figures_and_raises_no_tooltip_of_its_own(qapp) -> 
     assert inner[0].toolTip() == ""
 
 
+def raise_card(bars: StorageBars, index: int = 0) -> None:
+    """Show the card the way an outlasted hover delay does."""
+    bars._card_for = bars.buttons[index]
+    bars._show_card()
+
+
 def test_the_card_is_not_a_child_of_the_bars(qapp) -> None:
     """test_repeated_refreshes_reuse_the_same_bars counts VolumeBar children."""
     bars = StorageBars()
     bars.set_volumes([make_volume("a")])
     bars.show()
-    bars._card_for = bars.buttons[0]
-    bars._show_card()
+    raise_card(bars)
 
+    assert bars._card is not None and bars._card.isVisible()
     assert len(bars.findChildren(VolumeBar)) == 1
+
+
+def test_the_card_paints_its_own_background(qapp) -> None:
+    """A plain QWidget draws no stylesheet box model without WA_StyledBackground."""
+    from PySide6.QtCore import Qt
+
+    card = VolumeCard()
+    assert card.testAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+
+
+def test_a_pointer_that_moved_on_before_the_delay_raises_nothing(qapp) -> None:
+    """Leaving cancels the clock, so the card never opens behind the pointer."""
+    bars = StorageBars()
+    bars.set_volumes([make_volume("a")])
+    bars.show()
+    button = bars.buttons[0]
+
+    button.hovered.emit(True)
+    assert bars._hover_timer.isActive()
+    button.hovered.emit(False)
+
+    assert not bars._hover_timer.isActive()
+    assert bars._card_for is None
+
+
+def test_pressing_a_drive_leaves_the_card_down(qapp) -> None:
+    """The press opens the drive's page, which the card would then cover."""
+    bars = StorageBars()
+    bars.set_volumes([make_volume("a")])
+    bars.show()
+    button = bars.buttons[0]
+    raise_card(bars)
+
+    button.clicked.emit()
+    assert bars._card is not None and not bars._card.isVisible()
+
+    # Still down while the pointer stays on the button it just pressed.
+    button.hovered.emit(True)
+    assert not bars._hover_timer.isActive()
+
+    # And available again once the pointer has been somewhere else.
+    button.hovered.emit(False)
+    button.hovered.emit(True)
+    assert bars._hover_timer.isActive()
+
+
+def test_a_card_the_cursor_has_left_is_taken_down_by_the_guard(qapp) -> None:
+    """A tooltip window under the pointer can swallow the button's leave event."""
+    bars = StorageBars()
+    bars.set_volumes([make_volume("a")])
+    bars.show()
+    raise_card(bars)
+    assert bars._guard_timer.isActive()
+
+    bars._guard_card()
+
+    assert not bars._card.isVisible()
+    assert not bars._guard_timer.isActive()

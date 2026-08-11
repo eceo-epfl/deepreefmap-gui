@@ -35,6 +35,8 @@ from deepreefmap_gui.core.theme import (
     BAR_HEIGHT,
     BLOCK,
     BORDER_STRONG,
+    CARD_HOVER_DELAY_MS,
+    CARD_HOVER_GUARD_MS,
     GROOVE,
     PRIMARY,
     RADIUS,
@@ -44,7 +46,6 @@ from deepreefmap_gui.core.theme import (
     SPACE_XS,
     SUCCESS,
     SURFACE_HI,
-    TOOLTIP_DELAY_MS,
     WARNING,
 )
 from deepreefmap_gui.core.widgets import muted_label, utility_button_qss
@@ -323,6 +324,7 @@ class StorageBars(QWidget):
         self._selected: str | None = None
         self._card: VolumeCard | None = None
         self._card_for: VolumeButton | None = None
+        self._suppressed: VolumeButton | None = None
 
         self._layout = QHBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
@@ -338,8 +340,14 @@ class StorageBars(QWidget):
         # window would ambush anybody reaching for the status text below it.
         self._hover_timer = QTimer(self)
         self._hover_timer.setSingleShot(True)
-        self._hover_timer.setInterval(TOOLTIP_DELAY_MS)
+        self._hover_timer.setInterval(CARD_HOVER_DELAY_MS)
         self._hover_timer.timeout.connect(self._show_card)
+
+        # A top-level card under the pointer can swallow the button's leave, so
+        # while one is up the cursor position decides whether it stays.
+        self._guard_timer = QTimer(self)
+        self._guard_timer.setInterval(CARD_HOVER_GUARD_MS)
+        self._guard_timer.timeout.connect(self._guard_card)
 
         self.setVisible(False)
 
@@ -457,6 +465,9 @@ class StorageBars(QWidget):
         # answers once the window has gone wherever it is going.
         self._sync_checks()
         self._hide_card()
+        # The focus a press leaves behind would raise the card over the page it
+        # just opened, so it stays down until the pointer moves away.
+        self._suppressed = button if isinstance(button, VolumeButton) else None
         if volume is not None:
             self.volume_clicked.emit(volume.root)
 
@@ -464,9 +475,11 @@ class StorageBars(QWidget):
         button = self.sender()
         if not entered:
             self._hover_timer.stop()
+            if self._suppressed is button:
+                self._suppressed = None
             self._hide_card()
             return
-        if not isinstance(button, VolumeButton):
+        if not isinstance(button, VolumeButton) or button is self._suppressed:
             return
         # Moving from one drive to the next swaps the card without waiting again:
         # the delay is there to stop it appearing, not to stop it moving.
@@ -489,8 +502,20 @@ class StorageBars(QWidget):
             # up in this widget's children as another bar.
             self._card = VolumeCard()
         self._card.show_for(volume, button)
+        self._guard_timer.start()
+
+    def _guard_card(self) -> None:
+        """Take the card down once the cursor is on neither it nor its button."""
+        card, button = self._card, self._card_for
+        if card is None or not card.isVisible():
+            self._guard_timer.stop()
+            return
+        on_button = button is not None and (button.underMouse() or button.hasFocus())
+        if not on_button and not card.underMouse():
+            self._hide_card()
 
     def _hide_card(self) -> None:
         self._card_for = None
+        self._guard_timer.stop()
         if self._card is not None:
             self._card.hide()

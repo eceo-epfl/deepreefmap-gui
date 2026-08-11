@@ -15,9 +15,10 @@ from __future__ import annotations
 
 from html import escape
 
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
+from deepreefmap_gui.core.hover_card import apply_hover_card_flags, place_near_widget
 from deepreefmap_gui.core.storage_bar import (
     TALL_BAR_HEIGHT,
     VolumeBar,
@@ -49,8 +50,8 @@ class VolumeCard(QWidget):
     """One drive, spelled out: the headline, the bar, and every figure under it."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent, Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint)
-        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        super().__init__(parent)
+        apply_hover_card_flags(self)
         self.setObjectName("volumeCard")
         self.setFixedWidth(CARD_WIDTH)
         self.setStyleSheet(
@@ -104,17 +105,9 @@ class VolumeCard(QWidget):
         self.adjustSize()
 
     def show_for(self, volume, anchor: QWidget, *, footage: str = "") -> None:
-        """Sit above the button, nudged back on screen if it overhangs."""
+        """Sit above the button, or below it on a screen with no room above."""
         self.set_volume(volume, footage=footage)
-        corner = anchor.mapToGlobal(QPoint(0, -self.height() - SPACE_XS))
-        screen = anchor.screen()
-        if screen is not None:
-            bounds = screen.availableGeometry()
-            corner.setX(max(bounds.left(), min(corner.x(), bounds.right() - self.width())))
-            # Below the button instead, on the rare screen with no room above.
-            if corner.y() < bounds.top():
-                corner.setY(anchor.mapToGlobal(QPoint(0, anchor.height() + SPACE_XS)).y())
-        self.move(corner)
+        place_near_widget(self, anchor, prefer="above")
         self.show()
 
 

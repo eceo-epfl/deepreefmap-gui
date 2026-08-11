@@ -1,10 +1,16 @@
-"""Compact stacked stage/total bars plus the floating per-stage breakdown."""
+"""The floating per-stage breakdown of the run in flight.
+
+Raised by hovering the running row on the Process queue: it is the detail behind
+that row's one percentage, stage by stage, with what each has cost and what is
+left of the one still going.
+"""
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
+from deepreefmap_gui.core.hover_card import apply_hover_card_flags
 from deepreefmap_gui.core.theme import BORDER, GROOVE, PRIMARY, SUCCESS, TEXT_MUTED, WINDOW_TEXT
 from deepreefmap_gui.profiling.eta import StageRow, format_duration, format_remaining
 
@@ -23,44 +29,24 @@ def _bar(frac: float, color: str) -> str:
     )
 
 
-class HoverColumn(QWidget):
-    """Container reporting cursor hover so the breakdown popup can follow the mouse."""
-
-    # Global cursor position while over the column, None on leave. Children must set
-    # WA_TransparentForMouseEvents or the column never sees the moves.
-    hovered = Signal(object)
-
-    def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-        self.setMouseTracking(True)
-
-    def enterEvent(self, event) -> None:  # noqa: N802 (Qt override)
-        self.hovered.emit(event.globalPosition())
-        super().enterEvent(event)
-
-    def mouseMoveEvent(self, event) -> None:
-        self.hovered.emit(event.globalPosition())
-        super().mouseMoveEvent(event)
-
-    def leaveEvent(self, event) -> None:
-        self.hovered.emit(None)
-        super().leaveEvent(event)
-
-
 class TimingPopup(QWidget):
     """Frameless popup rendering an estimator's stage rows as rich text."""
 
     def __init__(self, parent=None) -> None:
-        super().__init__(parent, Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint)
-        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        super().__init__(parent)
+        apply_hover_card_flags(self)
+        self.setObjectName("timingPopup")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 8)
         self._label = QLabel()
         self._label.setTextFormat(Qt.TextFormat.RichText)
         layout.addWidget(self._label)
+        # Scoped to the object name: an unscoped QWidget rule draws the border
+        # around the child label as well as around the popup.
         self.setStyleSheet(
-            f"QWidget {{ background-color: {GROOVE}; border: 1px solid {BORDER};"
-            f" border-radius: 4px; }} QLabel {{ color: {WINDOW_TEXT}; }}"
+            f"QWidget#timingPopup {{ background-color: {GROOVE};"
+            f" border: 1px solid {BORDER}; border-radius: 4px; }}"
+            f" QLabel {{ color: {WINDOW_TEXT}; }}"
         )
 
     def set_rows(
