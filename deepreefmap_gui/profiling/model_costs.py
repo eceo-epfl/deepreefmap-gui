@@ -17,7 +17,7 @@ them.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 MB = 1024**2
 GB = 1024**3
@@ -88,6 +88,17 @@ _LOGER_PIXELS = 504 * 280
 _LOGER_LOAD_RAM = 12 * GB
 _LOGER_WEIGHTS_RAM = 5 * GB
 
+# Device-side: the weights plus one window's activations under autocast. Unlike
+# every other figure in this file this one is neither traced nor measured -- it
+# is a round number, and it is the one that decides on its own whether an 8 GB
+# card is refused, because it is compared against the budget at zero frames.
+#
+# It is the figure most worth replacing with a reading: one
+# torch.cuda.max_memory_allocated() straight after the backend is constructed,
+# before any frames, settles it. Until then a VRAM peak recorded on the card in
+# front of the user supersedes it in either direction (memory_estimate.py).
+_LOGER_VRAM_FIXED = 9 * GB
+
 _MAPPING_COSTS: tuple[MappingCost, ...] = (
     MappingCost(
         key="loger",
@@ -96,7 +107,7 @@ _MAPPING_COSTS: tuple[MappingCost, ...] = (
         resident_bytes_per_pixel=20,
         load_ram_bytes=_LOGER_LOAD_RAM,
         weights_ram_bytes=_LOGER_WEIGHTS_RAM,
-        vram_fixed_bytes=9 * GB,
+        vram_fixed_bytes=_LOGER_VRAM_FIXED,
         # The whole clip is uploaded as one fp32 tensor before inference.
         vram_bytes_per_frame=12 * _LOGER_PIXELS,
     ),
@@ -107,7 +118,7 @@ _MAPPING_COSTS: tuple[MappingCost, ...] = (
         resident_bytes_per_pixel=20,
         load_ram_bytes=_LOGER_LOAD_RAM,
         weights_ram_bytes=_LOGER_WEIGHTS_RAM,
-        vram_fixed_bytes=9 * GB,
+        vram_fixed_bytes=_LOGER_VRAM_FIXED,
         vram_bytes_per_frame=12 * _LOGER_PIXELS,
     ),
     # Frame-by-frame, and returns depth only: no world points, no confidence.
@@ -162,10 +173,67 @@ _SEGMENTATION_BY_KEY = {cost.key: cost for cost in _SEGMENTATION_COSTS}
 _SEGMENTATION_FALLBACK = _SEGMENTATION_BY_KEY["coralscapes-vit-l-dpt"]
 
 
+def _rescaled(tabled_base: int, tabled: int, measured: int) -> int:
+    """Hold a tabled figure's ratio to the weights, on the measured weights.
+
+    The ratios are measured (a torch checkpoint materialises roughly two and a
+    half copies of itself while loading, a safetensors file about two) and hold
+    whatever the parameters weigh, so only the base is replaced.
+    """
+    if tabled_base <= 0:
+        return tabled
+    # Integer arithmetic: a float ratio leaves the result a byte off a round
+    # multiple, which is invisible in a gigabyte and awkward to assert on.
+    return measured * tabled // tabled_base
+
+
 def mapping_cost(backend: str) -> MappingCost:
-    """The backend's profile, or the most expensive one if the name is unknown."""
-    return _MAPPING_BY_KEY.get(backend, _MAPPING_FALLBACK)
+    """The backend's profile, or the most expensive one if the name is unknown.
+
+    Weights are read off the checkpoint when it is installed; everything derived
+    from them is rescaled to match, in host RAM as much as on the graphics card.
+    A checkpoint is materialised in RAM before any of it reaches the device, so
+    an understated weights figure understates both budgets.
+    """
+    from deepreefmap_gui.profiling.model_weights import weights_bytes
+
+    base = _MAPPING_BY_KEY.get(backend, _MAPPING_FALLBACK)
+    # Weights are looked up against the profile actually being used, so an
+    # unknown name is costed at the *measured* most-expensive backend rather
+    # than at its tabled figure.
+    measured = weights_bytes(base.key)
+    if measured is None:
+        return base
+    # Activations are the part of the device figure that is not the weights, and
+    # the part no file can state. Held as tabled, added to the real weights.
+    activations = max(0, base.vram_fixed_bytes - base.weights_ram_bytes)
+    return replace(
+        base,
+        weights_ram_bytes=measured,
+        load_ram_bytes=_rescaled(base.weights_ram_bytes, base.load_ram_bytes, measured),
+        vram_fixed_bytes=measured + activations,
+    )
+
+
+def modelled_mapping_backends() -> dict[str, MappingCost]:
+    """Every backend with a profile here, so a caller can compare them."""
+    return dict(_MAPPING_BY_KEY)
 
 
 def segmentation_cost(model: str) -> SegmentationCost:
-    return _SEGMENTATION_BY_KEY.get(model, _SEGMENTATION_FALLBACK)
+    """The segmenter's profile, with its weights read off disk when installed.
+
+    A DPT head ships without its backbone, which `AutoModel.from_pretrained`
+    fetches at first use, so both are counted.
+    """
+    from deepreefmap_gui.profiling.model_weights import weights_bytes
+
+    base = _SEGMENTATION_BY_KEY.get(model, _SEGMENTATION_FALLBACK)
+    measured = weights_bytes(base.key)
+    if measured is None:
+        return base
+    return replace(
+        base,
+        weights_vram_bytes=measured,
+        load_ram_bytes=_rescaled(base.weights_vram_bytes, base.load_ram_bytes, measured),
+    )

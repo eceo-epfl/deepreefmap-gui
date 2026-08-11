@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import statistics
+from dataclasses import dataclass
 from pathlib import Path
 
 from deepreefmap_gui.io.atomic import atomic_write_json
@@ -13,6 +14,9 @@ from deepreefmap_gui.paths import run_timings_path as timings_path
 from deepreefmap_gui.profiling.eta import STAGES
 
 logger = logging.getLogger(__name__)
+
+# Parsed profile, keyed by the file's path, mtime and size. See _load_all.
+_LOADED: dict[tuple[str, int, int], dict[str, list[dict]]] = {}
 
 # One cold-cache or thermally throttled run should not skew the profile, so we
 # keep a short rolling window and fit with the median rather than the mean.
@@ -37,17 +41,115 @@ def load_expected_points(key: str, path: Path | None = None) -> int | None:
     return int(statistics.median(points)) if points else None
 
 
+@dataclass(frozen=True)
+class ProfileEntry:
+    """One recorded configuration, and what it costs per unit of its drivers.
+
+    A key on its own does not say what shape a run was; this pairs the learned
+    per-stage rates with the resolution and frame rate they were learned at, so a
+    pass at another size can be predicted by scaling from the nearest one.
+    """
+
+    key: str
+    mapping_backend: str
+    seg_model: str
+    width: int
+    height: int
+    fps: int
+    priors: dict[str, float]
+    frames: int | None
+    points: int | None
+
+    @property
+    def pixels(self) -> int:
+        return max(1, self.width * self.height)
+
+
+def _shape_from_key(key: str) -> tuple[str, str, int, int, int] | None:
+    """Unpack a `backend|seg|WxH|Nfps` key, for entries recorded without params."""
+    parts = key.split("|")
+    if len(parts) != 4 or not parts[3].endswith("fps"):
+        return None
+    size = parts[2].split("x")
+    if len(size) != 2:
+        return None
+    try:
+        return parts[0], parts[1], int(size[0]), int(size[1]), int(parts[3][:-3])
+    except ValueError:
+        return None
+
+
+def load_profile_entries(path: Path | None = None) -> list[ProfileEntry]:
+    """Every configuration this machine has learned timings for."""
+    target = path or timings_path()
+    entries: list[ProfileEntry] = []
+    for key, runs in _load_all(target).items():
+        priors = load_priors(key, target)
+        if not priors:
+            continue
+        params = next((r.get("params") for r in runs if r.get("params")), None) or {}
+        shape = _shape_from_key(key)
+        backend = params.get("mapping_backend") or (shape[0] if shape else "")
+        seg = params.get("segmentation_model") or (shape[1] if shape else "")
+        width = int(params.get("processing_width") or (shape[2] if shape else 0))
+        height = int(params.get("processing_height") or (shape[3] if shape else 0))
+        fps = int(params.get("fps") or (shape[4] if shape else 0))
+        if not (backend and width and height and fps):
+            continue
+        entries.append(
+            ProfileEntry(
+                key=key,
+                mapping_backend=backend,
+                seg_model=seg,
+                width=width,
+                height=height,
+                fps=fps,
+                priors=priors,
+                frames=load_expected_frames(key, target),
+                points=load_expected_points(key, target),
+            )
+        )
+    return entries
+
+
+def load_expected_frames(key: str, path: Path | None = None) -> int | None:
+    """Median frame count over stored runs for `key`, or None if unseen."""
+    frames = [
+        int(r["frames"]) for r in _load_all(path or timings_path()).get(key, []) if r.get("frames")
+    ]
+    return int(statistics.median(frames)) if frames else None
+
+
 def _strip_fps(key: str) -> str:
     """Drop the trailing `|Nfps` segment so keys group by resolution, not fps."""
     return key.rsplit("|", 1)[0] if key.endswith("fps") else key
 
 
-def load_expected_peaks(key: str, path: Path | None = None) -> dict | None:
-    """Worst recent peak as `{ram_bytes, vram_bytes, frames}`, or None if unseen."""
-    # Worst run, not the median: this is a crash predictor, and the high-water run
-    # says what happens on a busier machine. Peaks pool across every fps at this
-    # backend/model/resolution (unlike the ETA priors, keyed per fps) because peak
-    # memory tracks the frame count the caller scales by.
+def load_expected_peaks(
+    key: str,
+    path: Path | None = None,
+    *,
+    gpu_name: str | None = None,
+    batch_size: int | None = None,
+) -> dict | None:
+    """Worst recent peak as `{ram_bytes, frames, vram_bytes, vram_frames}`.
+
+    The RAM pair pools across every fps at this backend/model/resolution (unlike
+    the ETA priors, keyed per fps) because peak memory tracks the frame count the
+    caller scales by. Worst run rather than median: this is a crash predictor,
+    and the high-water run says what happens on a busier machine.
+
+    The VRAM pair is qualified far more narrowly, because the caller uses it to
+    move a fixed term rather than to lift a baseline. It is offered only when the
+    caller names the card, and only from runs on a card of that name at the same
+    preprocessing batch size, which changes device memory and is not in the key.
+    Without a gpu_name there is no VRAM pair at all: a peak from another
+    machine's card would rewrite this one's constant.
+
+    VRAM is carried with its own run's frame count, not the worst-RAM run's. The
+    caller subtracts a per-frame slope from it, and the wrong length there moves
+    the intercept by exactly that error.
+    """
     prefix = _strip_fps(key)
     runs = [
         r
@@ -60,30 +162,44 @@ def load_expected_peaks(key: str, path: Path | None = None) -> dict | None:
         return None
     worst_committed = 0
     worst_frames = 0
-    vrams: list[int] = []
+    worst_vram = 0
+    worst_vram_frames = 0
     for run in runs:
-        stages = run["stage_peaks"].values()
+        stages = list(run["stage_peaks"].values())
         # Peak committed memory per stage = RAM plus the swap it spilled into, then
         # the worst stage. A thrashing run pins RAM near 100% and shows its real
         # demand as swap, so RAM alone would understate the true peak.
         per_stage = [
             s["ram_bytes"] + (s.get("swap_bytes") or 0) for s in stages if s.get("ram_bytes")
         ]
-        if not per_stage:
+        if per_stage:
+            committed = max(per_stage)
+            if committed > worst_committed:
+                worst_committed = committed
+                worst_frames = int(run["frames"])
+        if gpu_name is None:
             continue
-        committed = max(per_stage)
+        recorded_gpu = (run.get("system_profile") or {}).get("gpu") or {}
+        if recorded_gpu.get("name") != gpu_name:
+            continue
+        params = run.get("params") or {}
+        recorded_batch = params.get("preprocess_batch_size")
+        # Absent counts as matching: batch size was not recorded before this was
+        # introduced, and discarding every older entry would cost the whole
+        # history to guard against a mismatch that is usually not one.
+        if batch_size is not None and recorded_batch not in (None, batch_size):
+            continue
         vram = [s["vram_bytes"] for s in stages if s.get("vram_bytes")]
-        if vram:
-            vrams.append(max(vram))
-        if committed > worst_committed:
-            worst_committed = committed
-            worst_frames = int(run["frames"])
-    if not worst_committed:
+        if vram and max(vram) > worst_vram:
+            worst_vram = max(vram)
+            worst_vram_frames = int(run["frames"])
+    if not worst_committed and not worst_vram:
         return None
     return {
-        "ram_bytes": worst_committed,
-        "vram_bytes": max(vrams) if vrams else None,
+        "ram_bytes": worst_committed or None,
         "frames": worst_frames,
+        "vram_bytes": worst_vram or None,
+        "vram_frames": worst_vram_frames if worst_vram else None,
     }
 
 
@@ -197,7 +313,19 @@ def _load_all(path: Path) -> dict[str, list[dict]]:
     by the next record_run, so the machine keeps its evidence of whatever went
     wrong. The single quarantine slot is deliberate: repeated corruption should
     not fill the config directory with copies.
+
+    Memoised on the file's own identity: the batch prediction asks for priors,
+    points and frames per queued pass and per recorded config, on every row
+    mutation.
     """
+    try:
+        stat = path.stat()
+    except OSError:
+        return {}
+    stamp = (str(path), stat.st_mtime_ns, stat.st_size)
+    cached = _LOADED.get(stamp)
+    if cached is not None:
+        return cached
     try:
         raw = path.read_text(encoding="utf-8")
     except OSError:
@@ -207,6 +335,9 @@ def _load_all(path: Path) -> dict[str, list[dict]]:
     except ValueError:
         loaded = None
     if isinstance(loaded, dict):
+        # One entry: older revisions can never be asked for again.
+        _LOADED.clear()
+        _LOADED[stamp] = loaded
         return loaded
     quarantine = path.with_name(path.name + ".corrupt")
     try:
@@ -266,6 +397,9 @@ def record_run(
         atomic_write_json(target, all_runs)
     except OSError:
         logger.warning("Could not write run timing profile to %s", target, exc_info=True)
+    # For filesystems whose mtime granularity is coarser than the gap between
+    # this write and the next read.
+    _LOADED.clear()
 
 
 def record_run_from_manifest(manifest: dict) -> None:
@@ -290,6 +424,9 @@ def record_run_from_manifest(manifest: dict) -> None:
             for k in (
                 "fps", "mapping_backend", "segmentation_model", "processing_width",
                 "processing_height", "mapping_options", "enable_tsdf", "grid_bins",
+                # Recorded so a VRAM peak can be matched to the batch size it was
+                # measured at; the segmentation term scales with it.
+                "preprocess_batch_size",
             )
             if manifest.get(k) is not None
         }

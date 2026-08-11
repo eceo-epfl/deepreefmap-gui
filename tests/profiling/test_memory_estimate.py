@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from deepreefmap_gui.profiling.memory_estimate import (
     RunShape,
     estimate_cost,
@@ -14,6 +16,20 @@ from deepreefmap_gui.profiling.system_probe import GPU_CUDA, GPU_MPS, GPU_NONE, 
 
 _GB = 1024**3
 _SEG = "coralscapes-vit-b-dpt"
+
+
+@pytest.fixture(autouse=True)
+def _tabled_weights(monkeypatch):
+    """Grade against the table, not against whatever this machine has installed.
+
+    Model weights are read off the checkpoints when they are present, so without
+    this the same assertions would measure different numbers on a developer's
+    machine and on a clean one. The calculated path has its own tests, which
+    supply a known figure rather than depending on a download.
+    """
+    monkeypatch.setattr(
+        "deepreefmap_gui.profiling.model_weights.weights_bytes", lambda name: None
+    )
 
 
 def _profile(*, total_gb=64, avail_gb=None, gpu=None, swap_gb=0):
@@ -112,13 +128,87 @@ def test_too_long_a_pass_is_blocked_on_ram() -> None:
     assert verdict.headline == "Too long to process in one pass"
 
 
+def _small_card() -> GpuInfo:
+    return GpuInfo(GPU_CUDA, "GTX", total_vram_bytes=8 * _GB, free_vram_bytes=8 * _GB)
+
+
 def test_a_small_card_is_reported_as_the_limit() -> None:
-    """RAM is ample but the sequence tensor will not fit the GPU."""
-    small_gpu = GpuInfo(GPU_CUDA, "GTX", total_vram_bytes=8 * _GB, free_vram_bytes=8 * _GB)
-    verdict = grade(_profile(total_gb=256, gpu=small_gpu), _shape(2000))
+    """RAM is ample but the backend will not fit the GPU.
+
+    LoGeR holds more on the card before the first frame than the card has, so
+    this is a fixed cost rather than a length: the pass does not fit at any
+    trim, and the verdict says which of the two it is.
+    """
+    verdict = grade(_profile(total_gb=256, gpu=_small_card()), _shape(2000))
+    assert verdict.level == "block"
+    assert verdict.limit == "vram_fixed"
+    assert "graphics" in verdict.detail
+
+
+def test_a_fixed_cost_names_the_backend_that_caused_it() -> None:
+    """Advice about the frame rate cannot be taken on a cost decided at zero frames."""
+    verdict = grade(_profile(total_gb=256, gpu=_small_card()), _shape(2000))
+
+    assert "loger_star" in verdict.headline
+    assert "do not change that" in verdict.detail
+
+
+def test_a_fixed_cost_offers_a_backend_that_actually_fits() -> None:
+    """Re-graded rather than asserted, so the offer is never one that fails too."""
+    fit = fit_for_pass(
+        _profile(total_gb=256, gpu=_small_card()),
+        seconds=400, fps=5, width=1376, height=768,
+        mapping_backend="loger_star", seg_model=_SEG,
+    )
+
+    assert fit.verdict.limit_is_fixed
+    assert fit.suggested_backend == "scsfmlearner"
+    assert "scsfmlearner" in fit.advice
+    # And the offer is good: the same pass on that backend is not refused.
+    assert grade(
+        _profile(total_gb=256, gpu=_small_card()),
+        _shape(2000, backend="scsfmlearner"),
+    ).level != "block"
+
+
+def test_a_length_block_is_not_reported_as_a_fixed_one() -> None:
+    """A card LoGeR fits on, with a clip too long for it, is still about length."""
+    big_gpu = GpuInfo(GPU_CUDA, "RTX", total_vram_bytes=24 * _GB, free_vram_bytes=24 * _GB)
+    # Long enough that the sequence tensor overflows the card, short enough that
+    # RAM is not the thing that ran out first.
+    verdict = grade(_profile(total_gb=256, gpu=big_gpu), _shape(10000))
+
     assert verdict.level == "block"
     assert verdict.limit == "vram"
-    assert "graphics" in verdict.detail
+    assert not verdict.limit_is_fixed
+
+
+def test_the_card_is_graded_on_what_it_has_not_what_is_free() -> None:
+    """A verdict that moves because something else opened cannot be acted on."""
+    busy = GpuInfo(GPU_CUDA, "RTX", total_vram_bytes=24 * _GB, free_vram_bytes=2 * _GB)
+    idle = GpuInfo(GPU_CUDA, "RTX", total_vram_bytes=24 * _GB, free_vram_bytes=24 * _GB)
+
+    assert (
+        machine_budget(_profile(gpu=busy)).vram_bytes
+        == machine_budget(_profile(gpu=idle)).vram_bytes
+    )
+
+
+def test_a_recorded_peak_can_disprove_the_tabled_fixed_cost() -> None:
+    """The tabled 9 GB is inferred, and is what refuses an 8 GB card outright.
+
+    VRAM is one line, so a single recorded peak identifies its intercept and can
+    move it down as well as up. Without that the figure could never be wrong.
+    """
+    tabled = estimate_cost(_shape(2000))
+    measured = estimate_cost(
+        _shape(2000),
+        recorded={"vram_bytes": 5 * _GB, "vram_frames": 2000},
+    )
+
+    assert measured.fixed_vram_bytes < tabled.fixed_vram_bytes
+    assert measured.vram_source == "measured"
+    assert tabled.vram_source == "estimated"
 
 
 def test_unified_memory_counts_the_gpu_against_ram() -> None:
@@ -202,3 +292,47 @@ def test_a_machine_too_small_for_any_length_still_advises() -> None:
     )
     assert fit.verdict.max_frames == 0
     assert fit.advice
+
+
+def test_a_segmentation_overflow_names_the_segmenter_not_the_backend() -> None:
+    """The two fixed terms do not add, so only one of them is the whole number.
+
+    Blaming the mapping backend for the segmenter's batch sent the user to a
+    control that could not help, and then told them nothing could.
+    """
+    card = GpuInfo(GPU_CUDA, "RTX", total_vram_bytes=6 * _GB, free_vram_bytes=6 * _GB)
+    fit = fit_for_pass(
+        _profile(total_gb=64, gpu=card),
+        seconds=300, fps=5, width=1376, height=768,
+        mapping_backend="scsfmlearner", seg_model="segformer-b5", batch_size=4,
+    )
+
+    assert fit.verdict.limit == "vram_fixed"
+    assert fit.verdict.cost.vram_fixed_from == "segmentation"
+    assert "segformer-b5" in fit.headline
+    assert "scsfmlearner" not in fit.headline
+    # And the fix is the control that actually moves it.
+    assert fit.suggested_batch_size is not None
+    assert "batch size" in fit.advice
+
+
+def test_a_backend_overflow_still_names_the_backend() -> None:
+    card = GpuInfo(GPU_CUDA, "GTX", total_vram_bytes=8 * _GB, free_vram_bytes=8 * _GB)
+    fit = fit_for_pass(
+        _profile(total_gb=256, gpu=card),
+        seconds=400, fps=5, width=1376, height=768,
+        mapping_backend="loger_star", seg_model=_SEG, batch_size=4,
+    )
+
+    assert fit.verdict.cost.vram_fixed_from == "mapping"
+    assert "loger_star" in fit.headline
+    assert "scsfmlearner" in fit.advice
+
+
+def test_a_card_reporting_only_free_vram_is_still_graded() -> None:
+    """A VRAM budget of None grades every run "ok" however large it is."""
+    partial = GpuInfo(GPU_CUDA, "RTX", total_vram_bytes=None, free_vram_bytes=8 * _GB)
+    budget = machine_budget(_profile(gpu=partial))
+
+    assert budget.vram_bytes is not None
+    assert grade(_profile(total_gb=256, gpu=partial), _shape(2000)).level == "block"

@@ -250,6 +250,10 @@ def instrumented_reconstruction(
     proxy = _MarkingViewer(kwargs.pop("viewer", None), instr)
     extra = dict(manifest_extra or {})
     extra.update(_record_run_command(output_dir, kwargs))
+    # The pipeline's manifest does not carry the batch size, and a VRAM peak is
+    # only comparable to an estimate made at the same one.
+    if "preprocess_batch_size" in kwargs:
+        extra.setdefault("preprocess_batch_size", int(kwargs["preprocess_batch_size"]))
     manifest: dict | None = None
     try:
         run_reconstruction(viewer=proxy, **kwargs)

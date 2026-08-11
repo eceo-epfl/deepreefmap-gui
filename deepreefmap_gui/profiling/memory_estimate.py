@@ -16,7 +16,7 @@ run rather than crash into it.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from deepreefmap_gui.profiling.model_costs import (
     FRAME_BYTES_PER_PIXEL,
@@ -38,9 +38,21 @@ _WARN_FRACTION = 0.85
 # Allocator slack and per-block transients.
 _OVERHEAD = 1.15
 
+# The desktop compositor and allocator fragmentation on the card, which a run
+# never gets back.
+_GPU_RESERVE_FRACTION = 0.08
+_GPU_RESERVE_MIN = 512 * 1024**2
+_GPU_RESERVE_MAX = int(1.5 * 1024**3)
+
 
 def _os_reserve(total_ram_bytes: int) -> int:
     return int(min(_OS_RESERVE_MAX, max(_OS_RESERVE_MIN, total_ram_bytes * _OS_RESERVE_FRACTION)))
+
+
+def _gpu_reserve(total_vram_bytes: int) -> int:
+    return int(
+        min(_GPU_RESERVE_MAX, max(_GPU_RESERVE_MIN, total_vram_bytes * _GPU_RESERVE_FRACTION))
+    )
 
 
 @dataclass(frozen=True)
@@ -84,7 +96,12 @@ class Cost:
     fixed_vram_bytes: int
     vram_bytes_per_frame: int
     frames: int
-    source: str  # "measured" | "estimated"
+    source: str  # "measured" | "estimated" -- of the RAM figures
+    vram_source: str = "estimated"  # "measured" once a peak from this card lands
+    # Which of the two terms set the fixed VRAM figure: they do not add (the
+    # segmenter is released before mapping loads), so one of them is the whole
+    # number. Blaming the wrong one sends the user to a control that cannot help.
+    vram_fixed_from: str = "mapping"  # "mapping" | "segmentation"
 
     @property
     def ram_bytes(self) -> int:
@@ -113,15 +130,34 @@ class Verdict:
     level: str  # "ok" | "warn" | "block"
     cost: Cost
     budget: Budget
-    limit: str  # "ram" | "vram" | ""
+    # "ram" | "vram" | "ram_fixed" | "vram_fixed" | "". The _fixed pair are a
+    # different fact from the other two: they are decided before the first frame,
+    # so nothing the user can set moves them.
+    limit: str
     max_frames: int
     percent: float
     headline: str
     detail: str
+    shape: RunShape | None = None
 
     @property
     def fits(self) -> bool:
         return self.level == "ok"
+
+    @property
+    def limit_is_fixed(self) -> bool:
+        return self.limit in ("ram_fixed", "vram_fixed")
+
+    @property
+    def need_bytes(self) -> int:
+        """Demand on whichever resource decided the verdict."""
+        return self.cost.vram_bytes if self.limit.startswith("vram") else self.cost.ram_bytes
+
+    @property
+    def budget_bytes(self) -> int:
+        if self.limit.startswith("vram"):
+            return self.budget.vram_bytes or 0
+        return self.budget.ram_bytes
 
 
 def estimate_cost(shape: RunShape, *, recorded: dict | None = None) -> Cost:
@@ -165,12 +201,31 @@ def estimate_cost(shape: RunShape, *, recorded: dict | None = None) -> Cost:
             ]
         source = "measured"
 
+    seg_vram = segmentation.vram_bytes(shape.batch_size)
+    fixed_vram = max(seg_vram, mapping.vram_fixed_bytes)
+    vram_source = "estimated"
+    if recorded and recorded.get("vram_bytes") and recorded.get("vram_frames") is not None:
+        # VRAM is a single line, a fixed term plus a slope, so one recorded
+        # point identifies the intercept in either direction. The caller offers
+        # a peak from this card at this batch size only, and the figure is
+        # device-wide use, so correcting to it errs high.
+        implied = int(recorded["vram_bytes"]) - mapping.vram_bytes_per_frame * int(
+            recorded["vram_frames"]
+        )
+        if implied > 0:
+            # Segmentation runs before mapping loads and is modelled separately,
+            # so it floors the fixed term whatever mapping turned out to cost.
+            fixed_vram = max(seg_vram, implied)
+            vram_source = "measured"
+
     return Cost(
         stages=tuple(stages),
-        fixed_vram_bytes=max(segmentation.vram_bytes(shape.batch_size), mapping.vram_fixed_bytes),
+        fixed_vram_bytes=fixed_vram,
         vram_bytes_per_frame=mapping.vram_bytes_per_frame,
         frames=max(0, shape.frames),
         source=source,
+        vram_source=vram_source,
+        vram_fixed_from="segmentation" if fixed_vram == seg_vram else "mapping",
     )
 
 
@@ -180,6 +235,9 @@ def machine_budget(profile: SystemProfile) -> Budget:
     Graded against installed RAM less an OS reserve rather than against whatever
     is momentarily free, so the same settings do not change verdict because a
     browser is open.
+
+    VRAM is graded the same way and for the same reason. What the driver reports
+    free moves under the user, on Windows even while nothing is running.
     """
     ram = max(0, profile.total_ram_bytes - _os_reserve(profile.total_ram_bytes))
     gpu = profile.gpu
@@ -187,7 +245,13 @@ def machine_budget(profile: SystemProfile) -> Budget:
         return Budget(ram_bytes=ram, vram_bytes=None, unified=True)
     vram = None
     if gpu.kind == GPU_CUDA:
-        vram = gpu.free_vram_bytes if gpu.free_vram_bytes is not None else gpu.total_vram_bytes
+        # Installed less a reserve, for the reason above. A card that reports
+        # only what is free still gets graded against that -- a noisy budget
+        # beats no budget at all, because a VRAM budget of None means every run
+        # grades "ok" on the graphics card however large it is.
+        total = gpu.total_vram_bytes or gpu.free_vram_bytes
+        if total:
+            vram = max(0, total - _gpu_reserve(total))
     return Budget(ram_bytes=ram, vram_bytes=vram, unified=False)
 
 
@@ -239,15 +303,27 @@ def grade(
         and cost.vram_bytes > budget.vram_bytes
     )
 
+    fixed_ram = max(stage.fixed_bytes for stage in cost.stages)
     if over_ram or over_vram:
         level = "block"
-        limit = "ram" if over_ram else "vram"
+        # Which resource decided keeps its old precedence; what is new is
+        # telling a fixed cost apart from a length. A run whose fixed term alone
+        # is over budget does not fit at one frame, so advice about the frame
+        # rate, the trim or the resolution is advice that cannot be taken.
+        if over_ram:
+            limit = "ram_fixed" if fixed_ram > budget.ram_bytes else "ram"
+        else:
+            limit = (
+                "vram_fixed"
+                if cost.fixed_vram_bytes > (budget.vram_bytes or 0)
+                else "vram"
+            )
     elif percent >= 100.0 * _WARN_FRACTION:
         level, limit = "warn", "ram"
     else:
         level, limit = "ok", ""
 
-    headline, detail = _wording(level, limit, cost, budget, ram_need)
+    headline, detail = _wording(level, limit, cost, budget, ram_need, shape, fixed_ram)
     return Verdict(
         level=level,
         cost=cost,
@@ -257,6 +333,7 @@ def grade(
         percent=percent,
         headline=headline,
         detail=detail,
+        shape=shape,
     )
 
 
@@ -274,6 +351,14 @@ class Fit:
     max_seconds: float
     suggested_fps: int | None
     suggested_seconds: float | None
+    # A mapping backend that was re-graded and came back fitting, for the case
+    # where the run does not fit at any length. None when none of them do.
+    suggested_backend: str | None = None
+    suggested_backend_vram: int | None = None
+    # The largest preprocessing batch that grades non-block, when the batch size
+    # is what pushes the device over. Replaces a second, separately calibrated
+    # warning that used to contradict this one.
+    suggested_batch_size: int | None = None
 
     @property
     def level(self) -> str:
@@ -296,6 +381,27 @@ class Fit:
         """What to change, in the controls the user has in front of them."""
         if self.fits:
             return ""
+        if self.verdict.limit_is_fixed:
+            # The batch size leads whenever it is what overflowed: it is a
+            # control on this form, and it fixes the run outright. Recommending
+            # a different backend for a segmentation overflow would change the
+            # method for a reason that had nothing to do with it.
+            if self.suggested_batch_size is not None and (
+                self.verdict.cost.vram_fixed_from == "segmentation"
+            ):
+                return (
+                    f"Set the preprocessing batch size to {self.suggested_batch_size} "
+                    "in advanced settings."
+                )
+            if self.suggested_backend is None:
+                return "No mapping method fits this machine at these settings."
+            size = (
+                f" It needs about {format_bytes(self.suggested_backend_vram)} "
+                "of graphics memory."
+                if self.suggested_backend_vram is not None
+                else ""
+            )
+            return f"Choose {self.suggested_backend} under Mapping.{size}"
         parts = []
         if self.suggested_fps is not None:
             parts.append(f"set FPS to {self.suggested_fps}")
@@ -341,18 +447,40 @@ def fit_for_pass(
     ceiling = verdict.max_frames
     max_seconds = ceiling / fps
 
-    suggested_fps = None
-    suggested_seconds = None
-    if verdict.level != "ok":
+    suggested_fps: int | None = None
+    suggested_seconds: float | None = None
+    suggested_backend: str | None = None
+    suggested_backend_vram: int | None = None
+    suggested_batch_size: int | None = None
+    if verdict.limit_is_fixed:
+        # Offered only if it actually fits: re-graded rather than assumed, so the
+        # app never sends somebody to a control that will not help either. The
+        # recorded peak is dropped for the re-grade -- a peak measured under one
+        # backend says nothing about another.
+        for backend in _lighter_backends(mapping_backend):
+            lighter = grade(profile, replace(shape, mapping_backend=backend))
+            if lighter.level != "block":
+                suggested_backend = backend
+                suggested_backend_vram = lighter.cost.fixed_vram_bytes
+                break
+    elif verdict.level != "ok":
         # The largest frame rate that still fits the pass as trimmed.
-        for candidate in range(fps - 1, 0, -1):
-            if seconds * candidate <= ceiling:
-                suggested_fps = candidate
+        for rate in range(fps - 1, 0, -1):
+            if seconds * rate <= ceiling:
+                suggested_fps = rate
                 break
         # Only worth saying when it is meaningfully shorter than the pass
         # already is, and long enough to still be a usable transect.
         if max_seconds >= 60 and max_seconds <= 0.85 * seconds:
             suggested_seconds = max_seconds
+    if verdict.limit.startswith("vram") and batch_size > 1:
+        # The batch size only reaches the device through the segmentation term,
+        # so this is worth saying only when shrinking it actually changes the
+        # verdict. Same model, same units as everything else on this readout.
+        for size in range(batch_size - 1, 0, -1):
+            if grade(profile, replace(shape, batch_size=size), recorded=recorded).level != "block":
+                suggested_batch_size = size
+                break
     return Fit(
         verdict=verdict,
         seconds=seconds,
@@ -360,20 +488,80 @@ def fit_for_pass(
         max_seconds=max_seconds,
         suggested_fps=suggested_fps,
         suggested_seconds=suggested_seconds,
+        suggested_backend=suggested_backend,
+        suggested_backend_vram=suggested_backend_vram,
+        suggested_batch_size=suggested_batch_size,
     )
 
 
-def _wording(level: str, limit: str, cost: Cost, budget: Budget, ram_need: int) -> tuple[str, str]:
+def _lighter_backends(current: str) -> list[str]:
+    """Modelled backends that hold less on the device than `current`, cheapest first."""
+    from deepreefmap_gui.profiling.model_costs import modelled_mapping_backends
+
+    costs = modelled_mapping_backends()
+    here = costs.get(current)
+    ceiling = here.vram_fixed_bytes if here is not None else None
+    lighter = [
+        (cost.vram_fixed_bytes, key)
+        for key, cost in costs.items()
+        if key != current and (ceiling is None or cost.vram_fixed_bytes < ceiling)
+    ]
+    return [key for _, key in sorted(lighter)]
+
+
+def _wording(
+    level: str,
+    limit: str,
+    cost: Cost,
+    budget: Budget,
+    ram_need: int,
+    shape: RunShape,
+    fixed_ram: int,
+) -> tuple[str, str]:
     """Plain statements of what was measured against what."""
     if level == "ok":
         return "", (
             f"Needs about {format_bytes(ram_need)} of the "
             f"{format_bytes(budget.ram_bytes)} this machine can give a run."
         )
+    # A fixed cost belongs to the model that was chosen, so the sentence names
+    # it: the choice is the only thing that can be changed about it, and a
+    # verdict that will not say what caused it cannot be acted on.
+    if limit == "vram_fixed":
+        measured = (
+            " Measured on this card on an earlier run."
+            if cost.vram_source == "measured"
+            else ""
+        )
+        # Whichever term set the figure is the one named. Segmentation's is the
+        # batch size times a per-frame cost, so it is answerable by a control the
+        # user has; the mapping backend's is answerable only by changing backend.
+        if cost.vram_fixed_from == "segmentation":
+            return f"{shape.seg_model} needs more graphics memory than this card has", (
+                f"Reading {shape.batch_size} frames at a time through "
+                f"{shape.seg_model} takes about {format_bytes(cost.fixed_vram_bytes)} "
+                f"on the graphics card; this card can give a run "
+                f"{format_bytes(budget.vram_bytes or 0)}. Frame rate, length and "
+                f"resolution do not change that -- the batch size does.{measured}"
+            )
+        return f"{shape.mapping_backend} needs more graphics memory than this card has", (
+            f"{shape.mapping_backend} holds about {format_bytes(cost.fixed_vram_bytes)} "
+            f"on the graphics card before the first frame is read; this card can "
+            f"give a run {format_bytes(budget.vram_bytes or 0)}. Frame rate, "
+            f"length and resolution do not change that.{measured}"
+        )
+    if limit == "ram_fixed":
+        return f"{shape.mapping_backend} needs more memory than this computer has", (
+            f"Loading {shape.mapping_backend} alone takes about "
+            f"{format_bytes(fixed_ram)}; this computer can give a run "
+            f"{format_bytes(budget.ram_bytes)}. Frame rate, length and "
+            f"resolution do not change that."
+        )
     if limit == "vram":
-        return "Too much for the graphics card", (
-            f"Needs about {format_bytes(cost.vram_bytes)} of graphics memory; "
-            f"{format_bytes(budget.vram_bytes)} is free."
+        return "Too long for the graphics card", (
+            f"Needs about {format_bytes(cost.vram_bytes)} of graphics memory at "
+            f"{cost.frames} frames; this card can give a run "
+            f"{format_bytes(budget.vram_bytes or 0)}."
         )
     if level == "block":
         return "Too long to process in one pass", (

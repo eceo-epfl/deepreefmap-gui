@@ -492,6 +492,11 @@ def prefetch_model(info: ModelInfo, progress_cb: ProgressCallback | None = None)
         snapshot_roots[repo] = Path(root)
 
     _materialise_files(info, snapshot_roots)
+    # The memory model sizes a model from its files. They only just arrived, so
+    # whatever it concluded while they were absent is now wrong.
+    from deepreefmap_gui.profiling.model_weights import forget_cached_sizes
+
+    forget_cached_sizes()
 
 
 def _materialise_files(info: ModelInfo, snapshot_roots: dict[str, Path]) -> None:
