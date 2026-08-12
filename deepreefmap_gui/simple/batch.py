@@ -8,6 +8,7 @@ import re
 import threading
 import time
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import partial
@@ -226,6 +227,33 @@ def _failed_pass_label(transect: Transect | None, run_dir_name: str) -> str:
     name = transect.name if transect is not None else "Unassigned"
     number = _pass_number(run_dir_name)
     return f"{name} pass {number}" if number is not None else name
+
+
+def _button_column_width(parent: QWidget, labels: Iterable[str]) -> int:
+    """Width a cell button needs for the widest label it can hold.
+
+    Measured against a real button of the same kind, so the column follows the
+    font the machine is actually running: the padding, the border and the
+    stylesheet are all in the figure, and none of them are constants here.
+
+    Both dresses of the button are measured, because a row marked amber carries
+    its own stylesheet and its own padding with it, and the column has to hold
+    the wider of the two rather than whichever one happened to be on screen.
+    """
+    probe = QPushButton(parent)
+    probe.setProperty("quiet", "true")
+    probe.setVisible(False)
+    widest = 0
+    for warned in (False, True):
+        _style_warning_cell(probe, ok=not warned, filled=False)
+        for label in labels:
+            probe.setText(label)
+            probe.ensurePolished()
+            widest = max(widest, probe.sizeHint().width())
+    probe.deleteLater()
+    # Room for the view's own cell margins either side, which the button never
+    # gets and which are what turned "Default settings" into "efault setting".
+    return widest + 2 * SPACE_SM
 
 
 def _style_warning_cell(button: QPushButton, *, ok: bool, filled: bool = True) -> None:
@@ -615,8 +643,16 @@ class SimpleBatchMixin(MixinBase):
             # they go to one place, and split across three cells the window was
             # the one that ended up too narrow to read.
             (_COL_SECTION, 280),
-            # Wide enough for "Default settings", the longest label it takes.
-            (_COL_SETTINGS, 130),
+            # Measured from the labels it takes, not guessed: a fixed 130 px was
+            # wide enough for "Default settings" in the font it was written
+            # against and clipped it to "efault setting" in a larger one.
+            (
+                _COL_SETTINGS,
+                _button_column_width(
+                    self._survey_pass_table,
+                    (override_summary({}), override_summary({"a": 1, "b": 2})),
+                ),
+            ),
             # Wide enough for "Running 100%": the running row carries its own
             # percentage, which is where a pass's progress is read now.
             (_COL_STATUS, 150),
@@ -1759,6 +1795,21 @@ class SimpleBatchMixin(MixinBase):
         # blocked by it, and a filled amber on every row of a long session
         # reads as a table of errors.
         _style_warning_cell(button, ok=fit is None or fit.fits, filled=False)
+        self._widen_settings_column(button)
+
+    def _widen_settings_column(self, button: QPushButton) -> None:
+        """Keep the column at least as wide as the button now needs.
+
+        A label centred in a button that is too narrow is clipped at both ends,
+        which is how "Default settings" came out as "efault setting". The width
+        cannot be a constant: it follows the machine's UI font, and the amber
+        variant brings its own padding with it. It only ever grows, so a table
+        of rows in different states does not shuffle its columns as they repaint.
+        """
+        table = self._survey_pass_table
+        needed = button.sizeHint().width() + SPACE_SM
+        if table.columnWidth(_COL_SETTINGS) < needed:
+            table.setColumnWidth(_COL_SETTINGS, needed)
 
     def _rows_over_memory(self) -> int:
         """How many queued passes this machine cannot give what they ask for."""

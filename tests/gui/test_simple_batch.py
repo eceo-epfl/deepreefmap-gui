@@ -1907,19 +1907,42 @@ def test_passes_queued_mid_run_land_in_the_next_session(
     batch_window._survey_running_batch = None
 
 
-def test_no_settings_label_is_clipped(batch_window):
-    """The settings column holds a button, so its width has to fit the longest
-    label it takes, which is the one that says nothing is overridden."""
-    from PySide6.QtGui import QFontMetrics
+def test_no_settings_label_is_clipped(batch_window, tmp_path, monkeypatch):
+    """Scenario: the cart's settings column, holding a button whose label is
+    centred in it.
 
-    from deepreefmap_gui.simple.batch import _COL_SETTINGS
-
+    Expected behaviour: the column fits what the button itself says it needs.
+    Too narrow and the label is clipped at both ends rather than elided, which
+    is how "Default settings" came out as "efault setting".
+    """
+    add_video(batch_window, tmp_path, monkeypatch)
     table = batch_window._survey_pass_table
-    metrics = QFontMetrics(table.font())
-    widest = metrics.horizontalAdvance("Default settings")
-    # Padding either side of a push button's text; generous rather than exact,
-    # because the point is that the column is not sized to the text alone.
-    assert table.columnWidth(_COL_SETTINGS) >= widest + 24
+    button = settings_cell(batch_window, 0)
+
+    assert button.text() == "Default settings"
+    assert table.columnWidth(_COL_SETTINGS) >= button.sizeHint().width()
+
+
+def test_the_settings_column_follows_the_machine_s_ui_font(
+    batch_window, tmp_path, monkeypatch
+):
+    """A width in pixels cannot be a constant: the same label is half as wide
+    again on a laptop set to a larger interface font, which is where the old
+    fixed 130px clipped it."""
+    from PySide6.QtGui import QFont
+
+    add_video(batch_window, tmp_path, monkeypatch)
+    table = batch_window._survey_pass_table
+    button = settings_cell(batch_window, 0)
+    before = table.columnWidth(_COL_SETTINGS)
+
+    larger = QFont(button.font())
+    larger.setPointSizeF(button.font().pointSizeF() * 1.8)
+    button.setFont(larger)
+    batch_window._paint_settings_cell(0)
+
+    assert table.columnWidth(_COL_SETTINGS) > before
+    assert table.columnWidth(_COL_SETTINGS) >= button.sizeHint().width()
 
 
 def test_a_moved_clip_relinks_on_readd(batch_window, tmp_path, monkeypatch):
