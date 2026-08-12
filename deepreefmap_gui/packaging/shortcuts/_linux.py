@@ -33,23 +33,47 @@ def _entry_path() -> Path:
     return _data_home() / "applications" / _ENTRY_NAME
 
 
+def _theme_root() -> Path:
+    return _data_home() / "icons" / "hicolor"
+
+
 def _icon_path() -> Path:
-    return _data_home() / "icons" / "hicolor" / "512x512" / "apps" / _ICON_NAME
+    return _theme_root() / "512x512" / "apps" / _ICON_NAME
 
 
-def _refresh_menu_database() -> None:
-    """Ask the desktop environment to pick up the change. Best-effort."""
-    exe = shutil.which("update-desktop-database")
-    if exe is None:
-        return
+def _pixmap_path() -> Path:
+    """Pre-theme lookup path, still consulted by LXDE, LXQt and older panels."""
+    return _data_home() / "pixmaps" / _ICON_NAME
+
+
+def _run(args: list[str]) -> None:
     try:
-        subprocess.run(
-            [exe, str(_data_home() / "applications")],
-            check=False,
-            capture_output=True,
-        )
+        subprocess.run(args, check=False, capture_output=True)
     except OSError:
-        logger.debug("update-desktop-database failed", exc_info=True)
+        logger.debug("%s failed", args[0], exc_info=True)
+
+
+def _refresh_desktop_caches() -> None:
+    """Rebuild the menu and icon caches a desktop reads instead of scanning.
+
+    Best-effort: each tool is optional and a failure is not a failed install.
+    """
+    exe = shutil.which("update-desktop-database")
+    if exe is not None:
+        _run([exe, str(_data_home() / "applications")])
+
+    # A per-user overlay of the system hicolor theme, which carries the
+    # index.theme the two merge under, hence --ignore-theme-index. Only refresh
+    # a cache that exists: without one the desktop scans the directory.
+    exe = shutil.which("gtk-update-icon-cache")
+    if exe is not None and (_theme_root() / "icon-theme.cache").exists():
+        _run([exe, "--ignore-theme-index", "--quiet", "--force", str(_theme_root())])
+
+    for name in ("kbuildsycoca6", "kbuildsycoca5"):
+        exe = shutil.which(name)
+        if exe is not None:
+            _run([exe])
+            break
 
 
 def quote_exec(path: Path) -> str:
@@ -115,12 +139,15 @@ class LinuxShortcuts:
     def install(self, binary: Path) -> None:
         binary = binary.resolve()
         try:
-            icon_dest = _icon_path()
-            icon_dest.parent.mkdir(parents=True, exist_ok=True)
             from importlib import resources
 
             icon_src = resources.files("deepreefmap_gui.resources") / "icon.png"
-            icon_dest.write_bytes(icon_src.read_bytes())
+            payload = icon_src.read_bytes()
+            for icon_dest in (_icon_path(), _pixmap_path()):
+                icon_dest.parent.mkdir(parents=True, exist_ok=True)
+                if icon_dest.exists() and icon_dest.read_bytes() == payload:
+                    continue
+                icon_dest.write_bytes(payload)
 
             entry = _entry_path()
             entry.parent.mkdir(parents=True, exist_ok=True)
@@ -139,12 +166,14 @@ class LinuxShortcuts:
             )
         except OSError as exc:
             raise ShortcutError(str(exc)) from exc
-        _refresh_menu_database()
+        _refresh_desktop_caches()
 
     def remove(self) -> None:
         try:
             _entry_path().unlink(missing_ok=True)
             _icon_path().unlink(missing_ok=True)
+            _pixmap_path().unlink(missing_ok=True)
         except OSError as exc:
             raise ShortcutError(str(exc)) from exc
-        _refresh_menu_database()
+        # The caches would otherwise keep naming an icon that is gone.
+        _refresh_desktop_caches()

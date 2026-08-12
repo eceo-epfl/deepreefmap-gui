@@ -79,7 +79,7 @@ def test_the_shortcut_row_adds_and_removes_the_entry(make_window, monkeypatch, t
     monkeypatch.setenv("DEEPREEFMAP_MOCK_PYAPP", "1")
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
     monkeypatch.setenv("DEEPREEFMAP_SHORTCUT_MANIFEST", str(tmp_path / "shortcut.json"))
-    monkeypatch.setattr(_linux, "_refresh_menu_database", lambda: None)
+    monkeypatch.setattr(_linux, "_refresh_desktop_caches", lambda: None)
 
     window = make_window()
     _icon, _detail, actions = window._setup_check_rows["shortcut"]

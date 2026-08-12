@@ -33,9 +33,18 @@ def _isolated(tmp_path, monkeypatch):
     monkeypatch.setenv("DEEPREEFMAP_SHORTCUT_MANIFEST", str(tmp_path / "shortcut.json"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
     monkeypatch.setenv("APPDATA", str(tmp_path / "AppData" / "Roaming"))
-    monkeypatch.setattr(
-        "deepreefmap_gui.packaging.shortcuts._linux._refresh_menu_database", lambda: None
-    )
+    monkeypatch.setattr("deepreefmap_gui.packaging.shortcuts._linux._run", lambda args: None)
+
+
+@pytest.fixture
+def refreshes(monkeypatch):
+    """The commands the Linux backend would have run, with every tool present."""
+    from deepreefmap_gui.packaging.shortcuts import _linux
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(_linux, "_run", calls.append)
+    monkeypatch.setattr(_linux.shutil, "which", lambda name: f"/usr/bin/{name}")
+    return calls
 
 
 @pytest.fixture
@@ -147,6 +156,55 @@ def test_removing_twice_is_not_an_error(monkeypatch, binary):
     assert remove_shortcut().ok
 
 
+def test_linux_installs_the_icon_the_entry_names(monkeypatch, binary):
+    """`Icon=deepreefmap-gui` is a theme name, so the file has to sit where a
+    theme lookup reaches it, and be gone again after a remove."""
+    monkeypatch.setattr(sc.sys, "platform", "linux")
+    from deepreefmap_gui.packaging.shortcuts import _linux
+
+    install_shortcut(binary)
+    icon = _linux._icon_path()
+    assert icon.exists() and icon.read_bytes().startswith(b"\x89PNG")
+    assert icon.stem == "deepreefmap-gui"
+    assert _linux._pixmap_path().exists()
+
+    remove_shortcut()
+    assert not icon.exists()
+    assert not _linux._pixmap_path().exists()
+
+
+def test_linux_rebuilds_a_stale_icon_cache(monkeypatch, binary, refreshes):
+    """Scenario: an icon cache older than the icon it should list.
+
+    Expected behaviour: it is rebuilt on install and on remove. A stale cache
+    shadows the file and the entry falls back to the generic placeholder.
+    """
+    monkeypatch.setattr(sc.sys, "platform", "linux")
+    from deepreefmap_gui.packaging.shortcuts import _linux
+
+    cache = _linux._theme_root() / "icon-theme.cache"
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_bytes(b"stale")
+
+    install_shortcut(binary)
+    assert any("gtk-update-icon-cache" in call[0] for call in refreshes)
+    assert any("kbuildsycoca" in call[0] for call in refreshes)
+    assert any("update-desktop-database" in call[0] for call in refreshes)
+
+    refreshes.clear()
+    remove_shortcut()
+    assert any("gtk-update-icon-cache" in call[0] for call in refreshes)
+
+
+def test_linux_leaves_a_scanned_icon_directory_uncached(refreshes):
+    """No cache means the desktop scans the directory, which needs no help."""
+    from deepreefmap_gui.packaging.shortcuts import _linux
+
+    _linux._refresh_desktop_caches()
+
+    assert not any("gtk-update-icon-cache" in call[0] for call in refreshes)
+
+
 # --- Staleness and ownership ---
 
 
@@ -254,7 +312,7 @@ def mac(monkeypatch, tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(_macos.Path, "home", staticmethod(lambda: home))
-    monkeypatch.setattr(_macos, "_refresh_launch_services", lambda: None)
+    monkeypatch.setattr(_macos, "_refresh_launch_services", lambda unregister=False: None)
     return home / "Applications" / "DeepReefMap.app"
 
 
@@ -293,6 +351,25 @@ def test_macos_installs_without_an_icon_rather_than_failing(mac, binary, monkeyp
     assert install_shortcut(binary).ok
     info = plistlib.loads((mac / "Contents" / "Info.plist").read_bytes())
     assert "CFBundleIconFile" not in info
+
+
+def test_macos_unregisters_the_bundle_before_deleting_it(mac, binary, monkeypatch):
+    """Launch Services caches the icon and the entry, and unregistering a bundle
+    that is already deleted reads nothing."""
+    from deepreefmap_gui.packaging.shortcuts import _macos
+
+    install_shortcut(binary)
+
+    seen: list[tuple[bool, bool]] = []
+    monkeypatch.setattr(
+        _macos,
+        "_refresh_launch_services",
+        lambda unregister=False: seen.append((unregister, mac.exists())),
+    )
+    assert remove_shortcut().ok
+
+    assert seen == [(True, True)]
+    assert not mac.exists()
 
 
 def test_macos_reads_its_target_back_and_notices_a_move(mac, binary, tmp_path):

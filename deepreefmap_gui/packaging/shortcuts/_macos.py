@@ -52,18 +52,21 @@ def _stub_path() -> Path:
     return _bundle_path() / "Contents" / "MacOS" / _EXECUTABLE
 
 
-def _refresh_launch_services() -> None:
+def _refresh_launch_services(unregister: bool = False) -> None:
     """Nudge Launch Services to re-read the bundle. Best-effort.
 
     Needed mainly when reinstalling over an existing bundle, where the icon and
     version are cached. Never a full database rebuild: that takes minutes and
     affects every app on the machine.
+
+    ``unregister`` drops the bundle from the database instead, and has to run
+    while the bundle still exists for lsregister to read.
     """
     if not _LSREGISTER.exists():
         return
     try:
         subprocess.run(
-            [str(_LSREGISTER), "-f", str(_bundle_path())],
+            [str(_LSREGISTER), "-u" if unregister else "-f", str(_bundle_path())],
             check=False,
             capture_output=True,
             timeout=15,
@@ -172,9 +175,10 @@ class MacShortcuts:
         import shutil
 
         bundle = _bundle_path()
+        if bundle.exists():
+            _refresh_launch_services(unregister=True)
         try:
             if bundle.exists():
                 shutil.rmtree(bundle)
         except OSError as exc:
             raise ShortcutError(str(exc)) from exc
-        _refresh_launch_services()
