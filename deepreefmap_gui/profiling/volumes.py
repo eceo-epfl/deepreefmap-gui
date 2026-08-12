@@ -124,6 +124,36 @@ def volume_root(path: str, *, ismount: IsMountFn = os.path.ismount) -> str | Non
         current = parent
 
 
+def volume_for_path(
+    path: str,
+    *,
+    usage: UsageFn = shutil.disk_usage,
+    ismount: IsMountFn = os.path.ismount,
+) -> VolumeUsage | None:
+    """The drive `path` sits on, with nothing of the survey's counted onto it.
+
+    For a drive that matters to the app without the survey having put anything
+    there yet -- the output root on a laptop set up this morning. The segments
+    are zero, which is the truth: the space in use is somebody else's.
+    """
+    root = volume_root(path, ismount=ismount)
+    if root is None:
+        return None
+    try:
+        du = usage(root)
+        total, free = int(du.total), int(du.free)
+    except OSError:
+        return None
+    return VolumeUsage(
+        root=root,
+        label=_label_for(root),
+        total_bytes=total,
+        free_bytes=free,
+        video_bytes=0,
+        output_bytes=0,
+    )
+
+
 @dataclass
 class _Tally:
     video_bytes: int = 0

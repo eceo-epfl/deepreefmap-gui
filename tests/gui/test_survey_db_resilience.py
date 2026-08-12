@@ -112,7 +112,9 @@ def test_a_healthy_database_reports_ready(make_window, out_root, monkeypatch):
     window._refresh_readiness_view()
     checks = {c.key: c for c in window._current_setup_checks()}
     assert checks["survey"].ok
-    assert checks["survey"].action_label == ""
+    # The action stays, re-running the check rather than offering a repair for
+    # a database that does not need one.
+    assert checks["survey"].action_label == "Check again"
 
 
 def test_an_open_survey_is_not_inspected_again(make_window, out_root, monkeypatch):

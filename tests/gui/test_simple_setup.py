@@ -138,12 +138,16 @@ def test_ready_when_all_three_pass(window, monkeypatch):
     assert window._setup_summary.text() == "All requirements met."
     checks = {c.key: c for c in window._current_setup_checks()}
     for key, (_icon, _detail, actions) in window._setup_check_rows.items():
-        # A row whose action toggles something keeps it once the row passes:
-        # "Remove from the applications menu" is only reachable while it is
-        # there. Rows whose action fixes what they report hide it.
-        if checks[key].action_label:
+        # Every row keeps its action once it passes -- settings and past surveys
+        # are things a diver goes to look at on a machine with nothing wrong
+        # with it -- except the rows that genuinely have nothing to offer.
+        if not checks[key].actionable:
+            assert all(a.isHidden() for a in actions)
             continue
-        assert all(a.isHidden() for a in actions)
+        assert all(not a.isHidden() for a in actions)
+        # As a glyph with the words in its tooltip, so a page of ticks does not
+        # read as a page of problems.
+        assert all(a.text() == "" and a.toolTip() for a in actions)
 
 
 def test_missing_models_crosses_the_row_and_offers_provisioning(window, monkeypatch):
@@ -158,7 +162,8 @@ def test_cpu_only_machine_still_reaches_ready_with_the_standard_method(window, m
     _force(window, monkeypatch, gpu_name=None, mapping="scsfmlearner", missing=())
     _icon, detail, actions = window._setup_check_rows["graphics"]
     assert "CPU" in detail.text()
-    assert all(a.isHidden() for a in actions)
+    # Settings stay reachable, as the glyph the passing state uses.
+    assert all(not a.isHidden() and a.text() == "" for a in actions)
     assert window._setup_summary.text() == "All requirements met."
 
 
@@ -430,3 +435,44 @@ def test_the_readiness_view_paints_the_memory_row(window, monkeypatch):
     # smaller resolution or frame rate is chosen.
     assert not actions[0].isHidden()
     assert window._setup_summary.text() == "All requirements met."
+
+
+def test_the_disk_row_lists_the_drives(window, monkeypatch, out_root):
+    """Scenario: the readiness row reports one figure for one drive.
+
+    Expected behaviour: the row opens the whole set, so a laptop with a card
+    reader and an external plugged in can be read at a glance, and each one is
+    the way into its own page.
+    """
+    window._on_setup_show_drives()
+    popup = window._setup_drives_popup
+
+    # The output root's own drive is listed even before a survey has put
+    # anything on it: it is the drive this row is reporting.
+    assert popup.buttons
+    opened: list[str] = []
+    monkeypatch.setattr(window, "_open_storage_page", opened.append)
+    popup.volume_clicked.disconnect()
+    popup.volume_clicked.connect(window._open_storage_page)
+
+    popup.buttons[0].click()
+
+    assert opened and opened[0] in str(out_root.resolve()) + "/"
+    popup.hide()
+
+
+def test_the_drive_list_leads_with_where_runs_are_written(window):
+    """A measured drive keeps what the survey put on it; the output root leads."""
+    from deepreefmap_gui.profiling.volumes import VolumeUsage, volume_for_path
+
+    here = volume_for_path(window._out_root_input.text())
+    other = VolumeUsage(
+        root="/mnt/elsewhere", label="elsewhere", total_bytes=100, free_bytes=50,
+        video_bytes=10, output_bytes=10,
+    )
+    window._storage_bars.set_volumes([other])
+
+    listed = window._setup_drive_list()
+
+    assert listed[0].root == here.root
+    assert [v.root for v in listed[1:]] == ["/mnt/elsewhere"]

@@ -19,10 +19,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QPoint, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QAbstractButton,
+    QFrame,
     QHBoxLayout,
     QMenu,
     QSizePolicy,
@@ -35,6 +36,7 @@ from deepreefmap_gui.core.theme import (
     BAR_HEIGHT,
     BLOCK,
     BORDER_STRONG,
+    CARD_BG,
     CARD_HOVER_DELAY_MS,
     CARD_HOVER_GUARD_MS,
     GROOVE,
@@ -304,6 +306,91 @@ class VolumeButton(QAbstractButton):
         painter.end()
 
 
+class VolumeListPopup(QFrame):
+    """Every drive at once, one per line, each a way into its own page.
+
+    The foot of the window carries the first few side by side and has room for no
+    more. This is the whole list, opened from the readiness row that reports disk
+    space, where the question being asked is "which drive, and how full?" rather
+    than "how is this run doing?".
+
+    The rows are the same buttons the foot of the window draws, so a drive looks
+    like itself wherever it is seen and there is one place the bar is painted.
+    """
+
+    volume_clicked = Signal(str)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent, Qt.WindowType.Popup)
+        self.setObjectName("volumeList")
+        self.setStyleSheet(
+            f"QFrame#volumeList {{ background-color: {CARD_BG};"
+            f" border: 1px solid {BORDER_STRONG}; border-radius: {RADIUS}px; }}"
+        )
+        self._column = QVBoxLayout(self)
+        self._column.setContentsMargins(SPACE_SM, SPACE_SM, SPACE_SM, SPACE_SM)
+        self._column.setSpacing(SPACE_XS)
+        self._buttons: list[VolumeButton] = []
+        self._empty = muted_label("No drives measured yet.")
+        self._column.addWidget(self._empty)
+
+    @property
+    def buttons(self) -> list[VolumeButton]:
+        """The drive rows currently listed, in the order they are drawn."""
+        return [button for button in self._buttons if button.isVisibleTo(self)]
+
+    def _button(self, index: int) -> VolumeButton:
+        while len(self._buttons) <= index:
+            button = VolumeButton(self)
+            button.setCheckable(False)
+            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+            button.clicked.connect(self._on_row_clicked)
+            # Before the empty line, which stays last and is hidden whenever
+            # there is anything to list.
+            self._column.insertWidget(len(self._buttons), button)
+            self._buttons.append(button)
+        return self._buttons[index]
+
+    def show_volumes(self, volumes: list[VolumeUsage], *, under: QWidget) -> None:
+        """List these drives under `under`, kept inside the screen it sits on."""
+        for index, volume in enumerate(volumes):
+            button = self._button(index)
+            button.show_volume(volume, compact=False)
+            button.setVisible(True)
+        for button in self._buttons[len(volumes) :]:
+            button.setVisible(False)
+        self._empty.setVisible(not volumes)
+        self.adjustSize()
+        self.move(self._anchored_at(under))
+        self.show()
+        self.raise_()
+
+    def _anchored_at(self, under: QWidget) -> QPoint:
+        """Just below the control that opened it, nudged back onto the screen.
+
+        A popup opened from a row near the bottom of a laptop screen would
+        otherwise list its drives off the end of it.
+        """
+        point = under.mapToGlobal(QPoint(0, under.height() + SPACE_XS))
+        screen = under.screen()
+        if screen is None:
+            return point
+        area = screen.availableGeometry()
+        x = min(max(point.x(), area.left()), max(area.right() - self.width(), area.left()))
+        y = point.y()
+        if y + self.height() > area.bottom():
+            # Above the control instead, which is where the room is.
+            y = max(area.top(), under.mapToGlobal(QPoint(0, 0)).y() - self.height() - SPACE_XS)
+        return QPoint(x, y)
+
+    def _on_row_clicked(self) -> None:
+        button = self.sender()
+        volume = button.usage() if isinstance(button, VolumeButton) else None
+        self.hide()
+        if volume is not None:
+            self.volume_clicked.emit(volume.root)
+
+
 class StorageBars(QWidget):
     """The drives this survey uses, side by side, each one a way in.
 
@@ -367,6 +454,10 @@ class StorageBars(QWidget):
     def overflow_button(self) -> QToolButton:
         """The "+2 more" stand-in for the drives with no button of their own."""
         return self._overflow
+
+    def volumes(self) -> list[VolumeUsage]:
+        """Every drive last measured, including the ones with no button here."""
+        return list(self._volumes)
 
     def selected_root(self) -> str | None:
         return self._selected

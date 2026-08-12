@@ -24,6 +24,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
+from PySide6.QtCore import QSize
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -34,6 +35,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from deepreefmap_gui.core.icons import (
+    ICON_SM,
+    browse_icon,
+    cog_icon,
+    download_icon,
+    drive_icon,
+    folder_icon,
+    link_icon,
+    refresh_icon,
+)
 from deepreefmap_gui.core.theme import (
     ERROR,
     GUTTER,
@@ -129,11 +140,16 @@ class SetupCheck:
     title: str
     detail: str
     advisory: bool = False
-    # What the row's action offers right now. Empty keeps the default, where an
-    # action is a way to fix what the row reports and so is hidden once it
-    # passes. A row whose action toggles something -- rather than fixing it --
-    # names the action here and stays visible in both states.
+    # What the row's action offers right now, for a row whose action changes with
+    # its state. Empty keeps the label the button was built with.
     action_label: str = ""
+    # Whether there is anything to press. A row's actions stay reachable once it
+    # passes -- settings, past surveys and the model store are all things a diver
+    # goes to look at on a machine with nothing wrong with it, and hiding them
+    # left a fully set-up laptop with no way in. False is for the rows that
+    # genuinely offer nothing: a menu entry this build cannot write, or one an
+    # installer owns and would break if we touched it.
+    actionable: bool = True
 
 
 def graphics_check(*, gpu_name: str | None, requires_gpu: bool) -> SetupCheck:
@@ -273,10 +289,16 @@ def shortcut_check(status: ShortcutStatus) -> SetupCheck:
     uninstaller expects to find.
     """
     if status.state is ShortcutState.UNSUPPORTED:
-        return SetupCheck("shortcut", True, "Applications menu", status.detail, advisory=True)
+        return SetupCheck(
+            "shortcut", True, "Applications menu", status.detail, advisory=True, actionable=False
+        )
     if not status.owned and status.state in (ShortcutState.CURRENT, ShortcutState.UNKNOWN):
         return SetupCheck(
-            "shortcut", True, "Applications menu", "Installed, and managed by the installer."
+            "shortcut",
+            True,
+            "Applications menu",
+            "Installed, and managed by the installer.",
+            actionable=False,
         )
     if status.state is ShortcutState.ABSENT:
         return SetupCheck(
@@ -372,6 +394,51 @@ _ROW_TITLES = {
     "shortcut": "Applications menu",
 }
 
+def _set_cta(button: QPushButton, on: bool) -> None:
+    """Turn a button's filled-CTA styling on or off, repolishing so it takes."""
+    button.setProperty("cta", "true" if on else None)
+    button.style().unpolish(button)
+    button.style().polish(button)
+
+
+# Wide enough for the glyph and the button's own padding, narrow enough that six
+# of them down the page read as one column of controls rather than six buttons.
+_COMPACT_ACTION_WIDTH = 34
+_UNBOUNDED = 16777215  # QWIDGETSIZE_MAX
+
+
+def _row_action(label: str, icon, *, cta_when_unmet: bool = False) -> QPushButton:
+    """One readiness-row action, carrying both the shapes it is shown in.
+
+    Spelled out while the row needs fixing, because a diver has to be able to
+    read what to do. A glyph once the row passes, because the action is still
+    worth reaching -- settings, past surveys, the model store -- but a page of
+    ticks with six sentence-long buttons beside them reads as six problems.
+    """
+    button = QPushButton(label)
+    button.setIcon(icon)
+    button.setIconSize(QSize(ICON_SM, ICON_SM))
+    button.setProperty("full_label", label)
+    if cta_when_unmet:
+        button.setProperty("cta_when_unmet", True)
+    return button
+
+
+def _paint_row_action(button: QPushButton, *, label: str, compact: bool) -> None:
+    """Switch one action between its spelled-out and glyph-only shapes."""
+    button.setText("" if compact else label)
+    # The label survives as the tooltip for the mouse and as the accessible name
+    # for everything else: a glyph on its own is a guess, and a tooltip is not a
+    # name a keyboard or a screen reader can reach.
+    button.setToolTip(label if compact else "")
+    button.setAccessibleName(label)
+    if compact:
+        button.setFixedWidth(_COMPACT_ACTION_WIDTH)
+    else:
+        button.setMinimumWidth(0)
+        button.setMaximumWidth(_UNBOUNDED)
+
+
 _TICK = f'<span style="color:{SUCCESS}; font-weight:bold;">&#10003;</span>'
 _CROSS = f'<span style="color:{ERROR}; font-weight:bold;">&#10007;</span>'
 # An advisory failure: the machine is not missing anything, the session queued
@@ -416,34 +483,39 @@ class SimpleSetupMixin(MixinBase):
 
         self._setup_check_rows: dict[str, tuple[QLabel, QLabel, list[QWidget]]] = {}
 
-        graphics_settings = QPushButton("Open settings")
+        graphics_settings = _row_action("Open settings", cog_icon())
         graphics_settings.clicked.connect(self._on_edit_run_settings)
         card_layout.addWidget(self._build_setup_row("graphics", [graphics_settings]))
 
-        memory_settings = QPushButton("Open settings")
+        memory_settings = _row_action("Open settings", cog_icon())
         memory_settings.clicked.connect(self._on_edit_run_settings)
         card_layout.addWidget(self._build_setup_row("memory", [memory_settings]))
 
-        self._setup_usb_btn = QPushButton("Import from USB drive…")
+        self._setup_usb_btn = _row_action("Import from USB drive…", folder_icon())
         self._setup_usb_btn.clicked.connect(self._on_setup_import_pack)
-        self._setup_download_btn = QPushButton("Download models (requires internet)")
-        self._setup_download_btn.setProperty("cta", "true")
+        self._setup_download_btn = _row_action(
+            "Download models (requires internet)", download_icon(ICON_SM), cta_when_unmet=True
+        )
         self._setup_download_btn.clicked.connect(self._on_setup_download_models)
         card_layout.addWidget(
             self._build_setup_row("models", [self._setup_usb_btn, self._setup_download_btn])
         )
 
-        space_browse = QPushButton("Open past surveys")
+        self._setup_drives_btn = _row_action("Drives", drive_icon())
+        self._setup_drives_btn.clicked.connect(self._on_setup_show_drives)
+        space_browse = _row_action("Open past surveys", browse_icon())
         space_browse.clicked.connect(lambda: self._go_to_section("browse"))
-        card_layout.addWidget(self._build_setup_row("space", [space_browse]))
+        card_layout.addWidget(
+            self._build_setup_row("space", [self._setup_drives_btn, space_browse])
+        )
 
-        self._setup_survey_btn = QPushButton("Repair…")
-        self._setup_survey_btn.clicked.connect(self.check_survey_database)
+        self._setup_survey_btn = _row_action("Repair…", refresh_icon(ICON_SM, TEXT_MUTED))
+        self._setup_survey_btn.clicked.connect(self._on_setup_check_survey)
         card_layout.addWidget(self._build_setup_row("survey", [self._setup_survey_btn]))
 
         # Its label changes with what the entry currently is, so the row carries
         # the verb rather than the button carrying a fixed one.
-        self._setup_shortcut_btn = QPushButton("Add")
+        self._setup_shortcut_btn = _row_action("Add", link_icon(ICON_SM, TEXT_MUTED))
         self._setup_shortcut_btn.clicked.connect(self._on_toggle_shortcut)
         card_layout.addWidget(self._build_setup_row("shortcut", [self._setup_shortcut_btn]))
 
@@ -629,16 +701,18 @@ class SimpleSetupMixin(MixinBase):
             else:
                 icon.setText(_ALERT if check.advisory else _CROSS)
             detail.setText(check.detail)
-            # A row that names its action keeps it in both states: it toggles
-            # something rather than fixing what the row reports.
-            if check.action_label:
-                for action in actions:
-                    if isinstance(action, QPushButton):
-                        action.setText(check.action_label)
-                    action.setVisible(True)
-                continue
             for action in actions:
-                action.setVisible(not check.ok)
+                action.setVisible(check.actionable)
+                if not isinstance(action, QPushButton):
+                    continue
+                label = check.action_label or str(action.property("full_label") or "")
+                # Spelled out while the row needs fixing, a glyph once it passes.
+                _paint_row_action(action, label=label, compact=check.ok)
+                # Emphasis follows the verdict even though the action does not:
+                # a filled button on a row with a tick pulls a diver towards
+                # something that does not need doing, and away from the way on.
+                if action.property("cta_when_unmet"):
+                    _set_cta(action, not check.ok)
         ready = setup_ready(checks)
         unmet = sum(1 for check in checks if not check.ok and not check.advisory)
         # Says what the unmet count means for the button beside it. "1
@@ -653,9 +727,7 @@ class SimpleSetupMixin(MixinBase):
         )
         # When something is broken the loudest button on the page should be the
         # one that fixes it, not the one that carries on past it.
-        self._setup_continue_btn.setProperty("cta", "true" if ready else None)
-        self._setup_continue_btn.style().unpolish(self._setup_continue_btn)
-        self._setup_continue_btn.style().polish(self._setup_continue_btn)
+        _set_cta(self._setup_continue_btn, ready)
         if ready:
             # Once the machine can run, readiness stops leading on launch.
             self._settings.setValue("setup_complete", True)
@@ -682,6 +754,60 @@ class SimpleSetupMixin(MixinBase):
         # the diver has seen the state and chosen to move on.
         self._settings.setValue("setup_complete", True)
         self._set_simple_section("videos")
+
+    def _setup_drive_list(self) -> list:
+        """Every drive worth listing: the ones the survey uses, and the one it
+        writes to.
+
+        The output root leads, because it is the drive this row is about, and on
+        a laptop set up this morning it is the only one there is anything to say
+        about. The rest come from the foot of the window's own measurements
+        rather than a second scan, so the two never disagree.
+        """
+        from deepreefmap_gui.profiling.volumes import volume_for_path
+
+        bars = getattr(self, "_storage_bars", None)
+        measured = bars.volumes() if bars is not None else []
+        out_root = Path(self._out_root_input.text()).expanduser()
+        try:
+            here = volume_for_path(str(out_root))
+        except Exception:
+            here = None
+        if here is None:
+            return measured
+        # The measured copy of the same drive knows what the survey put on it,
+        # so it wins; this only fills in a drive nothing has been written to yet.
+        for volume in measured:
+            if volume.root == here.root:
+                return [volume] + [v for v in measured if v.root != here.root]
+        return [here, *measured]
+
+    def _on_setup_show_drives(self) -> None:
+        """List the drives under the button, each one a way into its own page."""
+        from deepreefmap_gui.core.storage_bar import VolumeListPopup
+
+        popup = getattr(self, "_setup_drives_popup", None)
+        if popup is None:
+            popup = VolumeListPopup(self)
+            popup.volume_clicked.connect(self._open_storage_page)
+            self._setup_drives_popup = popup
+        popup.show_volumes(self._setup_drive_list(), under=self._setup_drives_btn)
+
+    def _on_setup_check_survey(self) -> None:
+        """Re-run the database check from its row, and say what came back.
+
+        check_survey_database is silent when the database is fine, which is right
+        on launch and wrong for a button: a press with no answer reads as a dead
+        control on a row that now offers one in both states.
+        """
+        self.check_survey_database()
+        health = self._survey_db_health()
+        self._status_label.setText(
+            f"Survey database is readable and writable ({health.path})."
+            if health.openable
+            else health.detail or "The survey database could not be opened."
+        )
+        self._refresh_readiness_view()
 
     def _on_setup_import_pack(self) -> None:
         if self._survey_worker_running:

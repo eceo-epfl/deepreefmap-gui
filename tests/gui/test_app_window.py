@@ -88,7 +88,9 @@ def test_the_shortcut_row_adds_and_removes_the_entry(make_window, monkeypatch, t
     install_shortcut()
     window._shortcut_status_cache = None
     window._refresh_readiness_view()
-    assert actions[0].text() == "Remove"
+    # The row passes now, so its action is the glyph shape and carries the verb
+    # as its name rather than its text.
+    assert actions[0].accessibleName() == "Remove"
     assert not actions[0].isHidden()
 
     remove_shortcut()

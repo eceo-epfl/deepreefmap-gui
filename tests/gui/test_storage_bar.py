@@ -7,8 +7,15 @@ from __future__ import annotations
 
 from PySide6.QtCore import QSize
 from PySide6.QtGui import QPixmap
+from PySide6.QtWidgets import QWidget
 
-from deepreefmap_gui.core.storage_bar import MAX_BARS, StorageBars, VolumeBar, alert_colour
+from deepreefmap_gui.core.storage_bar import (
+    MAX_BARS,
+    StorageBars,
+    VolumeBar,
+    VolumeListPopup,
+    alert_colour,
+)
 from deepreefmap_gui.core.theme import BLOCK, WARNING
 from deepreefmap_gui.core.volume_card import VolumeCard
 from deepreefmap_gui.profiling.system_probe import format_bytes
@@ -268,3 +275,51 @@ def test_a_card_the_cursor_has_left_is_taken_down_by_the_guard(qapp) -> None:
 
     assert not bars._card.isVisible()
     assert not bars._guard_timer.isActive()
+
+
+def test_the_drive_list_shows_every_drive_at_once(qapp) -> None:
+    """Scenario: more drives than the foot of the window has room for.
+
+    Expected behaviour: the list is the whole set. The foot of the window caps
+    itself at MAX_BARS because it shares that space with the run status; a popup
+    opened to answer "which drive, and how full?" would be answering it badly.
+    """
+    volumes = [make_volume(f"d{n}") for n in range(MAX_BARS + 2)]
+    anchor = QWidget()
+    anchor.show()
+    popup = VolumeListPopup()
+
+    popup.show_volumes(volumes, under=anchor)
+
+    assert len(popup.buttons) == len(volumes)
+    assert [b.usage().label for b in popup.buttons] == [v.label for v in volumes]
+    # Each row says which drive and how much of it is left, without a hover.
+    assert all(v.label in b.caption.text() for b, v in zip(popup.buttons, volumes, strict=True))
+    popup.hide()
+
+
+def test_a_drive_row_opens_that_drive(qapp) -> None:
+    popup = VolumeListPopup()
+    anchor = QWidget()
+    anchor.show()
+    popup.show_volumes([make_volume("card"), make_volume("external")], under=anchor)
+    opened: list[str] = []
+    popup.volume_clicked.connect(opened.append)
+
+    popup.buttons[1].click()
+
+    assert opened == ["/mnt/external"]
+    # And it gets out of the way: the page it opened is the thing to look at.
+    assert not popup.isVisible()
+
+
+def test_the_drive_list_says_so_when_there_is_nothing_to_list(qapp) -> None:
+    popup = VolumeListPopup()
+    anchor = QWidget()
+    anchor.show()
+
+    popup.show_volumes([], under=anchor)
+
+    assert popup.buttons == []
+    assert popup._empty.isVisibleTo(popup)
+    popup.hide()
