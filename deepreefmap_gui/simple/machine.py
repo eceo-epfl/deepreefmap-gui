@@ -39,7 +39,6 @@ from deepreefmap_gui.core.icons import (
 )
 from deepreefmap_gui.core.theme import (
     GUTTER,
-    READING_WIDTH,
     SPACE_SM,
     SPACE_XS,
     TEXT_MUTED,
@@ -47,6 +46,7 @@ from deepreefmap_gui.core.theme import (
 )
 from deepreefmap_gui.core.widgets import (
     SectionHeader,
+    centred_column,
     section_card,
     segmented_qss,
     utility_button_qss,
@@ -159,10 +159,10 @@ class SimpleMachineMixin(MixinBase):
         four ways of looking at one computer, not four places to go, and the
         component is the one Browse already uses for the same job.
         """
-        page = QWidget()
-        outer = QVBoxLayout(page)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(GUTTER)
+        # The whole destination is one centred column: heading, switch and views
+        # share an edge, so the switch stays over the view it opens instead of
+        # sitting a window's width away from it.
+        page, outer = centred_column()
 
         header = QHBoxLayout()
         header.setSpacing(GUTTER)
@@ -206,6 +206,7 @@ class SimpleMachineMixin(MixinBase):
         outer.addWidget(self._machine_stack, 1)
 
         self._set_machine_view("readiness")
+        self._refresh_update_notice()
         return page
 
     def _build_machine_host(self, attribute: str) -> QWidget:
@@ -236,17 +237,7 @@ class SimpleMachineMixin(MixinBase):
         page = QWidget()
         outer = QVBoxLayout(page)
         outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
-        row = QHBoxLayout()
-        column = QWidget()
-        column.setMaximumWidth(READING_WIDTH)
-        layout = QVBoxLayout(column)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(GUTTER)
-        row.addWidget(column, 1)
-        row.addStretch(0)
-        outer.addLayout(row)
-        outer.addStretch(1)
+        outer.setSpacing(GUTTER)
 
         card, card_layout = section_card()
         caption = QLabel("The version installed here, and any newer one available.")
@@ -257,7 +248,8 @@ class SimpleMachineMixin(MixinBase):
         host_layout = QVBoxLayout(self._machine_updates_host)
         host_layout.setContentsMargins(0, 0, 0, 0)
         card_layout.addWidget(self._machine_updates_host)
-        layout.addWidget(card)
+        outer.addWidget(card)
+        outer.addStretch(1)
         return page
 
     def _build_machine_nav_button(self) -> MachineButton:
@@ -291,6 +283,32 @@ class SimpleMachineMixin(MixinBase):
             layout = host.layout()
             if layout is not None and widget.parentWidget() is not host:
                 layout.addWidget(widget)
+
+    def _refresh_update_notice(self) -> None:
+        """Say a release is waiting on the destination the badge opens.
+
+        The header badge gets somebody here, and then the page it lands on is
+        Readiness, which knows nothing about updates: the badge looked like it
+        had brought them nowhere. So the segment that holds the release is
+        tinted, and the strip above the checks names the version and opens it.
+        """
+        version = getattr(self, "_update_available", "")
+        button = getattr(self, "_machine_view_buttons", {}).get("updates")
+        if button is not None:
+            index = MACHINE_VIEWS.index("updates")
+            button.setStyleSheet(
+                segmented_qss(
+                    first=index == 0,
+                    last=index == len(MACHINE_VIEWS) - 1,
+                    alert=UPDATE if version else "",
+                )
+            )
+        strip = getattr(self, "_setup_update_strip", None)
+        if strip is not None:
+            strip.show_notice(
+                f"DeepReefMap {version} is available." if version else "",
+                "See what's new",
+            )
 
     def _set_machine_view(self, view: str) -> None:
         if view not in MACHINE_VIEWS:

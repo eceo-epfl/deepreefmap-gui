@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 from _factories import clip_pass, make_profile, make_transect
 
+from deepreefmap_gui.core.theme import UPDATE
 from deepreefmap_gui.simple import setup as setup_mod
 from deepreefmap_gui.simple.machine import MACHINE_VIEWS
 from deepreefmap_gui.simple.section_state import ATTENTION, BLOCKED, FIX_MACHINE, OK
@@ -203,6 +204,42 @@ def test_the_segmented_control_switches_the_view(window):
 def test_an_unknown_view_is_rejected(window):
     with pytest.raises(ValueError):
         window._set_machine_view("gauges")
+
+
+# --- the badge lands somewhere that says the same thing ----------------------
+
+
+def test_the_page_the_update_badge_opens_names_the_release(window):
+    """Scenario: the header badge lights up and is clicked.
+
+    Expected behaviour: Setup opens on Readiness, which knows nothing about
+    releases, so the news has to be repeated here. Otherwise the badge reads as
+    having brought the diver nowhere.
+    """
+    window._set_updates_tab_alert("2.1.0")
+
+    assert window._setup_update_strip.isVisibleTo(window._machine_stack)
+    assert "2.1.0" in window._setup_update_strip._message.text()
+
+
+def test_the_updates_segment_is_tinted_only_while_a_release_waits(window):
+    updates = window._machine_view_buttons["updates"]
+
+    window._set_updates_tab_alert("2.1.0")
+    assert UPDATE in updates.styleSheet()
+
+    window._set_updates_tab_alert(None)
+    assert UPDATE not in updates.styleSheet()
+    assert not window._setup_update_strip.isVisibleTo(window._machine_stack)
+
+
+def test_the_notice_opens_the_view_that_installs_the_release(window):
+    window._set_simple_section("machine")
+    window._set_updates_tab_alert("2.1.0")
+
+    window._setup_update_strip._action.click()
+
+    assert window._machine_view == "updates"
 
 
 # --- the panels are lent, not rebuilt ----------------------------------------

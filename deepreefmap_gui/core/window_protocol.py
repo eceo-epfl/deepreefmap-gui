@@ -413,6 +413,7 @@ if TYPE_CHECKING:
         ) -> None: ...
         def _sync_system_gauges_running(self) -> None: ...  # SimpleMachineMixin
         def _refresh_machine_button(self) -> None: ...  # SimpleMachineMixin
+        def _refresh_update_notice(self) -> None: ...  # SimpleMachineMixin
         def _refresh_readiness_view(self) -> None: ...  # SimpleSetupMixin
         def _current_setup_checks(self) -> list: ...  # SimpleSetupMixin
         def _initial_simple_section(self) -> str: ...  # SimpleSetupMixin

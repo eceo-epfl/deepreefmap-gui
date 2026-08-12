@@ -47,6 +47,9 @@ class VersionCheckMixin(MixinBase):
         """
         self._update_available = latest or ""
         self._refresh_machine_button()
+        # The badge says one is waiting from outside Setup; this says it inside,
+        # on the view that opens first.
+        self._refresh_update_notice()
 
     def _apply_update_check(self, current: str, releases: list[dict] | None, pyapp_bin: str | None) -> None:
         self._current_version_str = current

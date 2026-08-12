@@ -41,11 +41,13 @@ from deepreefmap_gui.core.theme import (
     ERROR,
     FONT_SM,
     GROOVE,
+    GUTTER,
     IDLE,
     ON_ACCENT,
     PRIMARY,
     RADIUS,
     RADIUS_SM,
+    READING_WIDTH,
     SPACE_MD,
     SPACE_SM,
     SPACE_XL,
@@ -55,6 +57,7 @@ from deepreefmap_gui.core.theme import (
     TABLE_ROW_HEIGHT,
     TEXT_DIM,
     TEXT_MUTED,
+    UPDATE,
     WARN_BG,
     WARN_BORDER,
     WARN_TEXT,
@@ -151,6 +154,38 @@ def section_column(title: str = "", *, spacing: int = SPACE_SM) -> tuple[QWidget
     return column, layout
 
 
+# How much of a centred page's width the column claims before its cap stops it.
+# Equal stretch either side would split the window three ways and leave the
+# column at a third of the space rather than at its cap, so the column asks for
+# far more than the margins and the cap is what actually decides its width.
+_COLUMN_STRETCH = 20
+
+
+def centred_column(
+    max_width: int = READING_WIDTH, *, spacing: int = GUTTER
+) -> tuple[QWidget, QVBoxLayout]:
+    """A page whose content is capped at a readable measure and centred on it.
+
+    Returns the page and the layout its content goes in. Content pinned to the
+    left of a wide window leaves a screen's worth of empty space beside it, and
+    the eye has to track the whole way across to get from a sentence to the
+    control that acts on it.
+    """
+    page = QWidget()
+    row = QHBoxLayout(page)
+    row.setContentsMargins(0, 0, 0, 0)
+    row.setSpacing(0)
+    column = QWidget()
+    column.setMaximumWidth(max_width)
+    layout = QVBoxLayout(column)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(spacing)
+    row.addStretch(1)
+    row.addWidget(column, _COLUMN_STRETCH)
+    row.addStretch(1)
+    return page, layout
+
+
 def lent_panel_home(parent: QWidget) -> tuple[QWidget, QWidget, QVBoxLayout]:
     """A permanent holder for a panel that lives somewhere else, and the panel.
 
@@ -172,12 +207,17 @@ def lent_panel_home(parent: QWidget) -> tuple[QWidget, QWidget, QVBoxLayout]:
     return home, page, page_layout
 
 
-def segmented_qss(*, first: bool, last: bool) -> str:
+def segmented_qss(*, first: bool, last: bool, alert: str = "") -> str:
     """One button of a joined segmented control, filled when it is the live one.
 
     The segments share a seam: only the outermost corners round, and every
     segment after the first drops its left border so the row reads as one
     control rather than as several loose pills.
+
+    `alert` tints the segment in the colour given, for a view that has something
+    waiting on it. Only while it is unselected: once it is the live segment the
+    view itself says what is waiting, and a second colour on the control would be
+    competing with the accent that marks which segment is open.
     """
     corners = []
     if first:
@@ -188,10 +228,16 @@ def segmented_qss(*, first: bool, last: bool) -> str:
     if last:
         corners.append(f"border-top-right-radius: {RADIUS}px;")
         corners.append(f"border-bottom-right-radius: {RADIUS}px;")
+    rest = (
+        f" background: {tinted(alert, PILL_TINT_ALPHA)}; color: {alert};"
+        f" font-weight: {WEIGHT_SEMIBOLD};"
+        if alert
+        else f" background: {BUTTON}; color: {WINDOW_TEXT};"
+    )
     return (
         f"QToolButton {{ border: 1px solid {BORDER}; border-radius: 0; {' '.join(corners)}"
         f" padding: {SPACE_XS}px {SPACE_MD}px; min-height: {CONTROL_HEIGHT - 2 * SPACE_XS}px;"
-        f" background: {BUTTON}; color: {WINDOW_TEXT}; }}"
+        f"{rest} }}"
         f" QToolButton:hover {{ background: {SURFACE_HI}; border-color: {BORDER_STRONG}; }}"
         f" QToolButton:focus {{ border-color: {PRIMARY}; }}"
         f" QToolButton:checked {{ background: {PRIMARY}; color: {ON_ACCENT};"
@@ -521,6 +567,54 @@ class NotReadyStrip(QWidget):
 
     def clear(self) -> None:
         self._reason.setText("")
+        self.setVisible(False)
+
+
+class NoticeStrip(QWidget):
+    """News about a page, next to the one action that follows from it.
+
+    NotReadyStrip's shape for something that is not a blocker: an update
+    waiting, a result ready. Tinted from its own ink rather than filled, so it
+    reads as a note on the page rather than as a warning about it.
+    """
+
+    action_clicked = Signal()
+
+    def __init__(self, colour: str = UPDATE, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("noticeStrip")
+        # A bare QWidget paints no stylesheet background without this, so the
+        # tint and the border it is drawn against never appear.
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(
+            f"QWidget#noticeStrip {{ background-color: {tinted(colour, PILL_TINT_ALPHA)};"
+            f" border: 1px solid {tinted(colour, PILL_BORDER_ALPHA)};"
+            f" border-radius: {RADIUS_SM}px; }}"
+        )
+        row = QHBoxLayout(self)
+        row.setContentsMargins(SPACE_MD, SPACE_SM, SPACE_MD, SPACE_SM)
+        row.setSpacing(SPACE_MD)
+
+        self._message = QLabel("")
+        self._message.setWordWrap(True)
+        self._message.setStyleSheet(f"color: {colour}; font-weight: {WEIGHT_SEMIBOLD};")
+        row.addWidget(self._message, 1)
+
+        self._action = QPushButton("")
+        self._action.clicked.connect(self.action_clicked)
+        row.addWidget(self._action)
+
+        self.setVisible(False)
+
+    def show_notice(self, message: str, action: str = "") -> None:
+        """Say the news. An empty message hides the strip."""
+        self._message.setText(message)
+        self._action.setText(action)
+        self._action.setVisible(bool(action))
+        self.setVisible(bool(message))
+
+    def clear(self) -> None:
+        self._message.setText("")
         self.setVisible(False)
 
 

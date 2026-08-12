@@ -37,14 +37,13 @@ from PySide6.QtWidgets import (
 from deepreefmap_gui.core.theme import (
     ERROR,
     GUTTER,
-    READING_WIDTH,
     SPACE_SM,
     SPACE_XS,
     SUCCESS,
     TEXT_MUTED,
     WARNING,
 )
-from deepreefmap_gui.core.widgets import section_card
+from deepreefmap_gui.core.widgets import NoticeStrip, section_card
 from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.models.cache import GPU_ONLY_BACKENDS
 from deepreefmap_gui.packaging.shortcuts import (
@@ -375,22 +374,19 @@ class SimpleSetupMixin(MixinBase):
         page = QWidget()
         outer = QVBoxLayout(page)
         outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
-        # A few rows of status is a short page, so it is capped at the width of
-        # what it has to say. Pinned to the top left rather than centred:
-        # the heading and the view switch above it start at the page margin, and
-        # a card that floats away from the control that opened it reads as a
-        # separate thing.
-        row = QHBoxLayout()
-        column = QWidget()
-        column.setMaximumWidth(READING_WIDTH)
-        layout = QVBoxLayout(column)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(GUTTER)
-        row.addWidget(column, 1)
-        row.addStretch(0)
-        outer.addLayout(row)
-        outer.addStretch(1)
+        outer.setSpacing(GUTTER)
+        # The width the page is capped and centred at is the destination's, so
+        # the card sits under the switch that opened it rather than starting a
+        # measure of its own.
+
+        # A newer release, said on the view that opens first. Above the card
+        # rather than in it: the checks are about this computer, and this is
+        # about the software on it.
+        self._setup_update_strip = NoticeStrip()
+        self._setup_update_strip.action_clicked.connect(
+            lambda: self._set_machine_view("updates")
+        )
+        outer.addWidget(self._setup_update_strip)
 
         # Untitled: the page it sits on is already headed Setup, and the
         # segmented control above says which of its views this is.
@@ -455,7 +451,8 @@ class SimpleSetupMixin(MixinBase):
         footer.addWidget(self._setup_continue_btn)
         card_layout.addLayout(footer)
 
-        layout.addWidget(card)
+        outer.addWidget(card)
+        outer.addStretch(1)
 
         self._refresh_readiness_view()
         return page
