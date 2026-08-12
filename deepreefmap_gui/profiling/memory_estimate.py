@@ -528,10 +528,13 @@ def _wording(
     # it: the choice is the only thing that can be changed about it, and a
     # verdict that will not say what caused it cannot be acted on.
     if limit == "vram_fixed":
+        # The fixed term decides this verdict on its own, before frame rate,
+        # length or resolution enter into it, so where the figure came from is
+        # part of the verdict rather than a footnote to it.
         measured = (
             " Measured on this card on an earlier run."
             if cost.vram_source == "measured"
-            else ""
+            else " This is an estimate until a run on this card records what it took."
         )
         # Whichever term set the figure is the one named. Segmentation's is the
         # batch size times a per-frame cost, so it is answerable by a control the

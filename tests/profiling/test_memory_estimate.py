@@ -153,6 +153,20 @@ def test_a_fixed_cost_names_the_backend_that_caused_it() -> None:
     assert "do not change that" in verdict.detail
 
 
+def test_an_unmeasured_fixed_cost_says_it_is_an_estimate() -> None:
+    """Expected behaviour: the figure that refuses a card on its own says whether
+    a reading stands behind it.
+
+    The mapping backend's fixed term is modelled, not traced, and it decides the
+    verdict before frame rate, length or resolution enter into it. Stated bare it
+    reads as a measurement of the card in front of the user.
+    """
+    verdict = grade(_profile(total_gb=256, gpu=_small_card()), _shape(2000))
+
+    assert verdict.cost.vram_source == "estimated"
+    assert "is an estimate" in verdict.detail
+
+
 def test_a_fixed_cost_offers_a_backend_that_actually_fits() -> None:
     """Re-graded rather than asserted, so the offer is never one that fails too."""
     fit = fit_for_pass(
