@@ -24,7 +24,13 @@ _MAX_RUNS_PER_KEY = 10
 
 # Stamped on each entry so a future schema change can tell old (peak-less) runs
 # from new ones. Bump when the entry shape changes incompatibly.
-_ENTRY_VERSION = 1
+#
+# 2: stage peaks are the run's own process rather than the whole machine. A
+#    version 1 peak carries the desktop's RAM and whatever was in swap before the
+#    run began, which on a busy machine is tens of gigabytes that were never the
+#    run's, so those peaks are read as absent rather than believed.
+_ENTRY_VERSION = 2
+_PROCESS_PEAK_VERSION = 2
 
 
 def history_key(mapping_backend: str, seg_model: str, proc_w: int, proc_h: int, fps: int) -> str:
@@ -169,9 +175,18 @@ def load_expected_peaks(
         # Peak committed memory per stage = RAM plus the swap it spilled into, then
         # the worst stage. A thrashing run pins RAM near 100% and shows its real
         # demand as swap, so RAM alone would understate the true peak.
-        per_stage = [
-            s["ram_bytes"] + (s.get("swap_bytes") or 0) for s in stages if s.get("ram_bytes")
-        ]
+        #
+        # Only from entries that measured this run's own process. An older one
+        # measured the whole machine, so its figure carries the desktop's RAM and
+        # whatever was in swap before the run began -- tens of gigabytes that were
+        # never the run's, applied to a fixed term the user cannot argue with. The
+        # VRAM half of the same entry is still read: the card was always sampled
+        # device-wide, deliberately, and that has not changed.
+        per_stage = (
+            [s["ram_bytes"] + (s.get("swap_bytes") or 0) for s in stages if s.get("ram_bytes")]
+            if int(run.get("version") or 1) >= _PROCESS_PEAK_VERSION
+            else []
+        )
         if per_stage:
             committed = max(per_stage)
             if committed > worst_committed:
@@ -233,6 +248,11 @@ def summarise_recorded_runs(path: Path | None = None) -> list[dict]:
                     # the UI can show "not recorded" rather than a misleading 0%.
                     "swap_recorded": any("swap_bytes" in s for s in peaks.values()),
                     "peak_vram_bytes": max(vrams) if vrams else None,
+                    # Whether the RAM and swap figures are the run's own or the
+                    # whole machine's. Old entries measured the machine, and a
+                    # panel that shows both without saying which is which invites
+                    # the reader to compare two different quantities.
+                    "machine_basis": int(entry.get("version") or 1) < _PROCESS_PEAK_VERSION,
                     "total_ram_bytes": profile.get("total_ram_bytes"),
                     "total_swap_bytes": profile.get("total_swap_bytes") or 0,
                     "gpu_name": gpu.get("name"),
@@ -288,6 +308,9 @@ def group_recorded_runs(path: Path | None = None) -> list[dict]:
                 "peak_swap_bytes": int(statistics.median(swaps)) if swaps else 0,
                 "swap_recorded": any(m.get("swap_recorded") for m in members),
                 "peak_vram_bytes": int(statistics.median(vrams)) if vrams else None,
+                # One old member is enough to qualify the group: the median it
+                # sits in is no longer purely the run's own.
+                "machine_basis": any(m.get("machine_basis") for m in members),
                 "total_ram_bytes": rep["total_ram_bytes"],
                 "total_swap_bytes": rep["total_swap_bytes"],
                 "gpu_name": rep["gpu_name"],

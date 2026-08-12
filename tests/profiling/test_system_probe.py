@@ -130,6 +130,39 @@ def test_sample_utilisation_reports_swap() -> None:
     assert 0 <= u.swap_used_bytes <= u.swap_total_bytes
 
 
+def test_sample_process_memory_reads_this_process() -> None:
+    """The run's own footprint, which is what a stored peak has to mean.
+
+    Runs on whichever platform the suite is on: the call has to come back with
+    something usable everywhere, since a None sends the sampler back to the
+    machine-wide reading it exists to replace.
+    """
+    mine = sp.sample_process_memory()
+
+    assert mine is not None
+    rss, swap = mine
+    assert rss > 0
+    assert swap >= 0
+    # And it is this process, not the machine: the desktop around it is larger.
+    assert rss < sp.sample_utilisation().ram_total_bytes
+
+
+def test_process_memory_survives_a_platform_that_will_not_report_it(monkeypatch) -> None:
+    """psutil raises for a process it cannot inspect; the sampler has a fallback."""
+    class _Blind:
+        def children(self, recursive=False):
+            return []
+
+        def memory_full_info(self):
+            raise RuntimeError("denied")
+
+        def memory_info(self):
+            raise RuntimeError("denied")
+
+    monkeypatch.setattr(sp.psutil, "Process", lambda *a, **k: _Blind())
+    assert sp.sample_process_memory() is None
+
+
 def test_format_bytes() -> None:
     assert sp.format_bytes(None) == "\u2014"  # em dash placeholder for unknown
     assert sp.format_bytes(2 * 1024**3) == "2.0 GB"

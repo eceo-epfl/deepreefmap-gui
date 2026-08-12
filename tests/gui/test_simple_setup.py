@@ -383,6 +383,21 @@ def test_memory_is_a_row_like_the_others():
     assert without_card.detail == "16.0 GB of memory."
 
 
+def test_the_memory_row_reports_the_swap_the_grade_counts():
+    """A machine shown 16 GB, then warned about a 30 GB run it can finish, has
+    been given two figures that do not add up."""
+    check = setup_mod.memory_check(
+        total_ram_bytes=16 * _GB, vram_bytes=None, swap_bytes=32 * _GB
+    )
+    assert check.detail == "16.0 GB of memory, and 32.0 GB of swap."
+
+    with_card = setup_mod.memory_check(
+        total_ram_bytes=16 * _GB, vram_bytes=8 * _GB, swap_bytes=32 * _GB
+    )
+    assert "32.0 GB of swap" in with_card.detail
+    assert with_card.detail.endswith("8.0 GB on the graphics card.")
+
+
 def test_a_memory_advisory_marks_its_row_without_holding_the_machine_back():
     """The row fails against the session queued, not against the machine, so
     readiness stays met and processing still starts."""

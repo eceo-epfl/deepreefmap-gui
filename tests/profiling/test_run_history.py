@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from deepreefmap_gui.profiling import run_history
 from deepreefmap_gui.profiling.run_history import (
     _MAX_RUNS_PER_KEY,
     distinct_model_combinations,
@@ -64,9 +65,37 @@ def test_stage_peaks_and_system_profile_round_trip(tmp_path) -> None:
     import json
 
     stored = json.loads(path.read_text())[key][0]
-    assert stored["version"] == 1
+    assert stored["version"] == run_history._ENTRY_VERSION
     assert stored["stage_peaks"] == peaks
     assert stored["system_profile"]["total_ram_bytes"] == 33_000_000_000
+
+
+def test_peaks_measured_against_the_whole_machine_are_not_read_back(tmp_path) -> None:
+    """Scenario: history written before peaks were measured per process.
+
+    Expected behaviour: those figures carry the desktop's RAM and whatever was
+    already in swap, so they are treated as unmeasured rather than believed. The
+    grade falls back to its model, which at least ranks the backends correctly.
+    Timings and the card's own figure are untouched: only RAM changed basis.
+    """
+    import json
+
+    path = tmp_path / "run_timings.json"
+    key = history_key("loger_star", "seg", 1376, 768, 5)
+    record_run(
+        key, {"mapping": 100.0}, frames=1000, points=1,
+        stage_peaks={"mapping": {"ram_bytes": 60_000_000_000, "vram_bytes": 9_000_000_000}},
+        system_profile={"gpu": {"name": "RTX"}}, path=path,
+    )
+    stored = json.loads(path.read_text())
+    stored[key][0]["version"] = 1
+    path.write_text(json.dumps(stored))
+
+    peaks = load_expected_peaks(key, path, gpu_name="RTX")
+    assert peaks is not None
+    assert peaks["ram_bytes"] is None
+    assert peaks["vram_bytes"] == 9_000_000_000
+    assert load_priors(key, path)
 
 
 def test_peaks_pool_across_fps_for_the_same_resolution(tmp_path) -> None:

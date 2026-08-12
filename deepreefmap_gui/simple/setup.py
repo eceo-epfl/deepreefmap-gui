@@ -219,28 +219,42 @@ def space_check(
 
 
 def memory_check(
-    *, total_ram_bytes: int, vram_bytes: int | None, advisory: str = ""
+    *,
+    total_ram_bytes: int,
+    vram_bytes: int | None,
+    swap_bytes: int = 0,
+    advisory: str = "",
 ) -> SetupCheck:
-    """Memory row. Advisory: a session graded short of memory still runs."""
+    """Memory row. Advisory: a session graded short of memory still runs.
+
+    Swap is reported alongside the RAM because the grade counts it: a machine
+    told it has 27.5 GB, then warned about a 56 GB run it can actually finish,
+    has been shown two figures that do not add up.
+    """
     if advisory:
         return SetupCheck("memory", False, "Memory", advisory, advisory=True)
-    installed = format_bytes(total_ram_bytes)
+    parts = [f"{format_bytes(total_ram_bytes)} of memory"]
+    if swap_bytes:
+        parts.append(f"{format_bytes(swap_bytes)} of swap")
     if vram_bytes:
-        return SetupCheck(
-            "memory",
-            True,
-            "Memory",
-            f"{installed} of memory, and {format_bytes(vram_bytes)} on the graphics card.",
-        )
-    return SetupCheck("memory", True, "Memory", f"{installed} of memory.")
+        parts.append(f"{format_bytes(vram_bytes)} on the graphics card")
+    if len(parts) == 1:
+        return SetupCheck("memory", True, "Memory", f"{parts[0]}.")
+    return SetupCheck("memory", True, "Memory", f"{', '.join(parts[:-1])}, and {parts[-1]}.")
 
 
 def survey_check(health: SurveyDbHealth) -> SetupCheck:
     """Survey database row. Blocking: a run that cannot be recorded loses its
     provenance, and nothing in Transects, Process or Browse works without it."""
     if health.openable:
+        # "Repair" is what the action does when the row has failed; on a healthy
+        # database the same button re-runs the check, and says so.
         return SetupCheck(
-            "survey", True, "Survey database", f"Reading and writing {health.path}."
+            "survey",
+            True,
+            "Survey database",
+            f"Reading and writing {health.path}.",
+            action_label="Check again",
         )
     return SetupCheck(
         "survey",
@@ -300,6 +314,7 @@ def evaluate_setup(
     min_free_bytes: int,
     total_ram_bytes: int = 0,
     vram_bytes: int | None = None,
+    swap_bytes: int = 0,
     memory_advisory: str = "",
     bytes_per_footage_minute: float | None = None,
     survey_health: SurveyDbHealth | None = None,
@@ -309,7 +324,10 @@ def evaluate_setup(
     checks = [
         graphics_check(gpu_name=gpu_name, requires_gpu=requires_gpu),
         memory_check(
-            total_ram_bytes=total_ram_bytes, vram_bytes=vram_bytes, advisory=memory_advisory
+            total_ram_bytes=total_ram_bytes,
+            vram_bytes=vram_bytes,
+            swap_bytes=swap_bytes,
+            advisory=memory_advisory,
         ),
         models_check(missing_models),
         space_check(free_bytes, min_free_bytes, bytes_per_footage_minute),
@@ -535,6 +553,7 @@ class SimpleSetupMixin(MixinBase):
             min_free_bytes=_MIN_FREE_BYTES,
             total_ram_bytes=profile.total_ram_bytes,
             vram_bytes=profile.gpu.total_vram_bytes if profile.gpu.has_distinct_vram else None,
+            swap_bytes=profile.total_swap_bytes,
             memory_advisory=getattr(self, "_memory_advisory", ""),
             bytes_per_footage_minute=self._footage_size_rate(out_root),
             survey_health=self._survey_db_health(),

@@ -384,6 +384,7 @@ def make_profile(
     gpu_name: str | None = "GPU",
     free: int = 50 * 1024**3,
     total_ram: int = 16 * 1024**3,
+    total_swap: int = 0,
     vram: int | None = 8 * 1024**3,
 ):
     """A stand-in for probe_system's result, exposing what the setup rows read."""
@@ -394,7 +395,12 @@ def make_profile(
         if gpu_name
         else GpuInfo(GPU_NONE, "CPU only", None, None)
     )
-    return SimpleNamespace(gpu=gpu, disk_free_bytes=free, total_ram_bytes=total_ram)
+    return SimpleNamespace(
+        gpu=gpu,
+        disk_free_bytes=free,
+        total_ram_bytes=total_ram,
+        total_swap_bytes=total_swap,
+    )
 
 
 def repo_commit(repo_id: str) -> str:

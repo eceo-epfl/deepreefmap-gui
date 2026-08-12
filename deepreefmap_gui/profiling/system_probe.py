@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import platform
+import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -183,6 +184,47 @@ def sample_utilisation() -> Utilisation:
         swap_used_bytes=swap_used,
         swap_total_bytes=swap_total,
     )
+
+
+# Per-process swap is a Linux figure (VmSwap, via smaps_rollup). It is also the
+# only platform where the call that carries it is cheap: on Windows the same
+# psutil call walks the process's working set to compute USS, which on a
+# multi-gigabyte run is far too slow to poll twice a second.
+_PROCESS_SWAP_READABLE = sys.platform.startswith("linux")
+
+
+def sample_process_memory() -> tuple[int, int] | None:
+    """This process tree's resident and swapped-out bytes, or None if unreadable.
+
+    The pipeline runs inside this process, so its own footprint is the run's
+    demand. The machine-wide reading is the wrong basis for a peak that is stored
+    and compared later: it charges the run for every other application on the
+    desktop, and on a machine with pages already in swap it charged it for those
+    too, which made a light mapping backend record a larger peak than a heavy one
+    and left the memory grade unable to rank them.
+
+    Off Linux the swap half reads zero, so a run that pages out records low. That
+    is the safe direction here rather than a gap: a recorded peak only ever raises
+    the estimate's fixed term (memory_estimate.estimate_cost ignores a negative
+    shortfall), so an understated reading leaves the model's own figure standing
+    instead of talking the machine into a run that will not fit.
+    """
+    try:
+        me = psutil.Process()
+        processes = [me, *me.children(recursive=True)]
+    except Exception:
+        return None
+    rss = swap = 0
+    read_any = False
+    for proc in processes:
+        try:
+            info = proc.memory_full_info() if _PROCESS_SWAP_READABLE else proc.memory_info()
+        except Exception:
+            continue
+        rss += int(getattr(info, "rss", 0) or 0)
+        swap += int(getattr(info, "swap", 0) or 0)
+        read_any = True
+    return (rss, swap) if read_any else None
 
 
 def format_bytes(n: float | None) -> str:

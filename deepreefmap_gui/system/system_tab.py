@@ -218,8 +218,15 @@ class SystemPanelMixin(MixinBase):
             grid.setHorizontalSpacing(8)
             grid.setVerticalSpacing(3)
             grid.setColumnStretch(1, 1)
-            self._add_meter(grid, 0, "RAM", ram, total, True)
-            self._add_meter(grid, 1, "Swap", swap, run["total_swap_bytes"], run.get("swap_recorded", False))
+            # Runs recorded before memory was measured per process read the whole
+            # machine, desktop included. Said on the row rather than corrected:
+            # the reading was true, it is just not the same quantity as the run's.
+            basis = " (whole machine)" if run.get("machine_basis") else ""
+            self._add_meter(grid, 0, f"RAM{basis}", ram, total, True)
+            self._add_meter(
+                grid, 1, f"Swap{basis}", swap, run["total_swap_bytes"],
+                run.get("swap_recorded", False),
+            )
             self._add_meter(grid, 2, "VRAM", run["peak_vram_bytes"], run["gpu_total_vram_bytes"], True)
             self._add_time_row(grid, 3, run.get("run_seconds"), run.get("seconds_per_frame"))
             vbox.addLayout(grid)

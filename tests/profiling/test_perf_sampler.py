@@ -26,6 +26,58 @@ def test_peaks_are_the_max_within_each_stage_window() -> None:
     assert peaks["mapping"] == {"ram_bytes": 34, "vram_bytes": 8, "swap_bytes": 6}
 
 
+def test_the_sampler_measures_this_run_not_the_whole_desktop(monkeypatch) -> None:
+    """Scenario: a busy desktop holding 20 units of RAM and 9 in swap, around a
+    run of its own that holds 6 and 1.
+
+    Expected behaviour: the sample is the run's. A machine-wide reading is stored
+    as the run's peak and read back by the memory grade, where the desktop's share
+    made a light mapping backend record more than a heavy one.
+    """
+    import threading
+
+    import deepreefmap_gui.profiling.system_probe as probe
+
+    monkeypatch.setattr(
+        probe, "sample_utilisation",
+        lambda: probe.Utilisation(20, 100, 20.0, 1.0, vram_used_bytes=3, vram_total_bytes=10,
+                                  swap_used_bytes=9, swap_total_bytes=100),
+    )
+    monkeypatch.setattr(probe, "sample_process_memory", lambda: (6, 1))
+    sampler = ResourceSampler(interval_s=0.01)
+    sampler.start()
+    deadline = threading.Event()
+    deadline.wait(0.05)
+    sampler.stop()
+
+    assert sampler.samples
+    assert all(s.ram_bytes == 6 and s.swap_bytes == 1 for s in sampler.samples)
+    # VRAM stays device-wide: understating what a card holds is an OOM kill.
+    assert all(s.vram_bytes == 3 for s in sampler.samples)
+
+
+def test_the_machine_reading_is_the_fallback_when_the_process_will_not_report(
+    monkeypatch,
+) -> None:
+    import threading
+
+    import deepreefmap_gui.profiling.system_probe as probe
+
+    monkeypatch.setattr(
+        probe, "sample_utilisation",
+        lambda: probe.Utilisation(20, 100, 20.0, 1.0, vram_used_bytes=3, vram_total_bytes=10,
+                                  swap_used_bytes=9, swap_total_bytes=100),
+    )
+    monkeypatch.setattr(probe, "sample_process_memory", lambda: None)
+    sampler = ResourceSampler(interval_s=0.01)
+    sampler.start()
+    threading.Event().wait(0.05)
+    sampler.stop()
+
+    assert sampler.samples
+    assert all(s.ram_bytes == 20 and s.swap_bytes == 9 for s in sampler.samples)
+
+
 def test_stage_without_samples_or_marks_is_omitted() -> None:
     # Mapping has no marks, and preprocess has no sample landing inside it.
     marks = {"start": 0.0, "preprocess": 10.0}

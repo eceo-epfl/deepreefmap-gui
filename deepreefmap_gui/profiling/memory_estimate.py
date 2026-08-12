@@ -5,10 +5,26 @@ RAM and VRAM, from the tables in model_costs.py. Both limits are inverted to a
 frame ceiling, so the answer to "it does not fit" is a length the machine can
 actually process rather than a number the user has to interpret.
 
-Swap is deliberately excluded from the budget. The peak here is a torch.cat over
-tensors that are all live and all touched; spilling that to disk thrashes rather
-than degrades, and the kernel kills on memory pressure well before the combined
-pool is exhausted.
+Swap counts towards the RAM budget where the machine has it, capped at the
+installed RAM again. A run that spills finishes, far more slowly, and refusing
+one outright on a machine with 32 GB of swap sitting idle is the wrong answer.
+The cap is the honest half: past roughly its own RAM again the working set is
+mostly on disk and the run thrashes rather than degrades. Recorded peaks are
+already RAM plus the swap the run spilled into (run_history.py), so a budget
+without swap graded a measured demand against a pool it was never measured in
+and called a run that had succeeded here impossible.
+
+Spilling into swap is not a fault, so it is not a warning: a run that fits the
+combined pool grades "ok" and the readout says how much of it runs from swap and
+that this is slower. A machine that warns on every run it can actually do is a
+machine the user learns to ignore.
+
+The pool is held to what is free as well as to what is installed. A desktop
+sitting in 20 GB does not hand it over because a run would like it, and a verdict
+graded against the box's figure alone was green on runs that would be killed. The
+two are different problems and the wording keeps them apart: the machine being
+too small is answered by trimming the pass, another application holding the
+memory is answered by closing it.
 
 A Linux RAM exhaustion is an uncatchable OOM kill, so this advises before a long
 run rather than crash into it.
@@ -32,8 +48,12 @@ _OS_RESERVE_FRACTION = 0.12
 _OS_RESERVE_MIN = 3 * 1024**3
 _OS_RESERVE_MAX = 8 * 1024**3
 
-# Share of the budget above which a run is close enough to warn about.
+# Share of the budget above which a run is close enough to warn about. The wall
+# is higher on a machine with swap, and the last stretch of it is disk: a run
+# that runs out there slows to a crawl first rather than being killed outright,
+# so the margin that has to be kept clear is a thinner one.
 _WARN_FRACTION = 0.85
+_SWAP_WARN_FRACTION = 0.95
 
 # Allocator slack and per-block transients.
 _OVERHEAD = 1.15
@@ -47,6 +67,21 @@ _GPU_RESERVE_MAX = int(1.5 * 1024**3)
 
 def _os_reserve(total_ram_bytes: int) -> int:
     return int(min(_OS_RESERVE_MAX, max(_OS_RESERVE_MIN, total_ram_bytes * _OS_RESERVE_FRACTION)))
+
+
+def _usable_swap(profile: SystemProfile) -> int:
+    """Swap a run may count on: what the machine has, up to its RAM again.
+
+    Installed rather than currently free, for the reason the RAM budget is:
+    a verdict that moves because something else swapped cannot be acted on.
+
+    What "has" means is the platform's answer, and two of the three understate it.
+    Windows reports the pagefile at its present size, which the system grows on
+    demand, and macOS reports a swapfile that starts near nothing and grows the
+    same way. Both err towards a smaller budget than the machine would really
+    give, which is the side to be wrong on.
+    """
+    return max(0, min(profile.total_swap_bytes, profile.total_ram_bytes))
 
 
 def _gpu_reserve(total_vram_bytes: int) -> int:
@@ -123,6 +158,29 @@ class Budget:
     ram_bytes: int
     vram_bytes: int | None
     unified: bool  # GPU draws from system RAM, so one pool serves both
+    swap_bytes: int = 0  # spill space, slow but real
+    # RAM and swap actually free when the machine was last probed. Zero means the
+    # probe said nothing, not that nothing is free.
+    free_bytes: int = 0
+
+    @property
+    def memory_bytes(self) -> int:
+        """Everything a run could occupy on a machine with nothing else running."""
+        return self.ram_bytes + self.swap_bytes
+
+    @property
+    def usable_bytes(self) -> int:
+        """What a run can have right now: neither more than the machine's share of
+        its own memory, nor more than what is genuinely free.
+
+        The installed figure alone was the optimistic one -- a desktop holding
+        20 GB does not hand it over because a run would like it -- and grading a
+        run "ok" against memory another application is sitting in is how a green
+        readout turns into an OOM kill.
+        """
+        if not self.free_bytes:
+            return self.memory_bytes
+        return min(self.memory_bytes, self.free_bytes)
 
 
 @dataclass(frozen=True)
@@ -139,6 +197,11 @@ class Verdict:
     headline: str
     detail: str
     shape: RunShape | None = None
+    # Demand on the RAM side, the GPU's share included where the pool is shared.
+    memory_need_bytes: int = 0
+    # Frames that fit in what is free at this moment, as against max_frames, which
+    # is what the machine can give a run when nothing else is holding it.
+    max_frames_now: int = 0
 
     @property
     def fits(self) -> bool:
@@ -151,13 +214,41 @@ class Verdict:
     @property
     def need_bytes(self) -> int:
         """Demand on whichever resource decided the verdict."""
-        return self.cost.vram_bytes if self.limit.startswith("vram") else self.cost.ram_bytes
+        if self.limit.startswith("vram"):
+            return self.cost.vram_bytes
+        return self.memory_need_bytes or self.cost.ram_bytes
+
+    @property
+    def swap_need_bytes(self) -> int:
+        """How much of the demand lands in swap, which is what makes a run slow."""
+        if self.limit.startswith("vram") or not self.budget.swap_bytes:
+            return 0
+        return max(0, min(self.need_bytes, self.budget.usable_bytes) - self.budget.ram_bytes)
 
     @property
     def budget_bytes(self) -> int:
+        """The pool the demand is measured against: what is free to give it.
+
+        Swap is in the figure whether or not this particular run reaches into it.
+        What the machine can give a run does not depend on which run is asking,
+        and a denominator that grew when the mapping method changed read as
+        though the computer had gained memory.
+        """
         if self.limit.startswith("vram"):
             return self.budget.vram_bytes or 0
-        return self.budget.ram_bytes
+        return self.budget.usable_bytes
+
+    @property
+    def held_by_others_bytes(self) -> int:
+        """Memory this machine has but something else is in, at probe time."""
+        return max(0, self.budget.memory_bytes - self.budget.usable_bytes)
+
+    @property
+    def budget_label(self) -> str:
+        """What that pool is called, so a readout never quotes swap as plain memory."""
+        if self.limit.startswith("vram"):
+            return "graphics memory"
+        return "memory and swap" if self.budget.swap_bytes else "memory"
 
 
 def estimate_cost(shape: RunShape, *, recorded: dict | None = None) -> Cost:
@@ -232,17 +323,26 @@ def estimate_cost(shape: RunShape, *, recorded: dict | None = None) -> Cost:
 def machine_budget(profile: SystemProfile) -> Budget:
     """RAM and VRAM a run may claim.
 
-    Graded against installed RAM less an OS reserve rather than against whatever
-    is momentarily free, so the same settings do not change verdict because a
-    browser is open.
+    Two figures, and a run is held to both. ``ram_bytes`` is installed less an OS
+    reserve: what this machine could give a run, which does not move when a
+    browser opens and is what the frame ceilings are quoted from. ``free_bytes``
+    is what is actually free at this moment, which is what a run will really get.
+    Grading on the first alone was optimistic; grading on the second alone would
+    tell a diver to trim a transect when the answer is to close a browser.
 
     VRAM is graded the same way and for the same reason. What the driver reports
     free moves under the user, on Windows even while nothing is running.
     """
     ram = max(0, profile.total_ram_bytes - _os_reserve(profile.total_ram_bytes))
+    swap = _usable_swap(profile)
+    # What is free right now, which the run is also held to: the installed figure
+    # says what the machine could give a run, not what it has left to give.
+    free = max(0, profile.available_ram_bytes) + max(0, min(profile.free_swap_bytes, swap))
     gpu = profile.gpu
     if gpu.kind == GPU_MPS:
-        return Budget(ram_bytes=ram, vram_bytes=None, unified=True)
+        return Budget(
+            ram_bytes=ram, vram_bytes=None, unified=True, swap_bytes=swap, free_bytes=free
+        )
     vram = None
     if gpu.kind == GPU_CUDA:
         # Installed less a reserve, for the reason above. A card that reports
@@ -252,11 +352,21 @@ def machine_budget(profile: SystemProfile) -> Budget:
         total = gpu.total_vram_bytes or gpu.free_vram_bytes
         if total:
             vram = max(0, total - _gpu_reserve(total))
-    return Budget(ram_bytes=ram, vram_bytes=vram, unified=False)
+    return Budget(
+        ram_bytes=ram, vram_bytes=vram, unified=False, swap_bytes=swap, free_bytes=free
+    )
 
 
-def _max_frames_for(cost: Cost, budget: Budget) -> int:
-    """Frames the tightest stage allows."""
+def _max_frames_for(cost: Cost, budget: Budget, *, pool: int | None = None) -> int:
+    """Frames the tightest stage allows.
+
+    Against what the machine can give a run by default, not against what is free
+    this second: a length that dropped because a browser opened is not a length
+    anybody can plan a dive around. The caller passes the live pool when it needs
+    the other question answered -- what would fit right now.
+    """
+    if pool is None:
+        pool = budget.memory_bytes
     stages = cost.stages
     if budget.unified:
         # One pool: the GPU's demand comes out of the same RAM.
@@ -268,7 +378,7 @@ def _max_frames_for(cost: Cost, budget: Budget) -> int:
             )
             for stage in stages
         )
-    ceiling = min(stage.frame_ceiling(budget.ram_bytes) for stage in stages)
+    ceiling = min(stage.frame_ceiling(pool) for stage in stages)
     if budget.vram_bytes is not None and not budget.unified:
         vram_stage = Stage("vram", cost.fixed_vram_bytes, cost.vram_bytes_per_frame)
         ceiling = min(ceiling, vram_stage.frame_ceiling(budget.vram_bytes))
@@ -293,10 +403,19 @@ def grade(
     ram_need = cost.ram_bytes
     if budget.unified:
         ram_need += cost.vram_bytes
-    percent = 100.0 * ram_need / budget.ram_bytes if budget.ram_bytes else 0.0
+    # Against what is free right now, swap included: that is the wall the run
+    # hits, and it is lower than the installed one on a machine with a desktop
+    # open on it.
+    usable = budget.usable_bytes
+    percent = 100.0 * ram_need / usable if usable else 0.0
     ceiling = _max_frames_for(cost, budget)
+    ceiling_now = _max_frames_for(cost, budget, pool=usable)
 
-    over_ram = ram_need > budget.ram_bytes
+    over_ram = ram_need > usable
+    # The machine has the memory, something else is in it. A different problem
+    # with a different answer: closing an application costs nothing, trimming a
+    # transect costs data.
+    busy = over_ram and ram_need <= budget.memory_bytes
     over_vram = (
         budget.vram_bytes is not None
         and not budget.unified
@@ -311,16 +430,23 @@ def grade(
         # is over budget does not fit at one frame, so advice about the frame
         # rate, the trim or the resolution is advice that cannot be taken.
         if over_ram:
-            limit = "ram_fixed" if fixed_ram > budget.ram_bytes else "ram"
+            if busy:
+                # Named for the cause, not the resource: the pass is the size it
+                # always was, and what changed is what else is running.
+                limit = "busy"
+            else:
+                limit = "ram_fixed" if fixed_ram > budget.memory_bytes else "ram"
         else:
             limit = (
                 "vram_fixed"
                 if cost.fixed_vram_bytes > (budget.vram_bytes or 0)
                 else "vram"
             )
-    elif percent >= 100.0 * _WARN_FRACTION:
+    elif percent >= 100.0 * (_SWAP_WARN_FRACTION if budget.swap_bytes else _WARN_FRACTION):
         level, limit = "warn", "ram"
     else:
+        # Spilling into swap lands here: it is slower, not wrong, and the readout
+        # says so in the same sentence that reports what the run needs.
         level, limit = "ok", ""
 
     headline, detail = _wording(level, limit, cost, budget, ram_need, shape, fixed_ram)
@@ -330,6 +456,8 @@ def grade(
         budget=budget,
         limit=limit,
         max_frames=ceiling,
+        max_frames_now=ceiling_now,
+        memory_need_bytes=ram_need,
         percent=percent,
         headline=headline,
         detail=detail,
@@ -403,6 +531,10 @@ class Fit:
             )
             return f"Choose {self.suggested_backend} under Mapping.{size}"
         parts = []
+        # First, because it is the only fix here that costs nothing: the machine
+        # has the memory, and the pass is the length the dive was.
+        if self.verdict.limit == "busy":
+            parts.append("close other applications")
         if self.suggested_fps is not None:
             parts.append(f"set FPS to {self.suggested_fps}")
         if self.suggested_seconds is not None:
@@ -446,6 +578,10 @@ def fit_for_pass(
     verdict = grade(profile, shape, recorded=recorded)
     ceiling = verdict.max_frames
     max_seconds = ceiling / fps
+    # A busy machine is asked what fits right now, because that is the verdict
+    # being explained. Everything else is asked what the machine can do, so the
+    # length offered does not shrink because something else opened.
+    advice_ceiling = verdict.max_frames_now if verdict.limit == "busy" else ceiling
 
     suggested_fps: int | None = None
     suggested_seconds: float | None = None
@@ -466,13 +602,14 @@ def fit_for_pass(
     elif verdict.level != "ok":
         # The largest frame rate that still fits the pass as trimmed.
         for rate in range(fps - 1, 0, -1):
-            if seconds * rate <= ceiling:
+            if seconds * rate <= advice_ceiling:
                 suggested_fps = rate
                 break
         # Only worth saying when it is meaningfully shorter than the pass
         # already is, and long enough to still be a usable transect.
-        if max_seconds >= 60 and max_seconds <= 0.85 * seconds:
-            suggested_seconds = max_seconds
+        advice_seconds = advice_ceiling / fps
+        if advice_seconds >= 60 and advice_seconds <= 0.85 * seconds:
+            suggested_seconds = advice_seconds
     if verdict.limit.startswith("vram") and batch_size > 1:
         # The batch size only reaches the device through the segmentation term,
         # so this is worth saying only when shrinking it actually changes the
@@ -509,6 +646,20 @@ def _lighter_backends(current: str) -> list[str]:
     return [key for _, key in sorted(lighter)]
 
 
+def _pool_phrase(budget: Budget) -> str:
+    """What one run can occupy, naming swap where the machine has it.
+
+    Never folded into a single figure: a run told it has 58 GB, when 31 of them
+    are a swapfile, has been told the wrong thing about how long it will take.
+    """
+    if not budget.swap_bytes:
+        return format_bytes(budget.ram_bytes)
+    return (
+        f"{format_bytes(budget.ram_bytes)} of memory and "
+        f"{format_bytes(budget.swap_bytes)} of swap"
+    )
+
+
 def _wording(
     level: str,
     limit: str,
@@ -519,10 +670,37 @@ def _wording(
     fixed_ram: int,
 ) -> tuple[str, str]:
     """Plain statements of what was measured against what."""
+    spill = max(0, min(ram_need, budget.usable_bytes) - budget.ram_bytes)
+    held = max(0, budget.memory_bytes - budget.usable_bytes)
+    # Said once, wherever the verdict lands: the pass is slower for it, and that
+    # is the whole of what swap changes about a run that fits.
+    slower = (
+        f" About {format_bytes(spill)} of that runs from swap, so it will be slower."
+        if spill
+        else ""
+    )
+    # The whole pool, every time. What the machine can give a run does not depend
+    # on which run is being graded, and a figure that grew when the mapping method
+    # changed read as though the computer had gained memory.
+    pool = _pool_phrase(budget)
+    # Said wherever the verdict lands, because it is the difference between the
+    # figure on the box and the figure a run will get.
+    in_use = (
+        f" {format_bytes(held)} of it is in use by other applications right now."
+        if held
+        else ""
+    )
     if level == "ok":
         return "", (
-            f"Needs about {format_bytes(ram_need)} of the "
-            f"{format_bytes(budget.ram_bytes)} this machine can give a run."
+            f"Needs about {format_bytes(ram_need)} of the {pool} this machine "
+            f"can give a run.{in_use}{slower}"
+        )
+    if limit == "busy":
+        return "Other applications are using the memory this needs", (
+            f"Needs about {format_bytes(ram_need)}. This machine has "
+            f"{pool} for a run, but {format_bytes(held)} of it is in use by "
+            f"other applications, leaving {format_bytes(budget.usable_bytes)}. "
+            f"Closing them costs nothing; the pass would have to be shortened."
         )
     # A fixed cost belongs to the model that was chosen, so the sentence names
     # it: the choice is the only thing that can be changed about it, and a
@@ -557,7 +735,7 @@ def _wording(
         return f"{shape.mapping_backend} needs more memory than this computer has", (
             f"Loading {shape.mapping_backend} alone takes about "
             f"{format_bytes(fixed_ram)}; this computer can give a run "
-            f"{format_bytes(budget.ram_bytes)}. Frame rate, length and "
+            f"{_pool_phrase(budget)}. Frame rate, length and "
             f"resolution do not change that."
         )
     if limit == "vram":
@@ -569,9 +747,9 @@ def _wording(
     if level == "block":
         return "Too long to process in one pass", (
             f"Needs about {format_bytes(ram_need)} of memory; this machine can "
-            f"give a run {format_bytes(budget.ram_bytes)}."
+            f"give a run {pool}.{in_use}"
         )
     return "Close to this machine's limit", (
-        f"Needs about {format_bytes(ram_need)} of the "
-        f"{format_bytes(budget.ram_bytes)} this machine can give a run."
+        f"Needs about {format_bytes(ram_need)} of the {pool} this machine "
+        f"can give a run.{in_use}{slower}"
     )

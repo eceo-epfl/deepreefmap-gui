@@ -1213,6 +1213,10 @@ class FormPanelMixin(MixinBase):
         backend = self._map_combo.currentText()
         self._loger_panel.setVisible(backend in ("loger", "loger_star"))
         self._scs_panel.setVisible(backend == "scsfmlearner")
+        # The backend is the largest single term in the memory model, and the
+        # readout offers switching it as the fix. Leaving the grade stale meant
+        # taking that advice appeared to change nothing.
+        self._on_processing_settings_changed()
 
     def _collect_run_settings(self) -> dict:
         """Every run_reconstruction kwarg the form controls, minus the per-run
@@ -1394,7 +1398,7 @@ class FormPanelMixin(MixinBase):
         except Exception:
             over = 0
         if over > 1:
-            return f"{over} passes need more memory than this machine can give a run."
+            return f"{over} passes need more than this machine's memory."
         return fit.headline
 
     def _paint_capacity_readout(self, fit) -> None:
@@ -1416,7 +1420,9 @@ class FormPanelMixin(MixinBase):
         # as comfortable while the run is refused.
         verdict = fit.verdict
         need, budget = verdict.need_bytes, verdict.budget_bytes
-        resource = "graphics memory" if verdict.limit.startswith("vram") else "memory"
+        # Named by the verdict: a pool that is part swapfile must not be quoted
+        # as plain memory, or a run that will crawl reads as one that will not.
+        resource = verdict.budget_label
         self._capacity_caption.setText(
             f"Longest pass: {format_duration(fit.seconds)} at {fit.fps} FPS"
         )
@@ -1431,6 +1437,19 @@ class FormPanelMixin(MixinBase):
             detail += (
                 f" It can process about {format_duration(fit.max_seconds)} "
                 f"at {fit.fps} FPS."
+            )
+        # What the machine has is not what it has left. Said on the readout, so a
+        # figure that moved because something else opened can be understood.
+        if verdict.held_by_others_bytes:
+            detail += (
+                f" {format_bytes(verdict.held_by_others_bytes)} more is in use by "
+                f"other applications."
+            )
+        # Stated, not warned about: the run works, it is the speed that changes.
+        if verdict.swap_need_bytes:
+            detail += (
+                f" About {format_bytes(verdict.swap_need_bytes)} of it runs from "
+                f"swap, so expect it to be slower."
             )
         self._capacity_detail.setText(detail)
         self._paint_batch_size_hint(fit)

@@ -116,6 +116,43 @@ def test_the_readout_names_a_setting_that_would_fit(window, monkeypatch) -> None
     assert "FPS to" in advice or "trim" in advice
 
 
+def test_choosing_a_lighter_method_regrades_the_readout(window, monkeypatch) -> None:
+    """The readout offers a lighter mapping method as the fix for a pass that
+    will not fit, so taking that offer has to move the number it is read from."""
+    import deepreefmap_gui.profiling.system_probe as probe
+
+    monkeypatch.setattr(probe, "probe_system", lambda *a, **k: _low_ram_profile(probe))
+    _queue_pass(window, seconds=378.0, fps=5)
+    window._map_combo.setCurrentText("loger_star")
+    heavy = window._capacity_detail.text()
+
+    window._map_combo.setCurrentText("scsfmlearner")
+
+    assert window._capacity_detail.text() != heavy
+
+
+def test_swap_is_reported_as_a_cost_in_speed_not_a_warning(window, monkeypatch) -> None:
+    """A machine with a swapfile large enough to finish the pass is not failing."""
+    import deepreefmap_gui.profiling.system_probe as probe
+
+    def swapped(*_a, **_k):
+        base = _low_ram_profile(probe)
+        return probe.SystemProfile(
+            **{**base.to_dict(), "gpu": base.gpu,
+               "total_swap_bytes": 32 * 1024**3, "free_swap_bytes": 32 * 1024**3}
+        )
+
+    monkeypatch.setattr(probe, "probe_system", swapped)
+    _queue_pass(window, seconds=378.0, fps=5)
+    window._update_memory_profile_warning()
+
+    detail = window._capacity_detail.text()
+    assert "runs from swap" in detail and "slower" in detail
+    # No advice line, no advisory on Setup: nothing here needs the user's attention.
+    assert window._capacity_advice.isHidden()
+    assert window._memory_advisory == ""
+
+
 def test_capacity_is_unavailable_until_a_pass_is_queued(window) -> None:
     window._survey_rows = []  # no length is knowable yet
     window._update_memory_profile_warning()

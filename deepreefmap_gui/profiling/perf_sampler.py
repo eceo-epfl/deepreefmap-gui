@@ -1,4 +1,9 @@
-"""Background RAM/VRAM sampler: measure real peak memory per pipeline stage."""
+"""Background RAM/VRAM sampler: measure real peak memory per pipeline stage.
+
+RAM and swap are this process tree's own; VRAM stays device-wide, because a
+graphics figure that understates is an OOM the user cannot catch, and the whole
+card is what the run has to fit inside anyway.
+"""
 
 from __future__ import annotations
 
@@ -12,7 +17,7 @@ class ResourceSample:
     t: float  # time.monotonic() timestamp, comparable to the orchestrator's stage marks
     ram_bytes: int
     vram_bytes: int | None
-    swap_bytes: int = 0  # system swap in use; secondary RAM once physical RAM fills
+    swap_bytes: int = 0  # this run's own pages in swap: secondary RAM once RAM fills
 
 
 class ResourceSampler:
@@ -39,15 +44,21 @@ class ResourceSampler:
         self._thread = None
 
     def _loop(self) -> None:
-        from deepreefmap_gui.profiling.system_probe import sample_utilisation
+        from deepreefmap_gui.profiling.system_probe import (
+            sample_process_memory,
+            sample_utilisation,
+        )
 
         while not self._stop.is_set():
             try:
                 util = sample_utilisation()
+                # The machine-wide reading is the fallback, not the measurement:
+                # it is what a platform that will not report per-process memory
+                # leaves us with, and it counts the whole desktop as the run's.
+                mine = sample_process_memory()
+                ram, swap = mine or (util.ram_used_bytes, util.swap_used_bytes)
                 self.samples.append(
-                    ResourceSample(
-                        time.monotonic(), util.ram_used_bytes, util.vram_used_bytes, util.swap_used_bytes
-                    )
+                    ResourceSample(time.monotonic(), ram, util.vram_used_bytes, swap)
                 )
             except Exception:
                 pass
@@ -64,6 +75,8 @@ def peaks_from_marks(
 
     Swap is captured alongside RAM because a run that fills physical RAM pins it near
     100% and shows its real demand as swap, so a stage's true peak is RAM plus swap.
+    Both are the run's own (see ResourceSampler), which is what makes them
+    comparable to an estimate and to each other across backends.
     """
     peaks: dict[str, dict[str, int | None]] = {}
     for begin, end, stage in spans:

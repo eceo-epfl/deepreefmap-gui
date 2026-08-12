@@ -100,19 +100,150 @@ def test_vram_grows_with_the_clip() -> None:
     assert estimate_cost(_shape(3000)).vram_bytes > estimate_cost(_shape(300)).vram_bytes
 
 
-def test_swap_is_not_part_of_the_budget() -> None:
-    """A peak that is one torch.cat thrashes rather than degrades in swap."""
+def test_swap_is_part_of_what_a_run_may_use() -> None:
+    """A run that spills finishes, slowly, so refusing it outright is wrong."""
     without = machine_budget(_profile(total_gb=32))
-    with_swap = machine_budget(_profile(total_gb=32, swap_gb=64))
-    assert without.ram_bytes == with_swap.ram_bytes
+    with_swap = machine_budget(_profile(total_gb=32, swap_gb=16))
+
+    assert without.swap_bytes == 0
+    assert without.memory_bytes == without.ram_bytes
+    # The RAM half is untouched: swap is extra, not a licence to spend more RAM.
+    assert with_swap.ram_bytes == without.ram_bytes
+    assert with_swap.memory_bytes == without.ram_bytes + 16 * _GB
 
 
-def test_the_budget_ignores_what_is_momentarily_free() -> None:
-    """Otherwise the same settings change verdict when a browser opens."""
+def test_swap_counts_only_up_to_the_machine_s_own_ram() -> None:
+    """Past that the working set is mostly on disk and the run thrashes."""
+    assert machine_budget(_profile(total_gb=32, swap_gb=256)).swap_bytes == 32 * _GB
+
+
+def _swap_span(swap_gb=16, total_gb=32):
+    """Ceilings with and without swap, and a length that needs the swap half."""
+    dry, wet = _profile(total_gb=total_gb), _profile(total_gb=total_gb, swap_gb=swap_gb)
+    in_ram, combined = max_frames(dry, _shape(0)), max_frames(wet, _shape(0))
+    assert in_ram < combined
+    return dry, wet, (in_ram + combined) // 2
+
+
+def test_a_pass_that_needs_swap_is_not_a_warning() -> None:
+    """Expected behaviour: a run the machine can finish is passed, not flagged.
+
+    Spilling is a speed, not a fault, and a machine that warns on every run it
+    can actually do is one the user stops reading.
+    """
+    dry, wet, frames = _swap_span()
+
+    assert grade(dry, _shape(frames)).level == "block"
+    verdict = grade(wet, _shape(frames))
+
+    assert verdict.level == "ok"
+    assert verdict.limit == ""
+    # The speed it costs is still said, and the readout quotes the pool it was
+    # graded against rather than passing a swapfile off as memory.
+    assert "swap" in verdict.detail and "slower" in verdict.detail
+    assert verdict.swap_need_bytes > 0
+    assert verdict.budget_label == "memory and swap"
+    assert verdict.budget_bytes == verdict.budget.memory_bytes
+
+
+def test_the_pool_is_the_same_whatever_the_run_is() -> None:
+    """Scenario: the same machine graded for a heavy backend and a light one.
+
+    Expected behaviour: what the machine can give a run is a property of the
+    machine. A denominator that included swap only once a run reached into it
+    changed size when the mapping method changed, which read as the computer
+    gaining memory.
+    """
+    profile = _profile(total_gb=32, swap_gb=32)
+    light = grade(profile, _shape(600, backend="scsfmlearner"))
+    heavy = grade(profile, _shape(3000, backend="loger_star"))
+
+    assert light.budget_bytes == heavy.budget_bytes == light.budget.memory_bytes
+    assert light.budget_label == heavy.budget_label == "memory and swap"
+    # Only the part about this run differs: the light one reaches no swap.
+    assert light.swap_need_bytes == 0
+    assert "slower" not in light.detail
+    assert heavy.swap_need_bytes > 0
+
+
+def test_swap_still_runs_out() -> None:
+    """The pool is larger, not unlimited: past it the kernel still kills the run."""
+    verdict = grade(_profile(total_gb=32, swap_gb=32), _shape(100_000))
+
+    assert verdict.level == "block"
+    assert "swap" in verdict.detail
+
+
+def test_a_peak_recorded_with_its_swap_is_graded_against_swap_too() -> None:
+    """Scenario: a run that already finished here, spilling into the swapfile.
+
+    Expected behaviour: history records RAM plus that spill as the peak, so
+    grading it against RAM alone declared a run this machine had done impossible.
+    """
+    profile = _profile(total_gb=32, swap_gb=32)
+    verdict = grade(profile, _shape(1500), recorded={"ram_bytes": 40 * _GB, "frames": 1500})
+
+    assert verdict.cost.ram_bytes > verdict.budget.ram_bytes
+    assert verdict.level == "ok"
+
+
+def test_what_the_machine_can_give_does_not_move_with_the_desktop() -> None:
+    """The planning figure: a length that shrank because a browser opened is not
+    a length anybody can plan a dive around."""
     busy = machine_budget(_profile(total_gb=64, avail_gb=8))
     idle = machine_budget(_profile(total_gb=64, avail_gb=60))
     assert busy.ram_bytes == idle.ram_bytes
     assert busy.ram_bytes < 64 * _GB  # an OS reserve is held back
+
+
+def test_what_is_free_is_what_a_run_is_actually_held_to() -> None:
+    """Expected behaviour: the installed figure is what the machine could give a
+    run; a desktop sitting in 56 GB of it does not hand that over because a run
+    would like it, and a verdict graded on the box's number is green on runs the
+    kernel would kill."""
+    busy = machine_budget(_profile(total_gb=64, avail_gb=8))
+
+    assert busy.usable_bytes == 8 * _GB
+    assert busy.usable_bytes < busy.memory_bytes
+    # A machine with nothing else on it is held to its own share, not to a free
+    # figure that happens to be larger.
+    idle = machine_budget(_profile(total_gb=64, avail_gb=64))
+    assert idle.usable_bytes == idle.memory_bytes
+
+
+def test_memory_held_by_something_else_is_a_different_verdict() -> None:
+    """Scenario: a pass the machine can do, on a desktop with a browser in the way.
+
+    Expected behaviour: the pass is not the problem, so it is not what the
+    advice names. Closing an application costs nothing; trimming a transect
+    costs the data it was measuring.
+    """
+    frames = 600
+    quiet = _profile(total_gb=64, avail_gb=64)
+    busy = _profile(total_gb=64, avail_gb=10)
+    assert grade(quiet, _shape(frames)).level == "ok"
+
+    verdict = grade(busy, _shape(frames))
+
+    assert verdict.level == "block"
+    assert verdict.limit == "busy"
+    assert verdict.held_by_others_bytes > 0
+    assert "other applications" in verdict.detail
+    # The length it can do when the machine is its own is unchanged: it is the
+    # planning figure, and closing the browser is what restores it.
+    assert verdict.max_frames == grade(quiet, _shape(frames)).max_frames
+    assert verdict.max_frames_now < verdict.max_frames
+
+
+def test_a_busy_machine_is_told_to_close_something_first() -> None:
+    fit = fit_for_pass(
+        _profile(total_gb=64, avail_gb=10),
+        seconds=120.0, fps=5, width=1376, height=768,
+        mapping_backend="loger_star", seg_model=_SEG,
+    )
+
+    assert fit.verdict.limit == "busy"
+    assert fit.advice.startswith("Close other applications")
 
 
 def test_a_comfortable_run_fits() -> None:
