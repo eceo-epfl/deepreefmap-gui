@@ -18,6 +18,7 @@ from deepreefmap_gui.survey.health import SurveyDbState, inspect_survey_db
 from deepreefmap_gui.survey.recovery import (
     RecoveryKind,
     apply_recovery,
+    automatic_recovery,
     count_rebuild,
     rebuild_losses,
     recovery_options,
@@ -227,6 +228,66 @@ def test_restoring_a_backup_is_offered_first_and_recommended(tmp_path):
     assert options[0].kind is RecoveryKind.RESTORE_BACKUP
     assert options[0].recommended
     assert f"v{V0_2_0_VERSION}" in options[0].detail
+
+
+def test_restoring_a_backup_is_taken_without_asking(tmp_path):
+    """Expected behaviour: the one route that loses nothing is not a question."""
+    path = tmp_path / "survey.db"
+    write_v0_2_0_database(path)
+    _insert_transect_directly(path, "Reef edge")
+    SurveyStore(path).close()
+    _stamp_ahead(path)
+
+    health = inspect_survey_db(path)
+    option = automatic_recovery(health)
+    assert option is not None
+    assert option.kind is RecoveryKind.RESTORE_BACKUP
+
+    apply_recovery(option, health, tmp_path)
+    store = SurveyStore(path)
+    try:
+        assert [t.name for t in store.list_transects()] == ["Reef edge"]
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("with_run", [False, True])
+def test_nothing_is_done_without_asking_when_every_route_loses_data(tmp_path, with_run):
+    """Rebuilding, starting fresh and moving folder each cost something, so the
+    choice between them stays the user's."""
+    path = tmp_path / "survey.db"
+    SurveyStore(path).close()
+    if with_run:
+        _write_run(tmp_path)
+    _stamp_ahead(path)
+
+    assert automatic_recovery(inspect_survey_db(path)) is None
+
+
+def test_a_corrupt_database_is_not_rolled_back_without_asking(tmp_path):
+    """A rollback's backup was taken minutes ago by the upgrade being undone.
+    Against a corrupt file the same backup can be months old, and how much that
+    costs is not ours to decide."""
+    path = tmp_path / "survey.db"
+    write_v0_2_0_database(path)
+    SurveyStore(path).close()
+    path.write_bytes(b"not a database at all")
+
+    health = inspect_survey_db(path)
+    assert health.state is SurveyDbState.CORRUPT
+    assert automatic_recovery(health) is None
+    assert any(
+        o.kind is RecoveryKind.RESTORE_BACKUP for o in recovery_options(health, tmp_path)
+    ), "still offered, just not taken unasked"
+
+
+def test_a_backup_this_build_refuses_is_not_taken_without_asking(tmp_path):
+    path = tmp_path / "survey.db"
+    SurveyStore(path).close()
+    bk.write_backup(path, oldest_supported_version() - 1)
+    _stamp_ahead(path)
+
+    assert automatic_recovery(inspect_survey_db(path)) is None
 
 
 def test_rebuilding_is_recommended_when_there_is_no_backup(tmp_path):

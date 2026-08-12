@@ -1020,19 +1020,54 @@ class InterfaceShellMixin(MixinBase):
             return None
 
     def check_survey_database(self) -> None:
-        """Offer a way out if the survey database will not open. Called after show().
+        """Put the survey database back if it will not open. Called after show().
 
         After, not during, construction: the window has to exist and be visible
         before anything modal, and declining has to leave a usable app rather
         than an aborted launch.
+
+        A rolled-back update is undone without asking: automatic_recovery names
+        the route that restores the survey exactly, and taking it needs nothing
+        from the user. The choice is put to them only when there is no such
+        route or it fails, because then every route left costs something, and
+        which cost is acceptable is not ours to decide.
         """
         health = self._survey_db_health()
         if health.openable:
             return
-        from deepreefmap_gui.survey.recovery import RecoveryKind, apply_recovery
+        from deepreefmap_gui.survey.recovery import (
+            RecoveryKind,
+            apply_recovery,
+            automatic_recovery,
+        )
         from deepreefmap_gui.survey.recovery_dialog import SurveyRecoveryDialog
 
         out_root = Path(self._out_root_input.text()).expanduser()
+        automatic = automatic_recovery(health)
+        if automatic is not None:
+            try:
+                message = apply_recovery(automatic, health, out_root)
+            except Exception as exc:
+                logger.exception("Automatic survey recovery failed")
+                QMessageBox.warning(
+                    self,
+                    "Survey database",
+                    f"The backup could not be restored: {exc}",
+                )
+                # A half-done restore has moved files about, so what to offer
+                # next is decided from what is on disk now, not from the verdict
+                # that led here.
+                self._survey_health = health = inspect_survey_db(health.path)
+                if health.openable:
+                    self._after_recovery(
+                        "The backup could not be restored, so this is a new "
+                        "survey database. The previous one is kept beside it."
+                    )
+                    return
+            else:
+                self._after_recovery(message)
+                return
+
         dialog = SurveyRecoveryDialog(health, out_root, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -1050,8 +1085,14 @@ class InterfaceShellMixin(MixinBase):
                 self, "Survey database", f"That did not work: {exc}"
             )
             return
-        # The store was never opened, so there is nothing to close; drop the
-        # verdict so the next read re-inspects what recovery just put in place.
+        self._after_recovery(message)
+
+    def _after_recovery(self, message: str) -> None:
+        """Take up the database recovery just put in place, and say what happened.
+
+        The store was never opened, so there is nothing to close; dropping the
+        verdict is what makes the next read re-inspect.
+        """
         self._survey_health = None
         self._survey_store_obj = None
         self._activate_interface()

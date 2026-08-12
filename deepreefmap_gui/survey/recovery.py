@@ -20,6 +20,9 @@ database, and working in a different folder. They are offered anyway, because a
 survey that cannot be recovered is not a reason to leave someone with a window
 that will not open one at all. Nothing here deletes; the database in place is
 always renamed. Qt-free.
+
+Only the lossy routes are ever put to the user: :func:`automatic_recovery` names
+the one route that is exact, and the window takes it without asking.
 """
 
 from __future__ import annotations
@@ -32,7 +35,7 @@ from enum import Enum
 from pathlib import Path
 
 from deepreefmap_gui.survey.backup import SurveyBackup, best_backup
-from deepreefmap_gui.survey.health import SurveyDbHealth
+from deepreefmap_gui.survey.health import SurveyDbHealth, SurveyDbState
 
 logger = logging.getLogger(__name__)
 
@@ -127,16 +130,9 @@ def count_rebuild(out_root: Path) -> RebuildCounts:
     )
 
 
-def recovery_options(health: SurveyDbHealth, out_root: Path) -> list[RecoveryOption]:
-    """Every route out of this state, in the order the dialog should offer them.
-
-    Restoring a backup comes first when one this build can open exists, because
-    it is the only exact route; the rebuild is offered whenever a run folder can
-    be read; the two that recover nothing come last.
-    """
+def _restore_option(health: SurveyDbHealth) -> RecoveryOption | None:
+    """Restoring the pre-upgrade backup, when one this build can open exists."""
     from deepreefmap_gui.survey.store import oldest_supported_version
-
-    options: list[RecoveryOption] = []
 
     # Floored as well as capped. known_version is the newest format this build
     # writes, not the whole range it reads, so without the floor a database
@@ -144,19 +140,55 @@ def recovery_options(health: SurveyDbHealth, out_root: Path) -> list[RecoveryOpt
     backup = best_backup(
         health.path, health.known_version, min_version=oldest_supported_version()
     )
-    if backup is not None:
-        taken = backup.taken_at.astimezone().strftime("%d %b %Y, %H:%M")
-        options.append(RecoveryOption(
-            kind=RecoveryKind.RESTORE_BACKUP,
-            title="Restore the backup taken before the upgrade",
-            detail=(
-                f"Saved {taken}, in the format this version reads "
-                f"(v{backup.version}). Everything up to that moment comes back "
-                f"exactly; work done on the newer version does not."
-            ),
-            backup=backup,
-            recommended=True,
-        ))
+    if backup is None:
+        return None
+    taken = backup.taken_at.astimezone().strftime("%d %b %Y, %H:%M")
+    return RecoveryOption(
+        kind=RecoveryKind.RESTORE_BACKUP,
+        title="Restore the backup taken before the upgrade",
+        detail=(
+            f"Saved {taken}, in the format this version reads "
+            f"(v{backup.version}). Everything up to that moment comes back "
+            f"exactly; work done on the newer version does not."
+        ),
+        backup=backup,
+        recommended=True,
+    )
+
+
+def automatic_recovery(health: SurveyDbHealth) -> RecoveryOption | None:
+    """The route to take without asking, or None when the choice is a real one.
+
+    Only one state answers this: a database left by a newer build after a
+    rollback, where the backup was taken by that same upgrade moments before it
+    migrated. Restoring it is the exact undo of the update that was undone, the
+    loss is bounded by that, and the newer build's file is kept beside it.
+    Weighing schema versions against each other is not work to hand someone on a
+    boat, so that route is simply taken and reported.
+
+    Every other route trades away an unbounded amount: a rebuild loses
+    everything never processed, a new database carries nothing over, and a
+    different folder walks away from the survey. So does restoring a backup in
+    any other state -- against a corrupt file the newest backup may be months
+    old. Those stay the user's to choose.
+    """
+    if health.state is not SurveyDbState.TOO_NEW:
+        return None
+    return _restore_option(health)
+
+
+def recovery_options(health: SurveyDbHealth, out_root: Path) -> list[RecoveryOption]:
+    """Every route out of this state, in the order the dialog should offer them.
+
+    Restoring a backup comes first when one this build can open exists, because
+    it is the only exact route; the rebuild is offered whenever a run folder can
+    be read; the two that recover nothing come last.
+    """
+    options: list[RecoveryOption] = []
+
+    restore_backup = _restore_option(health)
+    if restore_backup is not None:
+        options.append(restore_backup)
 
     counts = count_rebuild(out_root)
     if counts.runs or not options:
