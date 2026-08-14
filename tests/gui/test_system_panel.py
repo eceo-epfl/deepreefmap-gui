@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from deepreefmap_gui.core.theme import BLOCK, UPDATE
 
 
@@ -151,6 +153,51 @@ def test_swap_is_reported_as_a_cost_in_speed_not_a_warning(window, monkeypatch) 
     # No advice line, no advisory on Setup: nothing here needs the user's attention.
     assert window._capacity_advice.isHidden()
     assert window._memory_advisory == ""
+
+
+def test_the_bar_carries_what_other_applications_hold(window, monkeypatch) -> None:
+    """The run is drawn against the whole pool, stacked on top of the part
+    something else is already in, so what is left of the track is what is
+    actually spare. This machine has 32 GB with 6 GB of it free, so most of the
+    track is held."""
+    import deepreefmap_gui.profiling.system_probe as probe
+
+    monkeypatch.setattr(probe, "probe_system", lambda *a, **k: _low_ram_profile(probe))
+    _queue_pass(window, seconds=378.0, fps=5)
+    window._update_memory_profile_warning()
+
+    verdict = window._current_fit().verdict
+    pool = verdict.budget_bytes + verdict.held_by_others_bytes
+    held = window._capacity_bar.held_percent()
+    assert held == pytest.approx(100 * verdict.held_by_others_bytes / pool, abs=0.5)
+    assert held > 50  # 6 GB free of 32 GB: the machine is mostly spoken for
+    assert "Other applications" in window._capacity_bar.toolTip()
+    # Every part of the track is named under it, in the order it is painted:
+    # what is already taken first, then what a run would add to it.
+    legend = window._capacity_legend.text()
+    assert legend.index("Other applications") < legend.index("Needed")
+
+
+def test_a_machine_with_nothing_else_running_has_no_held_share(window, monkeypatch) -> None:
+    import deepreefmap_gui.profiling.system_probe as probe
+
+    monkeypatch.setattr(
+        probe, "probe_system",
+        lambda *a, **k: probe.SystemProfile(
+            os_name="Linux", os_release="x", cpu_logical=8, cpu_physical=4,
+            total_ram_bytes=64 * 1024**3, available_ram_bytes=64 * 1024**3,
+            total_swap_bytes=0, free_swap_bytes=0,
+            gpu=probe.GpuInfo(probe.GPU_NONE, "CPU only", None, None),
+            disk_total_bytes=0, disk_free_bytes=0, disk_path="/",
+        ),
+    )
+    _queue_pass(window, seconds=378.0, fps=5)
+    window._update_memory_profile_warning()
+
+    assert window._capacity_bar.held_percent() == 0.0
+    assert "Other applications" not in window._capacity_bar.toolTip()
+    assert "Other applications" not in window._capacity_legend.text()
+    assert "Free" in window._capacity_legend.text()
 
 
 def test_capacity_is_unavailable_until_a_pass_is_queued(window) -> None:

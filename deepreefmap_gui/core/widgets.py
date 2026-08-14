@@ -881,6 +881,12 @@ class MeterBar(QProgressBar):
     Qt draws a range of (0, 0) as a busy animation, so an unknown figure reads
     as activity. Unavailable is painted instead as hazard hatching: static, and
     obviously not a level.
+
+    A share of the track can already be held by something other than what the
+    bar measures -- memory another application is sitting in, say. It is drawn
+    first, in the same grey the drive bars give to space they do not account
+    for, and the level stacks on top of it: the resource is taken before this
+    run asks for any, so what is left of the track is what is genuinely free.
     """
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -889,24 +895,61 @@ class MeterBar(QProgressBar):
         self.setTextVisible(False)
         self.setFixedHeight(BAR_HEIGHT)
         self._unavailable = False
+        self._held_percent = 0.0
+        self._colour = GROOVE
 
-    def set_level(self, percent: float, colour: str) -> None:
+    def set_level(self, percent: float, colour: str, held_percent: float = 0.0) -> None:
         self._unavailable = False
+        self._held_percent = max(0.0, min(100.0, held_percent))
+        self._colour = colour
         self.setRange(0, 100)
         self.setValue(int(round(max(0.0, min(100.0, percent)))))
         self.setStyleSheet(bar_qss(colour))
         self.update()
 
+    def held_percent(self) -> float:
+        return self._held_percent
+
     def set_unavailable(self) -> None:
         self._unavailable = True
+        self._held_percent = 0.0
         self.setRange(0, 100)
         self.setValue(0)
         self.setStyleSheet(bar_qss(GROOVE))
         self.update()
 
+    def _paint_stacked(self) -> None:
+        """What is already held, then the level on top of it.
+
+        Painted rather than left to the stylesheet's chunk, which only ever
+        starts at the left edge. Segments are square-cornered inside the
+        groove's rounding, as the drive bars are, so the two meet with no seam
+        and neither leaves a lit corner past the ends. A level that runs off the
+        track is clipped there, which is the fact: there is no room for it.
+        """
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        track = QRectF(self.rect())
+        radius = track.height() / 2.0
+        path = QPainterPath()
+        path.addRoundedRect(track, radius, radius)
+        painter.fillPath(path, QColor(GROOVE))
+        painter.setClipPath(path)
+        start = 0.0
+        for share, colour in ((self._held_percent, SURFACE_HI), (float(self.value()), self._colour)):
+            width = track.width() * share / 100.0
+            painter.fillRect(
+                QRectF(track.left() + start, track.top(), width, track.height()), QColor(colour)
+            )
+            start += width
+        painter.end()
+
     def paintEvent(self, event) -> None:
         if not self._unavailable:
-            super().paintEvent(event)
+            if self._held_percent > 0:
+                self._paint_stacked()
+            else:
+                super().paintEvent(event)
             return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)

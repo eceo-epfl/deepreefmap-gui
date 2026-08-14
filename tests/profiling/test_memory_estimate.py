@@ -256,7 +256,7 @@ def test_too_long_a_pass_is_blocked_on_ram() -> None:
     verdict = grade(_profile(total_gb=64), _shape(8000))
     assert verdict.level == "block"
     assert verdict.limit == "ram"
-    assert verdict.headline == "Too long to process in one pass"
+    assert verdict.headline == "May be too long to process in one pass"
 
 
 def _small_card() -> GpuInfo:

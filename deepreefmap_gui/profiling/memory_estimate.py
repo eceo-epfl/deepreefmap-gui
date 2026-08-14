@@ -522,7 +522,7 @@ class Fit:
                     "in advanced settings."
                 )
             if self.suggested_backend is None:
-                return "No mapping method fits this machine at these settings."
+                return "No mapping method is expected to fit this machine at these settings."
             size = (
                 f" It needs about {format_bytes(self.suggested_backend_vram)} "
                 "of graphics memory."
@@ -696,7 +696,7 @@ def _wording(
             f"can give a run.{in_use}{slower}"
         )
     if limit == "busy":
-        return "Other applications are using the memory this needs", (
+        return "Other applications are using memory this pass may need", (
             f"Needs about {format_bytes(ram_need)}. This machine has "
             f"{pool} for a run, but {format_bytes(held)} of it is in use by "
             f"other applications, leaving {format_bytes(budget.usable_bytes)}. "
@@ -718,34 +718,34 @@ def _wording(
         # batch size times a per-frame cost, so it is answerable by a control the
         # user has; the mapping backend's is answerable only by changing backend.
         if cost.vram_fixed_from == "segmentation":
-            return f"{shape.seg_model} needs more graphics memory than this card has", (
+            return f"{shape.seg_model} may need more graphics memory than this card has", (
                 f"Reading {shape.batch_size} frames at a time through "
                 f"{shape.seg_model} takes about {format_bytes(cost.fixed_vram_bytes)} "
                 f"on the graphics card; this card can give a run "
                 f"{format_bytes(budget.vram_bytes or 0)}. Frame rate, length and "
                 f"resolution do not change that -- the batch size does.{measured}"
             )
-        return f"{shape.mapping_backend} needs more graphics memory than this card has", (
+        return f"{shape.mapping_backend} may need more graphics memory than this card has", (
             f"{shape.mapping_backend} holds about {format_bytes(cost.fixed_vram_bytes)} "
             f"on the graphics card before the first frame is read; this card can "
             f"give a run {format_bytes(budget.vram_bytes or 0)}. Frame rate, "
             f"length and resolution do not change that.{measured}"
         )
     if limit == "ram_fixed":
-        return f"{shape.mapping_backend} needs more memory than this computer has", (
+        return f"{shape.mapping_backend} may need more memory than this computer has", (
             f"Loading {shape.mapping_backend} alone takes about "
             f"{format_bytes(fixed_ram)}; this computer can give a run "
             f"{_pool_phrase(budget)}. Frame rate, length and "
             f"resolution do not change that."
         )
     if limit == "vram":
-        return "Too long for the graphics card", (
+        return "May be too long for the graphics card", (
             f"Needs about {format_bytes(cost.vram_bytes)} of graphics memory at "
             f"{cost.frames} frames; this card can give a run "
             f"{format_bytes(budget.vram_bytes or 0)}."
         )
     if level == "block":
-        return "Too long to process in one pass", (
+        return "May be too long to process in one pass", (
             f"Needs about {format_bytes(ram_need)} of memory; this machine can "
             f"give a run {pool}.{in_use}"
         )

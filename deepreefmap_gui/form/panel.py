@@ -291,6 +291,12 @@ class FormPanelMixin(MixinBase):
         self._capacity_bar = MeterBar()
         ig.addWidget(self._capacity_bar)
 
+        # Names what each part of the track is, in the same order it is painted.
+        self._capacity_legend = QLabel()
+        self._capacity_legend.setWordWrap(True)
+        self._capacity_legend.setStyleSheet(f"color: {TEXT_MUTED}; font-size: {FONT_SM};")
+        ig.addWidget(self._capacity_legend)
+
         self._capacity_detail = QLabel()
         self._capacity_detail.setWordWrap(True)
         self._capacity_detail.setStyleSheet(f"color: {TEXT_MUTED}; font-size: {FONT_SM};")
@@ -1398,7 +1404,7 @@ class FormPanelMixin(MixinBase):
         except Exception:
             over = 0
         if over > 1:
-            return f"{over} passes need more than this machine's memory."
+            return f"{over} passes may need more than this machine's memory."
         return fit.headline
 
     def _paint_capacity_readout(self, fit) -> None:
@@ -1409,6 +1415,8 @@ class FormPanelMixin(MixinBase):
         if fit is None:
             self._capacity_caption.setText("Memory needed")
             self._capacity_bar.set_unavailable()
+            self._capacity_bar.setToolTip("")
+            self._capacity_legend.clear()
             self._capacity_detail.setText("Add a pass to see what it would need.")
             self._capacity_advice.setVisible(False)
             self._vram_auto_label.setVisible(False)
@@ -1426,7 +1434,19 @@ class FormPanelMixin(MixinBase):
         self._capacity_caption.setText(
             f"Longest pass: {format_duration(fit.seconds)} at {fit.fps} FPS"
         )
-        self._capacity_bar.set_level(100.0 * need / budget if budget else 0.0, colour)
+        # The bar is the whole pool, not just the free part of it: what other
+        # applications are already in, then what a run would take on top of
+        # that, then what neither has. Held is only shown where the verdict is
+        # about memory -- it is a RAM figure, and putting it under a
+        # graphics-memory bar would measure two pools in one track.
+        held = 0 if verdict.limit.startswith("vram") else verdict.held_by_others_bytes
+        pool = budget + held
+        self._capacity_bar.set_level(
+            100.0 * need / pool if pool else 0.0,
+            colour,
+            100.0 * held / pool if pool else 0.0,
+        )
+        self._paint_capacity_legend(colour, need, held, max(0, pool - need - held))
         detail = (
             f"Needs about {format_bytes(need)} of the {format_bytes(budget)} of "
             f"{resource} this machine can give one run."
@@ -1463,6 +1483,39 @@ class FormPanelMixin(MixinBase):
         )
         self._capacity_advice.setVisible(True)
 
+    def _paint_capacity_legend(
+        self, colour: str, need: int, held: int, free: int
+    ) -> None:
+        """Name each part of the track, in the order it is painted.
+
+        Filled marks for what is taken and a hollow one for what is left, as the
+        drive legend does, so the two bars are read the same way. A part that is
+        nothing is left out rather than listed at zero.
+
+        The run's own share is "Needed" rather than named after the pass: the
+        caption above already says which pass is being sized, and this readout
+        is read as a question about the machine.
+        """
+        from deepreefmap_gui.core.storage_bar import FREE_SWATCH
+        from deepreefmap_gui.profiling.system_probe import format_bytes
+
+        parts = []
+        if held:
+            parts.append((SURFACE_HI, "■", "Other applications", held))
+        parts.append((colour, "■", "Needed", need))
+        if free:
+            parts.append((FREE_SWATCH, "□", "Free", free))
+        self._capacity_legend.setText(
+            "&nbsp;&nbsp;&nbsp;".join(
+                f'<span style="color:{swatch_colour};">{mark}</span> '
+                f"{label} {format_bytes(value)}"
+                for swatch_colour, mark, label, value in parts
+            )
+        )
+        self._capacity_bar.setToolTip(
+            "\n".join(f"{label}: {format_bytes(value)}" for _, _, label, value in parts)
+        )
+
     def _paint_batch_size_hint(self, fit) -> None:
         """Say what the batch size would have to be, when it is what decides.
 
@@ -1475,8 +1528,8 @@ class FormPanelMixin(MixinBase):
             return
         w, h = self._proc_width_spin.value(), self._proc_height_spin.value()
         self._vram_auto_label.setText(
-            f"Batch size {self._batch_size_spin.value()} does not fit this card "
-            f"at {w}×{h}. {fit.suggested_batch_size} does."
+            f"Batch size {self._batch_size_spin.value()} may not fit this card "
+            f"at {w}×{h}. {fit.suggested_batch_size} should."
         )
         self._vram_auto_label.setVisible(True)
 
