@@ -152,8 +152,15 @@ class SetupCheck:
     actionable: bool = True
 
 
-def graphics_check(*, gpu_name: str | None, requires_gpu: bool) -> SetupCheck:
+def graphics_check(*, gpu_name: str | None, requires_gpu: bool, pending: bool = False) -> SetupCheck:
     """Graphics card row. Passes unless the chosen method needs a card and none exists."""
+    if pending:
+        # Counting the cards costs seconds on a cold driver, so the window opens
+        # before the answer exists. Advisory, so an unfinished probe cannot be
+        # what holds a session back; the row repaints when it lands.
+        return SetupCheck(
+            "graphics", True, "Graphics card", "Looking for a graphics card…", advisory=True
+        )
     if gpu_name is not None:
         return SetupCheck("graphics", True, "Graphics card", gpu_name)
     if requires_gpu:
@@ -331,6 +338,7 @@ def evaluate_setup(
     *,
     gpu_name: str | None,
     requires_gpu: bool,
+    gpu_pending: bool = False,
     missing_models: list[str],
     free_bytes: int,
     min_free_bytes: int,
@@ -344,7 +352,7 @@ def evaluate_setup(
 ) -> list[SetupCheck]:
     """The setup rows, in the order they are shown."""
     checks = [
-        graphics_check(gpu_name=gpu_name, requires_gpu=requires_gpu),
+        graphics_check(gpu_name=gpu_name, requires_gpu=requires_gpu, pending=gpu_pending),
         memory_check(
             total_ram_bytes=total_ram_bytes,
             vram_bytes=vram_bytes,
@@ -609,8 +617,9 @@ class SimpleSetupMixin(MixinBase):
         from deepreefmap_gui.models.cache import _MIN_FREE_BYTES
 
         out_root = Path(self._out_root_input.text()).expanduser()
-        profile = probe_system(out_root)
-        gpu_name = profile.gpu.name if profile.gpu.kind != GPU_NONE else None
+        profile = probe_system(out_root, wait_for_gpu=False)
+        gpu_resolved = profile.gpu.resolved
+        gpu_name = profile.gpu.name if gpu_resolved and profile.gpu.kind != GPU_NONE else None
         # The form, not the preset. _gpu_only_mapper and _required_model_names
         # both read these widgets, and the batch runs from them via
         # _collect_run_settings, so reading the preset here left the readiness
@@ -620,6 +629,7 @@ class SimpleSetupMixin(MixinBase):
         return evaluate_setup(
             gpu_name=gpu_name,
             requires_gpu=mapping in GPU_ONLY_BACKENDS,
+            gpu_pending=not gpu_resolved,
             missing_models=self._survey_missing_models(),
             free_bytes=profile.disk_free_bytes,
             min_free_bytes=_MIN_FREE_BYTES,
@@ -675,18 +685,48 @@ class SimpleSetupMixin(MixinBase):
             QMessageBox.warning(self, "Applications menu", result.message)
 
     def _footage_size_rate(self, out_root: Path) -> float | None:
-        """Measured output bytes per footage minute, remeasured when the root moves.
+        """Measured output bytes per footage minute, or None until the walk lands.
 
-        Cached because the page repaints on every batch change and measuring walks
-        the frame caches of several runs. _on_survey_done clears the cache, so a
-        finished batch is measured in without re-walking on every keystroke.
+        Measured on a worker thread, once per output root: it walks the frame
+        caches of several runs, which is a third of a second of disk on this
+        machine, and the page asking for it repaints on every cart change and
+        while the window is still being built. The row reads "not measured yet"
+        in the meantime, which is also what it says on a machine that has never
+        processed anything. _on_survey_done clears the cache, so a finished batch
+        is measured in without re-walking on every keystroke.
         """
         cache = getattr(self, "_footage_rate_cache", None)
         if cache is not None and cache[0] == out_root:
             return cache[1]
-        rate = measure_bytes_per_footage_minute(out_root)
+        if getattr(self, "_footage_rate_pending", None) != out_root:
+            self._footage_rate_pending = out_root
+
+            def work() -> None:
+                rate = measure_bytes_per_footage_minute(out_root)
+                try:
+                    self._sig_footage_rate.emit(out_root, rate)
+                except RuntimeError:
+                    pass  # window destroyed while the walk ran
+
+            threading.Thread(target=work, name="footage-rate", daemon=True).start()
+        return None
+
+    def _on_footage_rate(self, out_root: object, rate: object) -> None:
+        """Take a measurement only if it is still the one being waited for.
+
+        A walk outlives the root that started it: the output root can be edited
+        while it runs, and _on_survey_done clears both cache and marker so the
+        finished batch is measured in. Either way an older walk landing last
+        would otherwise install a figure for a root nobody is looking at, and
+        clear the marker so the next repaint starts a second concurrent walk.
+        """
+        assert isinstance(out_root, Path)
+        assert rate is None or isinstance(rate, float)
+        if getattr(self, "_footage_rate_pending", None) != out_root:
+            return
+        self._footage_rate_pending = None
         self._footage_rate_cache = (out_root, rate)
-        return rate
+        self._refresh_readiness_view()
 
     def _refresh_readiness_view(self) -> None:
         """Repaint the rows from a fresh probe, and record readiness once reached."""

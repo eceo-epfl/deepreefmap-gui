@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 from _factories import make_profile
 
+from deepreefmap_gui.profiling import system_probe
 from deepreefmap_gui.simple import setup as setup_mod
 
 _GB = 1024**3
@@ -366,12 +367,28 @@ def test_the_readiness_row_and_the_run_gate_read_one_machine(window, monkeypatch
     )
     monkeypatch.setitem(sys.modules, "torch", torch)
     monkeypatch.setattr(window, "_survey_missing_models", list)
-    window._gpu_available_cache = None
     window._map_combo.setCurrentText("loger")
+
+    # The window counts the card after it is on screen, so both readers answer
+    # from the finished probe rather than each running one of their own.
+    system_probe.await_gpu_probe()
 
     graphics = next(c for c in window._current_setup_checks() if c.key == "graphics")
     assert graphics.ok
     assert "Radeon RX 7900" in graphics.detail
+    assert window._gpu_only_mapper() == ""
+
+
+def test_a_gpu_only_method_is_not_blocked_before_the_card_is_counted(window, monkeypatch):
+    """The probe takes seconds. Until it lands the graphics row says so and holds
+    nothing back: a card merely not yet counted must not read as a card absent."""
+    monkeypatch.setattr(window, "_survey_missing_models", list)
+    window._map_combo.setCurrentText("loger")
+
+    graphics = next(c for c in window._current_setup_checks() if c.key == "graphics")
+    assert graphics.ok
+    assert graphics.advisory
+    assert "Looking for a graphics card" in graphics.detail
     assert window._gpu_only_mapper() == ""
 
 

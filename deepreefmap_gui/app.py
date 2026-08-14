@@ -137,6 +137,12 @@ class DeepReefMapWindow(
     # signals above measure drives, this one measures PyApp environments.
     _sig_envs_done = Signal(object)
     _sig_shortcut_done = Signal(object)
+    # The graphics card, once counted. Everything that grades a run against this
+    # machine opens before the answer exists, so each of them repaints on this.
+    _sig_gpu_probe_done = Signal()
+    # Output bytes per footage minute, measured by walking recent runs off
+    # the GUI thread. Carries the root it measured, so a stale walk is dropped.
+    _sig_footage_rate = Signal(object, object)
     # What a worker thread has to say, as data: a new kind of message should not
     # need a new signal here.
     _sig_notify = Signal(object)
@@ -174,6 +180,8 @@ class DeepReefMapWindow(
         self._sig_storage_usage.connect(self._apply_storage_usage)
         self._sig_storage_page.connect(self._apply_storage_page_scan)
         self._sig_notify.connect(self._notify_post)
+        self._sig_gpu_probe_done.connect(self._on_gpu_probe_done)
+        self._sig_footage_rate.connect(self._on_footage_rate)
 
         self.setWindowTitle("DeepReefMap")
         # Open at ~90% of the available screen, capped at the comfortable
@@ -278,6 +286,47 @@ class DeepReefMapWindow(
         # whole window has to exist first.
         self._activate_interface()
         self._install_shortcuts()
+
+    def start_gpu_probe(self) -> None:
+        """Count the graphics card on a worker thread, and repaint when it lands.
+
+        Importing torch and asking it how many devices there are is by far the
+        most expensive thing this app does before it can be used: half a second
+        for the import, and seconds again for the first enumeration, because the
+        GPU driver initialises inside it (3.3 s on the ROCm build). Everything
+        that reads the answer copes with not having it, so none of it is worth a
+        window that is not on screen yet.
+
+        Called once the event loop is running, never from __init__: torch's
+        import is Python bytecode holding the GIL, so a probe started during
+        construction starves the very build it was moved off.
+        """
+        from deepreefmap_gui.profiling.system_probe import start_gpu_probe
+
+        self._paint_gpu_indicator(None)
+
+        def done(_info: object) -> None:
+            try:
+                self._sig_gpu_probe_done.emit()
+            except RuntimeError:
+                pass  # window destroyed while the probe ran
+
+        start_gpu_probe(done)
+
+    def _on_gpu_probe_done(self) -> None:
+        """Repaint everything that graded this machine before the card was known."""
+        from deepreefmap_gui.profiling.system_probe import probe_system
+
+        self._paint_gpu_indicator(probe_system(wait_for_gpu=False).gpu)
+        # _update_memory_profile_warning carries the readiness view and the Setup
+        # button with it; the other two are the cart's own grades and its gate.
+        # Nothing is posted to the bell from here: a machine that cannot process
+        # is a condition, and it already reaches the bell through
+        # _machine_verdict -> conditions_from_state -> reconcile, which
+        # deduplicates it across launches and clears it when a card turns up.
+        self._update_memory_profile_warning()
+        self._refresh_settings_cells()
+        self._recompute_survey_start()
 
     def _install_shortcuts(self) -> None:
         """Keyboard routes to the destinations that otherwise need a mouse.
@@ -522,6 +571,9 @@ def launch(classes_path: Path | None = None, view_run_dir: Path | None = None) -
     classes_config = load_classes(classes_path)
     window = DeepReefMapWindow(classes_config, classes_path)
     window.show()
+    # Queued, so the window is on screen and painted first, and bound to the
+    # window so closing it before the timer fires drops the callback.
+    QTimer.singleShot(0, window, window.start_gpu_probe)
     window.check_survey_database()
     if view_run_dir is not None:
         QTimer.singleShot(100, lambda: window._auto_load_run(view_run_dir))

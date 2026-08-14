@@ -256,6 +256,20 @@ def all_known_models() -> list[ModelInfo]:
     return ALL_MODELS + discovered_models()
 
 
+def segmentation_model_names() -> list[str]:
+    """The segmentation dropdown's items, without importing the library registry.
+
+    Same names, same order as deepreefmap.segmentation.registry's
+    list_segmentation_models -- discovery registers into both, and
+    tests/models/test_model_catalogue.py compares the two lists. Sourced here
+    because that registry imports torch at module scope, and the form is built
+    before the window is on screen.
+    """
+    names = {m.name for m in SEGMENTATION_MODELS}
+    names.update(m.name for m in discovered_models() if m.kind == "segmentation")
+    return sorted(names)
+
+
 def model_available(info: ModelInfo) -> bool:
     """False when the model needs an install extra that isn't present."""
     if info.requires_extra == "loger":
@@ -381,11 +395,21 @@ def snapshot_dir(repo_id: str) -> Path | None:
 
 
 def _verify_repo(repo_id: str) -> tuple[ModelStatus, str]:
-    """Check one HF repo snapshot for completeness. Returns (status, reason)."""
+    """Check one HF repo snapshot for completeness. Returns (status, reason).
+
+    Walks the snapshot, so it is not for a repaint: the readiness rows and the
+    run gate read the states `_refresh_model_status` produces on its worker
+    thread instead. Deliberately not memoised -- what it decides on (a dangling
+    blob symlink, a nested weights file) lives outside the snapshot directory or
+    below it, so no cheap key over that directory can see a change to either.
+    """
     snap = _snapshot_dir(repo_id)
     if snap is None:
         return ModelStatus.ABSENT, "not downloaded"
+    return _verify_repo_uncached(snap)
 
+
+def _verify_repo_uncached(snap: Path) -> tuple[ModelStatus, str]:
     entries = [p for p in snap.rglob("*") if p.is_file() or p.is_symlink()]
     # A symlink whose blob never finished downloading fails to resolve. This is
     # the fingerprint of an interrupted (not merely cancelled-before-start) pull.

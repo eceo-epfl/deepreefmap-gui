@@ -1604,7 +1604,7 @@ class SimpleBatchMixin(MixinBase):
             settings.get("preprocess_batch_size") or self._batch_size_spin.value()
         )
         try:
-            machine = probe_system() if profile is None else profile
+            machine = probe_system(wait_for_gpu=False) if profile is None else profile
             return fit_for_pass(
                 machine,
                 seconds=seconds,
@@ -1764,7 +1764,7 @@ class SimpleBatchMixin(MixinBase):
         if not self._survey_rows:
             return
         try:
-            profile = probe_system()
+            profile = probe_system(wait_for_gpu=False)
         except Exception:
             profile = None
         for index in range(len(self._survey_rows)):
@@ -1816,7 +1816,7 @@ class SimpleBatchMixin(MixinBase):
         from deepreefmap_gui.profiling.system_probe import probe_system
 
         try:
-            profile = probe_system()
+            profile = probe_system(wait_for_gpu=False)
         except Exception:
             return 0
         return sum(
@@ -2050,15 +2050,21 @@ class SimpleBatchMixin(MixinBase):
         batch runs from, so the gate cannot block on a model the run would not
         load nor pass one it would. Iterating all_known_models() rather than the
         hardcoded catalogue means a model discovered this session is gated too.
+
+        Answered from what _refresh_model_status verified on its worker thread,
+        never by verifying here: this runs from the readiness rows and the cart
+        gate, several times per repaint and while the window is still being
+        built, and verifying walks every model's snapshot. Until the first
+        refresh lands nothing is reported missing -- the same choice the
+        graphics row makes, for the same reason: a model merely not yet checked
+        must not read as a model absent. _apply_model_status repaints both.
         """
         if self._survey_preset is None:
             return []
-        from deepreefmap_gui.models.cache import all_known_models, is_model_cached
-
         required = self._required_model_names()
         return sorted(
-            info.name for info in all_known_models()
-            if info.name in required and not is_model_cached(info)
+            info.name for info, cached in self._last_model_states
+            if info.name in required and not cached
         )
 
     def _simple_peak_seconds(self) -> float | None:
@@ -2629,6 +2635,9 @@ class SimpleBatchMixin(MixinBase):
         # footage capacity on disk, and the memory grade, which reads the peaks
         # the batch just recorded instead of an analytic guess.
         self._footage_rate_cache = None
+        # Also the in-flight marker, or a walk that started before these runs
+        # existed would be taken for a measurement of them.
+        self._footage_rate_pending = None
         self._batch_prediction_cache = None
         self._update_memory_profile_warning()
         self._end_run_controls()

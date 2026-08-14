@@ -35,7 +35,7 @@ if TYPE_CHECKING:
         QWidget,
     )
 
-    from deepreefmap_gui.core.spinner import SpinnerStopButton
+    from deepreefmap_gui.core.spinner import BusySpinner, SpinnerStopButton
     from deepreefmap_gui.core.storage_bar import StorageBars
     from deepreefmap_gui.io.lazy_frames import FrameAccessor
     from deepreefmap_gui.map.slippy_map import SlippyMapWidget
@@ -165,6 +165,9 @@ if TYPE_CHECKING:
         _hf_auth_btn: QPushButton
         _pause_btn: QPushButton
         _spinner_stop: SpinnerStopButton
+        _gpu_indicator: QLabel
+        _gpu_indicator_box: QWidget
+        _gpu_spinner: BusySpinner
         _out_root_widget: QWidget
         _output_group: QGroupBox
         _results_empty: QWidget
@@ -236,6 +239,8 @@ if TYPE_CHECKING:
         _storage_breakdowns: dict
         # (output root, measured bytes per footage minute); None until measured.
         _footage_rate_cache: tuple[Path, float | None] | None
+        # The root a footage-rate walk is running for, so it is not started twice.
+        _footage_rate_pending: Path | None
 
         # --- survey mode -------------------------------------------------
         _view_bar: QWidget
@@ -309,6 +314,8 @@ if TYPE_CHECKING:
         _sig_storage_page = Signal(object)
         _sig_envs_done = Signal(object)
         _sig_shortcut_done = Signal(object)
+        _sig_gpu_probe_done = Signal()
+        _sig_footage_rate = Signal(object, object)
         _sig_notify = Signal(object)
 
         # --- cross-mixin methods -----------------------------------------
@@ -338,6 +345,7 @@ if TYPE_CHECKING:
         def _refresh_recorded_runs(self) -> None: ...  # SystemPanelMixin
         def _refresh_system_gauges(self) -> None: ...  # SystemPanelMixin
         def _update_memory_profile_warning(self) -> None: ...  # FormPanelMixin
+        def _paint_gpu_indicator(self, gpu: object) -> None: ...  # FormPanelMixin
         def _check_for_update(self) -> None: ...  # VersionCheckMixin
         def _measure_envs(self) -> None: ...  # VersionCheckMixin
         def _refresh_envs(self) -> None: ...  # VersionCheckMixin
@@ -415,6 +423,7 @@ if TYPE_CHECKING:
         def _refresh_machine_button(self) -> None: ...  # SimpleMachineMixin
         def _refresh_update_notice(self) -> None: ...  # SimpleMachineMixin
         def _refresh_readiness_view(self) -> None: ...  # SimpleSetupMixin
+        def _on_footage_rate(self, out_root: object, rate: object) -> None: ...  # SimpleSetupMixin
         def _current_setup_checks(self) -> list: ...  # SimpleSetupMixin
         def _initial_simple_section(self) -> str: ...  # SimpleSetupMixin
         def _reveal_memory_detail(self) -> None: ...  # InterfaceShellMixin
@@ -452,6 +461,7 @@ if TYPE_CHECKING:
         def _cart_add(self, pass_id: uuid.UUID) -> None: ...  # SimpleBatchMixin
         def _refresh_survey_transect_names(self) -> None: ...  # SimpleBatchMixin
         def _rows_over_memory(self) -> int: ...  # SimpleBatchMixin
+        def _refresh_settings_cells(self) -> None: ...  # SimpleBatchMixin
         def _refresh_survey_pass_statuses(self) -> None: ...  # SimpleBatchMixin
         def _recompute_survey_start(self) -> None: ...  # SimpleBatchMixin
         def _survey_preset_summary(self) -> str: ...  # SimpleBatchMixin

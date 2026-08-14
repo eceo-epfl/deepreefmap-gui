@@ -309,7 +309,9 @@ class SystemPanelMixin(MixinBase):
         from deepreefmap_gui.profiling.system_probe import format_bytes, probe_system
 
         try:
-            profile = probe_system()
+            # On a repaint timer, so it shows the card as soon as it is counted
+            # rather than stalling the gauges until it is.
+            profile = probe_system(wait_for_gpu=False)
         except Exception:
             return
         total = profile.disk_total_bytes

@@ -26,6 +26,14 @@ def run_timings_path() -> Path:
     return Path(platformdirs.user_data_dir("deepreefmap", appauthor=False)) / "run_timings.json"
 
 
+def gpu_probe_cache_path() -> Path:
+    """Last graphics card identified on this machine, overridable for tests."""
+    override = os.environ.get("DEEPREEFMAP_GPU_CACHE")
+    if override:
+        return Path(override)
+    return Path(platformdirs.user_cache_dir("deepreefmap", appauthor=False)) / "gpu_probe.json"
+
+
 def shortcut_manifest_path() -> Path:
     """Record of the applications-menu entry this app created, overridable for tests."""
     override = os.environ.get("DEEPREEFMAP_SHORTCUT_MANIFEST")

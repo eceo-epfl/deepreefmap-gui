@@ -1231,9 +1231,12 @@ def test_gate_summary_and_run_settings_agree(window, monkeypatch):
     are exactly those _collect_run_settings() names, and the label describes the
     same run.
     """
-    from deepreefmap_gui.models import cache
+    from deepreefmap_gui.models.cache import all_known_models
 
-    monkeypatch.setattr(cache, "is_model_cached", lambda info: False)
+    # What _refresh_model_status delivers from its worker thread, which is what
+    # the gate reads: verifying the cache itself would walk every snapshot, on
+    # the GUI thread, on every repaint. Nothing cached here.
+    window._last_model_states = [(info, False) for info in all_known_models()]
     window._skip_seg_check.setChecked(False)
     window._seg_combo.setCurrentText("segformer-b2")
     window._map_combo.setCurrentText("scsfmlearner")

@@ -193,3 +193,20 @@ def _isolate_qsettings():
         QSettings.setPath(fmt, QSettings.Scope.UserScope, tmp)
         QSettings.setPath(fmt, QSettings.Scope.SystemScope, tmp)
     yield
+
+
+@pytest.fixture(autouse=True)
+def _fresh_gpu_probe(tmp_path, monkeypatch):
+    """One machine's card per test, remembered nowhere.
+
+    The probe caches what it identified for the process and records it for the
+    next launch, so without this a test that mocked a 4090 would answer for the
+    one after it -- and, worse, the developer's own recorded card would answer
+    for a test that mocked nothing.
+    """
+    from deepreefmap_gui.profiling import system_probe
+
+    monkeypatch.setenv("DEEPREEFMAP_GPU_CACHE", str(tmp_path / "gpu_probe.json"))
+    system_probe.reset_gpu_probe()
+    yield
+    system_probe.reset_gpu_probe()

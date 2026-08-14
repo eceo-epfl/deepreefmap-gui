@@ -60,34 +60,99 @@ def test_resolve_asset_name_cu130(platform, expected, monkeypatch) -> None:
     assert binary_swap.resolve_asset_name(platform) == expected
 
 
-@pytest.mark.parametrize("cuda, expected", [("13.0", "-cu130"), ("12.6", ""), (None, "")])
-def test_cuda_variant_suffix_from_torch_version(cuda, expected, monkeypatch) -> None:
-    import torch
-
+@pytest.mark.parametrize(
+    "local, expected",
+    [("cu130", "-cu130"), ("cu126", ""), ("rocm6.4", ""), ("", "")],
+)
+def test_cuda_variant_suffix_from_the_installed_torch(local, expected, monkeypatch) -> None:
     from deepreefmap_gui.packaging import binary_swap
 
     monkeypatch.delenv("PYAPP", raising=False)
-    monkeypatch.setattr(torch.version, "cuda", cuda, raising=False)
+    monkeypatch.setattr(binary_swap, "torch_local_version", lambda: local)
     assert binary_swap._cuda_variant_suffix() == expected
 
 
 def test_is_rocm_build_from_pyapp_binary_name(monkeypatch) -> None:
+    """The fallback path: no torch metadata, so the binary name is all there is."""
     from deepreefmap_gui.packaging import binary_swap
 
+    monkeypatch.setattr(binary_swap, "torch_local_version", lambda: None)
     monkeypatch.setenv("PYAPP", "/opt/pyapp/deepreefmap-gui-linux-x64-rocm")
     assert binary_swap._is_rocm_build() is True
 
 
-def test_is_rocm_build_reads_torch_hip_version(monkeypatch) -> None:
-    import torch
-
+@pytest.mark.parametrize(
+    "local, expected", [("rocm6.4", True), ("cu130", False), ("", False)]
+)
+def test_is_rocm_build_from_the_installed_torch(local, expected, monkeypatch) -> None:
     from deepreefmap_gui.packaging import binary_swap
 
     monkeypatch.delenv("PYAPP", raising=False)
-    monkeypatch.setattr(torch.version, "hip", None, raising=False)
-    assert binary_swap._is_rocm_build() is False
-    monkeypatch.setattr(torch.version, "hip", "6.3.42", raising=False)
-    assert binary_swap._is_rocm_build() is True
+    monkeypatch.setattr(binary_swap, "torch_local_version", lambda: local)
+    assert binary_swap._is_rocm_build() is expected
+
+
+def test_the_asset_variant_is_read_without_importing_torch() -> None:
+    """Same reason as the whole startup path: this runs on the update-check
+    thread, and an import there holds the GIL through the window's first paint."""
+    import subprocess
+    import sys
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys\n"
+            "from deepreefmap_gui.packaging.binary_swap import build_variant\n"
+            "build_variant()\n"
+            "print('torch' in sys.modules)",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert proc.stdout.strip() == "False"
+
+
+def test_the_torch_build_is_read_without_importing_torch() -> None:
+    """The update check runs on a worker thread seconds into startup. Importing
+    torch there holds the GIL through the whole import -- the window froze for
+    four seconds before its first frame -- and leaves torch resident, which
+    sends the GPU probe down its expensive in-process path as well."""
+    import subprocess
+    import sys
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys\n"
+            "from deepreefmap_gui.packaging.binary_swap import resolve_asset_name\n"
+            "resolve_asset_name('linux')\n"
+            "print('torch' in sys.modules)",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert proc.stdout.strip() == "False"
+
+
+def test_the_torch_build_tag_is_the_wheel_local_version(monkeypatch) -> None:
+    from deepreefmap_gui.packaging import binary_swap
+
+    monkeypatch.setattr("importlib.metadata.version", lambda _n: "2.9.1+rocm6.4")
+    assert binary_swap.torch_local_version() == "rocm6.4"
+    # A plain PyPI wheel carries no local version: the CPU/CUDA build, which
+    # wants the default asset. Distinct from None, which is no torch at all.
+    monkeypatch.setattr("importlib.metadata.version", lambda _n: "2.13.0")
+    assert binary_swap.torch_local_version() == ""
+
+    def absent(_name):
+        raise ModuleNotFoundError("torch")
+
+    monkeypatch.setattr("importlib.metadata.version", absent)
+    assert binary_swap.torch_local_version() is None
 
 
 def test_find_asset_url_returns_match() -> None:
@@ -632,3 +697,69 @@ def test_the_windows_swap_still_works_when_nothing_blocks_it(windows_swap) -> No
     assert target.read_bytes() == b"NEW-BINARY"
     assert target.with_suffix(".exe.old").read_bytes() == b"OLD-BINARY"
     assert not src.exists()
+
+
+@pytest.mark.parametrize(
+    "torch_local, expected",
+    [
+        ("rocm6.4", "rocm"),
+        ("cu130", "cu130"),
+        # The cu126 line has no asset of its own and takes the default build,
+        # as does a plain PyPI wheel, which carries no local version at all.
+        ("cu126", ""),
+        ("", ""),
+    ],
+)
+def test_the_variant_comes_from_the_provisioned_torch(torch_local, expected, monkeypatch) -> None:
+    """PyApp provisions each binary's env from its own requirements, so the wheel
+    tag is baked in at build time -- and unlike the asset filename it survives
+    the user renaming the download."""
+    from deepreefmap_gui.packaging import binary_swap
+
+    monkeypatch.setattr(binary_swap, "torch_local_version", lambda: torch_local)
+    # Set, and disagreeing, to show the env is what is believed.
+    monkeypatch.setenv("PYAPP", "/opt/pyapp/deepreefmap-gui-linux-x64-cu130")
+    assert binary_swap.build_variant() == expected
+
+
+@pytest.mark.parametrize(
+    "binary_name, expected",
+    [
+        ("deepreefmap-gui-linux-x64-rocm", "rocm"),
+        ("deepreefmap-gui-linux-x64-cu130", "cu130"),
+        ("deepreefmap-gui-linux-x64", ""),
+    ],
+)
+def test_the_binary_name_answers_when_there_is_no_torch(binary_name, expected, monkeypatch) -> None:
+    """A half-provisioned or repaired env has no torch to ask."""
+    from deepreefmap_gui.packaging import binary_swap
+
+    monkeypatch.setattr(binary_swap, "torch_local_version", lambda: None)
+    monkeypatch.setenv("PYAPP", f"/opt/pyapp/{binary_name}")
+    assert binary_swap.build_variant() == expected
+
+
+def test_no_torch_and_no_binary_is_the_default_build(monkeypatch) -> None:
+    from deepreefmap_gui.packaging import binary_swap
+
+    monkeypatch.setattr(binary_swap, "torch_local_version", lambda: None)
+    monkeypatch.delenv("PYAPP", raising=False)
+    assert binary_swap.build_variant() == ""
+
+
+def test_a_rocm_install_asks_for_the_rocm_asset(monkeypatch) -> None:
+    """The whole point of the variant: handing a ROCm laptop the CUDA build
+    would leave it with no working card after an in-app update."""
+    from deepreefmap_gui.packaging import binary_swap
+
+    monkeypatch.setattr(binary_swap, "torch_local_version", lambda: "rocm6.4")
+    assert binary_swap.resolve_asset_name("linux") == "deepreefmap-gui-linux-x64-rocm"
+
+
+def test_a_renamed_download_still_asks_for_its_own_variant(monkeypatch) -> None:
+    """A desktop binary gets renamed. The env it provisioned does not."""
+    from deepreefmap_gui.packaging import binary_swap
+
+    monkeypatch.setenv("PYAPP", "/home/diver/Desktop/deepreefmap")
+    monkeypatch.setattr(binary_swap, "torch_local_version", lambda: "rocm6.4")
+    assert binary_swap.resolve_asset_name("linux") == "deepreefmap-gui-linux-x64-rocm"

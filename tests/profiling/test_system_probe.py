@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sys
 import types
+from types import SimpleNamespace
 
 from deepreefmap_gui.profiling import system_probe as sp
 
@@ -64,7 +65,192 @@ def test_gpu_present_follows_the_probe(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "torch", _fake_torch())
     assert not sp.gpu_present()
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(mps=True))
+    sp.reset_gpu_probe()
     assert sp.gpu_present()
+
+
+def test_the_card_is_identified_once_per_process(monkeypatch) -> None:
+    """The identification costs seconds of driver initialisation, and a machine
+    does not grow a card while the app is open."""
+    calls = []
+
+    def counted():
+        calls.append(1)
+        return True
+
+    torch = _fake_torch(cuda=True, name="RTX 4090")
+    torch.cuda.is_available = counted
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    for _ in range(5):
+        assert sp._probe_gpu().name == "RTX 4090"
+    assert len(calls) == 1
+
+
+def test_free_vram_is_re_read_while_the_identity_is_not(monkeypatch) -> None:
+    """The card is fixed; what is left on it is not, and the gauges poll for it."""
+    # Falling, so each reading is distinguishable. The identification consumes
+    # the first one; every read after it is a fresh call.
+    remaining = [1000, 800, 600, 400]
+    torch = _fake_torch(cuda=True, name="RTX 4090")
+    torch.cuda.mem_get_info = lambda dev=0: (remaining.pop(0), 1000)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    seen = [sp._probe_gpu() for _ in range(3)]
+    assert [g.free_vram_bytes for g in seen] == [800, 600, 400]
+    assert {g.name for g in seen} == {"RTX 4090"}
+    assert {g.total_vram_bytes for g in seen} == {1000}
+
+
+def test_a_non_blocking_probe_never_loads_torch(monkeypatch) -> None:
+    """What the GUI thread calls. Loading torch there is the several-second
+    freeze this whole arrangement exists to prevent."""
+    monkeypatch.delitem(sys.modules, "torch", raising=False)
+
+    def refuse(name, *args, **kwargs):
+        raise AssertionError(f"the non-blocking path imported {name}")
+
+    monkeypatch.setattr(sp, "_resolve_gpu", refuse)
+    monkeypatch.setattr(sp, "_resolve_gpu_in_process", refuse)
+
+    gpu = sp._probe_gpu(wait=False)
+    assert gpu.kind == sp.GPU_UNKNOWN
+    assert not gpu.resolved
+    # And it does not start the probe behind the caller's back: the window does
+    # that, once, after it is on screen.
+    assert sp._gpu.thread is None
+
+
+def test_the_card_found_is_offered_to_the_next_launch(monkeypatch, tmp_path) -> None:
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(cuda=True, name="RTX 4090", free=7, total=9))
+    sp.await_gpu_probe()
+    assert sp._probe_gpu().name == "RTX 4090"
+
+    # A fresh process: nothing probed, but the record is on disk.
+    sp.reset_gpu_probe()
+    monkeypatch.delitem(sys.modules, "torch", raising=False)
+    hinted = sp._probe_gpu(wait=False)
+    assert hinted.kind == sp.GPU_CUDA
+    assert hinted.name == "RTX 4090"
+    assert hinted.total_vram_bytes == 9
+
+
+def test_a_record_from_another_torch_build_is_not_reused(monkeypatch) -> None:
+    """Which card torch reports is a property of the wheel: a cu130 build on an
+    AMD card finds nothing where the rocm build of the same torch finds it. The
+    recorded answer must not survive switching between them."""
+    monkeypatch.setattr(sp, "_torch_build", lambda: "2.9.1+rocm6.4")
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(cuda=True, name="Radeon RX 7900"))
+    sp.await_gpu_probe()
+    assert sp._probe_gpu().name == "Radeon RX 7900"
+
+    sp.reset_gpu_probe()
+    monkeypatch.setattr(sp, "_torch_build", lambda: "2.13.0")
+    monkeypatch.delitem(sys.modules, "torch", raising=False)
+    assert sp._probe_gpu(wait=False) is sp.GPU_PENDING
+
+
+def test_a_probe_that_could_not_check_is_not_recorded(monkeypatch) -> None:
+    """An antivirus blocking the child once, or a driver mid-reinstall, must not
+    leave the next launch believing this machine has no card."""
+    from deepreefmap_gui.paths import gpu_probe_cache_path
+
+    monkeypatch.delitem(sys.modules, "torch", raising=False)
+    monkeypatch.setattr(sp, "_resolve_gpu", lambda: sp._UNVERIFIED_NONE)
+    sp.await_gpu_probe()
+
+    assert sp._probe_gpu().kind == sp.GPU_NONE
+    assert not gpu_probe_cache_path().exists()
+
+
+def test_a_child_that_dies_is_not_retried_in_this_process(monkeypatch) -> None:
+    """A non-zero exit is overwhelmingly the driver killing the process inside
+    the enumeration. Repeating that call here would take the window with it."""
+    import subprocess
+
+    monkeypatch.delitem(sys.modules, "torch", raising=False)
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=-11, stdout=b"", stderr=b"boom")
+    )
+
+    def refuse():
+        raise AssertionError("fell back to importing torch in the GUI process")
+
+    monkeypatch.setattr(sp, "_resolve_gpu_in_process", refuse)
+    assert sp._resolve_gpu() is sp._UNVERIFIED_NONE
+
+
+def test_the_answer_is_found_among_whatever_else_the_child_printed(monkeypatch) -> None:
+    """ROCm banners, vendor .pth files and sitecustomize all reach that stdout."""
+    import subprocess
+
+    monkeypatch.delitem(sys.modules, "torch", raising=False)
+    noise = (
+        b"/opt/amdgpu/share/libdrm/amdgpu.ids: No such file or directory\n"
+        b'{"kind": "cuda", "name": "not the answer"}\n'
+        b'\nDRM_GPU {"kind": "cuda", "name": "Radeon RX 7900", "total": 9, "free": 7}\n'
+    )
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0, stdout=noise, stderr=b"")
+    )
+
+    gpu = sp._resolve_gpu()
+    assert (gpu.kind, gpu.name, gpu.total_vram_bytes) == (sp.GPU_CUDA, "Radeon RX 7900", 9)
+
+
+def test_a_child_that_printed_no_answer_reports_no_card(monkeypatch) -> None:
+    import subprocess
+
+    monkeypatch.delitem(sys.modules, "torch", raising=False)
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0, stdout=b"hello\n", stderr=b"")
+    )
+    monkeypatch.setattr(sp, "_resolve_gpu_in_process", _refuse_in_process)
+    assert sp._resolve_gpu() is sp._UNVERIFIED_NONE
+
+
+def _refuse_in_process():
+    raise AssertionError("fell back to importing torch in the GUI process")
+
+
+def test_the_probe_always_settles_an_answer(monkeypatch) -> None:
+    """The thread is created once and never replaced, so an exception escaping it
+    would leave every reader waiting on a card that is never counted."""
+    seen = []
+
+    def explode():
+        raise RuntimeError("probe blew up")
+
+    monkeypatch.setattr(sp, "_resolve_gpu", explode)
+    sp.start_gpu_probe(seen.append)
+    sp.await_gpu_probe()
+
+    assert [g.kind for g in seen] == [sp.GPU_NONE]
+    assert sp._gpu.identity is not None
+    assert not sp._gpu.waiters
+
+
+def test_last_session_free_vram_is_not_offered_as_a_live_reading(monkeypatch) -> None:
+    """The System tab polls this for its gauge. A number from last launch painted
+    as now would show an idle card at 90% used, and never move."""
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(cuda=True, name="RTX 4090", free=3, total=9))
+    sp.await_gpu_probe()
+    assert sp._probe_gpu().free_vram_bytes == 3
+
+    sp.reset_gpu_probe()
+    monkeypatch.delitem(sys.modules, "torch", raising=False)
+    remembered = sp._probe_gpu(wait=False)
+    assert remembered.total_vram_bytes == 9
+    assert remembered.free_vram_bytes is None
+
+
+def test_a_corrupt_record_is_ignored_rather_than_believed(monkeypatch) -> None:
+    from deepreefmap_gui.paths import gpu_probe_cache_path
+
+    path = gpu_probe_cache_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{not json", encoding="utf-8")
+    assert sp._probe_gpu(wait=False) is sp.GPU_PENDING
 
 
 def test_probe_gpu_treats_mps_as_unified(monkeypatch) -> None:

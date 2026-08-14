@@ -396,6 +396,10 @@ class ModelManagementMixin(MixinBase):
         # its "Models ready" row follows the same status refresh the library does.
         if hasattr(self, "_setup_check_rows"):
             self._refresh_readiness_view()
+        # And the cart gate, which reads the same states through
+        # _survey_missing_models rather than verifying the cache itself.
+        if hasattr(self, "_survey_start_btn"):
+            self._recompute_survey_start()
 
     def _required_model_names(self) -> set[str]:
         required = {self._map_combo.currentText()}

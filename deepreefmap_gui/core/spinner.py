@@ -1,10 +1,10 @@
-"""Animated circular stop button shown in the top bar while a job runs."""
+"""The spinning ring: as the stop button in the top bar, and as a bare busy mark."""
 
 from __future__ import annotations
 
 from PySide6.QtCore import QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QPainter, QPen
-from PySide6.QtWidgets import QAbstractButton
+from PySide6.QtWidgets import QAbstractButton, QWidget
 
 from deepreefmap_gui.core.theme import BORDER, DISABLED_FG, ERROR, PRIMARY
 
@@ -98,4 +98,59 @@ class SpinnerStopButton(QAbstractButton):
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(square_color)
         p.drawRoundedRect(QRectF(off, off, side, side), 2.0, 2.0)
+        p.end()
+
+
+_BUSY_SIZE = 13
+
+
+class BusySpinner(QWidget):
+    """A spinning ring on its own, for a line of text that is waiting on something.
+
+    Same arc, speed and track as SpinnerStopButton, minus the button: what it
+    reports cannot be cancelled, so there is nothing to press. Sized to sit on a
+    text baseline rather than in a toolbar.
+
+    The timer runs only while the widget is shown, so hiding it costs nothing.
+    """
+
+    def __init__(self, parent=None, size: int = _BUSY_SIZE) -> None:
+        super().__init__(parent)
+        self._size = size
+        self.setFixedSize(size, size)
+        self._angle = 0.0
+        self._timer = QTimer(self)
+        self._timer.setInterval(_TICK_MS)
+        self._timer.timeout.connect(self._advance)
+
+    def _advance(self) -> None:
+        self._angle = (self._angle + _STEP_DEG) % 360.0
+        self.update()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if not self._timer.isActive():
+            self._timer.start()
+
+    def hideEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        super().hideEvent(event)
+        self._timer.stop()
+
+    def paintEvent(self, event) -> None:
+        del event
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        m = 1.5
+        ring = QRectF(m, m, self._size - 2 * m, self._size - 2 * m)
+
+        track = QPen(QColor(BORDER), 1.6)
+        track.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(track)
+        p.drawEllipse(ring)
+
+        arc = QPen(QColor(PRIMARY), 1.8)
+        arc.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(arc)
+        # Qt angles are 1/16 degree, measured counter-clockwise from 3 o'clock.
+        p.drawArc(ring, int(-self._angle * 16), -_ARC_SPAN_DEG * 16)
         p.end()

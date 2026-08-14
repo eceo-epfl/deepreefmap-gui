@@ -59,37 +59,78 @@ class BinarySwapError(RuntimeError):
     pass
 
 
-def _is_rocm_build() -> bool:
-    # Raw env read: only the binary NAME matters here, and tests set PYAPP
-    # to names that need not exist on disk.
-    pyapp = os.environ.get("PYAPP")
-    if pyapp and "rocm" in Path(pyapp).name:
-        return True
-    try:
-        import torch
+def torch_local_version() -> str | None:
+    """The build tag on the installed torch (``rocm6.4``, ``cu130``), or None if absent.
 
-        # torch.version.hip is a version string on ROCm wheels and None on
-        # CUDA/CPU wheels. The attribute always exists, so hasattr would match
-        # every build and mislabel CUDA machines as ROCm.
-        return torch.version.hip is not None
+    ``""`` and ``None`` mean different things: a plain PyPI wheel carries no
+    local version and is the default build, while None is no torch at all and no
+    answer. Only the second is a reason to go looking elsewhere.
+
+    Read from the distribution's metadata rather than by importing torch. The
+    import costs half a second of GIL and pulls the GPU runtime in behind it,
+    and the update check runs on a worker thread a few hundred ms into startup:
+    paying it there froze the window for four seconds before its first frame,
+    and left torch resident so the GPU probe took its expensive in-process path
+    as well.
+    """
+    import importlib.metadata
+
+    try:
+        version = importlib.metadata.version("torch")
     except Exception:
-        return False
+        return None
+    _, _, local = version.partition("+")
+    return local
+
+
+# The GPU variants a release publishes an asset for, longest first so "cu130"
+# is not matched by a shorter tag that is also a prefix of it. Anything not
+# listed -- the cu126 line, a plain PyPI wheel -- takes the unsuffixed asset,
+# which is what release.yml calls the default build.
+_ASSET_VARIANTS = ("rocm", "cu130")
+
+
+def build_variant() -> str:
+    """Which GPU build this is: ``rocm``, ``cu130``, or ``""`` for the default.
+
+    An update must stay on the variant it replaces -- handing a ROCm laptop the
+    CUDA build would leave it with no working card -- so this decides which
+    release asset the updater asks for.
+
+    The env's own torch wheel is the answer. PyApp provisions that env from this
+    binary's requirements, so the tag is baked in at build time and survives the
+    user renaming the download, which the asset filename does not. The binary's
+    name is consulted only when there is no torch to ask: a half-provisioned or
+    repaired env, and the tests, which set PYAPP to names with no env behind them.
+    """
+    local = torch_local_version()
+    if local is not None:
+        for variant in _ASSET_VARIANTS:
+            # rocm6.4 -> rocm. cu126 matches nothing and takes the default
+            # asset, as does a plain PyPI wheel's empty tag.
+            if local.startswith(variant):
+                return variant
+        return ""
+
+    pyapp = os.environ.get("PYAPP")
+    if pyapp:
+        # Raw env read, and the NAME only: tests set PYAPP to names that need
+        # not exist on disk, so this cannot go through pyapp_binary().
+        name = Path(pyapp).name
+        for variant in _ASSET_VARIANTS:
+            if variant in name:
+                return variant
+    return ""
+
+
+def _is_rocm_build() -> bool:
+    return build_variant() == "rocm"
 
 
 def _cuda_variant_suffix() -> str:
     """``-cu130`` for a CUDA 13 build, else ``""``. Keeps an in-app update on its variant."""
-    try:
-        import torch
-
-        cuda = getattr(torch.version, "cuda", None)
-        if cuda:
-            return "-cu130" if cuda.split(".")[0] == "13" else ""
-    except Exception:
-        pass
-    pyapp = os.environ.get("PYAPP")
-    if pyapp and "cu130" in Path(pyapp).name:
-        return "-cu130"
-    return ""
+    variant = build_variant()
+    return f"-{variant}" if variant == "cu130" else ""
 
 
 def resolve_asset_name(platform: str | None = None) -> str:

@@ -49,7 +49,7 @@ from PySide6.QtWidgets import (
 )
 
 from deepreefmap_gui.core.icons import log_icon
-from deepreefmap_gui.core.spinner import SpinnerStopButton
+from deepreefmap_gui.core.spinner import BusySpinner, SpinnerStopButton
 from deepreefmap_gui.core.storage_bar import StorageBars
 from deepreefmap_gui.core.theme import (
     BAR_HEIGHT,
@@ -57,6 +57,7 @@ from deepreefmap_gui.core.theme import (
     BORDER,
     BUTTON,
     CARD_BG,
+    ERROR,
     FONT_SM,
     FONT_XL,
     GUTTER,
@@ -109,6 +110,10 @@ _TOTAL_CHUNK = PRIMARY_DARK
 # batch shows before the run that fails on it.
 _STORAGE_REFRESH_MS = 15_000
 
+# How long the bottom strip keeps the graphics card it found. Long enough to read
+# after looking away, short enough that the strip is not permanently decorated.
+_GPU_INDICATOR_LINGER_MS = 6_000
+
 
 logger = logging.getLogger(__name__)
 
@@ -126,10 +131,14 @@ class FormPanelMixin(MixinBase):
     def _build_form_widgets(self) -> None:
         from deepreefmap.camera.intrinsics import available_profile_names
         from deepreefmap.mapping.registry import list_mapping_backends
-        from deepreefmap.segmentation.registry import list_segmentation_models
+
+        from deepreefmap_gui.models.cache import segmentation_model_names
 
         profiles = available_profile_names() or ["gopro_hero_10"]
-        seg_models = list_segmentation_models()
+        # Not the library's registry: it imports torch, which costs half a second
+        # here and several on a Windows laptop, in the middle of building the
+        # window. Nothing on the way to the first frame may pull torch in.
+        seg_models = segmentation_model_names()
         map_backends = list_mapping_backends()
         documents = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)
         default_root = str(Path(documents or str(Path.home())) / "DeepReefMap")
@@ -460,7 +469,7 @@ class FormPanelMixin(MixinBase):
         adv_layout.addWidget(self._crop_width)
 
     def _build_advanced_resolution(self, adv_layout: QVBoxLayout) -> None:
-        from deepreefmap.segmentation.registry import model_processing_size
+        from deepreefmap_gui.models.families import model_processing_size
 
         default_seg = self._seg_combo.currentText()
         self._native_resolution = model_processing_size(default_seg) or (1376, 768)
@@ -968,7 +977,14 @@ class FormPanelMixin(MixinBase):
         self._models_group = models_group
         self._models_page = models_group
         models_layout.addWidget(models_group)
-        threading.Thread(target=self._refresh_model_status, daemon=True).start()
+        # Queued rather than started here: the first status refresh imports
+        # huggingface_hub, httpx and ssl and then makes a request, and a thread
+        # holds the GIL through an import as surely as this one would. Off the
+        # window's own build, it costs the window nothing. Receiver-bound so a
+        # window closed before it fires takes the callback with it.
+        QTimer.singleShot(
+            0, self, lambda: threading.Thread(target=self._refresh_model_status, daemon=True).start()
+        )
 
     def _build_updates_section(self, updates_layout: QVBoxLayout) -> None:
         self._update_version_label = QLabel(f"Version: <b>{current_version()}</b>")
@@ -1079,6 +1095,20 @@ class FormPanelMixin(MixinBase):
         row.setSpacing(GUTTER)
         self._status_label.setStyleSheet(f"color: {TEXT_SECONDARY};")
         row.addWidget(self._status_label, 1)
+        # The graphics card is counted after the window is up, so the strip says
+        # so while it happens rather than leaving the readiness row to look
+        # simply wrong for the first few seconds. Hidden once it has landed well.
+        self._gpu_indicator_box = QWidget()
+        gpu_row = QHBoxLayout(self._gpu_indicator_box)
+        gpu_row.setContentsMargins(0, 0, 0, 0)
+        gpu_row.setSpacing(SPACE_XS)
+        self._gpu_spinner = BusySpinner()
+        gpu_row.addWidget(self._gpu_spinner)
+        self._gpu_indicator = QLabel("")
+        self._gpu_indicator.setTextFormat(Qt.TextFormat.RichText)
+        gpu_row.addWidget(self._gpu_indicator)
+        self._gpu_indicator_box.setVisible(False)
+        row.addWidget(self._gpu_indicator_box)
         # Storage rides on this row rather than a band of its own: the bars are
         # BAR_HEIGHT tall inside a row already twice that, so the one number
         # that can stop a run mid-dive costs no height to keep on screen.
@@ -1105,6 +1135,44 @@ class FormPanelMixin(MixinBase):
         self._storage_timer.start()
         self._refresh_storage_bars()
         return bar
+
+    def _paint_gpu_indicator(self, gpu: object) -> None:
+        """Say where the graphics-card probe has got to, in the bottom strip.
+
+        `gpu` is None while it runs. A card that turns up is reported and then
+        got out of the way: Setup's readiness row is where it lives permanently,
+        and a strip that keeps a permanent tick teaches the diver to ignore it.
+        Nothing found stays up, because that is the state worth acting on.
+        """
+        from deepreefmap_gui.profiling.system_probe import GPU_NONE, GpuInfo
+
+        box = getattr(self, "_gpu_indicator_box", None)
+        if box is None:
+            return
+        label, spinner = self._gpu_indicator, self._gpu_spinner
+        if gpu is None:
+            spinner.setVisible(True)
+            label.setText(f"<span style='color:{TEXT_MUTED}'>Checking graphics card…</span>")
+            box.setToolTip("Loading the GPU libraries and counting the cards on this machine.")
+            box.setVisible(True)
+            return
+        assert isinstance(gpu, GpuInfo)
+        if not gpu.resolved:
+            box.setVisible(False)
+            return
+        spinner.setVisible(False)
+        if gpu.kind == GPU_NONE:
+            label.setText(f"<span style='color:{ERROR}'>✕ No graphics card</span>")
+            box.setToolTip(f"{gpu.name}. Processing will run on the CPU, which is far slower.")
+            box.setVisible(True)
+            return
+        label.setText(f"<span style='color:{SUCCESS}'>✓ {gpu.name}</span>")
+        box.setToolTip("Graphics card ready.")
+        box.setVisible(True)
+        # box as the timer's receiver, not just a capture: the window can be
+        # closed inside those six seconds, and Qt then drops the callback with
+        # the widget instead of firing it at a deleted C++ object.
+        QTimer.singleShot(_GPU_INDICATOR_LINGER_MS, box, lambda: box.setVisible(False))
 
     def _refresh_storage_bars(self) -> None:
         """Re-measure the drives this survey uses, off the thread painting them.
@@ -1291,7 +1359,7 @@ class FormPanelMixin(MixinBase):
             self._scs_checkpoint_input.setText(path)
 
     def _on_seg_model_changed(self, name: str) -> None:
-        from deepreefmap.segmentation.registry import model_processing_size
+        from deepreefmap_gui.models.families import model_processing_size
 
         self._native_resolution = model_processing_size(name) or (1376, 768)
         self._is_dpt_model = "dpt" in name
@@ -1355,7 +1423,7 @@ class FormPanelMixin(MixinBase):
         mapping = self._map_combo.currentText()
         seg = self._seg_combo.currentText()
         batch_size = self._batch_size_spin.value()
-        profile = probe_system()
+        profile = probe_system(wait_for_gpu=False)
         return fit_for_pass(
             profile,
             seconds=seconds,
@@ -1593,11 +1661,10 @@ class FormPanelMixin(MixinBase):
     def _gpu_available(self) -> bool:
         from deepreefmap_gui.profiling.system_probe import gpu_present
 
-        cached = getattr(self, "_gpu_available_cache", None)
-        if cached is None:
-            cached = gpu_present()
-            self._gpu_available_cache = cached
-        return cached
+        # Never blocking: this is read from repaints and from the cart gate, both
+        # on the GUI thread. Until the probe lands it answers True, and
+        # _on_gpu_probe_done re-runs everything that asked.
+        return gpu_present(wait=False)
 
     def _gpu_only_mapper(self) -> str:
         """The chosen mapping method when it needs a card this machine lacks.

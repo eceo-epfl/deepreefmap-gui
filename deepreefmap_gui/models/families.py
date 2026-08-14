@@ -2,6 +2,11 @@
 
 Repos matching no family below are skipped, so discovery never offers a model the
 app cannot load.
+
+The families also answer what a model's native input size is, by the same rule
+discovery registers it under. `deepreefmap.segmentation.registry` knows the same
+thing, but importing it costs a torch import, and the run form asks this while the
+window is still being built. tests/models/test_model_catalogue.py compares the two.
 """
 
 from __future__ import annotations
@@ -18,6 +23,10 @@ class _Family:
     kind: str
     family: str  # loader tag understood by segmentation.registry
     pattern: re.Pattern[str]
+    # The short name the app knows a model by, which for SegFormer is a prefix of
+    # the repo name rather than the whole of it. Resolution lookups go through
+    # this so a name off a dropdown resolves as readily as a repo id.
+    short_pattern: re.Pattern[str]
     gated: bool
     short_name: Callable[[re.Match[str]], str]
     resolution: Callable[[re.Match[str]], tuple[int, int]]
@@ -31,6 +40,7 @@ _DPT = _Family(
     # Only s/b/l variants are loadable today; unknown variants don't match and
     # are skipped, which is the intended "known-loadable only" behaviour.
     pattern=re.compile(r"^coralscapes-vit-(?P<v>[sbl])-dpt$"),
+    short_pattern=re.compile(r"^coralscapes-vit-(?P<v>[sbl])-dpt$"),
     gated=True,
     short_name=lambda m: m.group(0),
     resolution=lambda m: (384, 688) if m.group("v") == "s" else (768, 1376),
@@ -44,6 +54,7 @@ _SEGFORMER = _Family(
     kind="segmentation",
     family="segformer",
     pattern=re.compile(r"^segformer-b(?P<n>\d+)-finetuned-coralscapes(?:-\d+-\d+)?$"),
+    short_pattern=re.compile(r"^segformer-b(?P<n>\d+)$"),
     gated=False,
     short_name=lambda m: f"segformer-b{m.group('n')}",
     resolution=lambda m: (1024, 1024),
@@ -52,6 +63,20 @@ _SEGFORMER = _Family(
 )
 
 _FAMILIES = (_DPT, _SEGFORMER)
+
+
+def model_processing_size(name: str) -> tuple[int, int] | None:
+    """Native input size as (width, height) for a known model, else None.
+
+    Matches deepreefmap.segmentation.registry's function of the same name, whose
+    families carry the resolution as (height, width).
+    """
+    for fam in _FAMILIES:
+        m = fam.short_pattern.match(name) or fam.pattern.match(name)
+        if m is not None:
+            height, width = fam.resolution(m)
+            return width, height
+    return None
 
 
 def synthesize_model_info(
