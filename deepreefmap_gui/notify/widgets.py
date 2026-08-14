@@ -23,6 +23,7 @@ from deepreefmap_gui.core.icons import (
     blocked_icon,
     check_icon,
     close_icon,
+    icon_pixmap,
     silence_icon,
     warning_icon,
 )
@@ -173,7 +174,7 @@ class NotificationRow(QWidget):
         glyph = QLabel()
         draw = _SEVERITY_GLYPH.get(note.severity)
         if draw is not None:
-            glyph.setPixmap(draw(ICON_SM).pixmap(ICON_SM, ICON_SM))
+            glyph.setPixmap(icon_pixmap(draw(ICON_SM), ICON_SM, self.devicePixelRatio()))
         glyph.setAlignment(Qt.AlignmentFlag.AlignTop)
         glyph.setContentsMargins(0, SPACE_XS // 2, 0, 0)
         layout.addWidget(glyph)

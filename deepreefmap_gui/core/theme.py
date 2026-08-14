@@ -235,21 +235,28 @@ def _chevron_file(direction: str, color: str, size: int = 16) -> str:
     )
     cache.mkdir(parents=True, exist_ok=True)
     path = cache / f"chevron-{direction}-{color.lstrip('#')}-{size}.png"
-    if not path.exists():
-        pixmap = QPixmap(size, size)
+    # A scaled screen wants more pixels than the stylesheet asks for. Qt's image
+    # loader looks for an `@2x` sibling of any file it is given and uses it when
+    # the screen is scaled, so each arrow is painted once per scale.
+    for suffix, scale in (("", 1), ("@2x", 2), ("@3x", 3)):
+        at = path.with_name(f"{path.stem}{suffix}{path.suffix}")
+        if at.exists():
+            continue
+        pixels = size * scale
+        pixmap = QPixmap(pixels, pixels)
         pixmap.fill(Qt.GlobalColor.transparent)
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        pen = QPen(QColor(color), 1.5)
+        pen = QPen(QColor(color), 1.5 * scale)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         painter.setPen(pen)
-        mid, arm = size / 2, size * 0.22
+        mid, arm = pixels / 2, pixels * 0.22
         drop = arm if direction == "down" else -arm
         painter.drawLine(QPointF(mid - arm, mid - drop / 2), QPointF(mid, mid + drop / 2))
         painter.drawLine(QPointF(mid, mid + drop / 2), QPointF(mid + arm, mid - drop / 2))
         painter.end()
-        pixmap.save(str(path))
+        pixmap.save(str(at))
     # Qt stylesheet urls take forward slashes on every platform. Callers quote
     # the result: this lands under the user's cache directory, which on Windows
     # sits below a profile name that routinely contains a space, and an unquoted

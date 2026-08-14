@@ -21,8 +21,8 @@ import functools
 from importlib import resources
 from typing import Callable
 
-from PySide6.QtCore import QPointF, Qt
-from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
+from PySide6.QtCore import QPointF, QSize, Qt
+from PySide6.QtGui import QColor, QGuiApplication, QIcon, QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 
 from deepreefmap_gui.core.theme import (
@@ -47,22 +47,40 @@ def _source(name: str) -> str:
     return path.read_text(encoding="utf-8")
 
 
-@functools.lru_cache(maxsize=512)
-def _rendered(name: str, size: int, colour: str) -> QPixmap:
-    """One glyph at one size in one colour. Cached: rows repaint constantly.
+# The screen scale factors a glyph is rendered for. A 150% Windows display asks
+# for 1.5x, and Qt picks the 2x bitmap and scales it down, which is sharp; give
+# it only the 1x one and it scales up, which is not.
+_SCALES = (1, 2, 3)
 
-    Rendered at the device pixel ratio the pixmap is asked for rather than
-    scaled from a fixed bitmap, which is the reason for keeping these as
-    vectors at all.
+
+@functools.lru_cache(maxsize=1024)
+def _rendered(name: str, pixels: int, colour: str) -> QPixmap:
+    """One glyph at one size in device pixels, in one colour.
+
+    Cached: rows repaint constantly.
     """
     svg = _source(name).replace("currentColor", colour)
-    pm = QPixmap(size, size)
+    pm = QPixmap(pixels, pixels)
     pm.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pm)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     QSvgRenderer(svg.encode("utf-8")).render(painter)
     painter.end()
     return pm
+
+
+@functools.lru_cache(maxsize=512)
+def _icon(name: str, size: int, colour: str) -> QIcon:
+    """One glyph as an icon carrying a bitmap per screen scale.
+
+    The glyph is re-rendered from the vector at each scale rather than one
+    bitmap being resampled, which is the reason for keeping these as vectors at
+    all. Which bitmap is used is Qt's choice, made per screen at paint time.
+    """
+    icon = QIcon()
+    for scale in _SCALES:
+        icon.addPixmap(_rendered(name, size * scale, colour))
+    return icon
 
 
 def _glyph(
@@ -76,11 +94,25 @@ def _glyph(
 
     def build(size_: int = size, color: QColor | None = None) -> QIcon:
         colour = (color.name() if isinstance(color, QColor) else color) or ink
-        return QIcon(_rendered(name, size_, colour))
+        return _icon(name, size_, colour)
 
     build.__name__ = f"{name.replace('-', '_')}_icon"
     build.__doc__ = f"The Lucide '{name}' glyph."
     return build
+
+
+def icon_pixmap(icon: QIcon, size: int = ICON_SM, ratio: float | None = None) -> QPixmap:
+    """A glyph as a pixmap for a QLabel, at a screen's scale.
+
+    A button takes the QIcon and picks its own bitmap; a label takes a pixmap
+    and draws it as given, so the scale has to be asked for here. Pass the
+    label's own ``devicePixelRatio()`` where there is one; the primary screen's
+    is the fallback for a widget that has not been shown yet.
+    """
+    if ratio is None:
+        screen = QGuiApplication.primaryScreen()
+        ratio = screen.devicePixelRatio() if screen is not None else 1.0
+    return icon.pixmap(QSize(size, size), ratio)
 
 
 # --- The set ----------------------------------------------------------------
@@ -140,18 +172,22 @@ def status_dot_icon(colour: str, size: int = ICON_SM) -> QIcon:
     inside a longer line and has no room for a chip.
 
     Drawn rather than a glyph: the colour is the whole content, and there is no
-    picture to get right.
+    picture to get right. One bitmap per screen scale, as for the glyphs.
     """
-    pm = QPixmap(size, size)
-    pm.fill(Qt.GlobalColor.transparent)
-    painter = QPainter(pm)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    painter.setPen(Qt.PenStyle.NoPen)
-    painter.setBrush(QColor(colour))
-    radius = size * 0.22
-    painter.drawEllipse(QPointF(size / 2, size / 2), radius, radius)
-    painter.end()
-    return QIcon(pm)
+    icon = QIcon()
+    for scale in _SCALES:
+        pixels = size * scale
+        pm = QPixmap(pixels, pixels)
+        pm.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pm)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(colour))
+        radius = pixels * 0.22
+        painter.drawEllipse(QPointF(pixels / 2, pixels / 2), radius, radius)
+        painter.end()
+        icon.addPixmap(pm)
+    return icon
 
 
 def section_state_icon(state: str, size: int = ICON_SM) -> QIcon | None:

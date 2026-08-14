@@ -66,6 +66,7 @@ from deepreefmap_gui.core.icons import (
     chevron_down_icon,
     chevron_right_icon,
     close_icon,
+    icon_pixmap,
     link_icon,
     pencil_icon,
     play_icon,
@@ -969,7 +970,7 @@ class VideoRow(QWidget):
 
 
 def _dot(colour: str) -> QPixmap:
-    return status_dot_icon(colour).pixmap(ICON_SM)
+    return icon_pixmap(status_dot_icon(colour), ICON_SM)
 
 
 class TransectChip(QToolButton):
@@ -1295,8 +1296,11 @@ class SectionRow(QWidget):
         if self._pass is not None:
             arrow = arrow_right_icon if self._pass.direction == "forward" else arrow_left_icon
             self._direction.setPixmap(
-                arrow(ICON_SM, QColor(TEXT_MUTED if not self._selected else BRIGHT_TEXT))
-                .pixmap(ICON_SM, ICON_SM)
+                icon_pixmap(
+                    arrow(ICON_SM, QColor(TEXT_MUTED if not self._selected else BRIGHT_TEXT)),
+                    ICON_SM,
+                    self.devicePixelRatio(),
+                )
             )
         self._apply_cart_icon()
 
