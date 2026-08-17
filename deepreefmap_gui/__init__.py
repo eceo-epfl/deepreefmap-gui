@@ -11,7 +11,7 @@ transect they belong to, whether this laptop can run another one.
 
 ## Where the code for a feature is
 
-The window is a single class fused from 20 mixins, so a feature is a file rather than a widget
+The window is a single class fused from 21 mixins, so a feature is a file rather than a widget
 subtree. `class <Mixin>` is the only grep you need after this table:
 
 | What you see                                          | Mixin                  | File                   |
@@ -36,6 +36,7 @@ subtree. `class <Mixin>` is the only grep you need after this table:
 | Viewer controls: playback, legend, picking, app mode  | `ViewerControlsMixin`  | `viewer/controls.py`   |
 | Update check and install, the desktop entry toggle    | `VersionCheckMixin`    | `update/version.py`    |
 | Storage: one drive's runs, clips and what can go      | `StorageMixin`         | `storage/page.py`      |
+| Server: the registry, the device, and metadata sync   | `ServerPageMixin`      | `server/page_ui.py`    |
 
 Widgets those mixins build but do not own are their own modules beside them (`runs/run_table.py`,
 `runs/run_detail.py`, `viewer/legend.py`, and so on). Each subpackage's `__init__.py` states its
@@ -66,7 +67,9 @@ literally: `packs.py` is the model-pack format and the file copying, `packs_ui.p
 and the mixin that drive them. Prefer the suffix for new splits.
 
 `notify/` follows it too: `model.py`, `conditions.py`, `center.py` and `log.py` are pure, and the
-`_ui` modules are the bell, the popover and the Activity view.
+`_ui` modules are the bell, the popover and the Activity view. So does `server/`: `state.py` and
+`enrolment.py` read and act, `page_ui.py` and `connect_ui.py` are the page and the dialog. `sync/`
+below it is Qt-free throughout, and knows nothing about a window.
 
 The same split exists under older names, and those stay: `survey/` is the Qt-free domain layer
 under `simple/`'s UI, `simple/section_state.py` the pure verdict behind the header badges,

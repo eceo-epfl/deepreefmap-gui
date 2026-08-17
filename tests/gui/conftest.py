@@ -97,6 +97,19 @@ def machine_preset_path(tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_sync_credentials(tmp_path, monkeypatch):
+    """Keep the Server page off this machine's real device token.
+
+    The page reads the credential every time it is shown, and a developer with a
+    laptop enrolled against a real registry would otherwise have the suite paint
+    their own server, with a Sync now button wired to it.
+    """
+    monkeypatch.setenv("DEEPREEFMAP_SYNC_DEVICE", str(tmp_path / "sync_device.json"))
+    monkeypatch.setenv("DEEPREEFMAP_SYNC_TOKEN", str(tmp_path / "sync_token.json"))
+    monkeypatch.setattr("deepreefmap_gui.sync.credentials._keyring", lambda: None)
+
+
+@pytest.fixture(autouse=True)
 def _offline_tiles(qapp):
     """Map widgets must never fetch tiles during tests."""
     from deepreefmap_gui.map.tile_cache import shared_tile_cache

@@ -1,0 +1,144 @@
+"""What the Server page reads, and how it words a failure."""
+
+from __future__ import annotations
+
+from deepreefmap_gui.server.state import (
+    NOTHING_TO_SYNC,
+    RETRY_LATER,
+    default_device_name,
+    describe_failure,
+    pending_rows,
+    read_state,
+    summarise,
+)
+from deepreefmap_gui.survey.models import Site
+from deepreefmap_gui.sync import client, credentials
+from deepreefmap_gui.sync.connect_code import ConnectCodeError
+from deepreefmap_gui.sync.engine import (
+    CURSOR_KEY,
+    WATERMARK_PREFIX,
+    PullReport,
+    PushReport,
+    SectionPush,
+)
+
+TOKEN = "drmd_" + "0" * 16 + "_" + "1" * 64
+BEFORE_ANY_CLOCK = "2000-01-01T00:00:00+00:00"
+
+
+def test_an_unconnected_install_still_names_its_token_backend(store):
+    state = read_state(store)
+
+    assert not state.connected
+    assert state.base_url == ""
+    assert state.backend == credentials.BACKEND_FILE
+    assert state.waiting == 0
+
+
+def test_a_connected_install_reports_the_address_it_was_given(store):
+    credentials.save("https://reef.example.org", TOKEN)
+    store.set_sync_state(CURSOR_KEY, "4830")
+
+    state = read_state(store, device_name="Dive laptop")
+
+    assert state.connected
+    assert state.base_url == "https://reef.example.org"
+    assert state.device_id == credentials.device_id()
+    assert state.device_name == "Dive laptop"
+    assert state.cursor == 4830
+
+
+def test_the_onboarder_is_carried_separately_from_the_device_name(store):
+    """Two facts: what uploads are attributed to, and who set the laptop up."""
+    credentials.save("https://reef.example.org", TOKEN)
+
+    state = read_state(store, device_name="Dive laptop", enrolled_by="Kim Nguyen")
+
+    assert state.device_name == "Dive laptop"
+    assert state.enrolled_by == "Kim Nguyen"
+
+
+def test_an_unreadable_credential_is_a_fault_rather_than_a_crash(store, monkeypatch):
+    monkeypatch.setattr(
+        credentials, "load", lambda: (_ for _ in ()).throw(credentials.CredentialsError("mode 644"))
+    )
+
+    state = read_state(store)
+
+    assert not state.connected
+    assert "mode 644" in state.fault
+
+
+def test_the_row_that_earned_the_watermark_is_not_still_waiting(store):
+    """Scenario: a section is pushed, and its watermark is the stamp it earned.
+
+    Expected behaviour: nothing is waiting. Counting the row that carries the
+    watermark would leave every synced survey owing one row for ever.
+    """
+    site = Site(name="Reef")
+    store.add_site(site)
+    store.set_sync_state(f"{WATERMARK_PREFIX}sites", site.updated_at)
+
+    assert pending_rows(store) == {}
+
+    store.set_sync_state(f"{WATERMARK_PREFIX}sites", BEFORE_ANY_CLOCK)
+
+    assert pending_rows(store) == {"sites": 1}
+
+
+def test_a_sync_that_moved_nothing_says_so():
+    assert summarise(PullReport(), PushReport()) == NOTHING_TO_SYNC
+
+
+def test_a_summary_counts_both_directions_and_what_was_refused():
+    site = Site(name="Reef")
+    pull = PullReport(overwritten=(site.id,))
+    push = PushReport(
+        sections={"sites": SectionPush(received=2, applied=1, skipped=(site.id,))}
+    )
+
+    line = summarise(pull, push)
+
+    assert "sent 1 row(s)" in line
+    assert "already held 1" in line
+    assert "1 edit(s) made here were replaced" in line
+
+
+def test_an_unreachable_registry_is_a_retry():
+    failure = describe_failure(client.ServerUnreachableError("Cannot reach https://reef: timed out"))
+
+    assert not failure.reconnect
+    assert "https://reef" in failure.detail
+    assert RETRY_LATER in failure.detail
+
+
+def test_a_revoked_device_asks_for_a_reconnection():
+    """A 401 is the one failure a retry cannot fix, so the page offers a new code."""
+    failure = describe_failure(client.DeviceRevokedError("access has been revoked"))
+
+    assert failure.reconnect
+    assert failure.detail == "access has been revoked"
+
+
+def test_a_contract_mismatch_names_both_versions():
+    failure = describe_failure(
+        client.ContractMismatchError(
+            "This app speaks metadata contract 1 and the registry speaks 2. Update whichever is older."
+        )
+    )
+
+    assert not failure.reconnect
+    assert "1" in failure.detail and "2" in failure.detail
+
+
+def test_a_bad_connect_code_is_reported_as_the_code_and_not_the_server():
+    failure = describe_failure(ConnectCodeError("Not a connect code: it must start with `drm1.`."))
+
+    assert "connect code" in failure.title
+    assert "drm1." in failure.detail
+
+
+def test_the_device_name_defaults_to_this_machine(monkeypatch):
+    monkeypatch.setattr("socket.gethostname", lambda: "reef-laptop.local")
+
+    assert default_device_name() == "reef-laptop"

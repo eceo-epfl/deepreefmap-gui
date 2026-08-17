@@ -1,0 +1,392 @@
+"""The Server section in the shell: what it says, and what a sync does to it.
+
+No test here reaches the network. The registry is a fake object standing in for
+`SyncClient`, so the real engine, the real store and the real signals run.
+"""
+
+from __future__ import annotations
+
+import time
+
+import pytest
+
+from deepreefmap_gui.server.page_ui import (
+    NOT_CONNECTED,
+    ONBOARDED_BY,
+    SESSION_RUNNING,
+    WHERE_FILE,
+)
+from deepreefmap_gui.server.state import (
+    DEVICE_NAME_KEY,
+    ENROLLED_BY_KEY,
+    LAST_SYNC_KEY,
+    NOTHING_TO_SYNC,
+    SERVER_SECTION,
+)
+from deepreefmap_gui.simple.mode import DESTINATIONS, NON_DESTINATIONS, SIMPLE_SECTIONS
+from deepreefmap_gui.survey.models import Site
+from deepreefmap_gui.sync import client as client_mod
+from deepreefmap_gui.sync import credentials
+from deepreefmap_gui.sync.engine import CONFLICT_DISCARDED
+
+SERVER_URL = "https://reef.example.org"
+TOKEN = "drmd_" + "0" * 16 + "_" + "1" * 64
+CURSOR = 4830
+
+
+class FakeRegistry:
+    """Answers like the registry, and records the order it was asked in."""
+
+    def __init__(self, base_url="", token="", fail=None, skipped=None):
+        self.base_url = base_url
+        self.token = token
+        self._fail = fail
+        self._skipped = skipped or {}
+        self.calls: list[str] = []
+        self.pushed: list[dict] = []
+
+    def pull(self, since=None, limit=1000):
+        self.calls.append("pull")
+        if self._fail is not None:
+            raise self._fail
+        return {"contract_version": 1, "cursor": CURSOR, "has_more": False, "sections": {}}
+
+    def push(self, sections):
+        self.calls.append("push")
+        self.pushed.append(dict(sections))
+        return {
+            "cursor": CURSOR,
+            "sections": {
+                name: self._outcome(name, rows) for name, rows in sections.items()
+            },
+        }
+
+    def _outcome(self, name, rows):
+        skipped = [str(row_id) for row_id in self._skipped.get(name, ())]
+        return {
+            "received": len(rows),
+            "applied": len(rows) - len(skipped),
+            "skipped": skipped,
+        }
+
+
+@pytest.fixture(autouse=True)
+def _forget_device_identity(qapp):
+    """QSettings outlives a test, and both keys decide what the page says."""
+    from PySide6.QtCore import QSettings
+
+    settings = QSettings("ECEO", "deepreefmap")
+    for key in (DEVICE_NAME_KEY, ENROLLED_BY_KEY):
+        settings.remove(key)
+    yield
+    for key in (DEVICE_NAME_KEY, ENROLLED_BY_KEY):
+        settings.remove(key)
+
+
+@pytest.fixture
+def registry(monkeypatch):
+    """The one registry every sync in this file talks to."""
+    made: list[FakeRegistry] = []
+
+    def build(*, fail=None, skipped=None):
+        def factory(base_url, token=None, timeout=None):
+            fake = FakeRegistry(base_url, token or "", fail=fail, skipped=skipped)
+            made.append(fake)
+            return fake
+
+        monkeypatch.setattr(client_mod, "SyncClient", factory)
+        return made
+
+    return build
+
+
+def enrol_this_device():
+    credentials.save(SERVER_URL, TOKEN)
+
+
+def settle(qapp, ready, timeout=5.0):
+    """Deliver queued signals until a worker's result has landed."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        qapp.processEvents()
+        if ready():
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def facts(window) -> dict[str, str]:
+    return _rows(window._server_facts)
+
+
+def device_facts(window) -> dict[str, str]:
+    return _rows(window._server_device_facts)
+
+
+def _rows(listing) -> dict[str, str]:
+    values = [label.text() for label in listing._values]
+    return dict(zip(listing._keys, values, strict=True))
+
+
+def test_the_server_page_is_a_utility_section_not_a_destination(window):
+    """Scenario: the Server page is registered in the shell.
+
+    Expected behaviour: it is a section like Setup and storage, so no pill owns it
+    and none is lit while it is open. The four destinations are where the work is;
+    this is a connection you check and leave.
+    """
+    assert SERVER_SECTION in SIMPLE_SECTIONS
+    assert SERVER_SECTION in NON_DESTINATIONS
+    assert SERVER_SECTION not in DESTINATIONS
+    assert list(window._simple_nav_buttons) == list(DESTINATIONS)
+
+    window._set_simple_section(SERVER_SECTION)
+
+    assert window._current_section() == SERVER_SECTION
+    assert not any(b.isChecked() for b in window._simple_nav_buttons.values())
+
+
+def test_the_header_button_goes_there(window):
+    window._server_nav_button.click()
+
+    assert window._current_section() == SERVER_SECTION
+
+
+def test_an_unconnected_install_offers_only_the_connect_button(window):
+    window._set_simple_section(SERVER_SECTION)
+
+    assert window._server_empty.isVisibleTo(window)
+    assert window._server_connect_btn.isVisibleTo(window)
+    assert not window._server_sync_btn.isVisibleTo(window)
+    assert not window._server_disconnect_btn.isVisibleTo(window)
+    assert NOT_CONNECTED in window._server_empty._message.text()
+
+
+def test_a_connected_install_names_the_server_and_where_the_token_is(window):
+    enrol_this_device()
+    window._set_simple_section(SERVER_SECTION)
+
+    shown = facts(window)
+    assert shown["Server"] == SERVER_URL
+    assert shown["Token kept in"] == WHERE_FILE
+    assert shown["Last sync"] == "Never"
+    assert shown["Pulled up to"] == "Nothing yet"
+    assert window._server_disconnect_note.isVisibleTo(window)
+
+
+def test_the_device_name_is_shown_as_the_attribution(window):
+    """Uploads are attributed to this name, so the page leads with it."""
+    enrol_this_device()
+    window._settings.setValue(DEVICE_NAME_KEY, "Dive laptop")
+    window._set_simple_section(SERVER_SECTION)
+
+    assert window._server_device_label.text() == "Dive laptop"
+    assert "This device" not in facts(window)
+
+
+def test_a_registry_that_reports_no_one_shows_no_onboarder(window):
+    enrol_this_device()
+    window._set_simple_section(SERVER_SECTION)
+
+    assert ONBOARDED_BY not in device_facts(window)
+
+
+def test_the_page_counts_what_is_waiting_to_go(window):
+    enrol_this_device()
+    window._survey_store().add_site(Site(name="Reef Wall"))
+
+    window._set_simple_section(SERVER_SECTION)
+
+    assert window._server_waiting_card.isVisibleTo(window)
+    assert facts(window)["Waiting to send"] == "1 row(s)"
+
+
+def test_a_successful_connection_reports_the_server_it_found(window, qapp, monkeypatch, caplog):
+    """Scenario: a connect code is pasted and accepted.
+
+    Expected behaviour: the page names the address decoded out of the code and the
+    store the token went to, and the code itself is neither shown back nor logged.
+    """
+    from deepreefmap_gui.server import enrolment as enrolment_mod
+
+    secret = "ab" * 32
+    pasted = f"drm1.{secret}"
+
+    def fake_connect(code, device_name=""):
+        assert code == pasted
+        credentials.save(SERVER_URL, TOKEN)
+        return enrolment_mod.Connected(
+            base_url=SERVER_URL,
+            device_id="device-1",
+            device_name=device_name,
+            backend=credentials.BACKEND_FILE,
+            enrolled_by="Kim Nguyen",
+        )
+
+    monkeypatch.setattr(enrolment_mod, "connect", fake_connect)
+    window._set_simple_section(SERVER_SECTION)
+    with caplog.at_level("DEBUG"):
+        window._start_enrolment(pasted, "Dive laptop")
+        assert settle(qapp, lambda: window._server_notice.isVisibleTo(window))
+
+    message = window._server_notice._message.text()
+    assert SERVER_URL in message
+    assert WHERE_FILE in message
+    assert secret not in message
+    assert secret not in caplog.text
+    assert window._settings.value(DEVICE_NAME_KEY) == "Dive laptop"
+    assert window._settings.value(ENROLLED_BY_KEY) == "Kim Nguyen"
+    assert window._server_device_label.text() == "Dive laptop"
+    assert device_facts(window)[ONBOARDED_BY] == "Kim Nguyen"
+
+
+def test_a_refused_code_is_reported_on_the_page_when_the_dialog_has_gone(
+    window, qapp, monkeypatch
+):
+    """The dialog can be cancelled mid-enrolment, and the answer still arrives."""
+    from deepreefmap_gui.server import enrolment as enrolment_mod
+
+    def fake_connect(code, device_name=""):
+        raise client_mod.EnrolmentRejectedError("that code has already been used")
+
+    monkeypatch.setattr(enrolment_mod, "connect", fake_connect)
+    window._set_simple_section(SERVER_SECTION)
+    window._start_enrolment("drm1.whatever", "Dive laptop")
+
+    assert settle(qapp, lambda: window._server_blocker.isVisibleTo(window))
+    assert "already been used" in window._server_blocker._reason.text()
+    assert window._server_blocker._action.text() == "Connect again"
+
+
+def test_a_sync_pulls_before_it_pushes_and_reports_both(window, qapp, registry):
+    enrol_this_device()
+    window._survey_store().add_site(Site(name="Reef Wall"))
+    made = registry()
+    window._set_simple_section(SERVER_SECTION)
+    seen: list[str] = []
+    window._sig_sync_progress.connect(seen.append)
+
+    window._on_sync_now()
+    assert settle(qapp, lambda: not window._server_syncing)
+
+    assert made[0].calls == ["pull", "push"]
+    assert made[0].token == TOKEN
+    assert made[0].pushed[0]["sites"][0]["name"] == "Reef Wall"
+    assert [text.split(" (")[0] for text in seen] == ["Pulling changes", "Sending 1 row(s)…"]
+    assert "sent 1 row(s)" in window._server_notice._message.text()
+    assert window._survey_store().sync_state(LAST_SYNC_KEY)
+    assert facts(window)["Pulled up to"] == str(CURSOR)
+    assert facts(window)["Waiting to send"] == "0 row(s)"
+
+
+def test_a_survey_the_registry_already_has_says_so(window, qapp, registry):
+    enrol_this_device()
+    registry()
+    window._set_simple_section(SERVER_SECTION)
+
+    window._on_sync_now()
+    assert settle(qapp, lambda: not window._server_syncing)
+
+    assert window._server_notice._message.text() == NOTHING_TO_SYNC
+
+
+def test_a_session_in_flight_holds_the_sync_back(window, registry):
+    """A pull rewrites the rows the batch worker is writing pass statuses into."""
+    enrol_this_device()
+    made = registry()
+    window._set_simple_section(SERVER_SECTION)
+    window._survey_worker_running = True
+
+    window._on_sync_now()
+
+    assert made == []
+    assert window._server_blocker._reason.text() == SESSION_RUNNING
+
+
+def test_an_offline_registry_is_a_retry_and_not_a_reconnection(window, qapp, registry):
+    enrol_this_device()
+    registry(fail=client_mod.ServerUnreachableError("Cannot reach the registry: timed out"))
+    window._set_simple_section(SERVER_SECTION)
+
+    window._on_sync_now()
+    assert settle(qapp, lambda: not window._server_syncing)
+
+    assert "timed out" in window._server_blocker._reason.text()
+    # A retry, so the page does not offer a new connect code for it.
+    assert window._server_blocker._action.text() == ""
+    assert window._server_sync_btn.isEnabled()
+
+
+def test_a_revoked_device_is_asked_to_connect_again(window, qapp, registry):
+    enrol_this_device()
+    registry(fail=client_mod.DeviceRevokedError("this device's access has been revoked"))
+    window._set_simple_section(SERVER_SECTION)
+
+    window._on_sync_now()
+    assert settle(qapp, lambda: not window._server_syncing)
+
+    assert window._server_blocker._action.text() == "Connect again"
+
+
+def test_a_contract_mismatch_names_both_versions(window, qapp, registry):
+    enrol_this_device()
+    registry(
+        fail=client_mod.ContractMismatchError(
+            "This app speaks metadata contract 1 and the registry speaks 2."
+        )
+    )
+    window._set_simple_section(SERVER_SECTION)
+
+    window._on_sync_now()
+    assert settle(qapp, lambda: not window._server_syncing)
+
+    reason = window._server_blocker._reason.text()
+    assert "contract 1" in reason and "speaks 2" in reason
+
+
+def test_a_row_the_registry_held_newer_reaches_the_bell(window, qapp, registry):
+    """Scenario: a local edit is refused because the registry has a newer copy.
+
+    Expected behaviour: the engine's conflict report arrives at the notification
+    centre from the worker thread, and pressing it lands on this page. A modal
+    would interrupt whoever is mid-dive.
+    """
+    enrol_this_device()
+    site = Site(name="Reef Wall")
+    window._survey_store().add_site(site)
+    registry(skipped={"sites": [site.id]})
+    window._set_simple_section(SERVER_SECTION)
+    window._set_simple_section("videos")
+
+    window._on_sync_now()
+    assert settle(qapp, lambda: not window._server_syncing)
+
+    posted = {note.fingerprint: note for note in window._notify.active()}
+    assert CONFLICT_DISCARDED in posted
+    assert posted[CONFLICT_DISCARDED].section == SERVER_SECTION
+
+    window._on_notification_activated(posted[CONFLICT_DISCARDED].section)
+
+    assert window._current_section() == SERVER_SECTION
+
+
+def test_disconnecting_forgets_the_token_and_says_only_that(window, monkeypatch):
+    enrol_this_device()
+    window._set_simple_section(SERVER_SECTION)
+    monkeypatch.setattr("deepreefmap_gui.server.page_ui.confirm", lambda *a: True)
+
+    window._on_disconnect_server()
+
+    assert credentials.load() is None
+    assert window._server_empty.isVisibleTo(window)
+    assert "does not revoke the device" in window._server_disconnect_btn.toolTip()
+
+
+def test_disconnecting_is_refusable(window, monkeypatch):
+    enrol_this_device()
+    window._set_simple_section(SERVER_SECTION)
+    monkeypatch.setattr("deepreefmap_gui.server.page_ui.confirm", lambda *a: False)
+
+    window._on_disconnect_server()
+
+    assert credentials.load() is not None

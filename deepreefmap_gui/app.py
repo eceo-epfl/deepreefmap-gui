@@ -1,6 +1,6 @@
 """The window, and the process it runs in.
 
-`DeepReefMapWindow` builds no feature of its own. It fuses the 20 mixins listed in its bases
+`DeepReefMapWindow` builds no feature of its own. It fuses the 21 mixins listed in its bases
 (the feature-to-file table is in `deepreefmap_gui/__init__.py`), owns the frame they fill in
 (splitters, the run banner, the central layout, the shortcuts), and shuts everything down in
 `closeEvent`. Read `__init__` in order, not in parts: the form widgets are built first because
@@ -72,6 +72,7 @@ from deepreefmap_gui.runs.progress import ProgressBarsMixin
 from deepreefmap_gui.runs.progress_panel import ProgressPanel
 from deepreefmap_gui.runs.results import ResultsMixin
 from deepreefmap_gui.runs.videos import VideoLibraryMixin
+from deepreefmap_gui.server.page_ui import ServerPageMixin
 from deepreefmap_gui.simple.analysis import SimpleAnalysisMixin
 from deepreefmap_gui.simple.batch import SimpleBatchMixin
 from deepreefmap_gui.simple.machine import SimpleMachineMixin
@@ -98,6 +99,7 @@ class DeepReefMapWindow(
     ProgressBarsMixin,
     ResultsMixin,
     RunLoadingMixin,
+    ServerPageMixin,
     SimpleAnalysisMixin,
     SimpleBatchMixin,
     SimpleMachineMixin,
@@ -146,6 +148,12 @@ class DeepReefMapWindow(
     # What a worker thread has to say, as data: a new kind of message should not
     # need a new signal here.
     _sig_notify = Signal(object)
+    # The registry, off the GUI thread. Each pair carries the outcome and the
+    # failure, one of them None: a sync fails as readily as it succeeds, and both
+    # land in the same slot.
+    _sig_enrol_done = Signal(object, object)
+    _sig_sync_progress = Signal(str)
+    _sig_sync_done = Signal(object, object)
 
     def __init__(self, classes_config: ClassConfig, classes_path: Path | None) -> None:
         super().__init__()
@@ -180,6 +188,9 @@ class DeepReefMapWindow(
         self._sig_storage_usage.connect(self._apply_storage_usage)
         self._sig_storage_page.connect(self._apply_storage_page_scan)
         self._sig_notify.connect(self._notify_post)
+        self._sig_enrol_done.connect(self._on_enrol_done)
+        self._sig_sync_progress.connect(self._on_sync_progress)
+        self._sig_sync_done.connect(self._on_sync_done)
         self._sig_gpu_probe_done.connect(self._on_gpu_probe_done)
         self._sig_footage_rate.connect(self._on_footage_rate)
 
