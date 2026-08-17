@@ -29,9 +29,10 @@ import time
 from dataclasses import dataclass, field
 
 from PySide6.QtCore import QTimer
+from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import QApplication
 
-from deepreefmap_gui.core.theme import PRIMARY
+from deepreefmap_gui.core.theme import CARD_HOVER_GUARD_MS, PRIMARY
 from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.profiling.eta import (
     RunEtaEstimator,
@@ -264,11 +265,35 @@ class ProgressBarsMixin(MixinBase):
     def _ensure_timing_popup(self):
         popup = getattr(self, "_timing_popup", None)
         if popup is None:
+            from deepreefmap_gui.core.hover_card import install_dismiss_filter
             from deepreefmap_gui.runs.timing_popup import TimingPopup
 
             popup = TimingPopup(self)
             self._timing_popup = popup
+            install_dismiss_filter(self._survey_pass_table, self._hide_timing_popup)
         return popup
+
+    def _ensure_timing_guard_timer(self) -> QTimer:
+        """The poll that takes the breakdown down when no Leave arrives."""
+        timer = getattr(self, "_timing_guard_timer", None)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setInterval(CARD_HOVER_GUARD_MS)
+            timer.timeout.connect(self._guard_timing_popup)
+            self._timing_guard_timer = timer
+        return timer
+
+    def _guard_timing_popup(self) -> None:
+        """Hide the breakdown once the cursor is off the table it describes."""
+        from deepreefmap_gui.core.hover_card import cursor_on
+
+        popup = getattr(self, "_timing_popup", None)
+        table = self._survey_pass_table
+        if popup is None or not popup.isVisible():
+            self._ensure_timing_guard_timer().stop()
+            return
+        if not table.window().isActiveWindow() or not cursor_on(QCursor.pos(), table):
+            self._hide_timing_popup()
 
     def _progress_sinks(self) -> list:
         """Every widget mirroring the run in flight.
@@ -403,6 +428,9 @@ class ProgressBarsMixin(MixinBase):
             popup.set_rows(est.stage_rows(now), est.total_remaining_s(now), est.has_history)
 
     def _hide_timing_popup(self) -> None:
+        timer = getattr(self, "_timing_guard_timer", None)
+        if timer is not None:
+            timer.stop()
         popup = getattr(self, "_timing_popup", None)
         if popup is not None:
             popup.hide()
@@ -426,6 +454,7 @@ class ProgressBarsMixin(MixinBase):
         popup.set_rows(est.stage_rows(now), est.total_remaining_s(now), est.has_history)
         self._anchor_timing_popup(global_rect)
         popup.show()
+        self._ensure_timing_guard_timer().start()
 
     def _anchor_timing_popup(self, global_rect) -> None:
         """Place the breakdown against the row, and on the screen."""

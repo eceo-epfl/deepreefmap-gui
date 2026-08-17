@@ -13,12 +13,15 @@ the anchor it describes; it has to flip below instead.
 from __future__ import annotations
 
 import pytest
-from PySide6.QtCore import QPoint, QRect, QSize
+from PySide6.QtCore import QEvent, QPoint, QRect, QSize
 from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import QLabel, QWidget
+from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
 from deepreefmap_gui.core.hover_card import (
+    CARD_GAP,
     apply_hover_card_flags,
+    cursor_on,
+    install_dismiss_filter,
     place_near_cursor,
     place_near_widget,
 )
@@ -93,3 +96,84 @@ def test_the_flags_let_a_plain_widget_paint_its_own_border(card) -> None:
     assert card.testAttribute(Qt.WidgetAttribute.WA_StyledBackground)
     assert card.testAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
     assert card.windowFlags() & Qt.WindowType.FramelessWindowHint
+
+
+# --- dismissal --------------------------------------------------------------
+
+def test_the_cursor_is_judged_by_where_the_anchor_is_not_by_a_stale_flag(qapp) -> None:
+    """Scenario: the pointer leaves the window without a Leave reaching the
+    anchor, so `WA_UnderMouse` stays set on it.
+
+    Expected behaviour: `cursor_on` answers from geometry and says no.
+    """
+    from PySide6.QtCore import Qt
+
+    anchor = QWidget()
+    anchor.resize(80, 20)
+    anchor.move(300, 300)
+    anchor.show()
+    anchor.setAttribute(Qt.WidgetAttribute.WA_UnderMouse, True)
+
+    assert anchor.underMouse()
+    assert not cursor_on(QPoint(4000, 4000), anchor)
+    assert cursor_on(anchor.mapToGlobal(QPoint(40, 10)), anchor)
+
+
+def test_the_gap_a_card_is_placed_across_still_counts_as_on_the_anchor(qapp) -> None:
+    """A card sits CARD_GAP clear of its anchor, so a strict rect would take the
+    card down as the pointer crossed toward it."""
+    anchor = QWidget()
+    anchor.resize(80, 20)
+    anchor.move(300, 300)
+    anchor.show()
+    just_outside = anchor.mapToGlobal(QPoint(40, 20 + CARD_GAP - 1))
+
+    assert cursor_on(just_outside, anchor)
+    assert not cursor_on(anchor.mapToGlobal(QPoint(40, 20 + CARD_GAP * 3)), anchor)
+
+
+def test_a_hidden_anchor_is_never_under_the_cursor(qapp) -> None:
+    anchor = QWidget()
+    anchor.resize(80, 20)
+    assert not cursor_on(QPoint(0, 0), anchor)
+
+
+@pytest.mark.parametrize(
+    "event_type",
+    [
+        QEvent.Type.Leave,
+        QEvent.Type.WindowDeactivate,
+        QEvent.Type.WindowStateChange,
+    ],
+)
+def test_every_way_of_losing_the_pointer_hides_the_card(qapp, event_type) -> None:
+    owner = QWidget()
+    owner.show()
+    hidden: list[bool] = []
+    install_dismiss_filter(owner, lambda: hidden.append(True))
+
+    QApplication.sendEvent(owner.window(), QEvent(event_type))
+
+    assert hidden == [True]
+
+
+def test_a_hidden_window_is_left_to_its_own_hide_event(qapp) -> None:
+    """Filtering Hide reaches widgets already part-way through teardown, and a
+    widget holding a card takes it down in `hideEvent` regardless."""
+    owner = QWidget()
+    owner.show()
+    hidden: list[bool] = []
+    install_dismiss_filter(owner, lambda: hidden.append(True))
+
+    QApplication.sendEvent(owner.window(), QEvent(QEvent.Type.Hide))
+
+    assert hidden == []
+
+
+def test_the_filter_consumes_nothing_it_watches(qapp) -> None:
+    """Everything it acts on is an event somebody else is also handling."""
+    owner = QWidget()
+    owner.show()
+    handler = install_dismiss_filter(owner, lambda: None)
+
+    assert handler.eventFilter(owner, QEvent(QEvent.Type.Leave)) is False

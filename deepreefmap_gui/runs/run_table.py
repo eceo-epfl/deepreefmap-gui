@@ -13,15 +13,17 @@ from datetime import datetime, timezone
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QHeaderView,
     QTableWidget,
 )
 
 from deepreefmap_gui.core.widgets import (
+    ColumnSpec,
     SortableItem,
     StatusPillDelegate,
     configure_table,
     enable_sorting,
+    fitted_column_widths,
+    install_column_sizer,
 )
 from deepreefmap_gui.profiling.eta import format_duration
 from deepreefmap_gui.profiling.system_probe import format_bytes
@@ -83,9 +85,6 @@ _FLEX_WEIGHTS = {COL_NAME: 3, COL_VIDEO: 2, COL_TRANSECT: 1}
 # window too narrow to hold the columns by any arrangement.
 _FLEX_MINIMUMS = {COL_NAME: 140, COL_VIDEO: 100, COL_TRANSECT: 80}
 
-# No column narrower than this, whatever its content measures.
-_MIN_SECTION_WIDTH = 64
-
 # Numbers read right-aligned, which also lines up their digits down the column.
 # Their headers follow them, so label and value share an edge.
 _NUMERIC_COLUMNS = (COL_FRAMES, COL_POINTS, COL_RUNTIME, COL_SIZE)
@@ -110,48 +109,17 @@ _TOOLTIP_LABELS = {
 }
 
 
+_COLUMN_SPEC = ColumnSpec(
+    fixed=_FIXED_WIDTHS,
+    weights=_FLEX_WEIGHTS,
+    minimums=_FLEX_MINIMUMS,
+    optional=_OPTIONAL_WIDTHS,
+)
+
+
 def column_widths(available: int) -> dict[int, int]:
-    """How a viewport of `available` px divides between the columns it can hold.
-
-    The fixed columns take theirs first, then the optional ones in turn while
-    their width is still spare, then the rest is shared by weight. A share that
-    falls under a column's floor is clamped to it and the *remainder* is
-    re-divided among the columns still flexing, rather than every column being
-    clamped independently -- doing that over-spends the viewport by the size of
-    each bump and puts back the scrollbar this exists to avoid.
-
-    Columns left out are absent from the result, not zero-width. On a window too
-    narrow to hold even the mandatory ones at their floors the floors win and the
-    table scrolls. That is the honest answer: a column shrunk past reading is not
-    a column.
-    """
-    widths = dict(_FIXED_WIDTHS)
-    spent = sum(_FIXED_WIDTHS.values()) + sum(_FLEX_MINIMUMS.values())
-    for column, width in _OPTIONAL_WIDTHS:
-        if spent + width > available:
-            break
-        widths[column] = width
-        spent += width
-    slack = max(0, available - sum(widths.values()))
-    flexing = dict(_FLEX_WEIGHTS)
-    while flexing:
-        weight_total = sum(flexing.values())
-        clamped = next(
-            (
-                column
-                for column, weight in flexing.items()
-                if slack * weight // weight_total < _FLEX_MINIMUMS[column]
-            ),
-            None,
-        )
-        if clamped is None:
-            for column, weight in flexing.items():
-                widths[column] = slack * weight // weight_total
-            break
-        widths[clamped] = _FLEX_MINIMUMS[clamped]
-        slack = max(0, slack - _FLEX_MINIMUMS[clamped])
-        del flexing[clamped]
-    return widths
+    """How a viewport of `available` px divides between the columns it can hold."""
+    return fitted_column_widths(available, _COLUMN_SPEC)
 
 
 def _sort_text(value: str | None) -> str | None:
@@ -220,14 +188,6 @@ class RunTable(QTableWidget):
         # loses exactly the character that identifies it.
         self.setTextElideMode(Qt.TextElideMode.ElideMiddle)
 
-        header = self.horizontalHeader()
-        header.setStretchLastSection(False)
-        header.setMinimumSectionSize(_MIN_SECTION_WIDTH)
-        # Every column is driven from _apply_column_widths, so none of them is
-        # content-sized: left to measure themselves the numeric columns took the
-        # viewport and squeezed Name, the one column identifying the row.
-        for column in range(len(_HEADERS)):
-            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
         for column in _NUMERIC_COLUMNS:
             item = self.horizontalHeaderItem(column)
             if item is not None:
@@ -235,21 +195,7 @@ class RunTable(QTableWidget):
                     Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
                 )
         enable_sorting(self, COL_CREATED, Qt.SortOrder.DescendingOrder)
-
-    def _apply_column_widths(self) -> None:
-        header = self.horizontalHeader()
-        available = self.viewport().width()
-        if available <= 0:
-            return
-        widths = column_widths(available)
-        for column, _width in _OPTIONAL_WIDTHS:
-            self.setColumnHidden(column, column not in widths)
-        for column, width in widths.items():
-            header.resizeSection(column, width)
-
-    def resizeEvent(self, event) -> None:  # noqa: N802 (Qt override)
-        super().resizeEvent(event)
-        self._apply_column_widths()
+        install_column_sizer(self, _COLUMN_SPEC)
 
     def current_run_dir(self) -> str | None:
         row = self.currentRow()

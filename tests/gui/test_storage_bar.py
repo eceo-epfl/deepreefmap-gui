@@ -5,9 +5,9 @@ A standalone widget, so these take the root `qapp` fixture rather than a window.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QSize
+from PySide6.QtCore import QPoint, QSize, Qt
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 from deepreefmap_gui.core.storage_bar import (
     MAX_BARS,
@@ -263,18 +263,107 @@ def test_pressing_a_drive_leaves_the_card_down(qapp) -> None:
     assert bars._hover_timer.isActive()
 
 
-def test_a_card_the_cursor_has_left_is_taken_down_by_the_guard(qapp) -> None:
-    """A tooltip window under the pointer can swallow the button's leave event."""
+def point_at(bars: StorageBars, monkeypatch, pos: QPoint) -> None:
+    """Put the cursor somewhere. Synthetic under the offscreen platform, so the
+    guard's reading of it has to be monkeypatched rather than moved."""
+    monkeypatch.setattr("deepreefmap_gui.core.storage_bar.QCursor.pos", lambda: pos)
+
+
+def test_a_card_the_cursor_has_left_is_taken_down_by_the_guard(qapp, monkeypatch) -> None:
     bars = StorageBars()
     bars.set_volumes([make_volume("a")])
     bars.show()
     raise_card(bars)
     assert bars._guard_timer.isActive()
+    point_at(bars, monkeypatch, QPoint(4000, 4000))
 
     bars._guard_card()
 
     assert not bars._card.isVisible()
     assert not bars._guard_timer.isActive()
+
+
+def test_a_stuck_under_mouse_flag_cannot_keep_the_card_up(qapp, monkeypatch) -> None:
+    """Scenario: the pointer goes off the window edge, so no Leave is delivered
+    and `WA_UnderMouse` stays set on the button and on the card.
+
+    Expected behaviour: the card goes anyway. Where the cursor is decides, not a
+    flag that describes where it last was.
+    """
+    bars = StorageBars()
+    bars.set_volumes([make_volume("a")])
+    bars.show()
+    raise_card(bars)
+    button = bars.buttons[0]
+    button.setAttribute(Qt.WidgetAttribute.WA_UnderMouse, True)
+    bars._card.setAttribute(Qt.WidgetAttribute.WA_UnderMouse, True)
+    point_at(bars, monkeypatch, QPoint(4000, 4000))
+
+    bars._guard_card()
+
+    assert not bars._card.isVisible()
+
+
+def test_keyboard_focus_holds_the_card_only_while_the_window_is_active(
+    qapp, monkeypatch
+) -> None:
+    """Focus raises the card for a reader with no pointer, so it may not be
+    dropped on cursor position alone. It goes when the window stops being the
+    active one.
+    """
+    bars = StorageBars()
+    bars.set_volumes([make_volume("a")])
+    bars.show()
+    button = bars.buttons[0]
+    point_at(bars, monkeypatch, QPoint(4000, 4000))
+    monkeypatch.setattr(type(bars), "isActiveWindow", lambda _self: True)
+    # The offscreen platform grants no real keyboard focus, so it is asserted on
+    # rather than taken.
+    monkeypatch.setattr(type(button), "hasFocus", lambda _self: True)
+    raise_card(bars)
+
+    bars._guard_card()
+    assert bars._card.isVisible()
+
+    monkeypatch.setattr(type(bars), "isActiveWindow", lambda _self: False)
+    bars._guard_card()
+    assert not bars._card.isVisible()
+
+
+def test_a_cursor_still_on_the_button_keeps_its_card(qapp, monkeypatch) -> None:
+    bars = StorageBars()
+    bars.set_volumes([make_volume("a")])
+    bars.show()
+    monkeypatch.setattr(type(bars), "isActiveWindow", lambda _self: True)
+    raise_card(bars)
+    button = bars.buttons[0]
+    point_at(bars, monkeypatch, button.mapToGlobal(button.rect().center()))
+
+    bars._guard_card()
+
+    assert bars._card.isVisible()
+
+
+def test_the_dismissal_filter_lands_on_the_window_the_bars_end_up_in(qapp) -> None:
+    """Installed when a card is raised, by which point the bars are parented into
+    the status row and `window()` is the window a leave will come from."""
+    from deepreefmap_gui.core.hover_card import HoverDismissFilter
+
+    host = QWidget()
+    layout = QVBoxLayout(host)
+    bars = StorageBars()
+    layout.addWidget(bars)
+    bars.set_volumes([make_volume("a")])
+    host.show()
+    raise_card(bars)
+
+    assert bars._dismiss_filter_window is host
+    assert len(bars.findChildren(HoverDismissFilter)) == 1
+
+    # One filter however many times a card is raised.
+    bars._hide_card()
+    raise_card(bars)
+    assert len(bars.findChildren(HoverDismissFilter)) == 1
 
 
 def test_the_drive_list_shows_every_drive_at_once(qapp) -> None:

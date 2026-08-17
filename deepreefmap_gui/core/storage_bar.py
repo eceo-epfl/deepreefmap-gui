@@ -20,7 +20,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QPoint, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QCursor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QAbstractButton,
     QFrame,
@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from deepreefmap_gui.core.hover_card import cursor_on, install_dismiss_filter
 from deepreefmap_gui.core.theme import (
     BAR_HEIGHT,
     BLOCK,
@@ -412,6 +413,9 @@ class StorageBars(QWidget):
         self._card: VolumeCard | None = None
         self._card_for: VolumeButton | None = None
         self._suppressed: VolumeButton | None = None
+        # Which window the dismissal filter is on, so a re-parent moves it rather
+        # than stacking a second copy.
+        self._dismiss_filter_window: QWidget | None = None
 
         self._layout = QHBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
@@ -430,8 +434,9 @@ class StorageBars(QWidget):
         self._hover_timer.setInterval(CARD_HOVER_DELAY_MS)
         self._hover_timer.timeout.connect(self._show_card)
 
-        # A top-level card under the pointer can swallow the button's leave, so
-        # while one is up the cursor position decides whether it stays.
+        # A leave is not guaranteed to arrive: a pointer can go off the window
+        # edge or another application can take the screen. So while a card is up,
+        # where the cursor actually is decides whether it stays.
         self._guard_timer = QTimer(self)
         self._guard_timer.setInterval(CARD_HOVER_GUARD_MS)
         self._guard_timer.timeout.connect(self._guard_card)
@@ -592,17 +597,36 @@ class StorageBars(QWidget):
             # Parentless: it is a window of its own, and a child here would show
             # up in this widget's children as another bar.
             self._card = VolumeCard()
+        self._install_dismissal()
         self._card.show_for(volume, button)
         self._guard_timer.start()
 
+    def _install_dismissal(self) -> None:
+        """Watch the window the bars ended up in, so a leave takes the card down."""
+        window = self.window()
+        if self._dismiss_filter_window is window:
+            return
+        install_dismiss_filter(self, self._hide_card)
+        self._dismiss_filter_window = window
+
     def _guard_card(self) -> None:
-        """Take the card down once the cursor is on neither it nor its button."""
+        """Take the card down once the cursor is no longer on its button.
+
+        The card is not asked: it is non-interactive and sits ``CARD_GAP`` clear
+        of the button, so a pointer reaching it has left the button first.
+        """
         card, button = self._card, self._card_for
         if card is None or not card.isVisible():
             self._guard_timer.stop()
             return
-        on_button = button is not None and (button.underMouse() or button.hasFocus())
-        if not on_button and not card.underMouse():
+        # The button's window, never the card's: a WA_ShowWithoutActivating
+        # window is never active.
+        if button is None or not button.window().isActiveWindow():
+            self._hide_card()
+            return
+        # Focus holds the card up for a keyboard reader, who has no pointer to
+        # be on the button with.
+        if not (cursor_on(QCursor.pos(), button) or button.hasFocus()):
             self._hide_card()
 
     def _hide_card(self) -> None:

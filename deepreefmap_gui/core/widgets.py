@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -14,7 +15,9 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QGridLayout,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -676,6 +679,247 @@ def configure_table(
     table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
     table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
     table.setAlternatingRowColors(alternating)
+
+
+# --- Column widths ---------------------------------------------------------
+
+# No column narrower than this, whatever its content measures.
+MIN_SECTION_WIDTH = 64
+
+
+@dataclass(frozen=True)
+class ColumnSpec:
+    """How one table divides its viewport between its columns.
+
+    ``fixed`` are columns whose width is a property of what they hold rather
+    than of the window: a status pill, a timestamp, a formatted number.
+    ``weights`` are the identifying columns, which share what is left over in
+    proportion, each held above its entry in ``minimums``. ``optional`` are
+    secondary columns, in the order they earn their width, admitted while it is
+    still spare and hidden when it is not.
+    """
+
+    fixed: Mapping[int, int]
+    weights: Mapping[int, int]
+    minimums: Mapping[int, int]
+    optional: Sequence[tuple[int, int]] = ()
+
+
+def fitted_column_widths(available: int, spec: ColumnSpec) -> dict[int, int]:
+    """How a viewport of ``available`` px divides between the columns it can hold.
+
+    A share that falls under a column's floor is clamped to it and the
+    *remainder* is re-divided among the columns still flexing, rather than every
+    column being clamped independently: doing that over-spends the viewport by
+    the size of each bump and puts back the scrollbar this exists to avoid.
+
+    Columns left out are absent from the result, not zero-width. On a window too
+    narrow to hold even the mandatory ones at their floors the floors win and the
+    table scrolls, because a column shrunk past reading is not a column.
+    """
+    widths = dict(spec.fixed)
+    spent = sum(spec.fixed.values()) + sum(spec.minimums.values())
+    for column, width in spec.optional:
+        if spent + width > available:
+            break
+        widths[column] = width
+        spent += width
+    slack = max(0, available - sum(widths.values()))
+    flexing = dict(spec.weights)
+    while flexing:
+        weight_total = sum(flexing.values())
+        clamped = next(
+            (
+                column
+                for column, weight in flexing.items()
+                if slack * weight // weight_total < spec.minimums[column]
+            ),
+            None,
+        )
+        if clamped is None:
+            for column, weight in flexing.items():
+                widths[column] = slack * weight // weight_total
+            break
+        widths[clamped] = spec.minimums[clamped]
+        slack = max(0, slack - spec.minimums[clamped])
+        del flexing[clamped]
+    return widths
+
+
+class ColumnSizer(QObject):
+    """Keeps a view's columns fitted to its viewport, and out of the user's way.
+
+    Every column is ``Interactive``, so any of them can be dragged. A column the
+    user drags is pinned: later refits leave it at the width it was given and
+    re-divide what is left among the rest. ``settings_key`` persists those
+    choices by heading text, so a changed column set drops what no longer
+    applies.
+    """
+
+    def __init__(
+        self,
+        view: QTableWidget | QTreeWidget,
+        spec: ColumnSpec,
+        *,
+        settings_key: str | None = None,
+        settings: QSettings | None = None,
+    ) -> None:
+        super().__init__(view)
+        self._view = view
+        self._spec = spec
+        self._settings_key = settings_key
+        self._settings = settings
+        self._pinned: dict[int, int] = {}
+        self._applying = False
+
+        header = self._header()
+        header.setStretchLastSection(False)
+        header.setMinimumSectionSize(MIN_SECTION_WIDTH)
+        for column in range(self._column_count()):
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
+        # A widened column has to be reachable, so the scrollbar is offered.
+        view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        header.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        header.customContextMenuRequested.connect(self._on_header_menu)
+        header.sectionResized.connect(self._on_section_resized)
+        # Coalesced and deferred: a filter on the view runs before
+        # QAbstractScrollArea lays the viewport out, so refitting inline would
+        # read the width the viewport is about to stop having.
+        self._refit_timer = QTimer(self)
+        self._refit_timer.setSingleShot(True)
+        self._refit_timer.setInterval(0)
+        self._refit_timer.timeout.connect(self.apply)
+        view.installEventFilter(self)
+        self._restore()
+        self.apply()
+
+    def _header(self) -> QHeaderView:
+        view = self._view
+        return view.header() if isinstance(view, QTreeWidget) else view.horizontalHeader()
+
+    def _column_count(self) -> int:
+        view = self._view
+        return view.columnCount() if hasattr(view, "columnCount") else 0
+
+    def _heading(self, column: int) -> str:
+        model = self._view.model()
+        value = model.headerData(column, Qt.Orientation.Horizontal) if model else None
+        return str(value) if value else f"column{column}"
+
+    def apply(self) -> None:
+        """Refit every column that is not pinned to the viewport's width."""
+        # Resizing sections can lay the viewport out again, which arrives back
+        # here through the filter.
+        if self._applying:
+            return
+        view = self._view
+        available = view.viewport().width()
+        if available <= 0:
+            return
+        reserved = sum(self._pinned.values())
+        spec = self._spec
+        free = {
+            "fixed": {c: w for c, w in spec.fixed.items() if c not in self._pinned},
+            "weights": {c: w for c, w in spec.weights.items() if c not in self._pinned},
+            "optional": tuple((c, w) for c, w in spec.optional if c not in self._pinned),
+        }
+        minimums = {c: spec.minimums[c] for c in free["weights"]}
+        widths = fitted_column_widths(
+            max(0, available - reserved),
+            ColumnSpec(
+                fixed=free["fixed"],
+                weights=free["weights"],
+                minimums=minimums,
+                optional=free["optional"],
+            ),
+        )
+        widths.update(self._pinned)
+        header = self._header()
+        self._applying = True
+        try:
+            for column, _width in spec.optional:
+                self._set_hidden(column, column not in widths)
+            for column, width in widths.items():
+                header.resizeSection(column, width)
+        finally:
+            self._applying = False
+
+    def _set_hidden(self, column: int, hidden: bool) -> None:
+        view = self._view
+        if isinstance(view, QTreeWidget):
+            view.setColumnHidden(column, hidden)
+        else:
+            view.setColumnHidden(column, hidden)
+
+    def _on_section_resized(self, column: int, _old: int, new: int) -> None:
+        if self._applying or new <= 0:
+            return
+        self._pinned[column] = new
+        self._store()
+
+    def _on_header_menu(self, pos) -> None:
+        menu = QMenu(self._view)
+        menu.addAction("Reset column widths", self.reset)
+        menu.exec(self._header().mapToGlobal(pos))
+
+    def reset(self) -> None:
+        """Forget every dragged width and go back to fitting the viewport."""
+        self._pinned.clear()
+        self._store()
+        self.apply()
+
+    def _store(self) -> None:
+        if self._settings_key is None or self._settings is None:
+            return
+        self._settings.setValue(
+            f"columns/{self._settings_key}",
+            {self._heading(c): w for c, w in self._pinned.items()},
+        )
+
+    def _restore(self) -> None:
+        if self._settings_key is None or self._settings is None:
+            return
+        stored = self._settings.value(f"columns/{self._settings_key}")
+        if not isinstance(stored, dict):
+            return
+        by_heading = {self._heading(c): c for c in range(self._column_count())}
+        for heading, width in stored.items():
+            column = by_heading.get(str(heading))
+            if column is None:
+                continue
+            try:
+                self._pinned[column] = int(width)
+            except (TypeError, ValueError):
+                continue
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if event.type() == QEvent.Type.Resize:
+            try:
+                if watched is self._view:
+                    self._refit_timer.start()
+            except (AttributeError, RuntimeError):
+                # Reached after the view it fits has been torn down, when there
+                # is nothing left to fit. Raising here corrupts Qt's dispatch.
+                pass
+        return False
+
+
+def install_column_sizer(
+    view: QTableWidget | QTreeWidget,
+    spec: ColumnSpec,
+    *,
+    settings_key: str | None = None,
+    settings: QSettings | None = None,
+) -> ColumnSizer:
+    """Fit ``view``'s columns to its viewport, and keep them user-resizable.
+
+    Held on the view in ``column_sizer``: PySide6 discards a subclass instance's
+    ``__dict__`` while C++ still references it, and the resurrected wrapper's
+    ``eventFilter`` then has no state to work from.
+    """
+    sizer = ColumnSizer(view, spec, settings_key=settings_key, settings=settings)
+    view.column_sizer = sizer
+    return sizer
 
 
 def _sorts_before(mine: object, theirs: object, descending: bool) -> bool:

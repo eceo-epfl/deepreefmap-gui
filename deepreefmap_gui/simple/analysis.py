@@ -21,10 +21,12 @@ from PySide6.QtWidgets import (
 
 from deepreefmap_gui.core.theme import GUTTER, TEXT_MUTED
 from deepreefmap_gui.core.widgets import (
+    ColumnSpec,
     EmptyState,
     SortableItem,
     configure_table,
     enable_sorting,
+    install_column_sizer,
     muted_label,
     section_card,
 )
@@ -48,6 +50,14 @@ logger = logging.getLogger(__name__)
 
 # Below this cover fraction a class is noise in the chart; the CSV keeps everything.
 _CHART_MIN_FRACTION = 0.005
+
+# The class name takes the slack; the five figures beside it are percentages and
+# ratios, which are the same width whatever the pane is.
+_STATS_COLUMNS = ColumnSpec(
+    fixed={1: 68, 2: 76, 3: 62, 4: 56, 5: 68},
+    weights={0: 1},
+    minimums={0: 120},
+)
 
 
 class SimpleAnalysisMixin(MixinBase):
@@ -113,15 +123,16 @@ class SimpleAnalysisMixin(MixinBase):
 
         stats_card, stats_layout = section_card("Cover estimate and repeatability by class")
         self._analysis_stats_table = QTableWidget(0, 6)
-        # "Cover" is the count-weighted transect estimate. "Mean of passes" is
-        # the unweighted average of per-pass fractions, kept only as a spread
+        # "Cover" is the count-weighted transect estimate. "Pass mean" is the
+        # unweighted average of per-pass fractions, kept only as a spread
         # reference so it is never read as the cover figure.
         configure_table(
             self._analysis_stats_table,
-            ["Class", "Cover", "Mean of passes", "Std", "CV", "Range"],
+            ["Class", "Cover", "Pass mean", "Std", "CV", "Range"],
         )
         # Largest cover first, matching how the chart ranks its bars.
         enable_sorting(self._analysis_stats_table, 1, Qt.SortOrder.DescendingOrder)
+        install_column_sizer(self._analysis_stats_table, _STATS_COLUMNS)
         self._analysis_stats_stack = QStackedWidget()
         self._analysis_stats_stack.addWidget(self._analysis_stats_table)
         self._analysis_stats_stack.addWidget(

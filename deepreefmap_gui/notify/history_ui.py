@@ -22,7 +22,13 @@ from PySide6.QtWidgets import (
 )
 
 from deepreefmap_gui.core.theme import GUTTER, SPACE_SM, TEXT_MUTED
-from deepreefmap_gui.core.widgets import configure_table, muted_label, section_card
+from deepreefmap_gui.core.widgets import (
+    ColumnSpec,
+    configure_table,
+    install_column_sizer,
+    muted_label,
+    section_card,
+)
 from deepreefmap_gui.survey.models.notification import (
     BLOCKER,
     INFO,
@@ -33,6 +39,13 @@ from deepreefmap_gui.survey.models.notification import (
 from deepreefmap_gui.survey.models.notification import WARNING as SEVERITY_WARNING
 
 _COLUMNS = ("When", "Severity", "What", "Where", "Cleared")
+
+# The message is what a row is read for; the rest are stamps and short labels.
+_COLUMN_SPEC = ColumnSpec(
+    fixed={0: 128, 1: 88, 3: 120, 4: 112},
+    weights={2: 1},
+    minimums={2: 200},
+)
 
 # Label, then the value handed to the centre. "" means no filter.
 _SEVERITY_CHOICES = (
@@ -86,6 +99,7 @@ class NotificationHistoryPanel(QWidget):
 
         self._table = QTableWidget(0, len(_COLUMNS))
         configure_table(self._table, _COLUMNS)
+        install_column_sizer(self._table, _COLUMN_SPEC)
         layout.addWidget(self._table, 1)
         outer.addWidget(card, 1)
 
@@ -118,7 +132,6 @@ class NotificationHistoryPanel(QWidget):
                 if note.body:
                     item.setToolTip(note.body)
                 self._table.setItem(row, column, item)
-        self._table.resizeColumnsToContents()
 
     def set_muted(self, muted: list[tuple[str, str]]) -> None:
         while self._muted_layout.count() > 1:

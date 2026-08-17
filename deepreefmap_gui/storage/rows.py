@@ -23,7 +23,6 @@ from PySide6.QtCore import QModelIndex, QPersistentModelIndex, QRectF, Qt
 from PySide6.QtGui import QColor, QPainter, QPainterPath
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QHeaderView,
     QStyledItemDelegate,
     QTreeWidget,
     QTreeWidgetItem,
@@ -43,7 +42,12 @@ from deepreefmap_gui.core.theme import (
     WARNING,
     WINDOW_TEXT,
 )
-from deepreefmap_gui.core.widgets import SortableTreeItem
+from deepreefmap_gui.core.widgets import (
+    ColumnSpec,
+    SortableTreeItem,
+    fitted_column_widths,
+    install_column_sizer,
+)
 from deepreefmap_gui.profiling.system_probe import format_bytes
 from deepreefmap_gui.storage.inventory import MountClip, MountItem, MountRun
 from deepreefmap_gui.storage.tiers import (
@@ -182,46 +186,19 @@ class StorageTree(QTreeWidget):
         self.setUniformRowHeights(True)
         self.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.setItemDelegateForColumn(COL_BAR, MakeUpDelegate(self))
-        # The widths are computed to fit the viewport, so a horizontal bar can
-        # only ever be a rounding artefact sitting under every list on the page.
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        header = self.header()
-        header.setStretchLastSection(False)
-        for column in range(len(columns)):
-            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
+        install_column_sizer(self, _COLUMN_SPEC)
 
-    def _apply_column_widths(self) -> None:
-        available = self.viewport().width()
-        if available <= 0:
-            return
-        for column, width in column_widths(available).items():
-            self.header().resizeSection(column, width)
 
-    def resizeEvent(self, event) -> None:  # noqa: N802 (Qt override)
-        super().resizeEvent(event)
-        self._apply_column_widths()
+_COLUMN_SPEC = ColumnSpec(
+    fixed=StorageTree._FIXED,
+    weights=StorageTree._WEIGHTS,
+    minimums=StorageTree._MINIMUMS,
+)
 
 
 def column_widths(available: int) -> dict[int, int]:
-    """How a viewport of `available` px divides between the five columns.
-
-    The figures and the bar take theirs first and the rest is shared by weight,
-    clamped so neither the name nor the sentence is squeezed past reading. Same
-    shape as runs/run_table.py::column_widths, which this follows deliberately.
-    """
-    widths = dict(StorageTree._FIXED)
-    slack = max(0, available - sum(StorageTree._FIXED.values()))
-    total_weight = sum(StorageTree._WEIGHTS.values())
-    flexing = list(StorageTree._WEIGHTS)
-    for column in flexing[:-1]:
-        weight = StorageTree._WEIGHTS[column]
-        widths[column] = max(StorageTree._MINIMUMS[column], slack * weight // total_weight)
-        slack -= widths[column]
-    # The last one takes the remainder rather than its own share, so the columns
-    # add up to the viewport exactly and no rounding leaves a scrollbar behind.
-    last = flexing[-1]
-    widths[last] = max(StorageTree._MINIMUMS[last], slack)
-    return widths
+    """How a viewport of `available` px divides between the five columns."""
+    return fitted_column_widths(available, _COLUMN_SPEC)
 
 
 def _reveal(item: QTreeWidgetItem, path) -> None:

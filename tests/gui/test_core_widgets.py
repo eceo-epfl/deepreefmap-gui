@@ -87,3 +87,133 @@ def test_enable_sorting_flags_the_header_for_the_theme(qapp) -> None:
     assert header.property("sortable") == "true"
     assert header.isSortIndicatorShown()
     assert table.isSortingEnabled()
+
+
+# --- column widths ----------------------------------------------------------
+
+def _spec():
+    from deepreefmap_gui.core.widgets import ColumnSpec
+
+    return ColumnSpec(
+        fixed={1: 88, 2: 112},
+        weights={0: 3, 3: 1},
+        minimums={0: 140, 3: 80},
+        optional=((4, 76),),
+    )
+
+
+def test_a_viewport_is_divided_by_weight_and_never_overspent(qapp) -> None:
+    from deepreefmap_gui.core.widgets import fitted_column_widths
+
+    widths = fitted_column_widths(1000, _spec())
+
+    assert sum(widths.values()) <= 1000
+    # 3:1 on what is left after the fixed and optional columns.
+    assert widths[0] == widths[3] * 3
+    assert widths[0] > widths[3]
+
+
+def test_an_optional_column_goes_before_an_identifying_one_is_squeezed(qapp) -> None:
+    from deepreefmap_gui.core.widgets import fitted_column_widths
+
+    assert 4 in fitted_column_widths(1000, _spec())
+
+    narrow = fitted_column_widths(430, _spec())
+    assert 4 not in narrow
+    assert narrow[0] >= 140 and narrow[3] >= 80
+
+
+def test_below_every_floor_the_floors_win_and_the_table_scrolls(qapp) -> None:
+    """A column shrunk past reading is not a column, so the width is overspent
+    on purpose and the scrollbar is the honest answer."""
+    from deepreefmap_gui.core.widgets import fitted_column_widths
+
+    widths = fitted_column_widths(200, _spec())
+
+    assert widths[0] == 140 and widths[3] == 80
+    assert sum(widths.values()) > 200
+
+
+def _sized_table(qapp, width=1000):
+    from PySide6.QtWidgets import QTableWidget
+
+    from deepreefmap_gui.core.widgets import configure_table, install_column_sizer
+
+    table = QTableWidget(0, 5)
+    configure_table(table, ["Name", "Status", "Created", "Kind", "Extra"])
+    sizer = install_column_sizer(table, _spec())
+    table.resize(width, 200)
+    table.show()
+    qapp.processEvents()
+    qapp.processEvents()
+    return table, sizer
+
+
+def test_every_column_can_be_dragged(qapp) -> None:
+    from PySide6.QtWidgets import QHeaderView
+
+    table, _sizer = _sized_table(qapp)
+    header = table.horizontalHeader()
+
+    modes = {header.sectionResizeMode(c) for c in range(table.columnCount())}
+    assert modes == {QHeaderView.ResizeMode.Interactive}
+    assert not header.stretchLastSection()
+
+
+def test_a_dragged_column_survives_the_window_being_resized(qapp) -> None:
+    """Scenario: a column is widened to read a long name, then the window is
+    resized.
+
+    Expected behaviour: the width stays. Refitting every column on every resize
+    undid the drag before it could be used.
+    """
+    table, _sizer = _sized_table(qapp)
+    table.horizontalHeader().resizeSection(0, 420)
+
+    table.resize(700, 200)
+    qapp.processEvents()
+    qapp.processEvents()
+
+    assert table.columnWidth(0) == 420
+
+
+def test_resetting_gives_the_columns_back_to_the_viewport(qapp) -> None:
+    table, sizer = _sized_table(qapp)
+    fitted = table.columnWidth(0)
+    table.horizontalHeader().resizeSection(0, 420)
+    assert table.columnWidth(0) == 420
+
+    sizer.reset()
+    qapp.processEvents()
+
+    assert table.columnWidth(0) == fitted
+
+
+def test_dragged_widths_are_remembered_by_heading_not_by_position(qapp, tmp_path) -> None:
+    """Stored by name so a changed column set drops what no longer applies
+    instead of resizing whichever column moved into that index."""
+    from PySide6.QtCore import QSettings
+    from PySide6.QtWidgets import QTableWidget
+
+    from deepreefmap_gui.core.widgets import configure_table, install_column_sizer
+
+    settings = QSettings(str(tmp_path / "s.ini"), QSettings.Format.IniFormat)
+
+    def build(headings):
+        table = QTableWidget(0, len(headings))
+        configure_table(table, headings)
+        install_column_sizer(table, _spec(), settings_key="probe", settings=settings)
+        table.resize(1000, 200)
+        table.show()
+        qapp.processEvents()
+        qapp.processEvents()
+        return table
+
+    first = build(["Name", "Status", "Created", "Kind", "Extra"])
+    first.horizontalHeader().resizeSection(0, 420)
+
+    again = build(["Name", "Status", "Created", "Kind", "Extra"])
+    assert again.columnWidth(0) == 420
+
+    renamed = build(["Title", "Status", "Created", "Kind", "Extra"])
+    assert renamed.columnWidth(0) != 420

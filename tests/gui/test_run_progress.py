@@ -192,6 +192,47 @@ def test_hover_popup_builds_rows_from_estimator(make_window, monkeypatch) -> Non
     assert not window._timing_popup.isVisible()
 
 
+def test_the_breakdown_goes_when_the_cursor_leaves_the_table(make_window, monkeypatch) -> None:
+    """Scenario: the pointer goes straight off the window, so no leave reaches the
+    table the breakdown is anchored to.
+
+    Expected behaviour: the guard takes it down from where the cursor is.
+    """
+    from PySide6.QtCore import QPoint
+
+    window = make_window()
+    window._begin_progress(window._recon_model)
+    window._apply_progress("mapping", "Mapping", current=2, total=10)
+    _hover_running_row(window)
+    assert window._timing_popup.isVisible()
+    assert window._timing_guard_timer.isActive()
+
+    monkeypatch.setattr(
+        "deepreefmap_gui.runs.progress.QCursor.pos", lambda: QPoint(4000, 4000)
+    )
+    window._guard_timing_popup()
+
+    assert not window._timing_popup.isVisible()
+    assert not window._timing_guard_timer.isActive()
+
+
+def test_the_breakdown_goes_when_another_application_takes_the_screen(
+    make_window, monkeypatch
+) -> None:
+    from PySide6.QtCore import QEvent
+    from PySide6.QtWidgets import QApplication
+
+    window = make_window()
+    window._begin_progress(window._recon_model)
+    window._apply_progress("mapping", "Mapping", current=2, total=10)
+    _hover_running_row(window)
+    assert window._timing_popup.isVisible()
+
+    QApplication.sendEvent(window, QEvent(QEvent.Type.WindowDeactivate))
+
+    assert not window._timing_popup.isVisible()
+
+
 def test_the_breakdown_only_describes_the_row_being_processed(make_window) -> None:
     """Anchored to another row it would be a plausible reading of the wrong pass."""
     window = make_window()

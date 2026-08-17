@@ -10,7 +10,9 @@ parentless card lands on the monitor the cursor is on.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, QRect, Qt
+from typing import Callable
+
+from PySide6.QtCore import QEvent, QObject, QPoint, QRect, Qt
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QWidget
 
@@ -31,6 +33,79 @@ def apply_hover_card_flags(card: QWidget) -> None:
     # Without this a plain QWidget draws none of its stylesheet's background,
     # border or radius, and the card renders as a bare rectangle.
     card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+
+
+def cursor_on(pos: QPoint, anchor: QWidget, *, slack: int = CARD_GAP) -> bool:
+    """Whether ``pos`` is on ``anchor``, from the anchor's geometry on screen.
+
+    Geometry rather than ``anchor.underMouse()``: that reads ``WA_UnderMouse``,
+    which Qt clears on Leave, and a Leave is not delivered when the pointer goes
+    off the window edge or another application takes the screen.
+
+    ``slack`` is the gap placement leaves between anchor and card, so a pointer
+    crossing it still counts as on the anchor.
+    """
+    if anchor is None or not anchor.isVisible():
+        return False
+    rect = (
+        anchor.frameGeometry()
+        if anchor.isWindow()
+        else QRect(anchor.mapToGlobal(QPoint(0, 0)), anchor.size())
+    )
+    return rect.adjusted(-slack, -slack, slack, slack).contains(pos)
+
+
+# What "the pointer is no longer anywhere the card belongs" is made of. Not Hide:
+# a widget hidden with a card up takes it down in its own hideEvent, and filtering
+# it here reaches half-destroyed widgets during teardown.
+_DISMISS_EVENTS = frozenset(
+    {
+        QEvent.Type.Leave,
+        QEvent.Type.WindowDeactivate,
+        QEvent.Type.WindowStateChange,
+    }
+)
+
+
+class HoverDismissFilter(QObject):
+    """Hide a hover card once its owner's window is no longer where the pointer is.
+
+    A hover card is a tooltip window of its own, so nothing the owner receives
+    takes it down without this.
+    """
+
+    def __init__(self, hide: Callable[[], None], parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._hide = hide
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if event.type() in _DISMISS_EVENTS:
+            try:
+                self._hide()
+            except (AttributeError, RuntimeError):
+                # Reached while the owner is being torn down, when there is no
+                # card left to take down. Raising here corrupts Qt's dispatch.
+                pass
+        # Never consumed: these are all events somebody else is also acting on.
+        return False
+
+
+def install_dismiss_filter(owner: QWidget, hide: Callable[[], None]) -> HoverDismissFilter:
+    """Watch ``owner``'s window and call ``hide`` when the pointer leaves it.
+
+    Parented to ``owner`` so it dies with the widget whose card it hides, and
+    held in a Python attribute there as well: PySide6 discards a subclass
+    instance's ``__dict__`` while C++ still references it.
+    """
+    window = owner.window()
+    handler = HoverDismissFilter(hide, owner)
+    window.installEventFilter(handler)
+    kept = getattr(owner, "_hover_dismiss_filters", None)
+    if kept is None:
+        kept = []
+        owner._hover_dismiss_filters = kept
+    kept.append(handler)
+    return handler
 
 
 def _bounds_for(point: QPoint) -> QRect | None:

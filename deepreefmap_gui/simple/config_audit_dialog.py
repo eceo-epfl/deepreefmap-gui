@@ -11,7 +11,6 @@ from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
-    QHeaderView,
     QLabel,
     QTableWidget,
     QTableWidgetItem,
@@ -20,11 +19,24 @@ from PySide6.QtWidgets import (
 )
 
 from deepreefmap_gui.core.theme import TEXT_MUTED
-from deepreefmap_gui.core.widgets import EmptyState, configure_table, enable_sorting
+from deepreefmap_gui.core.widgets import (
+    ColumnSpec,
+    EmptyState,
+    configure_table,
+    enable_sorting,
+    install_column_sizer,
+)
 from deepreefmap_gui.survey.config_audit import STANDARD, ConfigAuditRow, audit_summary
 from deepreefmap_gui.survey.preset import OrgPreset
 
 _COL_RUN, _COL_SETTINGS, _COL_NOTE = range(3)
+
+# The difference is the prose the dialog is opened to read.
+_COLUMN_SPEC = ColumnSpec(
+    fixed={_COL_SETTINGS: 180},
+    weights={_COL_NOTE: 3, _COL_RUN: 2},
+    minimums={_COL_NOTE: 220, _COL_RUN: 160},
+)
 
 
 class ConfigAuditDialog(QDialog):
@@ -65,10 +77,7 @@ class ConfigAuditDialog(QDialog):
     def _build_table(self, rows: list[ConfigAuditRow]) -> QTableWidget:
         table = QTableWidget(len(rows), 3)
         configure_table(table, ["Run", "Settings", "Difference"])
-        header = table.horizontalHeader()
-        header.setSectionResizeMode(_COL_NOTE, QHeaderView.ResizeMode.Stretch)
-        table.setColumnWidth(_COL_RUN, 220)
-        table.setColumnWidth(_COL_SETTINGS, 180)
+        install_column_sizer(table, _COLUMN_SPEC)
         for index, row in enumerate(rows):
             for column, text in (
                 (_COL_RUN, row.display_name),
