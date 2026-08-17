@@ -197,6 +197,11 @@ TRAILING_BUTTONS_WIDTH = ICON_SM * 3 + SPACE_XS * 6
 
 UNASSIGNED_NAME = "Unassigned"
 
+# What turns a click on a clip row into a change to the set of picked clips
+# rather than a move of the detail pane. The list's own rows, no tick column and
+# no mode: the gesture is the one every file manager already teaches.
+PICK_MODIFIERS = Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier
+
 # What the chip says when a section has not been filed. Not an error: a section
 # runs perfectly well unfiled, so this is an invitation in the accent colour
 # rather than a warning in the red one.
@@ -711,6 +716,9 @@ class VideoRow(QWidget):
     new_section_requested = Signal(str)
     expand_toggled = Signal(str, bool)
     activated = Signal(str)
+    # The same press as ``activated``, with the modifiers held during it, so the
+    # list can read a ctrl or shift click as a change to a set of clips.
+    clicked = Signal(str, object)
     span_clicked = Signal(str)
     hide_requested = Signal(str)
     delete_unused_requested = Signal(str)
@@ -840,7 +848,13 @@ class VideoRow(QWidget):
         redrawn in the ink the row is currently written in. The ones that mean
         something on their own -- a broken link, a gravity dot -- keep their
         own colour, since that is the fact they are there to carry.
+
+        A no-op when the row is already in that state: the list repaints every
+        row on every scan, and redrawing a season's icons for one changed row is
+        the whole cost of a background refresh.
         """
+        if chosen == self._selected:
+            return
         _set_selected(self, chosen)
         self._selected = chosen
         self._sync_chevron()
@@ -910,8 +924,16 @@ class VideoRow(QWidget):
         )
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
+        """Report the press, and treat a bare one as picking this clip.
+
+        A ctrl or shift click is about the set of clips rather than about this
+        one, so it reports itself and leaves the detail pane where it was.
+        """
         if event.button() == Qt.MouseButton.LeftButton and self._entry is not None:
-            self.activated.emit(self.video_id)
+            modifiers = event.modifiers()
+            self.clicked.emit(self.video_id, modifiers)
+            if not modifiers & PICK_MODIFIERS:
+                self.activated.emit(self.video_id)
         super().mousePressEvent(event)
 
     def unused_sections(self) -> int:
@@ -1771,6 +1793,9 @@ class VideoLibraryList(QScrollArea):
     section_reassign = Signal(str)
     section_delete = Signal(str)
     section_open_transect = Signal(str)
+    # Which clips are picked has changed. What acts on a set of clips listens
+    # here, so a scan that takes a row away cannot leave an action aimed at it.
+    selection_changed = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -1799,6 +1824,11 @@ class VideoLibraryList(QScrollArea):
         self._header: VideoListHeader | None = None
         self._selected: str | None = None
         self._selected_section: str | None = None
+        # Every picked clip, the row a shift range runs from, and the set the
+        # last ``selection_changed`` reported.
+        self._selection: set[str] = set()
+        self._anchor: str | None = None
+        self._reported: set[str] = set()
         # Outlives every rebuild, so the one line telling the user the list takes
         # a drop is not something a refresh can take away.
         self.drop_hint = muted_label(DROP_HINT)
@@ -1812,6 +1842,10 @@ class VideoLibraryList(QScrollArea):
     @property
     def selected_section(self) -> str | None:
         return self._selected_section
+
+    def selection(self) -> set[str]:
+        """Every picked clip, which is the one clip of a plain click."""
+        return set(self._selection)
 
     def rows(self) -> dict[str, VideoRow]:
         return dict(self._rows)
@@ -1870,6 +1904,7 @@ class VideoLibraryList(QScrollArea):
         if shape != self._shape:
             self._rebuild(self._groups)
             self._shape = shape
+        self._prune_selection()
         # Built once for the whole list: a section spanning chapters needs the
         # clips either side of the one its row sits under.
         assets = {
@@ -1905,7 +1940,7 @@ class VideoLibraryList(QScrollArea):
                         duration_s=entry.video.duration_s,
                     )
         self._apply_expansion()
-        self._paint_selection()
+        self._apply_selection()
 
     def expand(self, video_id: str) -> None:
         """Open a clip from outside, as clicking its chevron would."""
@@ -1915,16 +1950,26 @@ class VideoLibraryList(QScrollArea):
         self._set_expanded(video_id, True)
 
     def set_selected(self, video_id: str | None) -> None:
+        """Pick one clip and no other, which is what a plain click does."""
         self._selected = video_id
+        self._anchor = video_id
+        self._selection = {video_id} if video_id else set()
         # One thing at a time: a clip and a section describe different levels,
         # and two highlights would leave the detail pane's subject ambiguous.
         self._selected_section = None
-        self._paint_selection()
+        self._apply_selection()
 
     def set_selected_section(self, pass_id: str | None) -> None:
+        """Pick one section, and let go of every clip.
+
+        A picked section is a level down from a picked clip, so a set of clips
+        left standing under it would be a target the user cannot see.
+        """
         self._selected_section = pass_id
         self._selected = None
-        self._paint_selection()
+        self._anchor = None
+        self._selection = set()
+        self._apply_selection()
 
     def reveal(self, pass_id: str) -> None:
         """Scroll a section into view.
@@ -1969,6 +2014,7 @@ class VideoLibraryList(QScrollArea):
                 self._add_clip(entry)
         self._body_layout.addStretch(1)
         self._body_layout.addWidget(self.drop_hint)
+        self._prune_selection()
 
     def _add_clip(self, entry: VideoLibraryEntry) -> None:
         video_id = str(entry.video.id)
@@ -1981,6 +2027,7 @@ class VideoLibraryList(QScrollArea):
         row.delete_unused_requested.connect(self.delete_unused_requested)
         row.delete_requested.connect(self.delete_requested)
         row.activated.connect(self._on_activated)
+        row.clicked.connect(self._on_clicked)
         row.expand_toggled.connect(self._set_expanded)
         self._body_layout.addWidget(row)
         self._rows[video_id] = row
@@ -2020,13 +2067,63 @@ class VideoLibraryList(QScrollArea):
         self.set_selected(video_id)
         self.activated.emit(video_id)
 
+    def _on_clicked(self, video_id: str, modifiers: Qt.KeyboardModifier) -> None:
+        """Read a click on a clip row as what it does to the set of picked clips.
+
+        Ctrl adds one clip or takes it back out, shift takes everything between
+        the last picked row and this one, and a bare click starts again from
+        here. The bare case is left to ``_on_activated``, which the same press
+        raises, so picking a clip and describing it stay one step.
+
+        A shift click with nothing picked yet has no range to take, so it picks
+        the one row, which is where the next range will run from.
+        """
+        if not modifiers & PICK_MODIFIERS:
+            return
+        if modifiers & Qt.KeyboardModifier.ShiftModifier and self._anchor is not None:
+            self._selection = self._range(self._anchor, video_id)
+        elif modifiers & Qt.KeyboardModifier.ControlModifier:
+            self._selection ^= {video_id}
+            self._anchor = video_id
+        else:
+            self._selection = {video_id}
+            self._anchor = video_id
+        self._apply_selection()
+
+    def _range(self, anchor: str, video_id: str) -> set[str]:
+        """The clips from ``anchor`` to ``video_id`` in the order they are listed.
+
+        Over the clips alone: a section row sits inside the range on screen and
+        is a level down from what is being picked, so it is not part of one.
+        """
+        order = [str(entry.video.id) for group in self._groups for entry in group.entries]
+        if anchor not in order or video_id not in order:
+            return {video_id}
+        first, last = sorted((order.index(anchor), order.index(video_id)))
+        return set(order[first : last + 1])
+
     def _on_section_activated(self, pass_id: str) -> None:
         self.set_selected_section(pass_id)
         self.section_activated.emit(pass_id)
 
-    def _paint_selection(self) -> None:
+    def _prune_selection(self) -> None:
+        """Drop picked clips that no longer have a row.
+
+        Rows are destroyed and rebuilt whenever the list's shape changes, which
+        a background scan does every time it finds a clip or a section. A set
+        left holding ids nobody can see is a delete aimed at nothing.
+        """
+        self._selection &= set(self._rows)
+        if self._anchor is not None and self._anchor not in self._rows:
+            self._anchor = None
+
+    def _apply_selection(self) -> None:
+        """Paint what is picked, and say so when the set of clips has moved."""
         for video_id, row in self._rows.items():
-            _set_selected(row, video_id == self._selected)
+            row.set_selected(video_id in self._selection)
         for pass_id, sections in self._sections.items():
             for section in sections:
                 section.set_selected(pass_id == self._selected_section)
+        if self._selection != self._reported:
+            self._reported = set(self._selection)
+            self.selection_changed.emit()

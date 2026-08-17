@@ -1064,3 +1064,144 @@ def test_a_section_strip_never_steals_the_row_s_own_click(qapp) -> None:
 
     assert row.strip is not None
     assert row.strip.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+
+# --- picking more than one clip ---------------------------------------------
+
+
+def _picking_list(count: int = 4) -> tuple[VideoLibraryList, list[str]]:
+    """A list of clips, and their ids in the order it shows them."""
+    entries = [make_entry(file_name=f"clip{n}.mp4") for n in range(count)]
+    listing = VideoLibraryList()
+    listing.set_groups([DateGroup(key="d", title="Today", entries=entries)], no_name)
+    return listing, [str(entry.video.id) for entry in entries]
+
+
+def _click(listing: VideoLibraryList, video_id: str, modifier) -> None:
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    listing.rows()[video_id].mousePressEvent(
+        QMouseEvent(
+            QMouseEvent.Type.MouseButtonPress,
+            QPointF(1.0, 1.0),
+            QPointF(1.0, 1.0),
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+            modifier,
+        )
+    )
+
+
+def test_a_plain_click_picks_one_clip_and_describes_it() -> None:
+    from PySide6.QtCore import Qt
+
+    listing, ids = _picking_list()
+    seen: list[str] = []
+    listing.activated.connect(seen.append)
+
+    _click(listing, ids[0], Qt.KeyboardModifier.NoModifier)
+    _click(listing, ids[2], Qt.KeyboardModifier.NoModifier)
+
+    assert listing.selection() == {ids[2]}
+    assert listing.selected == ids[2]
+    assert seen == [ids[0], ids[2]]
+
+
+def test_control_click_adds_a_clip_and_takes_it_back_out() -> None:
+    from PySide6.QtCore import Qt
+
+    listing, ids = _picking_list()
+    _click(listing, ids[0], Qt.KeyboardModifier.NoModifier)
+
+    _click(listing, ids[2], Qt.KeyboardModifier.ControlModifier)
+    assert listing.selection() == {ids[0], ids[2]}
+
+    _click(listing, ids[2], Qt.KeyboardModifier.ControlModifier)
+    assert listing.selection() == {ids[0]}
+
+
+def test_control_click_leaves_the_detail_pane_where_it_was() -> None:
+    """Picking a set is not picking a clip to read, so ``activated`` stays quiet."""
+    from PySide6.QtCore import Qt
+
+    listing, ids = _picking_list()
+    _click(listing, ids[0], Qt.KeyboardModifier.NoModifier)
+    seen: list[str] = []
+    listing.activated.connect(seen.append)
+
+    _click(listing, ids[3], Qt.KeyboardModifier.ControlModifier)
+
+    assert seen == []
+    assert listing.selected == ids[0]
+
+
+def test_shift_click_takes_the_range_in_the_order_the_list_shows() -> None:
+    from PySide6.QtCore import Qt
+
+    listing, ids = _picking_list()
+    _click(listing, ids[3], Qt.KeyboardModifier.NoModifier)
+
+    _click(listing, ids[1], Qt.KeyboardModifier.ShiftModifier)
+
+    assert listing.selection() == {ids[1], ids[2], ids[3]}
+
+
+def test_shift_click_with_nothing_picked_yet_takes_that_clip_alone() -> None:
+    from PySide6.QtCore import Qt
+
+    listing, ids = _picking_list()
+
+    _click(listing, ids[2], Qt.KeyboardModifier.ShiftModifier)
+
+    assert listing.selection() == {ids[2]}
+
+
+def test_a_rebuild_drops_the_clips_that_have_gone_and_keeps_the_rest() -> None:
+    """Scenario: a background scan finds a clip has gone, so the rows are rebuilt.
+
+    Expected behaviour: a set holding ids nobody can see is a delete aimed at
+    nothing, so the ids without a row are pruned and the change is reported.
+    """
+    from PySide6.QtCore import Qt
+
+    entries = [make_entry(file_name=f"clip{n}.mp4") for n in range(3)]
+    listing = VideoLibraryList()
+    listing.set_groups([DateGroup(key="d", title="Today", entries=entries)], no_name)
+    ids = [str(entry.video.id) for entry in entries]
+    _click(listing, ids[0], Qt.KeyboardModifier.NoModifier)
+    _click(listing, ids[2], Qt.KeyboardModifier.ControlModifier)
+    told: list[set[str]] = []
+    listing.selection_changed.connect(lambda: told.append(listing.selection()))
+
+    listing.set_groups([DateGroup(key="d", title="Today", entries=entries[:2])], no_name)
+
+    assert listing.selection() == {ids[0]}
+    assert told == [{ids[0]}]
+
+
+def test_picking_a_section_lets_go_of_every_clip() -> None:
+    from PySide6.QtCore import Qt
+
+    listing, ids = _picking_list()
+    _click(listing, ids[0], Qt.KeyboardModifier.NoModifier)
+    _click(listing, ids[1], Qt.KeyboardModifier.ControlModifier)
+
+    listing.set_selected_section("a-section")
+
+    assert listing.selection() == set()
+    assert listing.selected is None
+
+
+def test_every_picked_row_paints_itself_picked() -> None:
+    from PySide6.QtCore import Qt
+
+    listing, ids = _picking_list()
+
+    _click(listing, ids[0], Qt.KeyboardModifier.NoModifier)
+    _click(listing, ids[1], Qt.KeyboardModifier.ControlModifier)
+
+    painted = {
+        video_id for video_id, row in listing.rows().items() if row.property("selected")
+    }
+    assert painted == {ids[0], ids[1]}

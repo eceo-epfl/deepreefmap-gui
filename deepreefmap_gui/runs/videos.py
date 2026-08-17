@@ -18,7 +18,7 @@ import threading
 import uuid
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, Qt
+from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -34,18 +34,30 @@ from PySide6.QtWidgets import (
 )
 
 from deepreefmap_gui.core.reveal import reveal_in_file_manager
-from deepreefmap_gui.core.theme import GUTTER, PRIMARY, SPACE_SM, SPLIT_MIN_TOTAL
+from deepreefmap_gui.core.theme import (
+    BORDER,
+    ERROR,
+    GUTTER,
+    PRIMARY,
+    RADIUS_SM,
+    SPACE_MD,
+    SPACE_SM,
+    SPLIT_MIN_TOTAL,
+    WEIGHT_SEMIBOLD,
+)
 from deepreefmap_gui.core.widgets import (
     EmptyState,
     FilterChips,
     clip_outcome_color,
     confirm,
+    muted_label,
     section_column,
 )
 from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.runs.section_detail import SectionDetailPanel, section_window
 from deepreefmap_gui.runs.video_detail import VideoDetailPanel
 from deepreefmap_gui.runs.video_rows import (
+    DELETE_ARM_MS,
     KEEPS_FILE_NOTE,
     VideoLibraryList,
     VideoListHeader,
@@ -94,8 +106,62 @@ _HIDDEN_TOOLTIP = (
 )
 
 
+# The two bulk actions ask in the button, the way a clip row's own trash does:
+# one press arms, the second acts, and DELETE_ARM_MS stands it back down. A
+# whole library is more than a gesture is worth, so above this many clips the
+# question goes back into a dialog.
+_BULK_CONFIRM_ABOVE = 20
+
+# There is no tick column and no select mode, so the bar says how to pick more
+# than one clip. Nothing else on the page does.
+_PICK_HINT = "Ctrl-click or shift-click to pick more than one clip."
+
+# Named for what it does rather than for the "Not processed" chip, whose count
+# is wider: a clip cut into sections and never run reads as part processed and
+# is not swept, because re-importing the file does not bring its trims back.
+_SWEEP_IDLE = "Remove clips with no sections"
+
+
 def _sections_phrase(count: int) -> str:
     return f"{count} section" if count == 1 else f"{count} sections"
+
+
+def _clips_phrase(count: int) -> str:
+    return f"{count} clip" if count == 1 else f"{count} clips"
+
+
+def _delete_label(count: int) -> str:
+    """What the bulk delete offers to do, which follows what is picked."""
+    if count < 1:
+        return "Delete"
+    return "Delete clip" if count == 1 else f"Delete all {count}"
+
+
+def _sweep_label(count: int) -> str:
+    return _SWEEP_IDLE if count < 1 else f"Remove {_clips_phrase(count)} with no sections"
+
+
+def _delete_report(deleted: list[VideoLibraryEntry], refused: int) -> str:
+    """What the delete did, and what it would not do.
+
+    A refusal is named rather than passed over: a status line reporting only
+    the clips that went claims a success the other half of the set never had.
+    """
+    kept = (
+        f" {_clips_phrase(refused)} kept: a run was made from "
+        f"{'it' if refused == 1 else 'them'}, so delete those in Browse first."
+        if refused
+        else ""
+    )
+    if not deleted:
+        return f"{kept.strip()} {KEEPS_FILE_NOTE}"
+    if len(deleted) == 1:
+        clip = deleted[0]
+        sections = f" and {_sections_phrase(len(clip.passes))}" if clip.passes else ""
+        head = f"{clip.video.file_name}{sections} removed from the library."
+    else:
+        head = f"{_clips_phrase(len(deleted))} removed from the library."
+    return f"{head}{kept} {KEEPS_FILE_NOTE}"
 
 
 class VideoLibraryMixin(MixinBase):
@@ -193,6 +259,7 @@ class VideoLibraryMixin(MixinBase):
         self._video_list.section_reassign.connect(self._on_section_reassign)
         self._video_list.section_delete.connect(self._on_section_delete)
         self._video_list.section_open_transect.connect(self._open_transect_page)
+        self._video_list.selection_changed.connect(self._refresh_video_actions)
         self._video_stack = QStackedWidget()
         self._video_stack.addWidget(self._video_list)
         self._video_stack.addWidget(
@@ -204,6 +271,7 @@ class VideoLibraryMixin(MixinBase):
         self._video_stack.setAcceptDrops(True)
         self._video_stack.installEventFilter(self)
         column_layout.addWidget(self._video_stack, 1)
+        column_layout.addWidget(self._build_video_actions())
         split.addWidget(column)
 
         # The clip above the section it holds, so drilling in never costs sight
@@ -283,6 +351,144 @@ class VideoLibraryMixin(MixinBase):
         """A dragged handle is a decision; stop overriding it on every resize."""
         if not getattr(self, "_video_split_applying", False):
             self._video_split_user_sized = True
+
+    # --- acting on more than one clip ----------------------------------------
+
+    def _build_video_actions(self) -> QWidget:
+        """What can be done to the picked clips, under the list they are picked in.
+
+        Under the Footage column rather than in the filter row, so a destructive
+        button is nowhere near the chips a user clicks through all day.
+        """
+        bar = QWidget()
+        bar.setObjectName("videoActionBar")
+        bar.setStyleSheet(
+            f"QWidget#videoActionBar {{ border: 1px solid {BORDER};"
+            f" border-radius: {RADIUS_SM}px; }}"
+        )
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(SPACE_MD, SPACE_SM, SPACE_MD, SPACE_SM)
+        row.setSpacing(SPACE_MD)
+
+        self._video_finding = muted_label(_PICK_HINT)
+        row.addWidget(self._video_finding, 1)
+
+        self._video_clear_btn = QPushButton(_SWEEP_IDLE)
+        self._video_clear_btn.setEnabled(False)
+        self._video_clear_btn.clicked.connect(self._on_video_sweep_clicked)
+        row.addWidget(self._video_clear_btn)
+
+        self._video_delete_btn = QPushButton(_delete_label(0))
+        self._video_delete_btn.setEnabled(False)
+        self._video_delete_btn.clicked.connect(self._on_video_delete_clicked)
+        row.addWidget(self._video_delete_btn)
+
+        # Owned by the window rather than by either button, so whichever is
+        # armed can be stood down from anywhere the target set moves.
+        self._video_arm = QTimer(self)
+        self._video_arm.setSingleShot(True)
+        self._video_arm.setInterval(DELETE_ARM_MS)
+        self._video_arm.timeout.connect(self._refresh_video_actions)
+        self._video_armed: str | None = None
+        return bar
+
+    def _selected_clips(self) -> list[VideoLibraryEntry]:
+        """The picked clips, in the order the list shows them."""
+        picked = self._video_list.selection()
+        return [c for c in self._visible_clips() if str(c.video.id) in picked]
+
+    def _sweepable_clips(self) -> list[VideoLibraryEntry]:
+        """The clips on screen with nothing cut from them and nothing made from them.
+
+        Orphans only. Deleting is records-only and adding the file again mints a
+        fresh clip, so a swept orphan is recoverable; the sections cut from a
+        clip are not, and those trim windows are the user's own work.
+
+        Drawn from what is listed, so the count is what is on screen and a
+        hidden clip is never swept out from under the user.
+        """
+        return [c for c in self._visible_clips() if c.orphan and not c.runs]
+
+    def _refresh_video_actions(self) -> None:
+        """Relabel both bulk actions, disarmed.
+
+        Disarming first is the contract a two-press button lives by: the set the
+        first press armed is not the set the second would act on.
+        """
+        if getattr(self, "_video_delete_btn", None) is None:
+            return
+        self._video_armed = None
+        self._video_arm.stop()
+        self._paint_video_actions()
+
+    def _paint_video_actions(self) -> None:
+        """Each button says what it would do, and the armed one asks first."""
+        picked = len(self._selected_clips())
+        sweepable = len(self._sweepable_clips())
+        armed = self._video_armed if self._video_arm.isActive() else None
+        self._video_delete_btn.setText(
+            f"Click again to delete {picked}" if armed == "delete" else _delete_label(picked)
+        )
+        self._video_clear_btn.setText(
+            f"Click again to remove {sweepable}" if armed == "sweep" else _sweep_label(sweepable)
+        )
+        for name, button in (
+            ("delete", self._video_delete_btn),
+            ("sweep", self._video_clear_btn),
+        ):
+            button.setStyleSheet(
+                f"color: {ERROR}; font-weight: {WEIGHT_SEMIBOLD};" if armed == name else ""
+            )
+        self._video_delete_btn.setEnabled(bool(picked))
+        self._video_clear_btn.setEnabled(bool(sweepable))
+        self._video_finding.setText(
+            _PICK_HINT if not picked else f"{_clips_phrase(picked)} picked."
+        )
+
+    def _video_action_armed(self, name: str) -> bool:
+        """True on the second press of an action, arming it on the first."""
+        if self._video_armed == name and self._video_arm.isActive():
+            self._refresh_video_actions()
+            return True
+        self._video_armed = name
+        self._video_arm.start()
+        self._paint_video_actions()
+        return False
+
+    def _on_video_delete_clicked(self) -> None:
+        """Delete every picked clip, once the button has been asked twice."""
+        clips = self._selected_clips()
+        if not clips:
+            return
+        if len(clips) > _BULK_CONFIRM_ABOVE:
+            self._refresh_video_actions()
+            if confirm(
+                self,
+                "Delete clips",
+                f"Remove {_clips_phrase(len(clips))} from the library? {KEEPS_FILE_NOTE}",
+            ):
+                self._delete_clips(clips)
+            return
+        if self._video_action_armed("delete"):
+            self._delete_clips(clips)
+
+    def _on_video_sweep_clicked(self) -> None:
+        """Clear out the clips nothing was ever cut from."""
+        clips = self._sweepable_clips()
+        if not clips:
+            return
+        if len(clips) > _BULK_CONFIRM_ABOVE:
+            self._refresh_video_actions()
+            if confirm(
+                self,
+                "Remove clips",
+                f"Remove {_clips_phrase(len(clips))} with no sections from the "
+                f"library? {KEEPS_FILE_NOTE}",
+            ):
+                self._delete_clips(clips)
+            return
+        if self._video_action_armed("sweep"):
+            self._delete_clips(clips)
 
     # --- the library ---------------------------------------------------------
 
@@ -383,6 +589,7 @@ class VideoLibraryMixin(MixinBase):
         )
         self._video_stack.setCurrentIndex(0 if clips else 1)
         self._refresh_video_chips()
+        self._refresh_video_actions()
         self._refresh_video_detail()
         self._refresh_section_state()
 
@@ -989,49 +1196,51 @@ class VideoLibraryMixin(MixinBase):
         self._status_label.setText(f"Deleted {_sections_phrase(removed)}.")
 
     def _on_video_delete(self, video_id: str) -> None:
-        """Take a clip out of the library, with the sections cut from it.
+        """The trash on one clip's row, which its own second press has armed."""
+        clip = self._clip_by_id(video_id)
+        if clip is not None:
+            self._delete_clips([clip])
+
+    def _delete_clips(self, clips: list[VideoLibraryEntry]) -> None:
+        """Take clips out of the library, with the sections cut from them.
 
         The record only: the footage stays where it is, and adding the file
         again brings the clip back. A run is the record of what it processed,
         so a clip anything was made from stays until Browse has taken those
         runs, the same rule ``_on_section_delete`` applies one level down.
 
-        No dialog. The row's button asks by arming itself, which is what makes
-        clearing a dozen bad imports a dozen clicks.
+        The store refuses a clip a chaptered pass reaches from another clip too,
+        so every refusal is counted and reported rather than assumed away.
         """
         store = self._try_survey_store()
-        clip = self._clip_by_id(video_id)
-        if store is None or clip is None:
+        if store is None or not clips:
             return
-        if clip.runs:
-            count = f"{len(clip.runs)} run{'' if len(clip.runs) == 1 else 's'}"
-            self._status_label.setText(
-                f"This clip has {count}. Delete them in Browse first."
-            )
-            return
-        sections = (
-            f" and {_sections_phrase(len(clip.passes))}" if clip.passes else ""
-        )
-        try:
-            store.delete_video(clip.video.id)
-        except ValueError as exc:
-            self._status_label.setText(str(exc))
-            return
-        # A hidden clip that no longer exists would keep counting towards
-        # "Show hidden (n)" forever, since nothing else ever prunes that list.
-        if video_id in self._hidden_clip_ids:
-            self._hidden_clip_ids.discard(video_id)
-            self._save_hidden_clips()
-        if self._video_list.selected == video_id:
+        deleted: list[VideoLibraryEntry] = []
+        refused = 0
+        for clip in clips:
+            if clip.runs:
+                refused += 1
+                continue
+            try:
+                store.delete_video(clip.video.id)
+            except ValueError as exc:
+                logger.warning("Could not delete clip %s: %s", clip.video.id, exc)
+                refused += 1
+                continue
+            deleted.append(clip)
+        if deleted:
+            # A hidden clip that no longer exists would keep counting towards
+            # "Show hidden (n)" forever: nothing else prunes that list.
+            gone = {str(clip.video.id) for clip in deleted}
+            if gone & self._hidden_clip_ids:
+                self._hidden_clip_ids -= gone
+                self._save_hidden_clips()
             self._video_list.set_selected(None)
-        self._selected_pass_id = None
-        self._section_detail.setVisible(False)
+            self._selected_pass_id = None
+            self._section_detail.setVisible(False)
         self._refresh_video_library()
         self._refresh_survey_batch_tab()
-        self._status_label.setText(
-            f"{clip.video.file_name}{sections} removed from the library. "
-            f"{KEEPS_FILE_NOTE}"
-        )
+        self._status_label.setText(_delete_report(deleted, refused))
 
     def _on_video_reveal(self, video_id: str) -> None:
         """Show the clip itself in the file manager, selected rather than merely near.

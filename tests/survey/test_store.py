@@ -1194,6 +1194,23 @@ def test_a_deleted_clips_hash_is_free_again(store):
     assert [v.id for v in store.list_videos()] == [second.id]
 
 
+def test_re_adding_a_deleted_clip_brings_back_none_of_its_sections(store):
+    """Scenario: a clip is deleted, and the same file is added again.
+
+    Expected behaviour: the clip comes back under a fresh id with nothing cut
+    from it. Adding the file is the undo a deleted clip has, and it undoes the
+    clip alone, which is why a bulk sweep takes only clips with no sections.
+    """
+    _transect, video, pass_ = seed_pass(store)
+    store.delete_video(video.id)
+
+    again = store.upsert_video(make_video())
+
+    assert again.id != video.id
+    assert store.list_passes(video_id=again.id) == []
+    assert store.get_pass(pass_.id) is None
+
+
 def test_the_delete_guards_still_refuse_in_the_same_words(store):
     transect, video, pass_ = seed_pass(store)
     store.add_run(RunRecord(pass_id=pass_.id, run_dir_name="t1__p01"))

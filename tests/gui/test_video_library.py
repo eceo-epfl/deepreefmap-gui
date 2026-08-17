@@ -1089,3 +1089,161 @@ def test_cancelling_the_picker_still_cuts_nothing(window, tmp_path, monkeypatch)
     window._on_video_new_section()
 
     assert store.list_passes() == []
+
+
+# --- picking clips, and the two bulk actions under the list ------------------
+
+
+def pick_clips(window, *file_names: str) -> None:
+    """Pick clips the way the list is picked: a click, then ctrl-clicks."""
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    for index, name in enumerate(file_names):
+        clip = next(c for c in window._video_entries if c.video.file_name == name)
+        row = window._video_list.rows()[str(clip.video.id)]
+        row.mousePressEvent(
+            QMouseEvent(
+                QMouseEvent.Type.MouseButtonPress,
+                QPointF(1.0, 1.0),
+                QPointF(1.0, 1.0),
+                Qt.MouseButton.LeftButton,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier
+                if index == 0
+                else Qt.KeyboardModifier.ControlModifier,
+            )
+        )
+
+
+def test_the_delete_button_says_how_many_clips_it_would_take(window):
+    store = window._survey_store()
+    _seed(store, "one.mp4")
+    _seed(store, "two.mp4")
+    show_videos(window)
+
+    assert window._video_delete_btn.text() == "Delete"
+    assert not window._video_delete_btn.isEnabled()
+
+    pick_clips(window, "one.mp4")
+    assert window._video_delete_btn.text() == "Delete clip"
+    assert window._video_delete_btn.isEnabled()
+
+    pick_clips(window, "one.mp4", "two.mp4")
+    assert window._video_delete_btn.text() == "Delete all 2"
+
+
+def test_one_press_arms_the_bulk_delete_and_takes_nothing(window):
+    store = window._survey_store()
+    video = _seed(store, "one.mp4")
+    show_videos(window)
+    pick_clips(window, "one.mp4")
+
+    window._video_delete_btn.click()
+
+    assert window._video_delete_btn.text() == "Click again to delete 1"
+    assert store.get_video(video.id) is not None
+
+
+def test_the_second_press_deletes_every_picked_clip(window):
+    store = window._survey_store()
+    first = _seed(store, "one.mp4")
+    second = _seed(store, "two.mp4")
+    _seed(store, "three.mp4")
+    show_videos(window)
+    pick_clips(window, "one.mp4", "two.mp4")
+
+    window._video_delete_btn.click()
+    window._video_delete_btn.click()
+
+    assert store.get_video(first.id) is None
+    assert store.get_video(second.id) is None
+    assert listed_names(window) == ["three.mp4"]
+    assert window._video_delete_btn.text() == "Delete"
+
+
+def test_changing_the_pick_disarms_the_bulk_delete(window):
+    """The second press must never land on a set nobody armed."""
+    store = window._survey_store()
+    video = _seed(store, "one.mp4")
+    _seed(store, "two.mp4")
+    show_videos(window)
+    pick_clips(window, "one.mp4")
+    window._video_delete_btn.click()
+
+    pick_clips(window, "two.mp4")
+    window._video_delete_btn.click()
+
+    assert store.get_video(video.id) is not None
+    assert window._video_delete_btn.text() == "Click again to delete 1"
+
+
+def test_a_mixed_pick_deletes_the_clean_clips_and_says_what_it_kept(window):
+    store = window._survey_store()
+    clean = _seed(store, "clean.mp4", passes=1)
+    used = _seed(store, "used.mp4", passes=1, statuses=("succeeded",))
+    show_videos(window)
+    pick_clips(window, "clean.mp4", "used.mp4")
+
+    window._video_delete_btn.click()
+    window._video_delete_btn.click()
+
+    assert store.get_video(clean.id) is None
+    assert store.get_video(used.id) is not None
+    assert "1 clip kept" in window._status_label.text()
+    assert "Browse" in window._status_label.text()
+
+
+def test_the_sweep_takes_the_clips_nothing_was_cut_from(window):
+    store = window._survey_store()
+    orphan = _seed(store, "orphan.mp4")
+    cut = _seed(store, "cut.mp4", passes=1)
+    show_videos(window)
+
+    assert window._video_clear_btn.text() == "Remove 1 clip with no sections"
+    window._video_clear_btn.click()
+    window._video_clear_btn.click()
+
+    assert store.get_video(orphan.id) is None
+    assert store.get_video(cut.id) is not None
+
+
+def test_a_clip_with_sections_and_no_runs_is_never_swept(window):
+    """Re-importing the file mints a fresh clip but restores none of its trims."""
+    store = window._survey_store()
+    video = _seed(store, "trimmed.mp4", passes=2)
+    show_videos(window)
+
+    assert window._video_clear_btn.text() == "Remove clips with no sections"
+    assert not window._video_clear_btn.isEnabled()
+    assert store.get_video(video.id) is not None
+
+
+def test_the_sweep_counts_only_what_is_on_screen(window):
+    store = window._survey_store()
+    _seed(store, "alpha.mp4")
+    _seed(store, "beta.mp4")
+    show_videos(window)
+    assert window._video_clear_btn.text() == "Remove 2 clips with no sections"
+
+    window._video_search.setText("alph")
+    assert window._video_clear_btn.text() == "Remove 1 clip with no sections"
+
+    window._video_search.setText("")
+    window._on_video_filter_changed(VIDEO_PROCESSED)
+    assert not window._video_clear_btn.isEnabled()
+
+
+def test_the_sweep_leaves_a_hidden_clip_where_it_is(window):
+    store = window._survey_store()
+    hidden = _seed(store, "hidden.mp4")
+    _seed(store, "shown.mp4")
+    show_videos(window)
+    window._on_video_hide(str(hidden.id))
+
+    assert window._video_clear_btn.text() == "Remove 1 clip with no sections"
+    window._video_clear_btn.click()
+    window._video_clear_btn.click()
+
+    assert store.get_video(hidden.id) is not None
+    assert listed_names(window) == []
