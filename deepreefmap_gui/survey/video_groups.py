@@ -207,35 +207,45 @@ def sort_groups(
     ]
 
 
+def span_for_pass(
+    pass_: TransectPass, duration_s: float | None, status: str, run_count: int
+) -> Span | None:
+    """One section as a 0..1 range along a clip of ``duration_s``.
+
+    None when the clip's length is unknown: normalising against a guessed length
+    would draw the section somewhere the footage never had it.
+    """
+    if not duration_s or duration_s <= 0:
+        return None
+    begin = _fraction(pass_.begin_s, duration_s, 0.0)
+    # A section with no end runs to the end of the clip, which is also what the
+    # pipeline does with an unset end_s.
+    end = max(begin, _fraction(pass_.end_s, duration_s, 1.0))
+    return Span(
+        pass_id=str(pass_.id),
+        begin=begin,
+        end=end,
+        status=status,
+        run_count=run_count,
+    )
+
+
 def timeline_spans(entry: VideoLibraryEntry) -> list[Span]:
     """Each section of a clip as a 0..1 range along it, in time order.
 
     Empty when the clip's length is unknown: the widget then paints a bare
-    groove. Normalising against a guessed length would draw sections in places
-    the footage never had them, which is worse than drawing none.
+    groove.
     """
     duration = entry.video.duration_s
-    if not duration or duration <= 0:
-        return []
     runs_by_pass: dict[object, list[RunRecord]] = {}
     for run in entry.runs:
         runs_by_pass.setdefault(run.pass_id, []).append(run)
     spans = []
     for pass_ in sorted(entry.passes, key=_pass_order):
         runs = runs_by_pass.get(pass_.id, [])
-        begin = _fraction(pass_.begin_s, duration, 0.0)
-        # A section with no end runs to the end of the clip, which is also what
-        # the pipeline does with an unset end_s.
-        end = max(begin, _fraction(pass_.end_s, duration, 1.0))
-        spans.append(
-            Span(
-                pass_id=str(pass_.id),
-                begin=begin,
-                end=end,
-                status=pass_status(runs),
-                run_count=len(runs),
-            )
-        )
+        span = span_for_pass(pass_, duration, pass_status(runs), len(runs))
+        if span is not None:
+            spans.append(span)
     return spans
 
 

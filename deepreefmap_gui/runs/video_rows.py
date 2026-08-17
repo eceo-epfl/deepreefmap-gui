@@ -128,6 +128,7 @@ from deepreefmap_gui.survey.video_groups import (
     Span,
     capture_moment,
     pass_status,
+    span_for_pass,
     timeline_spans,
 )
 from deepreefmap_gui.survey.video_probe import NO, SOURCE_CONTAINER, YES
@@ -166,6 +167,18 @@ TRANSECT_CHARS = 22  # a transect name, or "Unassigned"
 TRANSECT_MIN_CHARS = 6
 RUNS_CHARS = 9  # "12 runs"
 
+# What the clip name is allowed to shrink to. A GoPro name is told apart by its
+# two ends, so below this an elided one stops identifying its clip.
+NAME_MIN_CHARS = 26
+
+# Below this the strip stops being a timeline and becomes a coloured smear.
+SECTIONS_MIN_WIDTH = 180
+
+# The name identifies the row and the strip summarises it, so a wider window
+# feeds the name first. Qt's own stretch splits slack equally, which is what gave
+# the strip the width and left the name frozen at NAME_CHARS.
+NAME_WEIGHT, SECTIONS_WEIGHT = 3, 2
+
 # One row: the smallest comfortable click target and not a pixel more. The list
 # is a whole field season of clips, so every pixel of padding costs one less on
 # screen, and the row's own buttons are told to fit rather than to pad.
@@ -178,6 +191,9 @@ DISCLOSURE_WIDTH = ICON_SM + SPACE_XS
 # A section row starts where its clip's name does. That alignment is what makes
 # the nesting read without drawing a connecting line for it.
 SECTION_INDENT = SPACE_SM + DISCLOSURE_WIDTH + SPACE_SM + ICON_SM
+
+# The play, cut and delete buttons that close every clip row.
+TRAILING_BUTTONS_WIDTH = ICON_SM * 3 + SPACE_XS * 6
 
 UNASSIGNED_NAME = "Unassigned"
 
@@ -368,6 +384,51 @@ def section_facts(entry: VideoLibraryEntry) -> list[tuple[TransectPass, str, int
         mine = runs.get(pass_.id, [])
         facts.append((pass_, pass_status(mine), len(mine)))
     return facts
+
+
+def section_strip_lead(widget: QWidget, name_width: int) -> int:
+    """The gap that puts a section row's strip under its clip row's.
+
+    Derived from the constants both rows are built from plus the clip name's
+    current width, never from measured pixels, so the two stay aligned at any UI
+    font size and at any window width. A clip row leads with the disclosure, the
+    link glyph, the name and four figure columns; a section row leads with its
+    indent, a status dot, the window, the transect chip and the run count.
+    """
+    cw = widget.fontMetrics().averageCharWidth()
+    clip = (
+        # A left margin, then one gap after each of the disclosure, the link, the
+        # name and the four figure columns.
+        SPACE_SM * 8
+        + DISCLOSURE_WIDTH
+        + ICON_SM
+        + name_width
+        + cw * (RECORDED_CHARS + LENGTH_CHARS + SIZE_CHARS + GRAVITY_CHARS)
+    )
+    section = (
+        # SECTION_INDENT already carries two of these, then one gap after each of
+        # the dot, the window, the chip, the arrow, the run count and this spacer.
+        SPACE_SM * 8
+        + DISCLOSURE_WIDTH
+        + ICON_SM * 3
+        + cw * (WINDOW_CHARS + TRANSECT_CHARS + RUNS_CHARS)
+    )
+    return max(0, clip - section)
+
+
+def clip_name_width(available: int, char_width: int) -> int:
+    """How wide the clip name column is in a row ``available`` px across.
+
+    The figures and the buttons take theirs first, then the name and the sections
+    strip share what is left by weight, each held above its floor. The strip is
+    not sized here: it takes the remainder through its layout stretch, so the two
+    always add up to the row exactly.
+    """
+    fixed = char_width * (RECORDED_CHARS + LENGTH_CHARS + SIZE_CHARS + GRAVITY_CHARS)
+    spent = fixed + DISCLOSURE_WIDTH + ICON_SM + TRAILING_BUTTONS_WIDTH + SPACE_SM * 10
+    slack = max(0, available - spent - SECTIONS_MIN_WIDTH)
+    share = slack * NAME_WEIGHT // (NAME_WEIGHT + SECTIONS_WEIGHT)
+    return max(char_width * NAME_MIN_CHARS, share)
 
 
 def _fixed_width(label: QLabel, chars: int) -> None:
@@ -686,6 +747,7 @@ class VideoRow(QWidget):
         self._name = secondary_label()
         _fixed_width(self._name, NAME_CHARS)
         row.addWidget(self._name)
+        self._name_width = self._name.width()
 
         self._recorded = muted_label()
         _fixed_width(self._recorded, RECORDED_CHARS)
@@ -734,6 +796,9 @@ class VideoRow(QWidget):
         self.delete_btn = _icon_button(trash_icon(), MENU_DELETE_CLIP, DELETE_CLIP_TOOLTIP)
         self.delete_btn.clicked.connect(self._on_delete_clicked)
         row.addWidget(self.delete_btn)
+        # A text glyph measures narrower than an icon, and the sections column has
+        # to end where a section row's own strip does.
+        self.new_section_btn.setFixedWidth(self.delete_btn.sizeHint().width())
         # Owned by the row, so a list rebuilt under an armed button takes the
         # timer down with the row rather than firing into a deleted widget.
         self._delete_arm = QTimer(self)
@@ -885,6 +950,30 @@ class VideoRow(QWidget):
         if self._entry is not None:
             self.menu().exec(event.globalPos())
 
+    def set_name_width(self, width: int) -> None:
+        """Take the width the list computed for the name column, and re-elide to it."""
+        if width == self._name_width:
+            return
+        self._name_width = width
+        self._name.setFixedWidth(width)
+        self._apply_name_text()
+
+    def _apply_name_text(self) -> None:
+        """A GoPro name is told apart by its two ends, so it elides from the middle.
+
+        Re-run whenever the column changes width: elided once at fill time, a
+        widened column kept the ellipsis it no longer needed.
+        """
+        if self._entry is None:
+            return
+        self._name.setText(
+            self._name.fontMetrics().elidedText(
+                self._entry.video.file_name,
+                Qt.TextElideMode.ElideMiddle,
+                self._name_width,
+            )
+        )
+
     def set_entry(
         self,
         entry: VideoLibraryEntry,
@@ -897,11 +986,7 @@ class VideoRow(QWidget):
         self._hidden = hidden
         video = entry.video
         self._set_link(entry)
-        self._name.setText(
-            self._name.fontMetrics().elidedText(
-                video.file_name, Qt.TextElideMode.ElideMiddle, self._name.width()
-            )
-        )
+        self._apply_name_text()
         self._recorded.setText(capture_label(video))
         self._length.setText(length_label(video.duration_s))
         self._size.setText(size_label(video.size_bytes))
@@ -1116,8 +1201,20 @@ class SectionRow(QWidget):
         self._runs.setVisible(not compact)
         row.addWidget(self._runs)
 
+        # In the wide list the section gets its own strip, on the same axis as the
+        # clip's above it, so which part of the clip a section is can be seen
+        # rather than read. Mouse-transparent: the row's own click selects it and
+        # its tooltip carries the frame preview.
+        self.strip: SectionStrip | None = None
         if not compact:
-            row.addStretch(1)
+            self._strip_lead = QLabel()
+            self._strip_lead.setFixedWidth(
+                section_strip_lead(self, self.fontMetrics().averageCharWidth() * NAME_CHARS)
+            )
+            row.addWidget(self._strip_lead)
+            self.strip = SectionStrip()
+            self.strip.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            row.addWidget(self.strip, 1)
 
         self.cart_btn = _icon_button(cart_icon(), MENU_ADD_TO_CART, MENU_ADD_TO_CART)
         self.cart_btn.clicked.connect(self._on_cart_clicked)
@@ -1149,6 +1246,12 @@ class SectionRow(QWidget):
         self._preview_key = ""
         self._preview_wired = False
 
+    def set_name_width(self, width: int) -> None:
+        """Follow the clip name's column, so this row's strip stays under its clip's."""
+        if self.strip is None:
+            return
+        self._strip_lead.setFixedWidth(section_strip_lead(self, width))
+
     @property
     def pass_id(self) -> str:
         return "" if self._pass is None else str(self._pass.id)
@@ -1173,6 +1276,7 @@ class SectionRow(QWidget):
         in_cart: bool = False,
         available: bool = True,
         preview: list[tuple[str, float]] | None = None,
+        duration_s: float | None = None,
     ) -> None:
         """Describe one section. ``status`` comes from ``section_facts``.
 
@@ -1184,12 +1288,26 @@ class SectionRow(QWidget):
         ``preview`` is where the section's frames can be grabbed from, out of
         ``catalogue.preview_points``. None where there is no file to read, and
         the row then says in words what it cannot show in pictures.
+
+        ``duration_s`` is the clip's length, which is what places this section
+        along it. Without one the strip is hidden: the row is the section, so
+        neither "nothing cut from this" nor "length unknown" is a statement it
+        can make.
         """
         self._pass = pass_
         self._run_count = run_count
         self._in_cart = in_cart
         self._available = available
         self._dot_label.setPixmap(_dot(STATUS_COLORS.get(status, TEXT_MUTED)))
+        if self.strip is not None:
+            span = span_for_pass(pass_, duration_s, status, run_count)
+            self.strip.setVisible(span is not None)
+            if span is not None:
+                self.strip.set_spans(
+                    [span],
+                    float(duration_s),
+                    {str(pass_.id): transect_name or UNASSIGNED_NAME},
+                )
         length = section_length_label(pass_)
         self._window.setText(
             f"{window_label(pass_)} · {length}" if length else window_label(pass_)
@@ -1595,6 +1713,12 @@ class VideoListHeader(QWidget):
         self._cells[column] = cell
         self._titles[column] = title
 
+    def set_name_width(self, width: int) -> None:
+        """Keep the Name heading over the column it names."""
+        cell = self._cells.get(SORT_NAME)
+        if cell is not None:
+            cell.setFixedWidth(width)
+
     @property
     def column(self) -> str:
         return self._column
@@ -1671,6 +1795,8 @@ class VideoLibraryList(QScrollArea):
         self._sections: dict[str, list[SectionRow]] = {}
         self._sections_by_video: dict[str, list[SectionRow]] = {}
         self._expanded: set[str] = set()
+        self._name_width = 0
+        self._header: VideoListHeader | None = None
         self._selected: str | None = None
         self._selected_section: str | None = None
         # Outlives every rebuild, so the one line telling the user the list takes
@@ -1693,6 +1819,36 @@ class VideoLibraryList(QScrollArea):
     def sections(self) -> dict[str, SectionRow]:
         """One row per pass: the first, where a pass spans several clips."""
         return {pass_id: rows[0] for pass_id, rows in self._sections.items() if rows}
+
+    def follow_header(self, header: VideoListHeader) -> None:
+        """Keep the header's Name column the same width as the rows' own."""
+        self._header = header
+        self._apply_name_width()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        super().resizeEvent(event)
+        self._apply_name_width()
+
+    def _apply_name_width(self) -> None:
+        """Give the clip name its share of the row, and the strip the remainder.
+
+        Pushed to every live row rather than left to layout stretch, which splits
+        slack equally and so handed the strip the width a wider window bought.
+        """
+        available = self.viewport().width()
+        if available <= 0:
+            return
+        width = clip_name_width(available, self.fontMetrics().averageCharWidth())
+        if width == self._name_width:
+            return
+        self._name_width = width
+        if self._header is not None:
+            self._header.set_name_width(width)
+        for row in self._rows.values():
+            row.set_name_width(width)
+        for rows in self._sections_by_video.values():
+            for section in rows:
+                section.set_name_width(width)
 
     def set_groups(
         self,
@@ -1726,6 +1882,9 @@ class VideoLibraryList(QScrollArea):
                 video_id = str(entry.video.id)
                 row = self._rows[video_id]
                 row.set_entry(entry, transect_name, hidden=bool(hidden(video_id)))
+                # A rebuild makes fresh rows, which start at the char-count width.
+                if self._name_width:
+                    row.set_name_width(self._name_width)
                 row.set_expanded(video_id in self._expanded)
                 # Filled through this clip's own rows rather than by pass id: a
                 # pass spanning two clips has a row under each, and each row
@@ -1743,6 +1902,7 @@ class VideoLibraryList(QScrollArea):
                         in_cart=bool(in_cart(str(pass_.id))),
                         available=entry.link_state != LINK_MISSING,
                         preview=preview_points(pass_, assets),
+                        duration_s=entry.video.duration_s,
                     )
         self._apply_expansion()
         self._paint_selection()

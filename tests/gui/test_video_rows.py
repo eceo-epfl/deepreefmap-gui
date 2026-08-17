@@ -901,3 +901,166 @@ def test_sorted_groups_rebuild_the_list_in_their_order() -> None:
         "small.mp4",
         "late.mp4",
     ]
+
+
+# --- Which column a wider window feeds --------------------------------------
+
+def test_a_wider_window_feeds_the_clip_name_before_the_sections_strip(qapp) -> None:
+    """Scenario: the window is widened.
+
+    Expected behaviour: the name column grows. The strip held the row's only
+    layout stretch, so a name frozen at thirty characters stayed elided while the
+    timeline beside it took every pixel a wider window bought.
+    """
+    entry = make_entry(file_name="10.03.2023_Japanese Garden_T2_C1_F_GX010002.MP4")
+    groups = [DateGroup(key="2026-07-01", title="Today", entries=[entry])]
+    listing = VideoLibraryList()
+    listing.set_groups(groups, no_name)
+    listing.show()
+
+    listing.resize(900, 400)
+    qapp.processEvents()
+    narrow = listing.rows()[str(entry.video.id)]._name.width()
+
+    listing.resize(1600, 400)
+    qapp.processEvents()
+    wide = listing.rows()[str(entry.video.id)]._name.width()
+
+    assert wide > narrow
+
+
+def test_the_strip_keeps_a_floor_a_timeline_is_still_readable_at(qapp) -> None:
+    from deepreefmap_gui.runs.video_rows import SECTIONS_MIN_WIDTH
+
+    entry = make_entry(windows=((0.0, 30.0), (40.0, 60.0)))
+    groups = [DateGroup(key="2026-07-01", title="Today", entries=[entry])]
+    listing = VideoLibraryList()
+    listing.set_groups(groups, no_name)
+    listing.show()
+    listing.resize(1600, 400)
+    qapp.processEvents()
+
+    row = listing.rows()[str(entry.video.id)]
+    assert row.strip.width() >= SECTIONS_MIN_WIDTH
+
+
+def test_a_widened_name_column_drops_the_ellipsis_it_no_longer_needs(qapp) -> None:
+    """Elided once at fill time, a name kept its ellipsis however wide the column
+    later became."""
+    long_name = "10.03.2023_Japanese Garden_T2_C1_F_GX010002.MP4"
+    entry = make_entry(file_name=long_name)
+    groups = [DateGroup(key="2026-07-01", title="Today", entries=[entry])]
+    listing = VideoLibraryList()
+    listing.set_groups(groups, no_name)
+    listing.show()
+
+    listing.resize(700, 400)
+    qapp.processEvents()
+    assert "…" in listing.rows()[str(entry.video.id)]._name.text()
+
+    listing.resize(2000, 400)
+    qapp.processEvents()
+    assert listing.rows()[str(entry.video.id)]._name.text() == long_name
+
+
+def test_the_heading_stays_over_the_column_it_names(qapp) -> None:
+    from deepreefmap_gui.runs.video_rows import SORT_NAME, VideoListHeader
+
+    entry = make_entry()
+    groups = [DateGroup(key="2026-07-01", title="Today", entries=[entry])]
+    header = VideoListHeader()
+    listing = VideoLibraryList()
+    listing.follow_header(header)
+    listing.set_groups(groups, no_name)
+    listing.show()
+    listing.resize(1600, 400)
+    qapp.processEvents()
+
+    row = listing.rows()[str(entry.video.id)]
+    assert header.cell(SORT_NAME).width() == row._name.width()
+
+
+# --- Where a section sits along its clip ------------------------------------
+
+def _clip_and_sections(qapp, width=1400, duration_s=120.0, windows=((10.0, 40.0),)):
+    """One clip row with its sections open under it, laid out at a real width."""
+    from PySide6.QtWidgets import QVBoxLayout, QWidget
+
+    entry = make_entry(windows=windows, duration_s=duration_s)
+    groups = [DateGroup(key="2026-07-01", title="Today", entries=[entry])]
+    listing = VideoLibraryList()
+    listing.set_groups(groups, no_name)
+    listing.expand(str(entry.video.id))
+    listing.set_groups(groups, no_name)
+
+    host = QWidget()
+    layout = QVBoxLayout(host)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.addWidget(listing)
+    host.resize(width, 400)
+    host.show()
+    qapp.processEvents()
+    qapp.processEvents()
+    clip = listing.rows()[str(entry.video.id)]
+    sections = listing._sections_by_video[str(entry.video.id)]
+    return listing, clip, sections, host
+
+
+@pytest.mark.parametrize("width", [1600, 1400, 1100])
+def test_a_section_strip_shares_its_clip_s_time_axis(qapp, width) -> None:
+    """Scenario: a clip is expanded, at three window widths.
+
+    Expected behaviour: the section's bar starts and ends on the same pixels as
+    its clip's, so a position along one means the same as along the other. This
+    is the guard for the next column added to either row.
+    """
+    _listing, clip, sections, _host = _clip_and_sections(qapp, width=width)
+    assert sections
+
+    parent = clip.strip.mapTo(clip.window(), clip.strip.rect().topLeft())
+    child = sections[0].strip.mapTo(sections[0].window(), sections[0].strip.rect().topLeft())
+
+    assert child.x() == parent.x()
+    assert sections[0].strip.width() == clip.strip.width()
+
+
+def test_a_section_strip_carries_only_its_own_span(qapp) -> None:
+    from deepreefmap_gui.survey.video_groups import timeline_spans
+
+    _listing, clip, sections, _host = _clip_and_sections(
+        qapp, windows=((10.0, 40.0), (60.0, 90.0))
+    )
+    expected = timeline_spans(clip._entry)
+
+    assert len(clip.strip.spans) == 2
+    for section, span in zip(sections, expected, strict=True):
+        assert len(section.strip.spans) == 1
+        assert section.strip.spans[0].begin == pytest.approx(span.begin)
+        assert section.strip.spans[0].end == pytest.approx(span.end)
+
+
+def test_a_clip_of_unknown_length_gives_its_sections_no_strip(qapp) -> None:
+    """The row is the section, so neither "nothing cut from this" nor "length
+    unknown" is a statement it can make about itself."""
+    _listing, _clip, sections, _host = _clip_and_sections(qapp, duration_s=0.0)
+
+    assert sections
+    assert not sections[0].strip.isVisibleTo(sections[0])
+
+
+def test_the_clip_pane_s_compact_rows_build_no_strip(qapp) -> None:
+    """No clip strip beside them to line up with, and the pane is a third of a page."""
+    row = SectionRow(compact=True)
+
+    assert row.strip is None
+
+
+def test_a_section_strip_never_steals_the_row_s_own_click(qapp) -> None:
+    """The row's tooltip lazily decodes a three-frame preview and a click selects
+    it; a live strip on top would take both."""
+    from PySide6.QtCore import Qt
+
+    row = SectionRow()
+
+    assert row.strip is not None
+    assert row.strip.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)

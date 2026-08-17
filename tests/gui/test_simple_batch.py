@@ -14,7 +14,6 @@ from deepreefmap_gui.profiling import batch_estimate
 from deepreefmap_gui.simple.batch import (
     _COL_ACTION,
     _COL_LENGTH,
-    _COL_NAME,
     _COL_RECORDED,
     _COL_SECTION,
     _COL_SETTINGS,
@@ -75,7 +74,7 @@ def test_every_column_of_the_cart_is_named(batch_window):
         table.horizontalHeaderItem(column).text()
         for column in range(table.columnCount())
     ]
-    assert named == ["", "Name", "Clip", "Recorded", "Length", "Transect + section",
+    assert named == ["", "Clip", "Recorded", "Length", "Transect + section",
                      "Settings", "Status", ""]
     # Centred: a heading names a column rather than starting it.
     assert table.horizontalHeader().defaultAlignment() & Qt.AlignmentFlag.AlignHCenter
@@ -2155,39 +2154,62 @@ def test_the_prediction_is_recomputed_only_when_the_queue_changes(
 # --- What a section is called ---
 
 
+def rename(window, row_index, monkeypatch, typed, accepted=True):
+    """Rename a section the way its row's menu does."""
+    from PySide6.QtWidgets import QInputDialog
+
+    monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **k: (typed, accepted)))
+    window._on_survey_rename(row_index)
+
+
+def row_name(window, row_index):
+    """What the row says it is called, which is its tooltip's first line now that
+    the name has no column of its own."""
+    table = window._survey_pass_table
+    return table.item(window._table_row_of(row_index), _COL_VIDEO).toolTip().splitlines()[0]
+
+
 def test_a_staged_section_is_named_without_anyone_typing(batch_window, tmp_path, monkeypatch):
     """A folder called Evan_1__p01__a3f9c2d1 is a fine directory and a poor name."""
     add_video(batch_window, tmp_path, monkeypatch)
     assign_transect(batch_window, 0)
 
-    table = batch_window._survey_pass_table
-    shown = table.item(batch_window._table_row_of(0), _COL_NAME).text()
+    shown = batch_window._row_label(batch_window._survey_rows[0])
 
     assert shown
     assert "__p" not in shown
     assert "pass" in shown.lower()
+    # And it reaches the row, which no longer spends a column on it.
+    assert shown in row_name(batch_window, 0)
 
 
 def test_renaming_a_section_persists(batch_window, tmp_path, monkeypatch):
     add_video(batch_window, tmp_path, monkeypatch)
     row = batch_window._survey_rows[0]
-    table = batch_window._survey_pass_table
 
-    table.item(batch_window._table_row_of(0), _COL_NAME).setText("North wall drift")
+    rename(batch_window, 0, monkeypatch, "North wall drift")
 
     stored = batch_window._survey_store().get_pass(row.pass_id)
     assert stored.label == "North wall drift"
-    assert table.item(batch_window._table_row_of(0), _COL_NAME).text() == "North wall drift"
+    assert "North wall drift" in row_name(batch_window, 0)
+
+
+def test_a_cancelled_rename_changes_nothing(batch_window, tmp_path, monkeypatch):
+    add_video(batch_window, tmp_path, monkeypatch)
+    row = batch_window._survey_rows[0]
+
+    rename(batch_window, 0, monkeypatch, "Never applied", accepted=False)
+
+    assert batch_window._survey_store().get_pass(row.pass_id).label == ""
 
 
 def test_two_sections_cannot_share_a_name(batch_window, tmp_path, monkeypatch):
     """Two rows called the same thing cannot be told apart when one of them fails."""
     add_video(batch_window, tmp_path, monkeypatch, name="GX010001.MP4")
     add_video(batch_window, tmp_path, monkeypatch, name="GX010002.MP4")
-    table = batch_window._survey_pass_table
 
-    table.item(batch_window._table_row_of(0), _COL_NAME).setText("Same name")
-    table.item(batch_window._table_row_of(1), _COL_NAME).setText("Same name")
+    rename(batch_window, 0, monkeypatch, "Same name")
+    rename(batch_window, 1, monkeypatch, "Same name")
 
     labels = [
         batch_window._survey_store().get_pass(r.pass_id).label
@@ -2201,12 +2223,84 @@ def test_clearing_the_name_restores_the_generated_one(batch_window, tmp_path, mo
     """An emptied field asks for the default back, not for a nameless section."""
     add_video(batch_window, tmp_path, monkeypatch)
     assign_transect(batch_window, 0)
-    table = batch_window._survey_pass_table
-    generated = table.item(batch_window._table_row_of(0), _COL_NAME).text()
+    generated = batch_window._row_label(batch_window._survey_rows[0])
 
-    table.item(batch_window._table_row_of(0), _COL_NAME).setText("Something else")
-    table.item(batch_window._table_row_of(0), _COL_NAME).setText("")
+    rename(batch_window, 0, monkeypatch, "Something else")
+    rename(batch_window, 0, monkeypatch, "")
 
     row = batch_window._survey_rows[0]
     assert batch_window._survey_store().get_pass(row.pass_id).label == ""
-    assert table.item(batch_window._table_row_of(0), _COL_NAME).text() == generated
+    assert generated in row_name(batch_window, 0)
+
+
+# --- What the cart's columns spend their width on ---------------------------
+
+def test_the_clip_and_the_section_take_the_width(batch_window, tmp_path, monkeypatch, qapp):
+    """Scenario: a wide window, a long clip name and a long transect name.
+
+    Expected behaviour: both read in full. The name column took the table's only
+    stretch, which left the two columns identifying a row pinned at a constant
+    and elided, and made the name the one column nobody could drag.
+    """
+    add_video(batch_window, tmp_path, monkeypatch)
+    assign_transect(batch_window, 0)
+    table = batch_window._survey_pass_table
+    table.resize(1400, 400)
+    table.show()
+    qapp.processEvents()
+    qapp.processEvents()
+
+    assert table.columnWidth(_COL_SECTION) >= 200
+    assert table.columnWidth(_COL_VIDEO) >= 120
+    assert table.columnWidth(_COL_SECTION) > table.columnWidth(_COL_VIDEO)
+
+
+def test_a_narrow_window_drops_recorded_before_it_squeezes_a_name(
+    batch_window, tmp_path, monkeypatch, qapp
+):
+    """The clip name and the section window already place the footage in time."""
+    add_video(batch_window, tmp_path, monkeypatch)
+    table = batch_window._survey_pass_table
+    table.resize(640, 400)
+    table.show()
+    qapp.processEvents()
+    qapp.processEvents()
+
+    assert table.isColumnHidden(_COL_RECORDED)
+    assert not table.isColumnHidden(_COL_SECTION)
+    assert table.columnWidth(_COL_SECTION) >= 200
+
+
+def test_the_facts_a_dropped_column_carried_stay_on_the_row(
+    batch_window, tmp_path, monkeypatch
+):
+    """Recorded and Length can both be hidden, so neither may be the only place
+    its fact is reachable."""
+    add_video(batch_window, tmp_path, monkeypatch)
+    table = batch_window._survey_pass_table
+
+    tooltip = table.item(batch_window._table_row_of(0), _COL_VIDEO).toolTip()
+
+    assert "Recorded" in tooltip
+    assert "Section runs" in tooltip
+
+
+def test_a_repainted_settings_button_does_not_read_as_a_dragged_column(
+    batch_window, tmp_path, monkeypatch, qapp
+):
+    """It measures itself on every repaint, and a width written straight to the
+    header would pin the column and stop every other one refitting."""
+    add_video(batch_window, tmp_path, monkeypatch)
+    table = batch_window._survey_pass_table
+    table.resize(1400, 400)
+    table.show()
+    qapp.processEvents()
+    qapp.processEvents()
+    before = table.columnWidth(_COL_SECTION)
+
+    batch_window._rebuild_survey_table()
+    qapp.processEvents()
+    qapp.processEvents()
+
+    assert table.column_sizer._pinned == {}
+    assert table.columnWidth(_COL_SECTION) == before

@@ -178,6 +178,7 @@ class VideoLibraryMixin(MixinBase):
         self._video_header.sort_changed.connect(self._on_video_sort_changed)
         column_layout.addWidget(self._video_header)
         self._video_list = VideoLibraryList()
+        self._video_list.follow_header(self._video_header)
         self._video_list.activated.connect(self._on_video_activated)
         self._video_list.play_requested.connect(self._on_video_play)
         self._video_list.reveal_requested.connect(self._on_video_reveal)

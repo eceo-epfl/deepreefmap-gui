@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
@@ -887,6 +887,17 @@ class ColumnSizer(QObject):
         menu = QMenu(self._view)
         menu.addAction("Reset column widths", self.reset)
         menu.exec(self._header().mapToGlobal(pos))
+
+    def widen_fixed(self, column: int, width: int) -> None:
+        """Raise a fixed column's width to ``width``, for a cell that measured itself.
+
+        Only ever grows, so a table of rows in different states does not shuffle
+        as they repaint, and a column the user has dragged is left alone.
+        """
+        if column in self._pinned or self._spec.fixed.get(column, 0) >= width:
+            return
+        self._spec = replace(self._spec, fixed={**self._spec.fixed, column: width})
+        self.apply()
 
     def reset(self) -> None:
         """Forget every dragged width and go back to fitting the viewport."""

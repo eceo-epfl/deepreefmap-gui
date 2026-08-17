@@ -20,7 +20,6 @@ from PySide6.QtGui import QColor, QFont, QGuiApplication
 from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QLineEdit,
     QMenu,
@@ -53,11 +52,13 @@ from deepreefmap_gui.core.theme import (
 )
 from deepreefmap_gui.core.widgets import (
     PASS_PERCENT_ROLE,
+    ColumnSpec,
     EmptyState,
     NotReadyStrip,
     StatusPillDelegate,
     configure_table,
     confirm,
+    install_column_sizer,
     muted_label,
     section_card,
 )
@@ -104,8 +105,6 @@ logger = logging.getLogger(__name__)
 
 (
     _COL_HANDLE,
-    # What this section is called. Takes the stretch the clip name had.
-    _COL_NAME,
     _COL_VIDEO,
     _COL_RECORDED,
     _COL_LENGTH,
@@ -113,7 +112,17 @@ logger = logging.getLogger(__name__)
     _COL_SETTINGS,
     _COL_STATUS,
     _COL_ACTION,
-) = range(9)
+) = range(8)
+
+# The clip and the section are what identify a row, so they take the slack. There
+# is no Name column: an unnamed pass is named after its transect and its number,
+# which the section cell already prints, and renaming is on the row's menu.
+# Recorded drops first, then Length: the clip name and the section window already
+# place the footage in time, and both facts stay in the row tooltip.
+_PASS_COLUMNS_FIXED = {_COL_HANDLE: 22, _COL_STATUS: 150, _COL_ACTION: 34}
+_PASS_COLUMNS_OPTIONAL = ((_COL_LENGTH, 80), (_COL_RECORDED, 80))
+_PASS_COLUMNS_WEIGHTS = {_COL_SECTION: 3, _COL_VIDEO: 2}
+_PASS_COLUMNS_MINIMUMS = {_COL_SECTION: 200, _COL_VIDEO: 120}
 
 # What will happen to a pass when processing next starts. Every row is in
 # exactly one of these, and the table is grouped in this order. NEXT holds the
@@ -586,7 +595,6 @@ class SimpleBatchMixin(MixinBase):
         # built wider than its labels ends with columns Qt names "9" and "10".
         headings = [
             "",
-            "Name",
             "Clip",
             "Recorded",
             "Length",
@@ -622,12 +630,9 @@ class SimpleBatchMixin(MixinBase):
         # the full text so it can be pasted into a bug report.
         self._survey_pass_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._survey_pass_table.customContextMenuRequested.connect(self._on_survey_pass_menu)
-        # The Name cell is the only editable one; every other cell clears
-        # ItemIsEditable, so opening the triggers here reaches that column alone.
-        self._survey_pass_table.setEditTriggers(
-            QTableWidget.EditTrigger.DoubleClicked | QTableWidget.EditTrigger.EditKeyPressed
-        )
-        self._survey_pass_table.itemChanged.connect(self._on_survey_name_edited)
+        # Nothing here is edited in place: renaming is on the row's menu, and a
+        # double-click opens the run the row produced.
+        self._survey_pass_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         h_header = self._survey_pass_table.horizontalHeader()
         # This table cannot sort by a header click: half its columns are cell
         # widgets Qt's sort will not move, the groups sit under spanned heading
@@ -635,35 +640,23 @@ class SimpleBatchMixin(MixinBase):
         # position. The order it does have is the one the rows are dragged into.
         h_header.setSectionsClickable(False)
         h_header.setHighlightSections(False)
-        h_header.setSectionResizeMode(_COL_NAME, QHeaderView.ResizeMode.Stretch)
-        # The name stretches; the rest are sized to what they hold, so a clip, a
-        # transect name, a time and a status pill all read without clipping.
-        for column, width in (
-            (_COL_HANDLE, 22),
-            # Enough for GX010001.MP4 and a chapter count after it.
-            (_COL_VIDEO, 170),
-            (_COL_RECORDED, 80),
-            (_COL_LENGTH, 80),
-            # Transect, direction and window on one button: they are one thing,
-            # they go to one place, and split across three cells the window was
-            # the one that ended up too narrow to read.
-            (_COL_SECTION, 280),
-            # Measured from the labels it takes, not guessed: a fixed 130 px was
-            # wide enough for "Default settings" in the font it was written
-            # against and clipped it to "efault setting" in a larger one.
-            (
-                _COL_SETTINGS,
-                _button_column_width(
+        # Measured from the labels it takes, not guessed: a fixed width wide
+        # enough for "Default settings" in one font clips it in a larger one.
+        self._pass_columns = ColumnSpec(
+            fixed={
+                **_PASS_COLUMNS_FIXED,
+                _COL_SETTINGS: _button_column_width(
                     self._survey_pass_table,
                     (override_summary({}), override_summary({"a": 1, "b": 2})),
                 ),
-            ),
-            # Wide enough for "Running 100%": the running row carries its own
-            # percentage, which is where a pass's progress is read now.
-            (_COL_STATUS, 150),
-            (_COL_ACTION, 34),
-        ):
-            self._survey_pass_table.setColumnWidth(column, width)
+            },
+            weights=_PASS_COLUMNS_WEIGHTS,
+            minimums=_PASS_COLUMNS_MINIMUMS,
+            optional=_PASS_COLUMNS_OPTIONAL,
+        )
+        self._pass_column_sizer = install_column_sizer(
+            self._survey_pass_table, self._pass_columns
+        )
         # Footage is imported under Videos and staged from there, so this table
         # takes no drops from outside: a clip dropped here would arrive with no
         # window cut from it and no transect, which is the state Videos exists
@@ -1234,7 +1227,6 @@ class SimpleBatchMixin(MixinBase):
         """
         # The rows the breakdown could be anchored to are about to be replaced.
         self._on_queue_row_hover(-1, None)
-        # Filling cells emits itemChanged, which is also how a rename arrives.
         self._survey_table_rebuilding = True
         try:
             self._rebuild_survey_table_rows()
@@ -1329,17 +1321,18 @@ class SimpleBatchMixin(MixinBase):
         handle.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
         table.setItem(index, _COL_HANDLE, handle)
 
-        # The one editable cell: everything else is a fact about the footage or
-        # the settings.
-        name_item = QTableWidgetItem(self._row_label(row))
-        name_item.setToolTip(
-            "What this section is called. Double-click to rename it; the run's "
-            "folder keeps its own name."
-        )
-        table.setItem(index, _COL_NAME, name_item)
-
         video_item = QTableWidgetItem(_clip_name(row.videos))
-        video_item.setToolTip(_clip_tooltip(row.videos))
+        # Carries the name, and the two facts whose own columns drop on a narrow
+        # window, so nothing is only reachable through a column that may be gone.
+        video_item.setToolTip(
+            "\n".join((
+                f"{self._row_label(row)}. Right-click the row to rename it.",
+                _clip_tooltip(row.videos),
+                f"Recorded {_clip_time(row.video.mtime)}",
+                f"Section runs {_span_length(row.end_s - row.begin_s)} of "
+                f"{_span_length(row.total_duration_s())}",
+            ))
+        )
         video_item.setFlags(video_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         table.setItem(index, _COL_VIDEO, video_item)
 
@@ -1660,15 +1653,16 @@ class SimpleBatchMixin(MixinBase):
             number=number,
         )
 
-    def _on_survey_name_edited(self, item) -> None:
-        """Commit a renamed section, refusing a name another one already has."""
+    def _on_survey_rename(self, index: int) -> None:
+        """Rename a section from the row's menu.
+
+        Empty means the derived name back, and a name another section already has
+        is refused with the one it got instead.
+        """
+        from PySide6.QtWidgets import QInputDialog
+
         from deepreefmap_gui.survey.labels import taken_labels, unique_label
 
-        if item.column() != _COL_NAME or self._survey_table_rebuilding:
-            return
-        index = self._model_index(item.row())
-        if index is None:
-            return
         row = self._survey_rows[index]
         store = self._try_survey_store()
         if store is None or row.pass_id is None:
@@ -1676,7 +1670,15 @@ class SimpleBatchMixin(MixinBase):
         pass_ = store.get_pass(row.pass_id)
         if pass_ is None:
             return
-        wanted = item.text().strip()
+        typed, accepted = QInputDialog.getText(
+            self,
+            "Rename section",
+            "What this section is called. Clear it for the derived name.",
+            text=self._row_label(row),
+        )
+        if not accepted:
+            return
+        wanted = typed.strip()
         if not wanted:
             # An emptied field is a request for the default back, not a request
             # for a nameless section.
@@ -1809,16 +1811,14 @@ class SimpleBatchMixin(MixinBase):
     def _widen_settings_column(self, button: QPushButton) -> None:
         """Keep the column at least as wide as the button now needs.
 
-        A label centred in a button that is too narrow is clipped at both ends,
-        which is how "Default settings" came out as "efault setting". The width
-        cannot be a constant: it follows the machine's UI font, and the amber
-        variant brings its own padding with it. It only ever grows, so a table
-        of rows in different states does not shuffle its columns as they repaint.
+        A label centred in a button that is too narrow is clipped at both ends.
+        The width cannot be a constant: it follows the machine's UI font, and the
+        amber variant brings its own padding with it. Routed through the sizer
+        rather than set directly, or a repaint would read as a dragged column.
         """
-        table = self._survey_pass_table
-        needed = button.sizeHint().width() + SPACE_SM
-        if table.columnWidth(_COL_SETTINGS) < needed:
-            table.setColumnWidth(_COL_SETTINGS, needed)
+        self._pass_column_sizer.widen_fixed(
+            _COL_SETTINGS, button.sizeHint().width() + SPACE_SM
+        )
 
     def _rows_over_memory(self) -> int:
         """How many queued passes this machine cannot give what they ask for."""
@@ -2869,6 +2869,8 @@ class SimpleBatchMixin(MixinBase):
                 f"Process {passes_phrase(len(done))} again",
                 partial(self._process_rows_again, done),
             )
+        # One row at a time: a name identifies one section.
+        menu.addAction("Rename section…", partial(self._on_survey_rename, index))
         error = self._survey_pass_error(self._survey_rows[index])
         if error:
             menu.addAction("Copy error details", partial(self._copy_pass_error, error))
