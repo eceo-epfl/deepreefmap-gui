@@ -44,6 +44,7 @@ from deepreefmap_gui.profiling.eta import format_duration
 from deepreefmap_gui.profiling.system_probe import format_bytes
 from deepreefmap_gui.runs.cover_panel import CoverPanel, load_cover
 from deepreefmap_gui.runs.run_cards import (
+    format_timestamp,
     format_trim_range,
     geometry_label,
     points_label,
@@ -241,6 +242,8 @@ def run_fact_rows(entry: RunEntry, related: int = 0) -> list[tuple[str, str]]:
         ("Session", entry.session_name or "No session recorded"),
         ("Video", entry.video_name or _MISSING),
         ("Recorded", recorded_text(entry) or _MISSING),
+        # When the run was made, as against when its footage was shot.
+        ("Created", format_timestamp(manifest.get("run_timestamp")) or _MISSING),
         ("Range", format_trim_range(manifest) or "whole video"),
         ("Frames", _frames_text(manifest)),
         ("Points", points_label(entry.points) if entry.points else _MISSING),

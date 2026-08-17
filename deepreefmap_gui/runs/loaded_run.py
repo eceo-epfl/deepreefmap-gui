@@ -9,6 +9,7 @@ the scene file in the background for next time.
 from __future__ import annotations
 
 import logging
+import shutil
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -266,6 +267,45 @@ def write_scene_file(
     )
     prune_other_scene_files(run_dir, keep=out)
     return out
+
+
+# A scene is tens of megabytes against a run directory of gigabytes, so this
+# only refuses on a drive already out of room.
+_SCENE_MIN_FREE_BYTES = 1024**3
+
+
+def write_scene_file_from_run_data(
+    run_dir: Path, data: dict, manifest: dict, *, progress_cb: ProgressCB | None = None
+) -> Path | None:
+    """Write the scene file straight from a finished run's ``set_data`` payload.
+
+    ``manifest`` is the merged one, not the file on disk: the scene embeds it and
+    is read back in place of it, so it has to carry the run name and survey block.
+
+    Geometry-only runs carry no reference cloud and get no scene file.
+    """
+    cloud = data.get("reference_cloud")
+    if cloud is None or len(cloud) == 0:
+        return None
+    # Before the index is built, so a full drive costs nothing.
+    try:
+        free = shutil.disk_usage(run_dir).free
+    except OSError:
+        free = None
+    if free is not None and free < _SCENE_MIN_FREE_BYTES:
+        logger.warning(
+            "Skipping scene file for %s: %.1f GB free", run_dir, free / 1024**3
+        )
+        return None
+    return write_scene_file(
+        run_dir,
+        manifest=manifest,
+        classes_config=data["classes_config"],
+        mapping_result=data["mapping_result"],
+        frame_batch=data["frame_batch"],
+        reference_cloud=cloud,
+        progress_cb=progress_cb,
+    )
 
 
 def generate_scene_file_async(

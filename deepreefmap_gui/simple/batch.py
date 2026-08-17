@@ -2579,6 +2579,7 @@ class SimpleBatchMixin(MixinBase):
                         viewer=self._viewer,
                         cancel_event=cancel_event,
                         pause_event=pause_event,
+                        scene_writer=self._write_scene_file,
                         manifest_extra={
                             "survey": survey_manifest_block(
                                 job.run, job.pass_, job.transect, batch,
@@ -2614,11 +2615,27 @@ class SimpleBatchMixin(MixinBase):
         finally:
             self._sig_survey_done.emit(ok, len(jobs), last_error[:300])
 
+    def _write_scene_file(self, output_dir: Path, data: dict, manifest: dict) -> None:
+        """Cache the finished pass for fast reopen, reporting the `scene_save` stage.
+
+        Called by ``instrumented_reconstruction`` on the batch worker thread once
+        the pass has returned, so the stage is timed and its progress lands on the
+        bars the rest of the pass used.
+        """
+        from deepreefmap_gui.runs.loaded_run import write_scene_file_from_run_data
+
+        write_scene_file_from_run_data(
+            output_dir, data, manifest, progress_cb=self._sig_load_progress.emit
+        )
+
     def _on_survey_progress(self, index: int, total: int, name: str) -> None:
         self._status_label.setText(f"Processing pass {index} of {total}: {name}")
         # Fresh estimator per pass so the ETA does not blend across passes. The
         # batch card spans them instead, from the median of past runs.
         self._begin_progress(self._recon_model)
+        # `_on_load_progress` drops every report while this is set, which would
+        # stall each pass at the last percent through its scene write.
+        self._load_cancelled = False
         for sink in self._progress_sinks():
             sink.set_batch_context(index, total, name)
         self._survey_running_index = index - 1
@@ -2746,7 +2763,8 @@ class SimpleBatchMixin(MixinBase):
             return
         item.setData(PASS_PERCENT_ROLE, percent)
         item.setText(f"Running {percent}%")
-        item.setToolTip("Hover for the stage-by-stage breakdown of this pass.")
+        # No tooltip: hovering this cell raises the stage breakdown itself, and a
+        # Qt tooltip lands on top of it.
 
     def _refresh_survey_pass_statuses(self) -> None:
         store = self._try_survey_store()

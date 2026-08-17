@@ -148,6 +148,43 @@ def test_fingerprint_notices_every_kind_of_source_change(run_dir):
     assert not fingerprint_matches(base, compute_source_fingerprint(run_dir))
 
 
+def test_fingerprint_survives_the_timings_being_folded_in(run_dir):
+    """Scenario: the scene is written, then `apply_manifest_timings` rewrites the
+    manifest to record how long writing it took.
+
+    Expected behaviour: the scene is not stale. Those keys say nothing about the
+    data it holds.
+    """
+    manifest = json.loads((run_dir / "run_manifest.json").read_text())
+    base = compute_source_fingerprint(run_dir)
+
+    timed = {
+        **manifest,
+        "stage_durations": {"scene_save": 0.5},
+        "stage_peaks": {"scene_save": 1024},
+        "run_duration_s": 186.2,
+        "system_profile": {"gpu": "none"},
+    }
+    (run_dir / "run_manifest.json").write_text(json.dumps(timed))
+    assert fingerprint_matches(base, compute_source_fingerprint(run_dir))
+
+    # A fact about the run itself still invalidates.
+    (run_dir / "run_manifest.json").write_text(json.dumps({**timed, "mode": "geometry_only"}))
+    assert not fingerprint_matches(base, compute_source_fingerprint(run_dir))
+
+
+def test_a_scene_stored_before_the_content_hash_falls_back_to_the_byte_hash(run_dir):
+    """A scene storing only `manifest_sha256` is matched on it: nothing rewrote
+    that manifest after the write, so the bytes are still the right question."""
+    current = compute_source_fingerprint(run_dir)
+    legacy = {k: v for k, v in current.items() if k != "manifest_data_sha256"}
+
+    assert fingerprint_matches(legacy, current)
+
+    (run_dir / "run_manifest.json").write_text(json.dumps({"name": "renamed"}))
+    assert not fingerprint_matches(legacy, compute_source_fingerprint(run_dir))
+
+
 def test_fingerprint_ignores_mapping_mtime(run_dir):
     """mtime is recorded but deliberately not compared: a touch is not a change."""
     base = compute_source_fingerprint(run_dir)

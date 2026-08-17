@@ -31,8 +31,9 @@ _STAGE_BEGIN_MARK: dict[str, str] = {stage: begin for begin, _end, stage in STAG
 
 # scene_save is the only stage the orchestrator does not drive: the scene file is
 # written by the caller's `scene_writer` after run_reconstruction returns, because
-# it needs the manifest the run just wrote. A run given no writer (batch, headless)
-# measures the other six and leaves this one absent.
+# it needs the manifest the run just wrote. A run given no writer (headless, or a
+# geometry-only pass with no cloud to cache) measures the other six and leaves
+# this one absent.
 WRITER_DRIVEN_STAGES: frozenset[str] = frozenset({"scene_save"})
 
 

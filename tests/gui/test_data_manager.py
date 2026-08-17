@@ -695,6 +695,23 @@ def test_run_record_names_the_session_in_tooltip_and_detail(out_root, make_windo
     assert dict(run_fact_rows(loose))["Session"] == "No session recorded"
 
 
+def test_the_detail_pane_says_when_the_run_was_made(out_root, make_window):
+    """The run table has a Created column, and this pane is the only other place
+    the fact is reachable."""
+    from deepreefmap_gui.runs.run_detail import run_fact_rows
+
+    write_run(out_root, "stamped")
+    window = make_window()
+    entry = next(e for e in window._data_entries if e.dir_name == "stamped")
+
+    assert dict(run_fact_rows(entry))["Created"].startswith("2026-07-01")
+
+    write_run(out_root, "unstamped", run_timestamp=None)
+    window._refresh_data_manager()
+    bare = next(e for e in window._data_entries if e.dir_name == "unstamped")
+    assert dict(run_fact_rows(bare))["Created"] == "—"
+
+
 def test_a_rerun_names_its_attempt_in_the_tooltip(out_root, make_window):
     from deepreefmap_gui.runs.run_cards import format_run_metadata
 

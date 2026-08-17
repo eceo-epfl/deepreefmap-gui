@@ -160,13 +160,36 @@ def _compressor():
 # Source fingerprint: cheap staleness detection
 # ---------------------------------------------------------------------------
 
+# `apply_manifest_timings` rewrites these after the scene is written, and none of
+# them describe the data the scene holds, so none may invalidate it.
+_VOLATILE_MANIFEST_KEYS = frozenset(
+    {"stage_durations", "stage_peaks", "run_duration_s", "system_profile"}
+)
+
+
+def _manifest_data_hash(manifest_path: Path) -> str:
+    """Hash what the manifest says about the run, ignoring how long it took."""
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    if not isinstance(manifest, dict):
+        return ""
+    stable = {k: v for k, v in manifest.items() if k not in _VOLATILE_MANIFEST_KEYS}
+    return hashlib.sha256(
+        json.dumps(stable, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+
+
 def compute_source_fingerprint(run_dir: Path) -> dict[str, Any]:
     manifest_path = run_dir / "run_manifest.json"
     mapping_path = run_dir / "mapping_outputs.npz"
 
     manifest_hash = ""
+    manifest_data_hash = ""
     if manifest_path.exists():
         manifest_hash = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+        manifest_data_hash = _manifest_data_hash(manifest_path)
 
     mapping_size = 0
     mapping_mtime = 0.0
@@ -187,6 +210,7 @@ def compute_source_fingerprint(run_dir: Path) -> dict[str, Any]:
 
     return {
         "manifest_sha256": manifest_hash,
+        "manifest_data_sha256": manifest_data_hash,
         "mapping_npz_size": mapping_size,
         "mapping_npz_mtime": mapping_mtime,
         "frame_count": frame_count,
@@ -195,7 +219,12 @@ def compute_source_fingerprint(run_dir: Path) -> dict[str, Any]:
 
 
 def fingerprint_matches(stored: dict[str, Any], current: dict[str, Any]) -> bool:
-    for key in ("manifest_sha256", "mapping_npz_size", "frame_count", "frames_total_bytes"):
+    # A scene storing only `manifest_sha256` is matched on it: nothing rewrote
+    # its manifest after the write, so those bytes are still the right question.
+    manifest_key = (
+        "manifest_data_sha256" if "manifest_data_sha256" in stored else "manifest_sha256"
+    )
+    for key in (manifest_key, "mapping_npz_size", "frame_count", "frames_total_bytes"):
         if stored.get(key) != current.get(key):
             return False
     return True

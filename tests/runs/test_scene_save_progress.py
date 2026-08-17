@@ -21,7 +21,11 @@ from _factories import make_classes_config, make_scene
 from deepreefmap.pipeline.artifacts import SemanticPointCloud
 
 from deepreefmap_gui.io.scene_file import find_scene_file, load_scene_file
-from deepreefmap_gui.runs.loaded_run import scene_file_pending, write_scene_file
+from deepreefmap_gui.runs.loaded_run import (
+    scene_file_pending,
+    write_scene_file,
+    write_scene_file_from_run_data,
+)
 from deepreefmap_gui.runs.progress import (
     _LOAD_PHASES,
     _LOAD_STAGE_TO_PHASE,
@@ -90,6 +94,65 @@ def test_a_finished_run_writes_a_scene_file_the_loader_accepts(run_data):
     assert scene.manifest["name"] == "reef north"
     assert scene.manifest["survey"]["pass"]["direction"] == "forward"
     assert len(scene.frame_indices) == N_FRAMES
+
+
+def test_a_scene_survives_the_timings_being_folded_in_after_it(run_data):
+    """Scenario: `instrumented_reconstruction` writes the scene, then rewrites
+    `run_manifest.json` to record how long that write took, as it does on every
+    pass of a queue.
+
+    Expected behaviour: the run still opens by the fast path.
+    """
+    run_dir, data = run_data
+    out = write_scene_file_from_run_data(run_dir, data, MANIFEST)
+    assert out is not None
+
+    manifest_path = run_dir / "run_manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest_path.write_text(
+        json.dumps(
+            {
+                **manifest,
+                "stage_durations": {"scene_save": 0.5},
+                "stage_peaks": {"scene_save": 4096},
+                "run_duration_s": 186.2,
+                "system_profile": {"gpu": "none"},
+            }
+        )
+    )
+
+    assert load_scene_file(out, run_dir=run_dir) is not None
+
+
+def test_a_run_with_no_cloud_writes_nothing(run_data):
+    """The payload-level guard, as against `scene_file_pending`'s: a geometry-only
+    pass reaches the writer through the queue and must leave no file."""
+    run_dir, data = run_data
+
+    assert write_scene_file_from_run_data(run_dir, {**data, "reference_cloud": None}, MANIFEST) is None
+    assert (
+        write_scene_file_from_run_data(
+            run_dir, {**data, "reference_cloud": SemanticPointCloud.empty()}, MANIFEST
+        )
+        is None
+    )
+    assert find_scene_file(run_dir) is None
+
+
+def test_a_full_drive_skips_the_scene_rather_than_failing_mid_write(run_data, monkeypatch):
+    """Checked before the index is built, so a full drive costs nothing and
+    leaves no half-written file behind."""
+    import shutil as shutil_mod
+
+    run_dir, data = run_data
+    monkeypatch.setattr(
+        shutil_mod,
+        "disk_usage",
+        lambda _p: type("U", (), {"free": 32 * 1024**2, "total": 0, "used": 0})(),
+    )
+
+    assert write_scene_file_from_run_data(run_dir, data, MANIFEST) is None
+    assert find_scene_file(run_dir) is None
 
 
 def test_a_geometry_only_run_is_never_owed_a_scene_file(run_data):

@@ -283,6 +283,59 @@ def test_each_pass_leaves_a_log_beside_its_outputs(
     assert "a line from inside the pass" in logs[0].read_text()
 
 
+def test_a_finished_pass_leaves_its_own_fast_reopen_cache(
+    batch_window, tmp_path, out_root, monkeypatch, qapp
+):
+    """Scenario: a pass runs to the end in the queue.
+
+    Expected behaviour: its scene file is already on disk, so the run's first
+    open takes the fast path instead of rebuilding its cloud. The write is timed,
+    so the manifest records the stage as well.
+    """
+    import numpy as np
+    from _factories import make_classes_config, make_scene
+    from deepreefmap.pipeline.artifacts import SemanticPointCloud
+
+    from deepreefmap_gui.io.scene_file import find_scene_file, load_scene_file
+
+    class_id = 1
+    n_frames = 3
+
+    def fake_run(**kwargs):
+        (kwargs["output_dir"] / "run_manifest.json").write_text(json.dumps({"mode": "semantic"}))
+        scene = make_scene(frame_indices=tuple(range(n_frames)), class_ids=(class_id,))
+        rng = np.random.default_rng(1)
+        kwargs["viewer"].set_data(
+            frame_batch=scene.frame_batch,
+            mapping_result=scene.mapping,
+            classes_config=make_classes_config((class_id,)),
+            reference_cloud=SemanticPointCloud(
+                xyz=rng.random((20, 3)).astype(np.float32),
+                rgb=rng.integers(0, 255, (20, 3), dtype=np.uint8),
+                labels=np.full(20, class_id, dtype=np.int32),
+                frame_indices=rng.integers(0, n_frames, 20).astype(np.int32),
+            ),
+        )
+        # The mark scene_save is measured from, as the orchestrator leaves it.
+        kwargs["viewer"].mark_outputs_ready(kwargs["output_dir"], [])
+
+    monkeypatch.setattr("deepreefmap.pipeline.orchestrator.run_reconstruction", fake_run)
+    add_video(batch_window, tmp_path, monkeypatch)
+    assign_transect(batch_window, 0)
+    batch_window._on_survey_start()
+    await_batch(batch_window, qapp)
+
+    run_dir = next(d for d in out_root.iterdir() if d.is_dir())
+    scene = find_scene_file(run_dir)
+    assert scene is not None, "the queue finished a pass without caching it"
+    # Usable, not merely present: the fingerprint has to survive the timings being
+    # folded into the manifest after the write.
+    assert load_scene_file(scene, run_dir=run_dir) is not None
+
+    manifest = json.loads((run_dir / "run_manifest.json").read_text())
+    assert "scene_save" in manifest["stage_durations"]
+
+
 def test_run_batch_records_success_and_links_manifest(
     batch_window, tmp_path, out_root, monkeypatch, qapp
 ):
@@ -1769,6 +1822,9 @@ def test_running_row_carries_its_own_progress(batch_window, tmp_path, monkeypatc
     item = batch_window._survey_pass_table.item(batch_window._table_row_of(0), _COL_STATUS)
     assert item.text() == "Running 42%"
     assert item.data(PASS_PERCENT_ROLE) == 42
+    # Hovering raises the stage breakdown itself, so a tooltip saying to hover
+    # lands on top of what it describes.
+    assert item.toolTip() == ""
 
     # A pass that has stopped running loses the fill rather than freezing at it.
     batch_window._survey_running_index = None
