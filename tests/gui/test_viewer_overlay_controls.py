@@ -106,6 +106,55 @@ def test_clearing_the_run_takes_the_controls_with_it(viewing_window):
     assert not window._reset_view_button.isHidden()
 
 
+def test_collapsing_folds_the_display_controls_but_not_the_camera_tools(viewing_window):
+    """The overlay sits on the cloud, so it has to be able to get out of the way.
+
+    Pick and Reset are the exception: they steer the camera the overlay is
+    covering, and they are one row.
+    """
+    window = viewing_window
+    assert not window._overlay_controls_container.isHidden()
+
+    window._toggle_overlay_controls_collapsed()
+
+    assert window._overlay_controls_container.isHidden()
+    assert not window._ov_pt_slider.isVisibleTo(window._pick_mode_overlay)
+    assert window._overlay_hint_row.isHidden()
+    assert not window._pick_mode_button.isHidden()
+    assert not window._reset_view_button.isHidden()
+
+    window._toggle_overlay_controls_collapsed()
+    assert not window._overlay_controls_container.isHidden()
+
+
+def test_the_collapse_state_survives_a_restart(viewing_window):
+    from PySide6.QtCore import QSettings
+
+    window = viewing_window
+    settings = QSettings("ECEO", "deepreefmap")
+    try:
+        was_collapsed = window._overlay_controls_collapsed
+        window._toggle_overlay_controls_collapsed()
+        assert settings.value("viewer_controls_collapsed", type=bool) is not was_collapsed
+    finally:
+        settings.remove("viewer_controls_collapsed")
+
+
+def test_a_run_loading_into_a_collapsed_overlay_leaves_it_collapsed(viewing_window):
+    """Scenario: the controls are folded away and a second run loads.
+
+    Expected behaviour: the fold is the user's, so revealing the controls for a
+    new run does not undo it.
+    """
+    window = viewing_window
+    window._toggle_overlay_controls_collapsed()
+
+    window._show_viewer_controls()
+
+    assert window._overlay_controls_container.isHidden()
+    window._toggle_overlay_controls_collapsed()
+
+
 def test_no_second_copy_of_any_control(window):
     """The dead sidebar group box held the only Snap and Camera backoff."""
     for name in (

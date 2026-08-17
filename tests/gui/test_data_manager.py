@@ -14,7 +14,7 @@ from PySide6.QtCore import QEvent, Qt, QUrl
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QSizePolicy
 
-from deepreefmap_gui.runs.browse import _DETAIL_SHARE
+from deepreefmap_gui.runs.browse import _DETAIL_MIN_WIDTH, _DETAIL_SHARE
 from deepreefmap_gui.runs.delete_data_dialog import DeleteChoice
 from deepreefmap_gui.runs.run_detail import OrthoDialog
 from deepreefmap_gui.runs.run_table import COL_NAME, COL_POINTS, COL_SIZE, COL_STATUS
@@ -172,7 +172,7 @@ def test_open_routes_through_auto_load(out_root, make_window, monkeypatch):
     select_run(window, 0)
     window._on_data_open_clicked()
     assert loaded == [run_dir]
-    assert window._run_meta_banner.isVisibleTo(window)
+    assert "points" in window._view_facts.text()
 
 
 def test_browse_is_the_destination_holding_the_run_browser(make_window):
@@ -233,8 +233,8 @@ def test_the_detail_pane_renames_the_run_it_is_showing(out_root, make_window, mo
         "deepreefmap_gui.runs.browse.QInputDialog.getText",
         staticmethod(lambda *a, **k: ("reef north", True)),
     )
-    assert not window._run_detail.rename_btn.isHidden()
-    window._run_detail.rename_btn.click()
+    assert window._run_detail.menu_actions["rename"].isEnabled()
+    window._run_detail.menu_actions["rename"].trigger()
 
     assert listed_runs(window) == ["reef north"]
     assert window._run_detail.title.text() == "reef north"
@@ -245,7 +245,7 @@ def test_a_crashed_run_offers_no_rename(out_root, make_window):
     write_crashed_run(out_root, "died")
     window = make_window()
     select_run(window, 0)
-    assert window._run_detail.rename_btn.isHidden()
+    assert not window._run_detail.menu_actions["rename"].isEnabled()
 
 
 def test_the_table_columns_carry_the_survey_metadata(out_root, make_window):
@@ -560,6 +560,76 @@ def test_a_run_that_cannot_be_opened_can_still_be_read(out_root, make_window):
     detail.log_btn.click()
 
     assert "it stopped here" in window._log_view._text.toPlainText()
+
+
+def test_the_log_is_the_call_to_action_on_a_run_that_cannot_open(out_root, make_window):
+    """One filled button per pane. A run with no opener has the log instead,
+    and a run that opens keeps its log in the menu rather than beside it."""
+    crashed = write_crashed_run(out_root, "died")
+    (crashed / "run.log").write_text("stopped\n", encoding="utf-8")
+    fine = write_run(out_root, "fine")
+    (fine / "run.log").write_text("finished\n", encoding="utf-8")
+    window = make_window()
+    detail = window._run_detail
+
+    select_run(window, row_of(window, "died"))
+    assert detail.log_btn.isVisibleTo(detail)
+    assert detail.log_btn.property("cta") == "true"
+    assert not detail.open_btn.isVisibleTo(detail)
+    assert not detail.menu_actions["show_log"].isVisible()
+
+    select_run(window, row_of(window, "fine"))
+    assert not detail.log_btn.isVisibleTo(detail)
+    assert detail.open_btn.property("cta") == "true"
+    assert detail.menu_actions["show_log"].isEnabled()
+
+
+def test_the_action_row_fits_the_pane_at_its_floor(out_root, make_window, qapp):
+    """Scenario: four labelled buttons in a 260px pane, each one elided.
+
+    Expected behaviour: a primary and a More… menu, both laid out at the width
+    they asked for. The floor is the narrowest the pane ever gets, so a row that
+    fits here fits the 340px View column too.
+    """
+    write_run(out_root, "run_a")
+    window = make_window()
+    window.show()
+    # Narrow enough that the detail pane sits on its declared floor.
+    window.resize(760, 700)
+    qapp.processEvents()
+    window._set_simple_section("browse")
+    qapp.processEvents()
+    select_run(window, 0)
+    qapp.processEvents()
+
+    detail = window._run_detail
+    assert detail.width() == _DETAIL_MIN_WIDTH
+    shown = [b for b in (detail.open_btn, detail.log_btn, detail.more_btn) if b.isVisible()]
+    assert detail.more_btn in shown
+    for button in shown:
+        assert button.width() >= button.sizeHint().width()
+
+
+def test_the_menu_carries_what_the_row_no_longer_holds(out_root, make_window):
+    write_run(out_root, "run_a")
+    window = make_window()
+    select_run(window, 0)
+    assert list(window._run_detail.menu_actions) == ["rename", "copy_command", "show_log"]
+
+
+def test_a_run_whose_data_went_cannot_have_its_command_copied(out_root, make_window, monkeypatch):
+    """The command is built from a manifest, and the manifest went with the data."""
+    write_survey_run(out_root, "kept_record")
+    window = make_window()
+    select_run(window, 0)
+    copy = window._run_detail.menu_actions["copy_command"]
+    assert copy.isEnabled()
+
+    choose_delete(monkeypatch, DeleteChoice.DATA)
+    window._on_data_delete_clicked()
+    select_run(window, 0)
+    assert not copy.isEnabled()
+    assert "gone" in copy.toolTip()
 
 
 # --- T1.7 multi-select actions ---

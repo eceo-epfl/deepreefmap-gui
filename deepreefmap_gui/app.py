@@ -2,7 +2,7 @@
 
 `DeepReefMapWindow` builds no feature of its own. It fuses the 21 mixins listed in its bases
 (the feature-to-file table is in `deepreefmap_gui/__init__.py`), owns the frame they fill in
-(splitters, the run banner, the central layout, the shortcuts), and shuts everything down in
+(splitters, the view bar, the central layout, the shortcuts), and shuts everything down in
 `closeEvent`. Read `__init__` in order, not in parts: the form widgets are built first because
 the toolbar, the settings dialog and Setup are all wired to them, and `_activate_interface`
 is last because it populates every page and re-divides the splitter.
@@ -51,7 +51,6 @@ from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QIcon, QSurfaceFormat
 from PySide6.QtWidgets import (
     QApplication,
-    QLabel,
     QMainWindow,
     QMessageBox,
     QSplitter,
@@ -59,7 +58,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from deepreefmap_gui.core.theme import BANNER_BG, BANNER_BORDER, BANNER_TEXT
 from deepreefmap_gui.core.widgets import confirm
 from deepreefmap_gui.form.panel import FormPanelMixin
 from deepreefmap_gui.models.cache_ui import ModelManagementMixin
@@ -266,19 +264,6 @@ class DeepReefMapWindow(
         self._central_vsplitter.setChildrenCollapsible(True)
         self._central_vsplitter.setHandleWidth(6)
 
-        # Banner below the toolbar that pops up the instant a past run is
-        # clicked, with the manifest metadata. Hidden until populated.
-        self._run_meta_banner = QLabel("")
-        self._run_meta_banner.setWordWrap(True)
-        self._run_meta_banner.setTextFormat(Qt.TextFormat.RichText)
-        self._run_meta_banner.setStyleSheet(
-            f"background-color: {BANNER_BG}; color: {BANNER_TEXT};"
-            f" padding: 4px 12px; border-bottom: 1px solid {BANNER_BORDER};"
-        )
-        # Compact single-row format means we only need ~2 lines of height.
-        self._run_meta_banner.setMaximumHeight(56)
-        self._run_meta_banner.setVisible(False)
-
         central = QWidget()
         central_layout = QVBoxLayout(central)
         central_layout.setContentsMargins(0, 0, 0, 0)
@@ -286,7 +271,6 @@ class DeepReefMapWindow(
         # Spans the window rather than riding in the simple shell, which View
         # mode squeezes to nothing to give the viewport the full width.
         central_layout.addWidget(self._view_bar)
-        central_layout.addWidget(self._run_meta_banner)
         central_layout.addWidget(self._central_vsplitter, 1)
         # Status and progress span the whole window under everything else, so
         # they read the same from every section and survive log-panel resizing.
@@ -386,6 +370,7 @@ class DeepReefMapWindow(
         self._data_split_event_filter(obj, event)
         self._video_split_event_filter(obj, event)
         self._plan_split_event_filter(obj, event)
+        self._view_bar_event_filter(obj, event)
         return super().eventFilter(obj, event)
 
     # --- teardown -----------------------------------------------------------

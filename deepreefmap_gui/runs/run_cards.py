@@ -1,7 +1,7 @@
 """Run metadata formatting, shared by every widget that describes a run.
 
 Formatting only: the widgets that arrange these strings (the run table, the
-detail pane, the top banner) each own their own layout.
+detail pane, the view bar) each own their own layout.
 """
 
 from __future__ import annotations
@@ -11,19 +11,21 @@ from datetime import datetime
 from pathlib import Path
 
 from deepreefmap_gui.core.theme import (
-    BANNER_TEXT,
-    FONT_LG,
     PRIMARY,
+    WARNING,
 )
 from deepreefmap_gui.profiling.eta import format_duration
 from deepreefmap_gui.profiling.system_probe import format_bytes
-from deepreefmap_gui.survey.catalogue import RunEntry, run_duration_s
+from deepreefmap_gui.survey.catalogue import RunEntry
 from deepreefmap_gui.survey.models import direction_text
 
 _GEOMETRY_LABELS = {
     "world_points": "world points (full)",
     "depth_unprojection": "depth-unprojection",
 }
+
+# The mapper's estimate of geometry when it cannot solve world points.
+DEPTH_FALLBACK = "depth_unprojection"
 
 # A column with nothing in it. The bare token, because test_design_system.py
 # fails any other spelling of an em dash in the tree.
@@ -73,7 +75,7 @@ def geometry_label(manifest: dict) -> str:
     if not source:
         return ""
     label = _GEOMETRY_LABELS.get(source, str(source))
-    return f"⚠ {label}" if source == "depth_unprojection" else label
+    return f"⚠ {label}" if source == DEPTH_FALLBACK else label
 
 
 def points_label(n: int) -> str:
@@ -85,12 +87,34 @@ def points_label(n: int) -> str:
     return str(n)
 
 
-def format_disk_size(run_dir: Path) -> str | None:
-    try:
-        total = sum(p.stat().st_size for p in run_dir.rglob("*") if p.is_file())
-    except Exception:
-        return None
-    return format_bytes(total)
+def frames_text(manifest: dict) -> str:
+    """How many frames a run processed, and at what rate: "1,240 @ 4 fps"."""
+    frames = manifest.get("frames_processed")
+    if not frames:
+        return _MISSING
+    text = f"{int(frames):,}"
+    fps = manifest.get("fps")
+    return f"{text} @ {fps} fps" if fps else text
+
+
+def run_facts_line(manifest: dict) -> str:
+    """The size of an open run, as rich text for the view bar.
+
+    Two facts, because everything else about the run is a row in the detail
+    pane beside it and the bar exists to leave room for the cloud. The third
+    appears only for a run whose geometry was estimated from depth: that is the
+    one manifest fact which changes how the cloud in front of you may be read,
+    so it is on screen whether or not the pane is open.
+    """
+    facts: list[str] = []
+    if manifest.get("frames_processed"):
+        facts.append(frames_text(manifest))
+    points = manifest.get("semantic_reference_points") or manifest.get("metric_points")
+    if points:
+        facts.append(f"{points_label(int(points))} points")
+    if manifest.get("geometry_source") == DEPTH_FALLBACK:
+        facts.append(f'<span style="color: {WARNING}">{geometry_label(manifest)}</span>')
+    return " · ".join(facts)
 
 
 def video_details(manifest: dict, index: int = 0) -> list[str]:
@@ -119,12 +143,6 @@ def format_trim_range(manifest: dict) -> str | None:
     begin_txt = f"{float(begin):.1f}" if begin is not None else "0"
     end_txt = f"{float(end):.1f}s" if end is not None else "end"
     return f"{begin_txt}–{end_txt}"
-
-
-def _disk_label(run_dir: Path, disk_bytes: int | None) -> str | None:
-    if disk_bytes is not None:
-        return format_bytes(disk_bytes)
-    return format_disk_size(run_dir)
 
 
 def _video_line(entry: RunEntry) -> str:
@@ -254,62 +272,6 @@ def emphasise_line(metadata: str, label: str | None) -> str:
         else line
         for line in metadata.split("<br>")
     )
-
-
-def format_run_metadata_compact(
-    manifest: dict,
-    run_dir: Path,
-    *,
-    include_disk_size: bool,
-    disk_bytes: int | None = None,
-) -> str:
-    """Single-line wrapping format used in the inline top banner."""
-    name = (manifest.get("name") or "").strip() or run_dir.name
-    header = (
-        f'<b style="font-size:{FONT_LG}">{name}</b>'
-        f'&nbsp;<span style="color:#7a8a99">({run_dir.name})</span>'
-    )
-    facts: list[str] = []
-    for label, key, fmt in (
-        ("Mode", "mode", str),
-        ("Frames", "frames_processed", str),
-        ("FPS", "fps", str),
-        ("Segmentation", "segmentation_model", str),
-        ("Mapping", "mapping_backend", str),
-        ("Geometry", "geometry_source", lambda v: _GEOMETRY_LABELS.get(v, str(v))),
-        ("Camera", "camera_profile", str),
-        ("Semantic pts", "semantic_reference_points", lambda v: f"{int(v):,}"),
-        ("Metric pts", "metric_points", lambda v: f"{int(v):,}"),
-        ("Input", "input_videos", lambda v: ", ".join(Path(p).name for p in v) if v else ""),
-        ("Created", "run_timestamp", format_timestamp),
-    ):
-        v = manifest.get(key)
-        if v is not None and v not in ("", []):
-            facts.append(
-                f'<span style="color:#8aa0b8">{label}:</span>&nbsp;'
-                f'<span style="color:{BANNER_TEXT}">{fmt(v)}</span>'
-            )
-    trim = format_trim_range(manifest)
-    if trim:
-        facts.append(
-            f'<span style="color:#8aa0b8">Range:</span>&nbsp;'
-            f'<span style="color:{BANNER_TEXT}">{trim}</span>'
-        )
-    dur = run_duration_s(manifest)
-    if dur:
-        facts.append(
-            f'<span style="color:#8aa0b8">Runtime:</span>&nbsp;'
-            f'<span style="color:{BANNER_TEXT}">{format_duration(dur)}</span>'
-        )
-    if include_disk_size:
-        disk = _disk_label(run_dir, disk_bytes)
-        if disk:
-            facts.append(
-                f'<span style="color:#8aa0b8">Disk:</span>&nbsp;'
-                f'<span style="color:{BANNER_TEXT}">{disk}</span>'
-            )
-    sep = '&nbsp;<span style="color:#4a5f74">·</span>&nbsp;'
-    return f"{header}&nbsp;&nbsp;{sep.join(facts)}"
 
 
 def provenance_rows(manifest: dict) -> list[tuple[str, str]]:

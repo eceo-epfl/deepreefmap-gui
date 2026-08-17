@@ -12,15 +12,19 @@ here as well, so the two open the same way rather than by coincidence.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 from PySide6.QtCore import QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QFont, QGuiApplication, QImageReader, QPixmap
+from PySide6.QtGui import QAction, QFont, QGuiApplication, QImageReader, QPixmap
 from PySide6.QtWidgets import (
     QAbstractButton,
     QHBoxLayout,
     QLabel,
+    QLayoutItem,
+    QMenu,
     QPushButton,
     QSizePolicy,
+    QToolButton,
     QToolTip,
     QVBoxLayout,
     QWidget,
@@ -47,6 +51,7 @@ from deepreefmap_gui.runs.cover_panel import CoverPanel, load_cover
 from deepreefmap_gui.runs.run_cards import (
     format_timestamp,
     format_trim_range,
+    frames_text,
     geometry_label,
     points_label,
     provenance_rows,
@@ -84,11 +89,6 @@ _MISSING = "—"
 # and "nothing changed" are different claims, and a manifest written before the
 # provenance block existed is making the first one.
 _NOT_RECORDED = "not recorded"
-
-# Backends that estimate geometry from depth when they cannot solve world
-# points. The fallback is silent in the manifest and materially worse, so the
-# row that names it says so.
-_DEPTH_FALLBACK = "depth_unprojection"
 
 
 class OrthoDialog(ImageDialog):
@@ -207,15 +207,6 @@ class DetailCard(QWidget):
         self.facts.clear()
 
 
-def _frames_text(manifest: dict) -> str:
-    frames = manifest.get("frames_processed")
-    if not frames:
-        return _MISSING
-    text = f"{int(frames):,}"
-    fps = manifest.get("fps")
-    return f"{text} @ {fps} fps" if fps else text
-
-
 def _related_text(related: int) -> str:
     if not related:
         return "none"
@@ -246,7 +237,7 @@ def run_fact_rows(entry: RunEntry, related: int = 0) -> list[tuple[str, str]]:
         # When the run was made, as against when its footage was shot.
         ("Created", format_timestamp(manifest.get("run_timestamp")) or _MISSING),
         ("Range", format_trim_range(manifest) or "whole video"),
-        ("Frames", _frames_text(manifest)),
+        ("Frames", frames_text(manifest)),
         ("Points", points_label(entry.points) if entry.points else _MISSING),
         ("Runtime", format_duration(entry.duration_s) if entry.duration_s else _MISSING),
         # Sized off the run directory by a background pass, so this is the one
@@ -324,42 +315,57 @@ class RunDetailPanel(DetailCard):
         self.error.setVisible(False)
         layout.addWidget(self.error)
 
-        # Opening the run is what this pane is for; copying its command line is
-        # for taking away, so it sits beside as a quiet action rather than
-        # holding the only full-width button in the pane, which is what it did.
+        # Opening the run is what this pane is for, and it is the only button in
+        # the row that says so. Everything occasional is behind More…: the pane
+        # is 260px at its floor, which does not hold four labelled buttons
+        # without eliding every one of them.
         self.open_btn = QPushButton("Open run")
         self.open_btn.setToolTip("Load this run into the 3D viewer")
         self.open_btn.clicked.connect(self.open_requested)
         self.open_btn.setVisible(False)
 
-        self.copy_command_btn = QPushButton("Copy command")
-        self.copy_command_btn.setIcon(copy_icon(ICON_SM))
-        self.copy_command_btn.setToolTip(
-            "Copy the command that reproduces this run in a terminal"
-        )
-        self.copy_command_btn.clicked.connect(self._copy_command)
-        self.copy_command_btn.setVisible(False)
-
         # A run that failed leaves one truncated line on its record and the whole
         # story in its log. This is the only way to that story: the other route
-        # is loading the run, which is the thing that cannot be done.
+        # is loading the run, which is the thing that cannot be done. So on a run
+        # that cannot open, the log is the pane's main action and stands in the
+        # row; on one that can, it is another entry in the menu.
         self.log_btn = QPushButton("Show log")
         self.log_btn.setIcon(log_icon())
         self.log_btn.setToolTip("Show this run's log, including why it stopped")
         self.log_btn.clicked.connect(self._request_log)
         self.log_btn.setVisible(False)
+        self.log_btn.setProperty("cta", "true")
 
-        # The name in the title is the one the person chose at staging time, and
-        # this is where they get to reconsider it once they have seen the result.
-        self.rename_btn = QPushButton("Rename")
-        self.rename_btn.setToolTip("Change what this run is called")
-        self.rename_btn.clicked.connect(self.rename_requested)
-        self.rename_btn.setVisible(False)
+        self.more_btn = QToolButton()
+        self.more_btn.setText("More…")
+        self.more_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu = QMenu(self.more_btn)
+        # Every entry says why it is off when it is off, so the menu explains
+        # itself rather than only refusing.
+        menu.setToolTipsVisible(True)
+        self.menu_actions = self._fill_run_actions(menu)
+        self.menu_actions["copy_command"].setIcon(copy_icon(ICON_SM))
+        self.menu_actions["show_log"].setIcon(log_icon())
+        self.more_btn.setMenu(menu)
 
-        self.add_actions(
-            self.open_btn, self.log_btn, self.rename_btn, self.copy_command_btn
-        )
+        self.add_actions(self.open_btn, self.more_btn)
+        # Into the primary slot beside the opener rather than through
+        # add_actions, which marks what it is handed quiet and would undo the
+        # call-to-action styling the log carries when it stands there alone.
+        item = cast(QLayoutItem, self.body.itemAt(self.body.count() - 1))
+        cast(QHBoxLayout, item.layout()).insertWidget(1, self.log_btn)
         self._entry: RunEntry | None = None
+
+    def _run_action_specs(self) -> tuple[tuple[str, str, object], ...]:
+        """Everything the menu offers on this run, in one list."""
+        return (
+            ("rename", "Rename…", self.rename_requested.emit),
+            ("copy_command", "Copy command", self._copy_command),
+            ("show_log", "Show log", self._request_log),
+        )
+
+    def _fill_run_actions(self, menu: QMenu) -> dict[str, QAction]:
+        return {key: menu.addAction(label, slot) for key, label, slot in self._run_action_specs()}
 
     def set_open_action_visible(self, visible: bool) -> None:
         """Hide the opener where opening means nothing: View mode is already in it."""
@@ -381,19 +387,23 @@ class RunDetailPanel(DetailCard):
             return
         text = command_from_manifest(self._entry.manifest, self._entry.run_dir)
         QGuiApplication.clipboard().setText(text)
+        # Anchored on the button the menu dropped from: the menu item itself is
+        # gone by the time the clipboard has the command.
+        action = self.menu_actions["copy_command"]
         QToolTip.showText(
-            self.copy_command_btn.mapToGlobal(self.copy_command_btn.rect().topRight()),
+            self.more_btn.mapToGlobal(self.more_btn.rect().topRight()),
             "Copied to clipboard",
-            self.copy_command_btn,
+            self.more_btn,
         )
-        self.copy_command_btn.setIcon(check_icon(ICON_SM))
-        QTimer.singleShot(1200, lambda: self.copy_command_btn.setIcon(copy_icon(ICON_SM)))
+        action.setIcon(check_icon(ICON_SM))
+        QTimer.singleShot(1200, lambda: action.setIcon(copy_icon(ICON_SM)))
 
     def show_entry(self, entry: RunEntry, related: int = 0) -> None:
         # Imported here rather than at module scope: simple.batch reaches back
         # into the window, and importing it eagerly closes an import cycle.
         from deepreefmap_gui.simple.batch import _diagnose_failure
 
+        broken = bool(entry.incomplete or entry.data_missing)
         status = catalogue.entry_status(entry)
         colour = STATUS_COLORS.get(status, TEXT_MUTED)
         self.title.setText(entry.display_name)
@@ -409,22 +419,44 @@ class RunDetailPanel(DetailCard):
             )
         elif entry.data_missing:
             self.error.setText("The output data was removed. Only this record remains.")
-        self.error.setVisible(bool(entry.incomplete or entry.data_missing))
+        self.error.setVisible(broken)
         self._entry = entry
+        # Disabled and explained rather than dropped: a menu whose items move
+        # between runs is one you have to read before every use.
         # An incomplete run still has a command worth copying: the run_command.sh
         # it wrote before it failed is exactly what a diagnosis starts from. A
         # data-removed run kept no manifest to build one from.
-        self.copy_command_btn.setVisible(not entry.data_missing)
+        copy = self.menu_actions["copy_command"]
+        copy.setEnabled(not entry.data_missing)
+        copy.setToolTip(
+            "The data this run was made from is gone."
+            if entry.data_missing
+            else "Copy the command that reproduces this run in a terminal"
+        )
         # The name lives in the manifest, so a run that never wrote one has
         # nothing to rename.
-        self.rename_btn.setVisible(not (entry.incomplete or entry.data_missing))
-        self.open_btn.setVisible(
-            self._open_action_allowed and not (entry.incomplete or entry.data_missing)
+        rename = self.menu_actions["rename"]
+        rename.setEnabled(not broken)
+        rename.setToolTip(
+            "This run has no manifest to carry a name."
+            if broken
+            else "Change what this run is called"
         )
+        self.open_btn.setVisible(self._open_action_allowed and not broken)
         # Offered for any run that kept one, whatever its status: run.log is kept
         # through every storage-cleanup tier, so a run whose outputs were cleared
-        # away still has its record.
-        self.log_btn.setVisible((entry.run_dir / "run.log").exists())
+        # away still has its record. One control for it, never two: in the row
+        # for a run that cannot open, in the menu for one that can.
+        has_log = (entry.run_dir / "run.log").exists()
+        self.log_btn.setVisible(has_log and broken)
+        log = self.menu_actions["show_log"]
+        log.setVisible(not broken)
+        log.setEnabled(has_log)
+        log.setToolTip(
+            "Show this run's log, including why it stopped"
+            if has_log
+            else "This run wrote no log."
+        )
         self._show_ortho(entry.run_dir, entry.display_name)
 
     def _show_ortho(self, run_dir: Path, title: str) -> None:
@@ -490,8 +522,8 @@ class RunDetailPanel(DetailCard):
         super().clear()
         self.error.setVisible(False)
         self._entry = None
-        self.copy_command_btn.setVisible(False)
         self.open_btn.setVisible(False)
+        self.log_btn.setVisible(False)
         self._ortho_source = None
         self._ortho_run_dir = None
         self._rescale_ortho()

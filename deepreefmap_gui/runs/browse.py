@@ -1200,15 +1200,15 @@ class BrowseMixin(MixinBase):
         if not path.is_dir():
             self._status_label.setText("The output data for this run was removed.")
             return
-        # Banner first, straight from the manifest, so the click lands
-        # instantly even when the load itself takes a while.
+        # Facts first, straight from the manifest, so the click lands instantly
+        # even when the load itself takes a while.
         manifest_path = path / "run_manifest.json"
         if manifest_path.exists():
             try:
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-                self._show_run_meta_banner(manifest, path, include_disk_size=False)
+                self._show_run_facts(manifest)
             except Exception:
-                self._hide_run_meta_banner()
+                self._clear_run_facts()
         self._auto_load_run(path)
 
     def _on_data_open_folder_clicked(self) -> None:
@@ -1442,7 +1442,7 @@ class BrowseMixin(MixinBase):
             return
         if self._active_run_dir == entry.run_dir:
             self._active_run_manifest = manifest
-            self._show_run_meta_banner(manifest, entry.run_dir, include_disk_size=False)
+            self._show_run_facts(manifest)
         self._status_label.setText(f"Renamed run to '{new_name}'.")
         self._refresh_data_manager()
 

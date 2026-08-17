@@ -64,6 +64,7 @@ from deepreefmap_gui.core.theme import (
 from deepreefmap_gui.core.widgets import muted_label, utility_button_qss
 from deepreefmap_gui.core.window_protocol import MixinBase
 from deepreefmap_gui.notify.conditions import conditions_from_state
+from deepreefmap_gui.runs.run_cards import run_facts_line
 from deepreefmap_gui.runs.run_detail import RunDetailPanel
 from deepreefmap_gui.simple.cart import CartButton
 from deepreefmap_gui.simple.section_state import (
@@ -570,6 +571,13 @@ class InterfaceShellMixin(MixinBase):
         font.setWeight(QFont.Weight.DemiBold)
         self._view_title.setFont(font)
         row.addWidget(self._view_title)
+
+        # The run's size, beside its name rather than in a band of its own. Two
+        # facts and a warning: everything else the manifest holds is a row in
+        # the Info pane, and the bar is what the cloud is not using.
+        self._view_facts = muted_label("")
+        row.addWidget(self._view_facts)
+
         row.addStretch(1)
 
         self._view_info_btn = QToolButton()
@@ -582,12 +590,61 @@ class InterfaceShellMixin(MixinBase):
         row.addWidget(self._view_info_btn)
 
         bar.setVisible(False)
+        bar.installEventFilter(self)
         self._view_bar = bar
+        self._view_bar_row = row
         return bar
 
     def _set_view_bar_visible(self, visible: bool) -> None:
         if hasattr(self, "_view_bar"):
             self._view_bar.setVisible(visible)
+
+    def _show_run_facts(self, manifest: dict) -> None:
+        """Name what the open run measured, in the bar above the cloud."""
+        text = run_facts_line(manifest)
+        self._view_facts.setText(text)
+        self._view_facts.setToolTip(text)
+        # On the bar as well, because the facts are hidden at the width where
+        # they are most worth asking for.
+        self._view_bar.setToolTip(text)
+        self._fit_view_facts()
+
+    def _clear_run_facts(self) -> None:
+        self._view_facts.setText("")
+        self._view_facts.setToolTip("")
+        self._view_bar.setToolTip("")
+
+    def _fit_view_facts(self) -> None:
+        """Drop the facts from a bar too narrow to hold them and the name.
+
+        The name is what identifies the run and Info is the way to everything
+        else, so the facts are what goes when the three cannot fit. Measured
+        rather than gated on a written width: how much room the name wants is
+        the run's name, and a long one is exactly when the facts have to go.
+        """
+        row = self._view_bar_row
+        margins = row.contentsMargins()
+        spent = margins.left() + margins.right()
+        for index in range(row.count()):
+            item = row.itemAt(index)
+            widget = item.widget() if item is not None else None
+            if widget is None or widget is self._view_facts:
+                continue
+            spent += widget.sizeHint().width() + row.spacing()
+        facts = self._view_facts
+        facts.setVisible(
+            bool(facts.text())
+            and self._view_bar.width() - spent >= facts.sizeHint().width() + row.spacing()
+        )
+
+    def _view_bar_event_filter(self, obj, event) -> None:
+        """Refit the bar's facts when it is resized.
+
+        Guarded on the bar existing: the filter is installed on the window, so
+        it sees events raised while the window is still being built.
+        """
+        if obj is getattr(self, "_view_bar", None) and event.type() == QEvent.Type.Resize:
+            self._fit_view_facts()
 
     def _on_view_info_toggled(self, checked: bool) -> None:
         self._view_info_open = checked

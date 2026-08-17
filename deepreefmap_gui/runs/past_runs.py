@@ -1,32 +1,16 @@
-"""Run banner and the workspace reset behind the toolbar "+" button."""
+"""The workspace reset behind the toolbar "+" button."""
 
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
 from deepreefmap_gui.core.window_protocol import MixinBase
-from deepreefmap_gui.runs.run_cards import format_run_metadata_compact
 
 logger = logging.getLogger(__name__)
 
 
 class PastRunsMixin(MixinBase):
-    """DeepReefMapWindow methods for the run banner and the workspace reset."""
-
-    def _show_run_meta_banner(self, manifest: dict, run_dir: Path, *, include_disk_size: bool) -> None:
-        # A warm Data-section size cache saves the synchronous directory walk.
-        cached_size = getattr(self, "_run_size_cache", {}).get(run_dir.name)
-        self._run_meta_banner.setText(
-            format_run_metadata_compact(
-                manifest, run_dir, include_disk_size=include_disk_size, disk_bytes=cached_size
-            )
-        )
-        self._run_meta_banner.setVisible(True)
-
-    def _hide_run_meta_banner(self) -> None:
-        self._run_meta_banner.setVisible(False)
-        self._run_meta_banner.setText("")
+    """DeepReefMapWindow methods for clearing the workspace."""
 
     def _on_new_reconstruction(self) -> None:
         self._viewer._clear_scene_data()
@@ -35,7 +19,7 @@ class PastRunsMixin(MixinBase):
         self._viewer.legend_overlay.setVisible(False)
         # The display controls act on a loaded cloud, so they go with it.
         self._set_overlay_controls_visible(False)
-        self._hide_run_meta_banner()
+        self._clear_run_facts()
         self._clear_run_warnings()
         self._active_run_dir = None
         self._active_run_manifest = None

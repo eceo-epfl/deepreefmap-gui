@@ -138,6 +138,58 @@ def test_an_opened_run_is_a_page_inside_browse(window, monkeypatch):
     assert window._work_hsplitter.sizes()[0] > 0
 
 
+_SOLVED = {
+    "frames_processed": 1240,
+    "fps": 4,
+    "semantic_reference_points": 8_200_000,
+    "geometry_source": "world_points",
+    "camera_profile": "gopro11_wide",
+    "mapping_backend": "loger_star",
+}
+
+
+def _facts(window, **overrides) -> str:
+    window._show_run_facts({**_SOLVED, **overrides})
+    return window._view_facts.text()
+
+
+def test_the_view_bar_names_the_size_of_the_run_and_nothing_else(window):
+    """The bar is what the cloud is not using, and the Info pane holds the rest."""
+    text = _facts(window)
+    assert "1,240 @ 4 fps" in text
+    assert "8.2M points" in text
+    for dropped in ("gopro11_wide", "loger_star", "Mode", "Runtime", "Disk"):
+        assert dropped not in text
+
+
+def test_only_a_depth_fallback_warns_in_the_view_bar(window):
+    assert "depth-unprojection" not in _facts(window)
+    assert "⚠ depth-unprojection" in _facts(window, geometry_source="depth_unprojection")
+
+
+def test_a_narrow_view_bar_keeps_the_facts_in_its_tooltip(window, qapp, monkeypatch):
+    """Expected behaviour: the run's name and the way out survive the squeeze,
+    and what goes is reachable by hovering the bar it went from."""
+    monkeypatch.setattr(window._viewer, "_ensure_plotter", lambda: None)
+    window._set_simple_section("view")
+    window.show()
+    qapp.processEvents()
+    window._view_title.setText("20260520-155637")
+    window._show_run_facts(_SOLVED)
+    assert window._view_facts.isVisibleTo(window._view_bar)
+
+    window._view_bar.resize(300, window._view_bar.height())
+    assert not window._view_facts.isVisibleTo(window._view_bar)
+    assert "8.2M points" in window._view_bar.toolTip()
+
+
+def test_clearing_the_workspace_takes_the_facts_with_it(window):
+    window._show_run_facts(_SOLVED)
+    window._clear_run_facts()
+    assert window._view_facts.text() == ""
+    assert window._view_bar.toolTip() == ""
+
+
 def test_revealing_the_canvas_needs_no_permission(window, monkeypatch):
     """The canvas gate is gone: scene data arriving is what reveals the cloud."""
     viewer = window._viewer

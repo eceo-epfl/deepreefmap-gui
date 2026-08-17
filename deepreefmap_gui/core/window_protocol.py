@@ -134,6 +134,8 @@ if TYPE_CHECKING:
         _pick_card: PickCard | None
         _last_pick_payload: dict | None
         _pick_card_pinned_pos: tuple[int, int] | None
+        _overlay_controls_collapsed: bool
+        _overlay_controls_run_ready: bool
         _legend_sort_mode: str
         _legend_sort_ascending: bool
         _legend_sort_connected: bool
@@ -199,7 +201,7 @@ if TYPE_CHECKING:
         _hf_auth_label: QLabel
         _ortho_rgb_preview: QLabel
         _ortho_seg_preview: QLabel
-        _run_meta_banner: QLabel
+        _view_facts: QLabel
         _capacity_caption: QLabel
         _capacity_detail: QLabel
         _capacity_advice: QLabel
@@ -384,7 +386,7 @@ if TYPE_CHECKING:
         def _set_storage_compact(self, running: bool) -> None: ...  # RunLoadingMixin
         def _request_data_refresh(self) -> None: ...  # BrowseMixin
         def _apply_run_sizes(self, sizes: dict) -> None: ...  # BrowseMixin
-        def _hide_run_meta_banner(self) -> None: ...  # PastRunsMixin
+        def _clear_run_facts(self) -> None: ...  # InterfaceShellMixin
         def _refresh_run_warnings_view(self) -> None: ...  # ViewerControlsMixin
         def _required_model_names(self) -> set[str]: ...  # ModelManagementMixin
         def _reset_progress(self) -> None: ...  # ProgressBarsMixin
@@ -481,9 +483,7 @@ if TYPE_CHECKING:
         ) -> None: ...
         def _set_semantic_only_controls_visible(self, visible: bool) -> None: ...  # ViewerControlsMixin
         def _show_results(self, output_dir: str) -> None: ...  # ResultsMixin
-        def _show_run_meta_banner(  # PastRunsMixin
-            self, manifest: dict, run_dir: Path, *, include_disk_size: bool
-        ) -> None: ...
+        def _show_run_facts(self, manifest: dict) -> None: ...  # InterfaceShellMixin
         def _show_viewer_controls(self) -> None: ...  # ViewerControlsMixin
         def _set_overlay_controls_visible(self, visible: bool) -> None: ...  # ViewerControlsMixin
 

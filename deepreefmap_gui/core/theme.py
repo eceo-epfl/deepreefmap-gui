@@ -122,7 +122,6 @@ OVERLAY_TEXT_LINK = "#cfd6dd"
 OVERLAY_DANGER = "#ff8080"
 
 # Compound tokens that travel together (background + text + border).
-BANNER_BG, BANNER_TEXT, BANNER_BORDER = "#1f2a36", "#d8e2ec", "#2f3f50"
 WARN_BG, WARN_TEXT, WARN_BORDER = "#4a3a14", "#ffd98a", "#8a6b1a"
 
 # Shared thin bar look for run-progress and utilisation meters, so every bar in

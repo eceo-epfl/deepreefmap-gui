@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Callable, cast
+from typing import Callable
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QFrame,
@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from deepreefmap_gui.core.icons import ICON_SM, chevron_down_icon, chevron_right_icon
 from deepreefmap_gui.core.theme import (
     BRIGHT_TEXT,
     FONT_SM,
@@ -31,8 +32,16 @@ from deepreefmap_gui.core.theme import (
     OVERLAY_TEXT_DIM,
     OVERLAY_TEXT_LINK,
     RADIUS,
+    SPACE_SM,
+    SPACE_XS,
 )
 from deepreefmap_gui.viewer.render import _format_point_count
+
+# Share of the canvas the overlay may take before its list starts scrolling.
+# The cloud is what the pane is for, so the legend keeps to a corner of it.
+_HEIGHT_SHARE = 0.55
+_WIDTH_SHARE = 0.4
+_WIDTH_MIN, _WIDTH_MAX = 180, 320
 
 
 class LegendOverlay(QWidget):
@@ -40,6 +49,7 @@ class LegendOverlay(QWidget):
 
     sort_clicked = Signal(str)
     master_clicked = Signal()
+    collapsed_changed = Signal(bool)
     # Without a host redraw on layout changes, stale pixels ghost through the
     # translucent panel until the camera next moves.
     repaint_requested = Signal()
@@ -97,15 +107,15 @@ class LegendOverlay(QWidget):
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(4)
-        self._title_label = QLabel("Legend")
+        self._title_label = QLabel("Classes")
         self._title_label.setObjectName("legend_title")
         header.addWidget(self._title_label, 1)
-        self._minimize_btn = QToolButton()
-        self._minimize_btn.setText("−")
-        self._minimize_btn.setFixedSize(16, 16)
-        self._minimize_btn.setToolTip("Collapse legend")
-        self._minimize_btn.clicked.connect(self._toggle_minimized)
-        header.addWidget(self._minimize_btn, 0)
+        self._collapse_btn = QToolButton()
+        self._collapse_btn.setIconSize(QSize(ICON_SM, ICON_SM))
+        self._collapse_btn.setFixedSize(ICON_SM + SPACE_XS, ICON_SM + SPACE_XS)
+        self._collapse_btn.setAccessibleName("Collapse the class legend")
+        self._collapse_btn.clicked.connect(self.toggle_collapsed)
+        header.addWidget(self._collapse_btn, 0)
         outer.addLayout(header)
 
         # Column headers above the list, laid out on the same grid as the rows
@@ -162,24 +172,12 @@ class LegendOverlay(QWidget):
         self._scroll.setWidget(self._inner)
         outer.addWidget(self._scroll, 1)
 
-        self._sunburst: QWidget | None = None
-        self._sunburst_was_visible = False
-        self._minimized = False
+        self._collapsed = False
+        self._apply_collapsed()
         # Per-class row widgets (swatch, checkbox, count, solo) so reorder() can
         # re-lay them out without recreating, which preserves checkbox state.
         self._rows: dict[int, tuple[QWidget, QCheckBox, QLabel, QToolButton]] = {}
         self.hide()
-
-    def set_sunburst(self, widget: QWidget) -> None:
-        """Dock a cover sunburst above the legend rows, inside this overlay."""
-        if self._sunburst is widget:
-            return
-        widget.setParent(self)
-        # Fixed height keeps the donut compact and makes the height budgeting in
-        # reposition() deterministic, so it can never overlap the rows below.
-        widget.setFixedHeight(170)
-        cast("QVBoxLayout", self.layout()).insertWidget(1, widget, 0)
-        self._sunburst = widget
 
     def _make_sort_header(self, key: str, label: str) -> QToolButton:
         btn = QToolButton()
@@ -207,26 +205,31 @@ class LegendOverlay(QWidget):
             font.setUnderline(active)
             btn.setFont(font)
 
-    def _toggle_minimized(self) -> None:
-        self._minimized = not self._minimized
-        if self._minimized:
-            # Remember whether the sunburst was showing (it's hidden on
-            # geometry-only runs) so expanding restores that, not a blank donut.
-            if self._sunburst is not None:
-                self._sunburst_was_visible = self._sunburst.isVisibleTo(self)
-                self._sunburst.setVisible(False)
-            self._sort_row.setVisible(False)
-            self._scroll.setVisible(False)
-        else:
-            self._scroll.setVisible(True)
-            self._sort_row.setVisible(True)
-            if self._sunburst is not None:
-                self._sunburst.setVisible(self._sunburst_was_visible)
-        self._minimize_btn.setText("+" if self._minimized else "−")
-        self._minimize_btn.setToolTip(
-            "Expand legend" if self._minimized else "Collapse legend"
-        )
+    def is_collapsed(self) -> bool:
+        return self._collapsed
+
+    def set_collapsed(self, collapsed: bool) -> None:
+        """Fold the overlay down to its header strip, or open it back up."""
+        if bool(collapsed) == self._collapsed:
+            return
+        self._collapsed = bool(collapsed)
+        self._apply_collapsed()
         self.reposition()
+        self.collapsed_changed.emit(self._collapsed)
+
+    def toggle_collapsed(self) -> None:
+        self.set_collapsed(not self._collapsed)
+
+    def _apply_collapsed(self) -> None:
+        """Match the rows and the chevron to the collapsed flag."""
+        self._sort_row.setVisible(not self._collapsed)
+        self._scroll.setVisible(not self._collapsed)
+        self._collapse_btn.setIcon(
+            chevron_right_icon() if self._collapsed else chevron_down_icon()
+        )
+        self._collapse_btn.setToolTip(
+            "Show the class list (L)" if self._collapsed else "Hide the class list (L)"
+        )
 
     def reorder(self, ordered_ids: list[int]) -> None:
         """Re-lay out the existing rows in `ordered_ids` order, no recreation."""
@@ -320,8 +323,13 @@ class LegendOverlay(QWidget):
         # Drive the scroll area's natural width from the inner content so
         # adjustSize() in reposition() picks up the correct width instead of
         # collapsing to QScrollArea's tiny default size hint.
+        # Bounded by the overlay's own width cap: a layout minimum wider than
+        # that would win over the cap and let a long class name push the legend
+        # across the canvas.
         sb_w = self._scroll.verticalScrollBar().sizeHint().width()
-        self._scroll.setMinimumWidth(self._inner.sizeHint().width() + sb_w + 4)
+        self._scroll.setMinimumWidth(
+            min(_WIDTH_MAX - 2 * SPACE_SM, self._inner.sizeHint().width() + sb_w + 4)
+        )
 
         # Align the column headers to the rows: reserve the "Only" column width
         # so "Points" sits over the counts, and reserve the scrollbar width on
@@ -334,8 +342,10 @@ class LegendOverlay(QWidget):
         # Record the full content height so reposition() can grow the scroll
         # area up to it when there's room, and give the scroll a small minimum
         # so it always yields under the height cap (scrolls instead of
-        # overlapping the sunburst/pinned section above it).
+        # overlapping the header above it).
         n_rows = len(visible_ids)
+        # Collapsed, the header strip is all there is, so it carries the count.
+        self._title_label.setText(f"Classes ({n_rows})")
         self._grid.activate()
         inner_h = max(1, self._inner.sizeHint().height())
         self._list_content_h = inner_h + 4
@@ -347,22 +357,22 @@ class LegendOverlay(QWidget):
         parent = self.parentWidget()
         if parent is None:
             return
-        cap_h = max(60, int(parent.height() * 0.85))
+        cap_h = max(60, int(parent.height() * _HEIGHT_SHARE))
         self.setMaximumHeight(cap_h)
-        self.setMaximumWidth(max(140, int(parent.width() * 0.5)))
+        self.setMaximumWidth(
+            min(_WIDTH_MAX, max(_WIDTH_MIN, int(parent.width() * _WIDTH_SHARE)))
+        )
         # Budget the main list's height to whatever remains under the cap once
-        # the header and sunburst have taken their (bounded) space, so the stack
-        # can't overflow the cap and overlap.
-        if not self._minimized:
+        # the header has taken its (bounded) space, so the stack can't overflow
+        # the cap and overlap.
+        if not self._collapsed:
             chrome = 12 + 4  # outer top/bottom margins + a little spacing slack
             header_h = max(
-                self._minimize_btn.sizeHint().height(), self._title_label.sizeHint().height()
+                self._collapse_btn.sizeHint().height(), self._title_label.sizeHint().height()
             )
             used = chrome + header_h
             if self._sort_row.isVisibleTo(self):
                 used += self._sort_row.sizeHint().height() + 4
-            if self._sunburst is not None and self._sunburst.isVisibleTo(self):
-                used += self._sunburst.height() + 4
             content_h = getattr(self, "_list_content_h", cap_h)
             floor = 2 * getattr(self, "_list_row_h", 18)
             scroll_h = max(floor, min(content_h, cap_h - used))

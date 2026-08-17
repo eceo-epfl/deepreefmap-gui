@@ -43,14 +43,18 @@ from deepreefmap_gui.core.theme import (
     BRIGHT_TEXT,
     CARD_BG,
     GROOVE,
+    GUTTER,
     OVERLAY_TEXT,
     PREVIEW_BG,
     PRIMARY,
     PRIMARY_DARK,
     SLIDER_HANDLE,
+    SPACE_SM,
+    SPACE_XS,
     TEXT_DIM,
     TEXT_SECONDARY,
 )
+from deepreefmap_gui.core.widgets import muted_label
 from deepreefmap_gui.viewer.frame_stack import (
     CompositeFrameView,
     FrameLayerControls,
@@ -81,6 +85,11 @@ _FRAME_PANEL_MIN_ENTRIES = 4
 
 # One popup for the stack, keyed in the same dict the per-layer popups used.
 _STACK_POPUP = "stack"
+
+# Width of the frames band below which the cover region folds away. What it
+# shows is also in the Info panel's cover table, so nothing is lost with it.
+_COVER_BAND_MIN_PANEL_WIDTH = 1000
+_COVER_BAND_MIN_WIDTH, _COVER_BAND_MAX_WIDTH = 280, 420
 
 
 def _panel_nbytes(parts: "tuple[np.ndarray, np.ndarray, np.ndarray]") -> int:
@@ -136,12 +145,23 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         frames_outer = QVBoxLayout(self._frames_panel)
         frames_outer.setContentsMargins(0, 0, 0, 0)
         frames_outer.setSpacing(0)
+        # Three regions across the band: the layer controls, the frame itself,
+        # and the run's benthic cover. The frame keeps the bulk of the width,
+        # and the cover fills what a letterboxed frame used to leave blank.
+        self._cover_band = QWidget()
+        cover_layout = QVBoxLayout(self._cover_band)
+        cover_layout.setContentsMargins(0, SPACE_SM, SPACE_SM, SPACE_SM)
+        cover_layout.setSpacing(SPACE_XS)
+        cover_layout.addWidget(muted_label("Benthic cover"))
+        self._cover_band.setMinimumWidth(_COVER_BAND_MIN_WIDTH)
+        self._cover_band.setMaximumWidth(_COVER_BAND_MAX_WIDTH)
         frames_row = QWidget()
         frames_row_layout = QHBoxLayout(frames_row)
         frames_row_layout.setContentsMargins(0, 0, 0, 0)
-        frames_row_layout.setSpacing(0)
-        frames_row_layout.addWidget(self.frame_layers)
-        frames_row_layout.addWidget(self.frame_stack, 1)
+        frames_row_layout.setSpacing(GUTTER)
+        frames_row_layout.addWidget(self.frame_layers, 0)
+        frames_row_layout.addWidget(self.frame_stack, 3)
+        frames_row_layout.addWidget(self._cover_band, 1)
         frames_outer.addWidget(frames_row, 1)
 
         # Slider bar: a fat, hard-to-miss timeline control with a Frame N / N
@@ -225,7 +245,10 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         # Still the cloud's window; the handle moves it either way.
         self._main_splitter.setStretchFactor(0, 2)
         self._main_splitter.setStretchFactor(1, 1)
+        self._main_splitter.splitterMoved.connect(self._on_band_split_moved)
         self._canvas_revealed = False
+        self._band_split_user_sized = False
+        self._band_split_applying = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -236,6 +259,9 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         self.legend_overlay = LegendOverlay(self._canvas_container)
         self.legend_overlay.repaint_requested.connect(self._render_canvas_safe)
         self._canvas_container.installEventFilter(self)
+        # Installed once _canvas_container exists: the filter reads it, and
+        # events start arriving the moment the filter goes on.
+        self._frames_panel.installEventFilter(self)
 
         self._plotter: Any = None
 
@@ -338,6 +364,8 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         self._last_t = None
 
     def eventFilter(self, obj, event):  # type: ignore[override]
+        if obj is self._frames_panel and event.type() == QEvent.Type.Resize:
+            self._apply_cover_band_visibility()
         if obj is self._canvas_container and event.type() == QEvent.Type.Resize:
             self.legend_overlay.reposition()
             self.canvas_resized.emit()
@@ -539,15 +567,39 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         assert layout is not None
         layout.addWidget(widget)
 
+    def set_cover_widget(self, widget: QWidget) -> None:
+        """Install the benthic-cover readout in the band's third region."""
+        layout = cast("QVBoxLayout | None", self._cover_band.layout())
+        assert layout is not None
+        layout.addWidget(widget, 1)
+
+    def _apply_cover_band_visibility(self) -> None:
+        """Keep the cover region only while the band is wide enough for three."""
+        self._cover_band.setVisible(
+            self._frames_panel.width() >= _COVER_BAND_MIN_PANEL_WIDTH
+        )
+
     def _reveal_canvas(self) -> None:
         self._ensure_plotter()
         self._canvas_revealed = True
         self._canvas_stack.setCurrentWidget(self._canvas_container)
-        # Re-apply on every call: an early bail leaves the bottom panel oversized
-        # after the second set_data (semantic, following the geometry preview) and
-        # after the results panel appears beside the cloud.
+        # Re-applied on every call: an early bail leaves the bottom panel
+        # oversized after the second set_data (semantic, following the geometry
+        # preview) and after the results panel appears beside the cloud. A
+        # dragged handle outranks it.
+        if self._band_split_user_sized:
+            return
         total = max(self._main_splitter.height(), self._main_splitter.sizeHint().height(), 400)
-        self._main_splitter.setSizes([int(total * 0.75), int(total * 0.25)])
+        self._band_split_applying = True
+        try:
+            self._main_splitter.setSizes([int(total * 0.75), int(total * 0.25)])
+        finally:
+            self._band_split_applying = False
+
+    def _on_band_split_moved(self, *_args: object) -> None:
+        """A dragged handle is a decision; stop re-imposing the default split."""
+        if not self._band_split_applying:
+            self._band_split_user_sized = True
 
     def _hide_canvas(self) -> None:
         self._canvas_revealed = False
@@ -935,6 +987,9 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
         self._last_confidence = None
         self._last_point_size = None
         self._point_filter = None
+        # A cleared workspace is a fresh start, so the next run opens at the
+        # default split rather than at the last run's dragged one.
+        self._band_split_user_sized = False
 
     def _auto_fit_camera(self, positions: np.ndarray) -> None:
         if self._plotter is None:

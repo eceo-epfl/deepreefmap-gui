@@ -75,7 +75,7 @@ class ResultsMixin(MixinBase):
         if manifest_path.exists():
             try:
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-                self._show_run_meta_banner(manifest, out, include_disk_size=True)
+                self._show_run_facts(manifest)
             except Exception:
                 pass
 
@@ -206,7 +206,6 @@ class ResultsMixin(MixinBase):
         self._cover_sunburst.set_cover(outputs.cover, self._run_classes_config())
         if self._cover_sunburst.isVisible() != self._cover_sunburst.has_data():
             self._cover_sunburst.setVisible(self._cover_sunburst.has_data())
-            self._viewer.legend_overlay.reposition()
         self._apply_viewer_crop_filter(crop)
 
     def _apply_viewer_crop_filter(self, crop: TransectCropParams | None) -> None:

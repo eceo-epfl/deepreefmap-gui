@@ -221,16 +221,16 @@ def test_the_stack_fills_the_pane_without_being_blown_up(qapp) -> None:
     from deepreefmap_gui.viewer.frame_stack import CompositeFrameView
 
     view = CompositeFrameView()
-    view.resize(80, 300)
-    view.set_layer("rgb", QPixmap.fromImage(_qimage(_solid(40, 40, 40))))
-    assert view._target_rect().width() == 80
+    view.resize(400, 300)
+    view.set_layer("rgb", QPixmap.fromImage(_qimage(_solid(40, 40, 40, h=400, w=1600))))
+    assert view._target_rect().width() == 400
 
-    view.resize(1200, 300)
+    view.resize(2000, 800)
 
     # Filled out on the resize alone, and capped at the frame's own resolution
     # rather than smeared across the pane.
-    assert view._target_rect().width() == 160
-    assert view._target_rect().height() == 90
+    assert view._target_rect().width() == 1600
+    assert view._target_rect().height() == 400
 
 
 def test_a_new_frame_keeps_where_you_were_looking(qapp) -> None:
@@ -261,6 +261,13 @@ def _controls(qapp):
     from deepreefmap_gui.viewer.frame_stack import FrameLayerControls
 
     return FrameLayerControls()
+
+
+def _captions(controls):
+    """The panel's own caption labels, which the per-row labels are not."""
+    from PySide6.QtWidgets import QLabel
+
+    return [w for w in controls.findChildren(QLabel) if w.text() == "Layers"]
 
 
 def test_solo_isolates_a_layer_and_gives_the_mix_back(qapp) -> None:
@@ -300,6 +307,34 @@ def test_reaching_for_a_slider_leaves_solo(qapp) -> None:
     assert controls.opacities() == {"rgb": 0.7, "seg": 0.0, "depth": 1.0}
 
 
+def test_the_rows_are_a_captioned_column_rather_than_three_bunched_bars(qapp) -> None:
+    from deepreefmap_gui.core.theme import SPACE_SM
+
+    controls = _controls(qapp)
+    controls.resize(300, 400)
+    controls.show()
+    qapp.processEvents()
+
+    assert _captions(controls) != []
+    rows = [controls._rows[kind].row for kind in ("rgb", "seg", "depth")]
+    gaps = {
+        later.geometry().top() - earlier.geometry().bottom() - 1
+        for earlier, later in zip(rows, rows[1:], strict=False)
+    }
+    assert gaps == {SPACE_SM}
+
+
+def test_the_caption_stays_when_a_layer_is_withdrawn(qapp) -> None:
+    """The caption is a sibling of the rows: wrapping them in it would hide a
+    geometry-only run's whole column along with its segmentation row."""
+    controls = _controls(qapp)
+    controls.set_layer_available("seg", False)
+
+    assert all(c.isVisibleTo(controls) for c in _captions(controls))
+    assert _captions(controls) != []
+    assert not controls._rows["seg"].row.isVisibleTo(controls)
+
+
 def test_each_layer_carries_its_own_colours_as_a_legend(qapp) -> None:
     controls = _controls(qapp)
     controls.set_swatches({1: (255, 0, 0), 2: (0, 255, 0)})
@@ -333,6 +368,34 @@ def test_a_new_run_does_not_inherit_the_last_one(qapp) -> None:
     assert viewer.frame_stack.composite_pixmap() is None
     assert viewer._frame_pixmaps == {}
     assert "stack" not in viewer._frame_dialogs
+
+
+def test_a_dragged_band_height_survives_the_next_scene(qapp) -> None:
+    """Scenario: the geometry preview lands, the user drags the band taller, and
+    the semantic cloud arrives on top of it.
+
+    Expected behaviour: the drag stands. Re-imposing the default split on every
+    reveal took the height back the moment the second scene loaded.
+    """
+    from deepreefmap_gui.viewer.point_cloud import QtPointCloudViewer
+
+    viewer = QtPointCloudViewer()
+    viewer.resize(1000, 800)
+    viewer.show()
+    qapp.processEvents()
+    viewer._reveal_canvas()
+
+    viewer._main_splitter.setSizes([300, 500])
+    viewer._on_band_split_moved()
+    dragged = viewer._main_splitter.sizes()
+
+    viewer._reveal_canvas()
+    assert viewer._main_splitter.sizes() == dragged
+
+    # A cleared workspace is a fresh start, so the default comes back.
+    viewer._clear_scene_data()
+    viewer._reveal_canvas()
+    assert viewer._main_splitter.sizes() != dragged
 
 
 def test_clearing_the_scene_empties_the_panel(qapp) -> None:
@@ -488,3 +551,37 @@ def test_the_layer_rows_sit_beside_the_image_not_under_it(qapp) -> None:
     image = viewer.frame_stack.geometry()
     assert image.left() >= controls.right()
     assert viewer.frame_stack.height() > viewer.frame_layers.height() * 0.5
+
+
+def test_the_band_runs_layers_then_frame_then_cover(qapp) -> None:
+    """The frame is letterboxed at its own resolution, so a wide band left a
+    column of nothing beside it. The cover readout spends it."""
+    viewer = _viewer_with_frames(qapp)
+    viewer.resize(1400, 800)
+    viewer.show()
+    qapp.processEvents()
+
+    layers = viewer.frame_layers.geometry()
+    image = viewer.frame_stack.geometry()
+    cover = viewer._cover_band.geometry()
+    assert layers.right() <= image.left()
+    assert image.right() <= cover.left()
+    # The frame is the point of the band, so it outweighs either neighbour.
+    assert image.width() > layers.width()
+    assert image.width() > cover.width()
+
+
+def test_a_narrow_band_drops_the_cover_and_keeps_the_frame(qapp) -> None:
+    """Below the breakpoint the cover goes: the Info panel's table says the same
+    thing, and the frame is what only the band can show."""
+    viewer = _viewer_with_frames(qapp)
+    viewer.resize(1400, 800)
+    viewer.show()
+    qapp.processEvents()
+    assert viewer._cover_band.isVisibleTo(viewer)
+
+    viewer.resize(820, 800)
+    qapp.processEvents()
+
+    assert not viewer._cover_band.isVisibleTo(viewer)
+    assert viewer.frame_stack.isVisibleTo(viewer)

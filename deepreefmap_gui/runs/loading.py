@@ -381,15 +381,15 @@ class RunLoadingMixin(MixinBase):
             self._status_label.setText(f"⚠ Loaded '{display}': {warning}")
         else:
             self._status_label.setText(f"Loaded run '{display}' from {run_dir}")
-        self._show_run_meta_banner(result.manifest, run_dir, include_disk_size=True)
+        self._show_run_facts(result.manifest)
 
         ortho_path = run_dir / "ortho.png"
         if ortho_path.exists():
             self._show_results(str(run_dir))
         else:
-            # No ortho (e.g. geometry-only run). Metadata is already in the
-            # banner shown above; just track the output dir. Still reveal the
-            # legend if this run built one (semantic run without an ortho).
+            # No ortho (e.g. geometry-only run), so only the output dir is
+            # tracked. Still reveal the legend if this run built one (a
+            # semantic run without an ortho).
             self._results_output_dir = run_dir
             self._reveal_legend_overlay()
 

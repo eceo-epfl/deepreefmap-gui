@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, SupportsInt, cast
 
+from PySide6.QtCore import QSettings
+
 from deepreefmap_gui.core.theme import (
     BORDER,
     BRIGHT_TEXT,
@@ -21,6 +23,7 @@ from deepreefmap_gui.core.theme import (
     PRIMARY,
     RADIUS,
     RADIUS_SM,
+    SPACE_XS,
     TEXT_MUTED,
     TEXT_SECONDARY,
     WEIGHT_BOLD,
@@ -169,18 +172,59 @@ class ViewerControlsMixin(MixinBase):
         """Show or hide the overlay's display controls with the loaded run.
 
         The Pick and Reset buttons above them stay: they steer the camera, which
-        is worth doing over a live preview as much as over a finished cloud.
+        is worth doing over a live preview as much as over a finished cloud. A
+        collapsed overlay keeps the display controls away whatever the run is
+        doing.
         """
+        self._overlay_controls_run_ready = visible
+        shown = visible and not self._overlay_controls_collapsed
         overlay_ctrl = getattr(self, "_overlay_controls_container", None)
         if overlay_ctrl is not None:
-            overlay_ctrl.setVisible(visible)
+            overlay_ctrl.setVisible(shown)
         ctrl_sep = getattr(self, "_overlay_ctrl_sep", None)
         if ctrl_sep is not None:
-            ctrl_sep.setVisible(visible)
+            ctrl_sep.setVisible(shown)
+        hint_row = getattr(self, "_overlay_hint_row", None)
+        if hint_row is not None:
+            hint_row.setVisible(not self._overlay_controls_collapsed)
         overlay = getattr(self, "_pick_mode_overlay", None)
         if overlay is not None:
             overlay.adjustSize()
             self._reposition_pick_mode_overlay()
+
+    def _toggle_overlay_controls_collapsed(self) -> None:
+        """Fold the display controls away, leaving the Pick / Reset strip."""
+        self._overlay_controls_collapsed = not self._overlay_controls_collapsed
+        self._viewer_settings().setValue(
+            "viewer_controls_collapsed", self._overlay_controls_collapsed
+        )
+        self._apply_overlay_collapse_state()
+
+    def _apply_overlay_collapse_state(self) -> None:
+        """Match the chevron and the folded rows to the collapsed flag."""
+        from deepreefmap_gui.core.icons import chevron_down_icon, chevron_right_icon
+
+        button = getattr(self, "_overlay_collapse_btn", None)
+        if button is not None:
+            collapsed = self._overlay_controls_collapsed
+            button.setIcon(chevron_right_icon() if collapsed else chevron_down_icon())
+            button.setToolTip(
+                "Show the display controls (D)" if collapsed
+                else "Hide the display controls (D)"
+            )
+        self._set_overlay_controls_visible(self._overlay_controls_run_ready)
+
+    def _on_legend_collapsed_changed(self, collapsed: bool) -> None:
+        self._viewer_settings().setValue("viewer_legend_collapsed", bool(collapsed))
+
+    def _viewer_settings(self) -> QSettings:
+        """The window's settings, or a handle of its own.
+
+        The canvas overlays are built before the run form, which is what owns
+        ``_settings``.
+        """
+        settings = getattr(self, "_settings", None)
+        return settings if settings is not None else QSettings("ECEO", "deepreefmap")
 
     def _set_semantic_only_controls_visible(self, visible: bool) -> None:
         """Hide per-class/semantic-only controls for geometry-only runs."""
@@ -510,8 +554,18 @@ class ViewerControlsMixin(MixinBase):
         layout.setContentsMargins(6, 6, 6, 4)
         layout.setSpacing(2)
 
+        settings = self._viewer_settings()
+        self._overlay_controls_collapsed = bool(
+            settings.value("viewer_controls_collapsed", False, type=bool)
+        )
+        self._overlay_controls_run_ready = False
         btn, reset_btn = self._build_overlay_tool_buttons(overlay, layout)
         self._build_overlay_display_controls(overlay, layout)
+        self._apply_overlay_collapse_state()
+
+        legend = self._viewer.legend_overlay
+        legend.set_collapsed(bool(settings.value("viewer_legend_collapsed", False, type=bool)))
+        legend.collapsed_changed.connect(self._on_legend_collapsed_changed)
 
         # The timeline is the one display control not on the overlay: it is wide,
         # so the viewer keeps it under the canvas. This is where it joins the rest.
@@ -552,6 +606,14 @@ class ViewerControlsMixin(MixinBase):
 
         QShortcut(QKeySequence("P"), self).activated.connect(btn.toggle)
         QShortcut(QKeySequence("R"), self).activated.connect(_on_reset_clicked)
+        # Bare D and L beside the bare P and R: Ctrl+L is the log panel, so the
+        # unmodified letter is free for the legend.
+        QShortcut(QKeySequence("D"), self).activated.connect(
+            self._toggle_overlay_controls_collapsed
+        )
+        QShortcut(QKeySequence("L"), self).activated.connect(
+            self._viewer.legend_overlay.toggle_collapsed
+        )
         QShortcut(QKeySequence(Qt.Key.Key_Escape), self).activated.connect(
             lambda: btn.setChecked(False) if btn.isChecked() else None
         )
@@ -565,14 +627,15 @@ class ViewerControlsMixin(MixinBase):
         self, overlay: QWidget, layout: QVBoxLayout
     ) -> tuple[QToolButton, QToolButton]:
         """Pick + Reset tool buttons with their keyboard-shortcut hint row."""
-        from PySide6.QtCore import Qt
-        from PySide6.QtWidgets import QHBoxLayout, QLabel, QToolButton
+        from PySide6.QtCore import QSize, Qt
+        from PySide6.QtWidgets import QHBoxLayout, QLabel, QToolButton, QWidget
 
         buttons_row = QHBoxLayout()
-        buttons_row.setSpacing(6)
+        buttons_row.setSpacing(SPACE_XS)
         buttons_row.setContentsMargins(0, 0, 0, 0)
 
         from deepreefmap_gui.core.icons import (
+            ICON_SM,
             crosshair_icon,
             refresh_icon,
         )
@@ -596,22 +659,35 @@ class ViewerControlsMixin(MixinBase):
             "Reset the 3D view to the default transect-lengthwise orientation.\n"
             "R triggers."
         )
-        buttons_row.addWidget(reset_btn)
+        buttons_row.addWidget(reset_btn, 1)
+
+        collapse_btn = QToolButton(overlay)
+        collapse_btn.setObjectName("ov_secondary")
+        collapse_btn.setIconSize(QSize(ICON_SM, ICON_SM))
+        collapse_btn.setFixedSize(ICON_SM + SPACE_XS, ICON_SM + SPACE_XS)
+        collapse_btn.setAccessibleName("Collapse the display controls")
+        collapse_btn.clicked.connect(self._toggle_overlay_controls_collapsed)
+        buttons_row.addWidget(collapse_btn, 0)
+        self._overlay_collapse_btn = collapse_btn
 
         layout.addLayout(buttons_row)
 
-        hints_row = QHBoxLayout()
-        hints_row.setSpacing(6)
-        hints_row.setContentsMargins(0, 0, 0, 0)
+        # A widget rather than a bare layout: collapsing folds the hints away
+        # with the controls they belong to, and only a widget can be hidden.
+        hints_row = QWidget(overlay)
+        hints_layout = QHBoxLayout(hints_row)
+        hints_layout.setSpacing(SPACE_XS)
+        hints_layout.setContentsMargins(0, 0, 0, 0)
         hint = QLabel("P  ·  Esc", overlay)
         hint.setObjectName("pick_mode_shortcut")
         hint.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        hints_row.addWidget(hint, 1)
+        hints_layout.addWidget(hint, 1)
         reset_hint = QLabel("R", overlay)
         reset_hint.setObjectName("pick_mode_shortcut")
         reset_hint.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        hints_row.addWidget(reset_hint, 1)
-        layout.addLayout(hints_row)
+        hints_layout.addWidget(reset_hint, 1)
+        layout.addWidget(hints_row)
+        self._overlay_hint_row = hints_row
         return btn, reset_btn
 
     def _build_overlay_display_controls(self, overlay: QWidget, layout: QVBoxLayout) -> None:

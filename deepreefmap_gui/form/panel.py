@@ -796,13 +796,14 @@ class FormPanelMixin(MixinBase):
         self._results_transect_slider.valueChanged.connect(self._on_results_transect_slider_changed)
         self._results_crop_slider.valueChanged.connect(self._on_results_crop_slider_changed)
 
-        # Two-ring sunburst (outer = fine classes, inner = coarse groups) docks
-        # above the legend rows in the canvas overlay so the user can show/hide
-        # classes from either the pie or the rows. Updates live with the crop.
+        # Two-ring sunburst (outer = fine classes, inner = coarse groups) sits
+        # in the band beside the frame stack, so the cover reads as a result
+        # rather than as chrome over the cloud. Clicking a slice still drives
+        # the legend's class toggles. Updates live with the crop.
         self._cover_sunburst = SunburstWidget()
         self._cover_sunburst.selection_clicked.connect(self._on_sunburst_selection)
         self._cover_sunburst.setVisible(False)
-        self._viewer.legend_overlay.set_sunburst(self._cover_sunburst)
+        self._viewer.set_cover_widget(self._cover_sunburst)
 
         self._cover_label = QLabel()
         self._cover_label.setWordWrap(True)

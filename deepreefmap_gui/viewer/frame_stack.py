@@ -30,13 +30,18 @@ from PySide6.QtWidgets import (
 
 from deepreefmap_gui.core.theme import (
     BORDER,
+    CONTROL_HEIGHT,
     GROOVE,
     PREVIEW_BG,
     PRIMARY,
     PRIMARY_DARK,
     SLIDER_HANDLE,
+    SPACE_MD,
+    SPACE_SM,
+    SPACE_XS,
     TEXT_SECONDARY,
 )
+from deepreefmap_gui.core.widgets import muted_label
 
 # A handle big enough to grab without aiming, on a groove tall enough to be an
 # obvious click target in its own right.
@@ -79,11 +84,13 @@ FRAME_TITLES = {
 DEFAULT_OPACITY = {"rgb": 1.0, "seg": 0.45, "depth": 0.0}
 
 _SWATCH_SIZE = QSize(28, 12)
-# Rows sit beside the image rather than under it, so height is no longer taken
-# from the frame: they can afford to be a comfortable size to hit.
-_ROW_HEIGHT = 28
-# The controls take a fixed strip and the image gets the rest of the width.
-_CONTROLS_WIDTH = 330
+# The controls take a column of their own at the left of the band; the frame
+# stack and the cover readout share what is left.
+_CONTROLS_MIN_WIDTH = 260
+_CONTROLS_MAX_WIDTH = 320
+# Under this the frame is too small to read a class boundary off, so the band
+# drops the cover readout rather than squeezing the image further.
+_FRAME_MIN_WIDTH = 360
 
 
 class ScrubSlider(QSlider):
@@ -215,6 +222,7 @@ class CompositeFrameView(QWidget):
         # The frame is wider than it is tall, so height is what limits it: in a
         # short pane no amount of free width makes the image any bigger.
         self.setMinimumHeight(240)
+        self.setMinimumWidth(_FRAME_MIN_WIDTH)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setStyleSheet(f"background-color: {PREVIEW_BG};")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -365,23 +373,37 @@ class FrameLayerControls(QWidget):
         self._saved_mix: dict[str, float] | None = None
         self._applying = False
 
-        # A fixed strip beside the image rather than a band under it: stacked
-        # under, three rows of controls came straight out of the height the
-        # frame and the 3D cloud were sharing.
-        self.setFixedWidth(_CONTROLS_WIDTH)
+        # A column beside the image rather than a band under it: stacked under,
+        # three rows of controls came straight out of the height the frame and
+        # the 3D cloud were sharing. The rule down its right edge is what makes
+        # it read as a column instead of three rows floating on the image's own
+        # dark field.
+        self.setMinimumWidth(_CONTROLS_MIN_WIDTH)
+        self.setMaximumWidth(_CONTROLS_MAX_WIDTH)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(f"FrameLayerControls {{ border-right: 1px solid {BORDER}; }}")
+        # One measured column for every layer name, so the sliders start at the
+        # same x whatever the font is.
+        self._label_width = (
+            max(self.fontMetrics().horizontalAdvance(t) for t in FRAME_TITLES.values())
+            + 2 * SPACE_MD
+        )
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 4, 4, 4)
-        layout.setSpacing(2)
+        layout.setContentsMargins(SPACE_MD, SPACE_SM, SPACE_MD, SPACE_SM)
+        layout.setSpacing(SPACE_SM)
+        # A sibling of the rows, not a wrapper around them: set_layer_available
+        # hides a row, and a withdrawn layer must not take the caption with it.
+        layout.addWidget(muted_label("Layers"))
         for kind in FRAME_LAYERS:
             layout.addWidget(self._build_row(kind))
         layout.addStretch(1)
 
     def _build_row(self, kind: str) -> QWidget:
         row = QWidget()
-        row.setFixedHeight(_ROW_HEIGHT)
+        row.setFixedHeight(CONTROL_HEIGHT)
         row_layout = QHBoxLayout(row)
         row_layout.setContentsMargins(0, 0, 0, 0)
-        row_layout.setSpacing(6)
+        row_layout.setSpacing(SPACE_SM)
 
         swatch = QLabel()
         swatch.setFixedSize(_SWATCH_SIZE)
@@ -392,21 +414,16 @@ class FrameLayerControls(QWidget):
         name.setCheckable(True)
         # Wide enough for the longest name: an elided "Segm...tion" in a row of
         # three is exactly the label that needed reading.
-        name.setFixedWidth(
-            max(
-                name.fontMetrics().horizontalAdvance(title) for title in FRAME_TITLES.values()
-            )
-            + 26
-        )
+        name.setFixedWidth(self._label_width)
         name.setToolTip(
             f"Show {FRAME_TITLES[kind].lower()} on its own; press again for the blend"
         )
-        name.setFixedHeight(_ROW_HEIGHT)
-        name.setStyleSheet("padding: 1px 6px;")
+        name.setFixedHeight(CONTROL_HEIGHT)
+        name.setStyleSheet(f"padding: 1px {SPACE_XS}px;")
         name.toggled.connect(lambda on, k=kind: self._on_solo_toggled(k, on))
 
         slider = ScrubSlider(Qt.Orientation.Horizontal)
-        slider.setFixedHeight(_ROW_HEIGHT)
+        slider.setFixedHeight(CONTROL_HEIGHT)
         slider.setStyleSheet(_SLIDER_QSS)
         slider.setRange(0, 100)
         slider.setPageStep(10)
@@ -415,7 +432,7 @@ class FrameLayerControls(QWidget):
         slider.valueChanged.connect(lambda value, k=kind: self._on_slider(k, value))
 
         percent = QLabel(f"{slider.value()}%")
-        percent.setFixedWidth(38)
+        percent.setFixedWidth(percent.fontMetrics().horizontalAdvance("100%") + SPACE_XS)
         percent.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         percent.setStyleSheet(f"color: {TEXT_SECONDARY};")
 
