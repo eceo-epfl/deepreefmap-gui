@@ -201,7 +201,9 @@ def test_a_queued_pass_without_a_transect_is_runnable(batch_window, tmp_path, mo
     # repeat passes, not the run.
     assert batch_window._survey_start_btn.isEnabled()
     cell = row_cell(batch_window, 0, _COL_SECTION)
-    assert cell.text().startswith("No transect · forward · ")
+    assert cell.text().startswith("No transect · ")
+    # The direction is the button's icon now, not a word in the middle of the line.
+    assert not cell.icon().isNull()
     assert cell.styleSheet() != ""
     assert len(batch_window._survey_store().list_passes()) == 1
     assert batch_window._survey_store().list_passes()[0].transect_id is None
@@ -253,7 +255,9 @@ def test_the_section_cell_opens_the_section_under_videos(batch_window, tmp_path,
     batch_window._refresh_survey_batch_tab()
 
     cell = row_cell(batch_window, 0, _COL_SECTION)
-    assert cell.text() == "T1 · forward · 0:00-1:00"
+    assert cell.text() == "T1 · 0:00-1:00"
+    assert not cell.icon().isNull()
+    assert "forward" in cell.toolTip()
     cell.click()
     assert opened == [batch_window._survey_rows[0].pass_id]
 

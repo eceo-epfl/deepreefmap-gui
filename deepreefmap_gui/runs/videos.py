@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
 )
 
 from deepreefmap_gui.core.reveal import reveal_in_file_manager
-from deepreefmap_gui.core.theme import GUTTER, PRIMARY, SPACE_SM
+from deepreefmap_gui.core.theme import GUTTER, PRIMARY, SPACE_SM, SPLIT_MIN_TOTAL
 from deepreefmap_gui.core.widgets import (
     EmptyState,
     FilterChips,
@@ -78,10 +78,6 @@ _SEARCH_WIDTH = 240
 # The clip list is the page; the detail pane describes whichever row is picked.
 _DETAIL_SHARE = 0.30
 _DETAIL_MIN_WIDTH = 260
-
-# Below this the splitter has not been laid out yet and its width is a
-# placeholder, so the share is computed from the sizes instead.
-_SPLIT_MIN_TOTAL = 400
 
 _PERIOD_TOOLTIP = (
     "How far apart two clips have to be shot to be filed separately. A card off "
@@ -264,7 +260,7 @@ class VideoLibraryMixin(MixinBase):
         if getattr(self, "_video_split_user_sized", False):
             return
         total = self._video_split.width()
-        if total < _SPLIT_MIN_TOTAL:
+        if total < SPLIT_MIN_TOTAL:
             total = sum(self._video_split.sizes()) or 1200
         detail = max(_DETAIL_MIN_WIDTH, int(total * _DETAIL_SHARE))
         self._video_split_applying = True
@@ -605,7 +601,10 @@ class VideoLibraryMixin(MixinBase):
         they are set here. Clicking one over there lands on it here.
         """
         self._go_to_section("videos")
-        self._select_section(str(pass_id))
+        if not self._select_section(str(pass_id)):
+            # The section has gone since whatever offered it was drawn, which a
+            # chart or a cart row outliving a delete is how it happens.
+            self._status_label.setText("That section is no longer in the survey.")
 
     def _pass_by_id(self, store, pass_id: str):
         """The section an id names, and None when the id names nothing.

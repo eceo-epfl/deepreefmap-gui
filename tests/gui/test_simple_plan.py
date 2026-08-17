@@ -557,6 +557,87 @@ def test_a_transect_is_read_whole_on_one_page(window):
     assert window._analysis_chart.window() is window
 
 
+@pytest.mark.parametrize("width", [1400, 1280, 1024, 800])
+def test_a_long_transect_name_never_pushes_the_figures_off_the_table(window, qapp, width):
+    """Scenario: a transect with a long name, at four window widths.
+
+    Expected behaviour: Depth, Passes and Runs stay readable. Sizing every column
+    to its content let the name take the viewport and cut the figures off the
+    right edge with the horizontal scrollbar turned off, so there was no way to
+    reach them.
+    """
+    from deepreefmap_gui.simple.plan import PLAN_COLUMNS
+
+    window._survey_store().add_transect(
+        make_transect("Vatu-i-Ra North Wall repeat 2024-03 deep")
+    )
+    window.resize(width, 800)
+    window.show()
+    window._go_to_section("transects")
+    window._refresh_transect_list()
+    qapp.processEvents()
+    qapp.processEvents()
+
+    tree = window._transect_list
+    for name in ("Depth", "Passes", "Runs"):
+        column = PLAN_COLUMNS.index(name)
+        assert not tree.isColumnHidden(column), f"{name} hidden at {width}px"
+        assert tree.columnWidth(column) > 0, f"{name} has no width at {width}px"
+    # The name gives way instead, down to the width it is still an identifier at.
+    assert tree.columnWidth(0) >= 140
+
+
+def test_length_is_the_column_that_drops_on_a_narrow_pane(window, qapp):
+    """Its value is in the row tooltip either way, and Depth was asked for."""
+    from deepreefmap_gui.simple.plan import PLAN_COLUMNS
+
+    window._survey_store().add_transect(make_transect("Reef"))
+    window.resize(800, 800)
+    window.show()
+    window._go_to_section("transects")
+    window._refresh_transect_list()
+    qapp.processEvents()
+    qapp.processEvents()
+
+    tree = window._transect_list
+    assert tree.isColumnHidden(PLAN_COLUMNS.index("Length"))
+    assert not tree.isColumnHidden(PLAN_COLUMNS.index("Depth"))
+
+
+@pytest.mark.parametrize("size", [(1400, 900), (1366, 768), (1280, 800)])
+def test_the_analysis_column_is_on_screen_without_resizing_anything(window, qapp, size):
+    """Scenario: the Transects page is opened at a normal window size.
+
+    Expected behaviour: the cover chart, the estimate table and the export
+    buttons are all on screen. A splitter asked for more height than the page has
+    is scaled down, so the analysis pane landed under its own minimum and the
+    table below the fold until the window was resized by hand.
+    """
+    window.resize(*size)
+    window.show()
+    qapp.processEvents()
+    window._go_to_section("transects")
+    qapp.processEvents()
+    qapp.processEvents()
+
+    assert window._plan_analysis_scroll.verticalScrollBar().maximum() == 0
+
+
+def test_a_dragged_plan_handle_survives_the_window_being_resized(window, qapp):
+    window.resize(1400, 900)
+    window.show()
+    window._go_to_section("transects")
+    qapp.processEvents()
+    window._plan_split.setSizes([500, 700])
+    window._on_plan_split_moved()
+
+    window.resize(1200, 800)
+    qapp.processEvents()
+    qapp.processEvents()
+
+    assert window._plan_split.sizes()[1] > window._plan_split.sizes()[0]
+
+
 def test_browse_routes_a_transect_through_to_transects(out_root, window):
     """The grouping's detail pane offers the transect rather than redrawing it."""
     from _factories import make_transect, seed_survey_run

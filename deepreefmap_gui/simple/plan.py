@@ -8,14 +8,13 @@ import uuid
 from collections.abc import Iterable
 from pathlib import Path
 
-from PySide6.QtCore import QModelIndex, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QModelIndex, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QGuiApplication
 from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QGridLayout,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QLineEdit,
     QPlainTextEdit,
@@ -39,14 +38,17 @@ from deepreefmap_gui.core.theme import (
     GUTTER,
     PRIMARY,
     RADIUS,
+    SPLIT_MIN_TOTAL,
     TEXT_DIM,
 )
 from deepreefmap_gui.core.widgets import (
     SCOPE_FILTERS,
+    ColumnSpec,
     EmptyState,
     FilterChips,
     SortableTreeItem,
     enable_sorting,
+    install_column_sizer,
     muted_label,
     secondary_label,
     section_card,
@@ -75,6 +77,17 @@ logger = logging.getLogger(__name__)
 # figures stay beside the transect they belong to however wide the window is.
 PLAN_COLUMNS = ("Transect", "Length", "Depth", "Passes", "Runs", "")
 PLAN_SPACER_COLUMN = len(PLAN_COLUMNS) - 1
+
+# Content-sized columns let one long transect name push Depth, Passes and Runs
+# clean off the viewport, so the figures get their reading width first and the
+# name takes what is left. Length is the one that drops on a narrow pane; its
+# value, like every other, is in `transect_tooltip`.
+_PLAN_COLUMN_SPEC = ColumnSpec(
+    fixed={2: 64, 3: 62, 4: 56},
+    weights={0: 3, PLAN_SPACER_COLUMN: 1},
+    minimums={0: 140, PLAN_SPACER_COLUMN: 0},
+    optional=((1, 78),),
+)
 # The transect a click on the map is about to draw, and the one being typed into
 # the form, share this row id: neither exists in the store yet.
 DRAFT_ID = "draft"
@@ -84,6 +97,12 @@ FOCUS_FILL = 0.6
 
 # Wide enough for the cover chart and its six-column table.
 PLAN_ANALYSIS_MIN_WIDTH = 460
+
+# How much of the page width the analysis column takes, and how much of the
+# working column's height the transect list takes under the map and the form.
+_PLAN_ANALYSIS_SHARE = 0.34
+_PLAN_LIST_SHARE = 0.42
+_PLAN_LIST_MIN_HEIGHT = 220
 
 _PLAN_SCOPE_TOOLTIP = (
     "In view lists only the transects the map is showing, and follows the map "
@@ -254,7 +273,10 @@ class NotesEdit(QPlainTextEdit):
         super().__init__(parent)
         self.setPlaceholderText("Anything worth remembering about this transect")
         self.setTabChangesFocus(True)
-        self.setFixedHeight(64)
+        # A range, not a fixed height, so the form gives room back to the map and
+        # the list on a short window.
+        self.setMinimumHeight(48)
+        self.setMaximumHeight(96)
 
     def focusOutEvent(self, event) -> None:  # noqa: N802 (Qt override)
         super().focusOutEvent(event)
@@ -277,8 +299,10 @@ class SimplePlanMixin(MixinBase):
 
     def _build_plan_page(self) -> QWidget:
         """The map beside the transect editor. The archive is Browse's."""
-        page = QSplitter(Qt.Orientation.Vertical)
+        page = QSplitter(Qt.Orientation.Horizontal)
         page.setHandleWidth(GUTTER)
+        work = QSplitter(Qt.Orientation.Vertical)
+        work.setHandleWidth(GUTTER)
         top = QSplitter(Qt.Orientation.Horizontal)
         top.setHandleWidth(GUTTER)
 
@@ -316,25 +340,16 @@ class SimplePlanMixin(MixinBase):
         self._transect_list.setRootIsDecorated(False)
         self._transect_list.setUniformRowHeights(True)
         self._transect_list.setAllColumnsShowFocus(True)
+        # The numeric columns are the point of the table, so a long name gives way
+        # to an ellipsis rather than pushing the counts off the right edge.
         self._transect_list.setTextElideMode(Qt.TextElideMode.ElideRight)
-        # The pane is narrow and the numeric columns are the point of the table,
-        # so a long name gives way to an ellipsis rather than to a scrollbar that
-        # would hide the counts off the right edge.
-        self._transect_list.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        )
-        header = self._transect_list.header()
-        header.setMinimumSectionSize(40)
-        header.setStretchLastSection(False)
-        for column in range(PLAN_SPACER_COLUMN):
-            header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(PLAN_SPACER_COLUMN, QHeaderView.ResizeMode.Stretch)
         header_item = self._transect_list.headerItem()
         header_item.setToolTip(3, "Video segments assigned to this transect")
         header_item.setToolTip(4, "Reconstructions produced from them")
         for column in range(1, PLAN_SPACER_COLUMN):
             header_item.setTextAlignment(column, Qt.AlignmentFlag.AlignRight)
         enable_sorting(self._transect_list)
+        install_column_sizer(self._transect_list, _PLAN_COLUMN_SPEC)
         self._transect_list.currentItemChanged.connect(lambda *_: self._on_transect_selected())
         # The empty state stands in for the list until there is something in it,
         # so a fresh install says how to get started instead of showing a void.
@@ -480,35 +495,72 @@ class SimplePlanMixin(MixinBase):
         top.setStretchFactor(1, 0)
         details.setMinimumWidth(360)
 
-        # What a transect found, beside the list it is picked from: a tape's
-        # position, its passes and the cover they agree on are facts about one
-        # line. Not in the column above, where the chart and its six-column
-        # table would leave the map a sliver of the window.
-        bottom = QSplitter(Qt.Orientation.Horizontal)
-        bottom.setHandleWidth(GUTTER)
-        bottom.addWidget(transects_group)
+        # Map and form over the list on the left, and what a transect found down
+        # the full height of the right. The chart plus its six-column table need
+        # roughly 420px of height, which a bottom-right quarter of the page does
+        # not have, so they were below the fold until the window was resized.
+        page.addWidget(work)
         analysis_scroll = QScrollArea()
         analysis_scroll.setWidgetResizable(True)
         analysis_scroll.setWidget(self._build_analysis_page())
         analysis_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         analysis_scroll.setMinimumWidth(PLAN_ANALYSIS_MIN_WIDTH)
-        bottom.addWidget(analysis_scroll)
-        bottom.setStretchFactor(0, 4)
-        bottom.setStretchFactor(1, 6)
+        self._plan_analysis_scroll = analysis_scroll
+        page.addWidget(analysis_scroll)
 
-        page.addWidget(top)
-        page.addWidget(bottom)
-        # Proportional rather than a pixel pair: 620 + 320 is taller than the
-        # body of a 900px window, so the table was handed whatever was left and
-        # clipped its last row. Both halves are working surfaces, so the map
-        # takes a little more and the table keeps enough to read.
-        page.setStretchFactor(0, 11)
-        page.setStretchFactor(1, 9)
-        page.setSizes([550, 450])
-        transects_group.setMinimumHeight(220)
+        work.addWidget(top)
+        work.addWidget(transects_group)
+        transects_group.setMinimumHeight(_PLAN_LIST_MIN_HEIGHT)
+        self._plan_split = page
+        self._plan_work_split = work
+        # Divided from the live width on every resize, not once here: the page
+        # lives in a QStackedWidget and is 0px wide until its section is shown.
+        page.installEventFilter(self)
+        self._apply_plan_split_sizes()
+        page.splitterMoved.connect(self._on_plan_split_moved)
+        work.splitterMoved.connect(self._on_plan_split_moved)
         # No list refresh here: refreshes happen when the interface is built,
         # so opening the store (which creates survey.db) waits until then.
         return page
+
+    def _apply_plan_split_sizes(self) -> None:
+        """Divide the page between the working column and the analysis column.
+
+        Set outright rather than left to stretch factors: a splitter only shares
+        out what is above each pane's minimum, and the analysis needs its whole
+        height for the chart and the cover table to both be on screen.
+        """
+        if getattr(self, "_plan_split_user_sized", False):
+            return
+        self._plan_split_applying = True
+        try:
+            total = self._plan_split.width()
+            if total < SPLIT_MIN_TOTAL:
+                total = sum(self._plan_split.sizes()) or 1200
+            analysis = max(PLAN_ANALYSIS_MIN_WIDTH, int(total * _PLAN_ANALYSIS_SHARE))
+            self._plan_split.setSizes([max(1, total - analysis), analysis])
+
+            height = self._plan_work_split.height()
+            if height < SPLIT_MIN_TOTAL:
+                height = sum(self._plan_work_split.sizes()) or 800
+            listed = max(_PLAN_LIST_MIN_HEIGHT, int(height * _PLAN_LIST_SHARE))
+            self._plan_work_split.setSizes([max(1, height - listed), listed])
+        finally:
+            self._plan_split_applying = False
+
+    def _plan_split_event_filter(self, obj, event) -> None:
+        """Re-divide the page when its splitter is resized.
+
+        Guarded on the splitter existing: the filter is installed on the window,
+        which receives events while the page is still being built.
+        """
+        if obj is getattr(self, "_plan_split", None) and event.type() == QEvent.Type.Resize:
+            self._apply_plan_split_sizes()
+
+    def _on_plan_split_moved(self, *_args) -> None:
+        """A dragged handle is a decision; stop overriding it on every resize."""
+        if not getattr(self, "_plan_split_applying", False):
+            self._plan_split_user_sized = True
 
     # --- List handling ---
 

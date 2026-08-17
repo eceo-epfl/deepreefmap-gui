@@ -58,14 +58,13 @@ from PySide6.QtWidgets import (
 from deepreefmap_gui.core.icons import (
     DEFAULT_INK,
     ICON_SM,
-    arrow_left_icon,
-    arrow_right_icon,
     broken_link_icon,
     cart_icon,
     check_icon,
     chevron_down_icon,
     chevron_right_icon,
     close_icon,
+    direction_arrow_icon,
     icon_pixmap,
     link_icon,
     pencil_icon,
@@ -1294,10 +1293,16 @@ class SectionRow(QWidget):
         self.trim_btn.setIcon(pencil_icon(color=QColor(ERROR) if not self._available else ink))
         self.delete_btn.setIcon(trash_icon(color=ink))
         if self._pass is not None:
-            arrow = arrow_right_icon if self._pass.direction == "forward" else arrow_left_icon
+            # Its own colour, except on a selected row: neither direction colour
+            # clears AA contrast on the selection fill, so there the arrow alone
+            # carries the direction.
             self._direction.setPixmap(
                 icon_pixmap(
-                    arrow(ICON_SM, QColor(TEXT_MUTED if not self._selected else BRIGHT_TEXT)),
+                    direction_arrow_icon(
+                        self._pass.direction,
+                        ICON_SM,
+                        QColor(BRIGHT_TEXT) if self._selected else None,
+                    ),
                     ICON_SM,
                     self.devicePixelRatio(),
                 )

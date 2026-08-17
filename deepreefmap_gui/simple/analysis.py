@@ -7,6 +7,7 @@ import uuid
 from pathlib import Path
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -23,6 +24,7 @@ from deepreefmap_gui.core.theme import GUTTER, TEXT_MUTED
 from deepreefmap_gui.core.widgets import (
     ColumnSpec,
     EmptyState,
+    FilterChips,
     SortableItem,
     configure_table,
     enable_sorting,
@@ -31,11 +33,12 @@ from deepreefmap_gui.core.widgets import (
     section_card,
 )
 from deepreefmap_gui.core.window_protocol import MixinBase
-from deepreefmap_gui.cover import COVER_LEVELS
+from deepreefmap_gui.cover import COVER_LEVELS, group_color_for_name
 from deepreefmap_gui.runs.run_cards import summarise_run_provenance
 from deepreefmap_gui.simple.charts import GroupedBarChart, pass_color
 from deepreefmap_gui.survey.analysis import (
     PooledCover,
+    aggregated_cover_chart,
     assemble_transect_covers,
     collate_long_format,
     cover_labels,
@@ -44,12 +47,16 @@ from deepreefmap_gui.survey.analysis import (
     repeatability_stats,
     reproducibility_groups,
 )
+from deepreefmap_gui.survey.models import direction_arrow
 from deepreefmap_gui.survey.models.exporters import save_long_format_csv, save_repeatability_csv
 
 logger = logging.getLogger(__name__)
 
 # Below this cover fraction a class is noise in the chart; the CSV keeps everything.
 _CHART_MIN_FRACTION = 0.005
+
+_MODE_POOLED, _MODE_PASSES = "pooled", "passes"
+_CHART_MODES = ((_MODE_POOLED, "Pooled"), (_MODE_PASSES, "Per pass"))
 
 # The class name takes the slack; the five figures beside it are percentages and
 # ratios, which are the same width whatever the pane is.
@@ -103,6 +110,21 @@ class SimpleAnalysisMixin(MixinBase):
             lambda *_: self._refresh_survey_analysis()
         )
         selector.addWidget(self._analysis_level_combo)
+        # Pooled by default: the estimate is what the page is for, and one bar per
+        # pass was four bars saying nothing about which to trust.
+        self._analysis_chart_mode = str(
+            self._settings.value("analysis_chart_mode", _MODE_POOLED)
+        )
+        if self._analysis_chart_mode not in dict(_CHART_MODES):
+            self._analysis_chart_mode = _MODE_POOLED
+        self._analysis_mode_chips = FilterChips(_CHART_MODES)
+        self._analysis_mode_chips.setToolTip(
+            "Pooled is the count-weighted estimate with the spread across passes. "
+            "Per pass draws each pass on its own, and a bar opens its section."
+        )
+        self._analysis_mode_chips.set_current(self._analysis_chart_mode)
+        self._analysis_mode_chips.changed.connect(self._on_analysis_mode_changed)
+        selector.addWidget(self._analysis_mode_chips)
         chart_layout.addLayout(selector)
         # The defensible headline: the count-weighted pool and how many passes
         # it rests on. The per-pass bars below are the spread, not the estimate.
@@ -117,7 +139,7 @@ class SimpleAnalysisMixin(MixinBase):
         self._analysis_provenance_label.setVisible(False)
         chart_layout.addWidget(self._analysis_provenance_label)
         self._analysis_chart = GroupedBarChart()
-        self._analysis_chart.setMinimumHeight(160)
+        self._analysis_chart.series_clicked.connect(self._on_analysis_series_clicked)
         chart_layout.addWidget(self._analysis_chart, 1)
         layout.addWidget(chart_card, 3)
 
@@ -232,19 +254,63 @@ class SimpleAnalysisMixin(MixinBase):
         self._analysis_covers = covers
         expected = len(store.list_passes(transect_id=transect_id))
         pooled = pooled_transect_cover(covers, expected_passes=expected)
+        self._draw_analysis_chart(covers, expected)
+        self._analysis_mode_chips.set_counts({_MODE_PASSES: len(covers)})
+        self._update_analysis_estimate_label(pooled)
+        self._fill_analysis_stats(covers, pooled)
+        self._fill_analysis_repro(all_covers)
+        self._refresh_analysis_empty_states()
+
+    def _draw_analysis_chart(self, covers: list, expected: int) -> None:
+        """Pooled with its spread, or one series per pass when asked for."""
+        level = self._analysis_level_combo.currentText()
+        if self._analysis_chart_mode == _MODE_POOLED:
+            aggregate = aggregated_cover_chart(
+                covers, minimum_fraction=_CHART_MIN_FRACTION, expected_passes=expected
+            )
+            self._analysis_chart.set_aggregate(
+                aggregate.labels,
+                aggregate.values,
+                spread=aggregate.spread,
+                colours={
+                    label: QColor(*group_color_for_name(self._classes_config, label, level))
+                    for label in aggregate.labels
+                },
+                passes=aggregate.n,
+            )
+            return
         series = [
             (
-                f"{index} {'fwd' if c.direction == 'forward' else 'rev'}",
+                f"{index} {direction_arrow(c.direction)}",
                 c.cover,
                 pass_color(c.direction, index - 1),
             )
             for index, c in enumerate(covers, start=1)
         ]
-        self._analysis_chart.set_data(cover_labels(covers, _CHART_MIN_FRACTION), series)
-        self._update_analysis_estimate_label(pooled)
-        self._fill_analysis_stats(covers, pooled)
-        self._fill_analysis_repro(all_covers)
-        self._refresh_analysis_empty_states()
+        self._analysis_chart.set_data(
+            cover_labels(covers, _CHART_MIN_FRACTION),
+            series,
+            keys=[str(c.pass_id) for c in covers],
+        )
+
+    def _on_analysis_mode_changed(self, key: str) -> None:
+        """A reader's preference, so it belongs to the machine, not the survey."""
+        self._analysis_chart_mode = key
+        self._settings.setValue("analysis_chart_mode", key)
+        self._refresh_survey_analysis()
+
+    def _on_analysis_series_clicked(self, key: str) -> None:
+        """A clicked pass opens where its section is described.
+
+        Inert in pooled mode: a pooled bar is every pass at once, so there is no
+        one section for it to be about.
+        """
+        if self._analysis_chart_mode != _MODE_PASSES:
+            return
+        cover = next((c for c in self._analysis_covers if str(c.pass_id) == key), None)
+        if cover is None:
+            return
+        self._open_section_in_videos(cover.pass_id)
 
     def _update_analysis_estimate_label(self, pooled: PooledCover) -> None:
         """State the estimator and how many passes back the number, up front."""
@@ -257,9 +323,17 @@ class SimpleAnalysisMixin(MixinBase):
             f"{pooled.contributing_passes} of {pooled.expected_passes} "
             f"pass{'es' if pooled.expected_passes != 1 else ''}"
         )
+        if self._analysis_chart_mode != _MODE_POOLED:
+            tail = "Bars below show each pass, not the estimate."
+        elif pooled.contributing_passes < 2:
+            tail = "One pass, so the bars have no spread to show."
+        else:
+            tail = (
+                "Bars below are that pool; each whisker spans the lowest and "
+                "highest single pass."
+            )
         self._analysis_estimate_label.setText(
-            f"Transect cover estimate: count-weighted pool of {passes}. "
-            "Bars below show each pass, not the estimate."
+            f"Transect cover estimate: count-weighted pool of {passes}. {tail}"
         )
         self._update_analysis_provenance()
 

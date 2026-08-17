@@ -36,3 +36,17 @@ def test_label_pixmap_follows_the_ratio_it_is_given(qapp):
     pixmap = icon_pixmap(status_dot_icon("#ff0000"), ICON_SM, 2.0)
     assert pixmap.width() == ICON_SM * 2
     assert pixmap.devicePixelRatio() == 2.0
+
+
+def test_a_direction_arrow_points_the_way_it_says(qapp) -> None:
+    """One place pairs the glyph with the ink, so no call site can draw a forward
+    arrow in the reverse colour."""
+    from deepreefmap_gui.core.icons import ICON_SM, direction_arrow_icon
+
+    forward = direction_arrow_icon("forward").pixmap(ICON_SM, ICON_SM).toImage()
+    reverse = direction_arrow_icon("reverse").pixmap(ICON_SM, ICON_SM).toImage()
+
+    assert not forward.isNull() and not reverse.isNull()
+    assert forward != reverse
+    # An unknown direction still yields something drawable rather than raising.
+    assert not direction_arrow_icon("").isNull()

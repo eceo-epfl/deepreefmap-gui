@@ -20,7 +20,12 @@ from PySide6.QtWidgets import (
 
 from deepreefmap_gui.core.icons import status_dot_icon
 from deepreefmap_gui.core.theme import TEXT_MUTED
-from deepreefmap_gui.core.widgets import STATUS_COLORS, fact_link, muted_label
+from deepreefmap_gui.core.widgets import (
+    STATUS_COLORS,
+    direction_html,
+    fact_link,
+    muted_label,
+)
 from deepreefmap_gui.profiling.system_probe import format_bytes
 from deepreefmap_gui.runs.run_detail import DetailCard
 from deepreefmap_gui.survey.models import RunRecord, TransectPass
@@ -158,7 +163,7 @@ class SectionDetailPanel(DetailCard):
         # in one dialog, and which way a swim went means nothing without the
         # line it went along. Cart membership is not here at all: the section's
         # own row carries that control and shows its state on it.
-        filing = f"{transect_name or 'Unassigned'} · {pass_.direction}"
+        filing = f"{transect_name or 'Unassigned'} · {direction_html(pass_.direction)}"
         rows = [
             ("Clip", clip_name),
             ("Transect", fact_link(filing, _FILING_LINK)),

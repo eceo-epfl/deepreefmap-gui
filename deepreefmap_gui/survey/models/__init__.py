@@ -25,14 +25,18 @@ from deepreefmap_gui.survey.models.transect import (
     initial_bearing_deg,
 )
 from deepreefmap_gui.survey.models.transect_pass import (
+    DIRECTION_ARROWS,
     PASS_DIRECTIONS,
     PASS_QUALITIES,
     TransectPass,
+    direction_arrow,
+    direction_text,
 )
 from deepreefmap_gui.survey.models.video_asset import VideoAsset
 
 __all__ = [
     "BLOCKER",
+    "DIRECTION_ARROWS",
     "CONDITION",
     "EVENT",
     "INFO",
@@ -56,6 +60,8 @@ __all__ = [
     "TransectPass",
     "VideoAsset",
     "compass_point",
+    "direction_arrow",
+    "direction_text",
     "haversine_m",
     "initial_bearing_deg",
 ]

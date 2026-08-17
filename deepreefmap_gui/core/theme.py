@@ -89,6 +89,11 @@ PRIMARY = "#4aa3ff"
 # grey of TEXT_MUTED: a queued section is waiting, not unavailable, and the two
 # read the same when both are drawn as grey beside a disabled control.
 IDLE = "#8aa0b8"
+# Which way a pass was swum. Teal and orchid rather than teal and orange: orange
+# sits in the same hue band as WARNING, UPDATE and ERROR, and the same tables
+# paint failures, so a reverse pass would read as a caution.
+DIRECTION_FORWARD = "#46c2b4"
+DIRECTION_REVERSE = "#e58fd6"
 PRIMARY_DARK = "#2a78c8"  # PRIMARY's outline/handle-border shade
 LINK = "#9ecbff"
 UPDATE = "#e0a030"
@@ -141,6 +146,10 @@ SPACE_XL = 24
 SPACE_XXL = 32
 PAGE_MARGIN = SPACE_MD  # padding between a page's content and the window edge
 GUTTER = SPACE_MD  # gap between two panes, cards, or rows of controls
+
+# Below this a splitter has not been laid out yet and its width is a placeholder,
+# so a share of the page is computed from its pane sizes instead.
+SPLIT_MIN_TOTAL = 400
 
 # Smallest comfortable click target. Chips, inline cell buttons and icon buttons
 # all sit on this floor: below it they are fiddly with a trackpad, which is how

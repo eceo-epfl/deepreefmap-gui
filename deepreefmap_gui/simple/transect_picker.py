@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from deepreefmap_gui.core.icons import ICON_SM, crosshair_icon
+from deepreefmap_gui.core.icons import ICON_SM, crosshair_icon, direction_arrow_icon
 from deepreefmap_gui.core.theme import ERROR, SPACE_SM, TREE_ROW_PAD_V
 from deepreefmap_gui.core.widgets import muted_label
 from deepreefmap_gui.map.overlays import OverlayTransect, transect_overlays
@@ -403,7 +403,9 @@ class TransectPickerDialog(QDialog):
         try:
             self.direction.clear()
             for name in PASS_DIRECTIONS:
-                self.direction.addItem(direction_label(name, transect), name)
+                self.direction.addItem(
+                    direction_arrow_icon(name), direction_label(name, transect), name
+                )
             index = self.direction.findData(keep)
             self.direction.setCurrentIndex(max(0, index))
         finally:

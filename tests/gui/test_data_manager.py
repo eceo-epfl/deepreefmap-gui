@@ -266,7 +266,8 @@ def test_the_table_columns_carry_the_survey_metadata(out_root, make_window):
     window._data_run_table.resize(1600, 400)
 
     row = row_of(window, "swim")
-    assert cell(window, row, COL_DIRECTION) == "Reverse"
+    # The arrow travels with the word wherever direction is shown.
+    assert cell(window, row, COL_DIRECTION) == "← Reverse"
     assert cell(window, row, COL_RECORDED).startswith("2026-07-21")
 
 

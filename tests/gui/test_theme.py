@@ -57,7 +57,17 @@ def test_theme_semantic_constants_are_valid_hex() -> None:
 
     from deepreefmap_gui.core import theme
 
-    for name in ("SUCCESS", "WARNING", "ERROR", "PRIMARY", "LINK", "UPDATE", "DANGER_BG"):
+    for name in (
+        "SUCCESS",
+        "WARNING",
+        "ERROR",
+        "PRIMARY",
+        "LINK",
+        "UPDATE",
+        "DANGER_BG",
+        "DIRECTION_FORWARD",
+        "DIRECTION_REVERSE",
+    ):
         assert QColor(getattr(theme, name)).isValid()
 
 

@@ -38,6 +38,7 @@ from deepreefmap_gui.core.widgets import (
     STATUS_COLORS,
     KeyValueList,
     StatusChip,
+    direction_html,
     section_card,
 )
 from deepreefmap_gui.profiling.eta import format_duration
@@ -238,7 +239,7 @@ def run_fact_rows(entry: RunEntry, related: int = 0) -> list[tuple[str, str]]:
     return [
         ("Folder", entry.dir_name),
         ("Transect", entry.transect_name or "Not assigned yet"),
-        ("Direction", (entry.direction or "").capitalize() or _MISSING),
+        ("Direction", direction_html(entry.direction) or _MISSING),
         ("Session", entry.session_name or "No session recorded"),
         ("Video", entry.video_name or _MISSING),
         ("Recorded", recorded_text(entry) or _MISSING),

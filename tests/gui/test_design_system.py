@@ -253,6 +253,8 @@ def test_focus_is_visible_on_more_than_text_fields() -> None:
         "LINK",
         "UPDATE",
         "BLOCK",
+        "DIRECTION_FORWARD",
+        "DIRECTION_REVERSE",
     ],
 )
 def test_text_tokens_clear_aa_on_every_surface_they_sit_on(token) -> None:
@@ -272,12 +274,37 @@ def test_status_pills_stay_readable_against_their_own_tint() -> None:
     """The pill is filled from the colour its text is drawn in, so every point
     of alpha is a point of legibility spent."""
     from deepreefmap_gui.core import theme
-    from deepreefmap_gui.core.widgets import PILL_TINT_ALPHA, STATUS_COLORS
+    from deepreefmap_gui.core.widgets import (
+        DIRECTION_COLORS,
+        PILL_TINT_ALPHA,
+        STATUS_COLORS,
+    )
 
-    for status, colour in STATUS_COLORS.items():
+    for name, colour in (*STATUS_COLORS.items(), *DIRECTION_COLORS.items()):
         for row_fill in (theme.BASE, theme.ALT_BASE):
             pill = composite(colour, row_fill, PILL_TINT_ALPHA / 255)
-            assert contrast(colour, pill) >= 4.0, (status, row_fill)
+            assert contrast(colour, pill) >= 4.0, (name, row_fill)
+
+
+def test_the_two_directions_are_told_apart_from_each_other_and_from_a_warning() -> None:
+    """A reverse pass sharing WARNING's hue band reads as a caution, in tables
+    that paint real cautions."""
+    from PySide6.QtGui import QColor
+
+    from deepreefmap_gui.core import theme
+
+    forward = QColor(theme.DIRECTION_FORWARD).hue()
+    reverse = QColor(theme.DIRECTION_REVERSE).hue()
+
+    def apart(a: int, b: int) -> int:
+        gap = abs(a - b) % 360
+        return min(gap, 360 - gap)
+
+    assert apart(forward, reverse) >= 60
+    # ERROR is the nearest of the three at 54 degrees, which is why the arrow
+    # travels with the colour everywhere and is the whole signal on a selected row.
+    for caution in (theme.WARNING, theme.UPDATE, theme.ERROR):
+        assert apart(reverse, QColor(caution).hue()) >= 50, caution
 
 
 def test_the_elevation_ramp_separates_by_lightness() -> None:

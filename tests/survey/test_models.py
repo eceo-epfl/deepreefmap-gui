@@ -286,3 +286,21 @@ def test_a_document_written_before_chapters_still_parses():
     for row in doc["passes"]:
         del row["extra_video_ids"]
     assert parse_document(doc)["passes"] == [pass_]
+
+
+def test_direction_reads_the_same_wherever_it_is_shown() -> None:
+    """One spelling, so eleven surfaces cannot each invent their own."""
+    from deepreefmap_gui.survey.models import (
+        PASS_DIRECTIONS,
+        direction_arrow,
+        direction_text,
+    )
+
+    assert direction_text("forward") == "→ Forward"
+    assert direction_text("reverse") == "← Reverse"
+    assert {direction_arrow(d) for d in PASS_DIRECTIONS} == {"→", "←"}
+    # Every value the store permits has a spelling, and nothing else does.
+    for d in PASS_DIRECTIONS:
+        assert direction_arrow(d) and direction_text(d)
+    for absent in ("", None, "sideways", "  "):
+        assert direction_arrow(absent) == "" and direction_text(absent) == ""

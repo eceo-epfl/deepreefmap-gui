@@ -5,6 +5,7 @@ from _factories import VIDEO_HASH, make_transect, make_video
 from deepreefmap.config.classes import load_classes
 
 from deepreefmap_gui.survey.analysis import (
+    aggregated_cover_chart,
     assemble_transect_covers,
     collate_long_format,
     cover_labels,
@@ -87,6 +88,66 @@ def test_repeatability_stats_math(store, tmp_path, classes_config):
     # Pinned, not re-derived from the returned std: cv = std / mean is the
     # formula under test, so computing it here would assert nothing.
     assert stats["cv"] == pytest.approx(0.353553, abs=1e-6)
+    # The endpoints and the count, so a chart can draw the spread rather than
+    # only state its width.
+    assert (stats["min"], stats["max"], stats["n"]) == pytest.approx((0.3, 0.5, 2.0))
+
+
+def test_one_pass_has_no_spread_rather_than_a_spread_of_zero(store, tmp_path, classes_config):
+    transect = seed_transect(store)
+    out_root = tmp_path / "out"
+    seed_run(store, out_root, transect, "only", [0.3], classes_config=classes_config)
+    covers = assemble_transect_covers(store, out_root, transect.id, classes_config, level="fine")
+    label = classes_config.classes[0].name
+
+    stats = repeatability_stats(covers)[label]
+    assert stats["n"] == 1.0
+    assert stats["min"] == stats["max"] == pytest.approx(0.3)
+    assert stats["std"] == 0.0
+
+    # And the chart is told there is none, so it draws no whisker: a zero-length
+    # one reads as perfect agreement between passes there are none of.
+    aggregate = aggregated_cover_chart(covers)
+    assert aggregate.n == 1
+    assert aggregate.spread == {}
+
+
+def test_the_aggregate_pools_the_estimate_and_brackets_it_with_the_passes(
+    store, tmp_path, classes_config
+):
+    """Scenario: two passes of one transect disagree about a class.
+
+    Expected behaviour: one bar at the count-weighted pool, whiskered by the
+    lowest and highest single pass. The two are different estimators, so the
+    whisker has to bracket the bar rather than equal it.
+    """
+    transect = seed_transect(store)
+    out_root = tmp_path / "out"
+    seed_run(store, out_root, transect, "run_a", [0.3], classes_config=classes_config)
+    seed_run(store, out_root, transect, "run_b", [0.5], classes_config=classes_config)
+    covers = assemble_transect_covers(store, out_root, transect.id, classes_config, level="fine")
+    label = classes_config.classes[0].name
+
+    aggregate = aggregated_cover_chart(covers)
+
+    assert aggregate.n == 2
+    assert label in aggregate.labels
+    low, high = aggregate.spread[label]
+    assert (low, high) == pytest.approx((0.3, 0.5))
+    assert low <= aggregate.values[label] <= high
+
+
+def test_the_aggregate_drops_the_classes_the_chart_calls_noise(store, tmp_path, classes_config):
+    transect = seed_transect(store)
+    out_root = tmp_path / "out"
+    seed_run(store, out_root, transect, "run_a", [0.3], classes_config=classes_config)
+    covers = assemble_transect_covers(store, out_root, transect.id, classes_config, level="fine")
+
+    everything = aggregated_cover_chart(covers, minimum_fraction=0.0)
+    trimmed = aggregated_cover_chart(covers, minimum_fraction=0.9)
+
+    assert everything.labels
+    assert trimmed.labels == []
 
 
 def test_reproducibility_groups_by_hash_and_trim(store, tmp_path, classes_config):

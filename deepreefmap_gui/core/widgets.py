@@ -41,6 +41,8 @@ from deepreefmap_gui.core.theme import (
     BUTTON,
     CARD_BG,
     CONTROL_HEIGHT,
+    DIRECTION_FORWARD,
+    DIRECTION_REVERSE,
     ERROR,
     FONT_SM,
     GROOVE,
@@ -70,6 +72,7 @@ from deepreefmap_gui.core.theme import (
     bar_qss,
 )
 from deepreefmap_gui.survey import statuses
+from deepreefmap_gui.survey.models.transect_pass import direction_text
 
 
 def section_title_font(label: QLabel) -> None:
@@ -409,6 +412,29 @@ def chip_qss(colour: str, *, interactive: bool) -> str:
         f" QToolButton:focus {{ border-color: {PRIMARY}; color: {WINDOW_TEXT}; }}"
         f" QToolButton:checked {{ border-color: {tinted(colour, PILL_BORDER_ALPHA)};{lit} }}"
     )
+
+
+class DirectionChip(QLabel):
+    """Which way a pass was swum, as an arrow and a word in its own colour.
+
+    The arrow is not decoration: neither direction colour clears AA contrast on a
+    selected row, so on one the glyph is all that carries the direction.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setAccessibleName("Direction")
+        self.set_direction("")
+
+    def set_direction(self, direction: str) -> None:
+        text = direction_text(direction)
+        self.setText(text)
+        self.setVisible(bool(text))
+        colour = DIRECTION_COLORS.get((direction or "").strip().lower(), TEXT_MUTED)
+        self.setStyleSheet(chip_qss(colour, interactive=False))
+        self.setToolTip(f"Swum {direction.lower()} along the transect." if text else "")
 
 
 class StatusChip(QLabel):
@@ -1040,6 +1066,22 @@ STATUS_COLORS = {
 }
 
 
+# The one place the Qt-free direction vocabulary meets the theme.
+DIRECTION_COLORS = {
+    "forward": DIRECTION_FORWARD,
+    "reverse": DIRECTION_REVERSE,
+}
+
+
+def direction_html(direction: str) -> str:
+    """The direction as rich text, for the fact rows that render markup."""
+    text = direction_text(direction)
+    if not text:
+        return ""
+    colour = DIRECTION_COLORS[direction.strip().lower()]
+    return f'<span style="color: {colour}; font-weight: {WEIGHT_SEMIBOLD}">{text}</span>'
+
+
 def clip_outcome_color(outcome: str) -> str:
     """The colour for a clip's own state, from the roles the runs use."""
     return TONE_COLORS[statuses.clip_spec(outcome).tone]
@@ -1057,6 +1099,12 @@ class StatusPillDelegate(QStyledItemDelegate):
     progress bar: PASS_PERCENT_ROLE fills it from the left.
     """
 
+    def __init__(
+        self, parent: QWidget | None = None, *, colours: Mapping[str, str] = STATUS_COLORS
+    ) -> None:
+        super().__init__(parent)
+        self._colours = colours
+
     def paint(self, painter, option: QStyleOptionViewItem, index) -> None:
         text = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
         if not text:
@@ -1071,9 +1119,11 @@ class StatusPillDelegate(QStyledItemDelegate):
         if style is not None:
             style.drawControl(QStyle.ControlElement.CE_ItemViewItem, blank, painter, option.widget)
 
-        # Key off the leading word so a decorated pill ("Succeeded ⚠") keeps its
-        # colour; case-insensitive so a title-cased "Failed" pill still reads red.
-        color = QColor(STATUS_COLORS.get(text.lower().split()[0], TEXT_MUTED))
+        # Whichever word is a key, so a decorated pill keeps its colour whether the
+        # decoration leads ("→ Forward") or trails ("Succeeded ⚠"). Case-insensitive
+        # so a title-cased "Failed" pill still reads red.
+        key = next((w for w in text.lower().split() if w in self._colours), "")
+        color = QColor(self._colours.get(key, TEXT_MUTED))
         metrics = option.fontMetrics
         pad_x = SPACE_SM
         width = min(metrics.horizontalAdvance(text) + pad_x * 2, option.rect.width() - SPACE_SM)

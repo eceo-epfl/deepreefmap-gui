@@ -124,6 +124,11 @@ Several features answer to two or three names. Prefer the first in prose, commen
 - **Adding a shared attribute is a two-file change.** The mixin that assigns it, and
   `core/window_protocol.py`. Skip the second and the sync test fails; a `hasattr` guard instead
   hides the gap from mypy entirely.
+- **Direction has one spelling.** `survey/models/transect_pass.py` owns the vocabulary
+  (`direction_arrow`, `direction_text`), `core/widgets.py::DIRECTION_COLORS` is where it meets the
+  theme, and `core/icons.py::direction_arrow_icon` pairs the glyph with the ink. Never a bare
+  "forward" in a label: the arrow is what carries direction on a selected row, where neither
+  colour clears AA contrast.
 - **Read `tests/README.md` before writing a test here.** The `tests/gui/` fixtures build a whole
   window, so a pure test placed there costs seconds per test for nothing.
 """

@@ -204,8 +204,59 @@ def repeatability_stats(covers: list[PassCover]) -> dict[str, dict[str, float]]:
             "std": std,
             "cv": std / mean if mean > 0 else 0.0,
             "range": max(values) - min(values),
+            # The endpoints and the count behind them, so a chart can draw the
+            # spread rather than only state its width.
+            "min": min(values),
+            "max": max(values),
+            "n": float(len(values)),
         }
     return stats
+
+
+@dataclass(frozen=True)
+class AggregatedCover:
+    """One transect's cover as a single estimate per class, with its spread.
+
+    ``values`` is the count-weighted pool, ``spread`` the lowest and highest
+    single-pass fraction behind it, and ``n`` how many passes that is. The two are
+    different estimators: a weighted mean always falls inside the range, but the
+    range is unweighted, so a reader has to be told which is which.
+    """
+
+    labels: list[str]
+    values: dict[str, float]
+    spread: dict[str, tuple[float, float]]
+    n: int
+    expected_passes: int
+
+
+def aggregated_cover_chart(
+    covers: list[PassCover],
+    *,
+    minimum_fraction: float = 0.0,
+    expected_passes: int | None = None,
+) -> AggregatedCover:
+    """The transect estimate and its between-pass range, ready to plot.
+
+    The spread is the observed range, not a standard deviation or a standard
+    error: a transect has one to four passes, where a sample SD is unstable and a
+    SEM asserts a normal approximation the data cannot support. At one pass there
+    is no spread to report and ``spread`` is empty.
+    """
+    pooled = pooled_transect_cover(covers, expected_passes=expected_passes)
+    labels = cover_labels(covers, minimum_fraction)
+    stats = repeatability_stats(covers) if len(covers) > 1 else {}
+    return AggregatedCover(
+        labels=labels,
+        values={label: pooled.cover.get(label, 0.0) for label in labels},
+        spread={
+            label: (stats[label]["min"], stats[label]["max"])
+            for label in labels
+            if label in stats
+        },
+        n=pooled.contributing_passes,
+        expected_passes=pooled.expected_passes,
+    )
 
 
 def reproducibility_groups(covers: list[PassCover]) -> list[list[PassCover]]:

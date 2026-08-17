@@ -35,6 +35,7 @@ from deepreefmap_gui.runs.run_cards import (
 )
 from deepreefmap_gui.survey import catalogue
 from deepreefmap_gui.survey.catalogue import RunEntry
+from deepreefmap_gui.survey.models import direction_text
 
 COL_NAME, COL_STATUS, COL_CREATED, COL_FRAMES = 0, 1, 2, 3
 COL_POINTS, COL_RUNTIME, COL_SIZE = 4, 5, 6
@@ -261,11 +262,7 @@ class RunTable(QTableWidget):
                 0 if entry.data_missing else entry.size_bytes,
             ),
             (COL_TRANSECT, entry.transect_name or "", _sort_text(entry.transect_name)),
-            (
-                COL_DIRECTION,
-                (entry.direction or "").capitalize(),
-                _sort_text(entry.direction),
-            ),
+            (COL_DIRECTION, direction_text(entry.direction), _sort_text(entry.direction)),
             (COL_RECORDED, recorded_text(entry), _recorded_sort_key(entry)),
             (COL_VIDEO, entry.video_name or "", _sort_text(entry.video_name)),
         )

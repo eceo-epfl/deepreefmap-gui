@@ -18,6 +18,7 @@ from deepreefmap_gui.core.theme import (
 from deepreefmap_gui.profiling.eta import format_duration
 from deepreefmap_gui.profiling.system_probe import format_bytes
 from deepreefmap_gui.survey.catalogue import RunEntry, run_duration_s
+from deepreefmap_gui.survey.models import direction_text
 
 _GEOMETRY_LABELS = {
     "world_points": "world points (full)",
@@ -160,7 +161,7 @@ def _column_lines(entry: RunEntry) -> list[str]:
         f"Status: {catalogue.entry_status(entry).capitalize()}",
         f"Created: {format_timestamp(manifest.get('run_timestamp')) or _MISSING}",
         f"Transect: {entry.transect_name or 'Not assigned yet'}",
-        f"Direction: {(entry.direction or '').capitalize() or _MISSING}",
+        f"Direction: {direction_text(entry.direction) or _MISSING}",
         f"Recorded: {recorded_text(entry) or _MISSING}",
         # No column shows the session, so the tooltip is where it lives; in the
         # always-shown block because its absence is a fact too.

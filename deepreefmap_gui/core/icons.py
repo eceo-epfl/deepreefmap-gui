@@ -26,6 +26,8 @@ from PySide6.QtGui import QColor, QGuiApplication, QIcon, QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 
 from deepreefmap_gui.core.theme import (
+    DIRECTION_FORWARD,
+    DIRECTION_REVERSE,
     ERROR,
     SUCCESS,
     TEXT_MUTED,
@@ -128,6 +130,20 @@ play_icon = _glyph("play")
 pause_icon = _glyph("pause")
 arrow_right_icon = _glyph("arrow-right")
 arrow_left_icon = _glyph("arrow-left")
+
+
+def direction_arrow_icon(
+    direction: str, size: int = ICON_SM, color: QColor | None = None
+) -> QIcon:
+    """The arrow for a pass direction, already in that direction's colour.
+
+    One place picks left from right and the ink that goes with it, so no call
+    site can pair a forward arrow with a reverse colour.
+    """
+    forward = (direction or "").strip().lower() == "forward"
+    glyph = arrow_right_icon if forward else arrow_left_icon
+    ink = color or QColor(DIRECTION_FORWARD if forward else DIRECTION_REVERSE)
+    return glyph(size, ink)
 check_icon = _glyph("check", size=ICON_SM, ink=SUCCESS)
 download_icon = _glyph("download")
 warning_icon = _glyph("triangle-alert", size=ICON_SM, ink=WARNING)

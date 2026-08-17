@@ -15,7 +15,7 @@ from functools import partial
 from pathlib import Path
 
 from deepreefmap.pipeline.artifacts import ReconstructionCancelled
-from PySide6.QtCore import QRect, Qt, Signal
+from PySide6.QtCore import QRect, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QGuiApplication
 from PySide6.QtWidgets import (
     QDialog,
@@ -32,7 +32,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from deepreefmap_gui.core.icons import ICON_SM, close_icon, grip_icon
+from deepreefmap_gui.core.icons import (
+    ICON_SM,
+    close_icon,
+    direction_arrow_icon,
+    grip_icon,
+)
 from deepreefmap_gui.core.reveal import reveal_in_file_manager
 from deepreefmap_gui.core.theme import (
     ERROR,
@@ -1286,7 +1291,6 @@ class SimpleBatchMixin(MixinBase):
         """
         return " · ".join((
             self._transect_cell_text(row.transect_id),
-            row.direction,
             f"{_mmss(row.begin_s)}-{_mmss(row.end_s)}",
         ))
 
@@ -1298,6 +1302,11 @@ class SimpleBatchMixin(MixinBase):
         """
         button = QPushButton(self._section_cell_text(row))
         button.setProperty("quiet", "true")
+        # The direction as a coloured arrow rather than a word in the middle of
+        # the line. Set as an icon, never a stylesheet: _refresh_row_notices owns
+        # this button's stylesheet.
+        button.setIcon(direction_arrow_icon(row.direction))
+        button.setIconSize(QSize(ICON_SM, ICON_SM))
         if row.pass_id is None:
             button.setEnabled(False)
         else:
@@ -2020,7 +2029,12 @@ class SimpleBatchMixin(MixinBase):
             if not isinstance(cell, QPushButton):
                 continue
             missing = [v.file_name for v in row.videos if v.path in missing_paths]
-            notes = ["Where this pass was swum, which way, and what part of the clip."]
+            # Names the direction the arrow icon shows, so it reaches a reader who
+            # sees neither the glyph nor its colour.
+            notes = [
+                f"Swum {row.direction} along the transect, "
+                "and what part of the clip that was."
+            ]
             if missing:
                 _style_missing_cell(cell)
                 notes.append(

@@ -33,10 +33,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from deepreefmap_gui.core.icons import direction_arrow_icon
 from deepreefmap_gui.core.theme import (
     GUTTER,
     PRIMARY,
     SPACE_SM,
+    SPLIT_MIN_TOTAL,
 )
 from deepreefmap_gui.core.widgets import (
     SCOPE_FILTERS,
@@ -126,10 +128,6 @@ _RUN_LIST_PAGE, _EMPTY_PAGE = 0, 1
 _DETAIL_EMPTY, _DETAIL_RUN, _DETAIL_TRANSECT, _DETAIL_SESSION = range(4)
 
 _GROUP_KEY_ROLE = Qt.ItemDataRole.UserRole
-
-# Below this the splitter has not been laid out yet, so its width says nothing
-# about how much room Browse actually has.
-_SPLIT_MIN_TOTAL = 400
 
 # Wide enough for a transect or session name to survive elision. Down from 300
 # once the rail stopped being a card and the tree stopped indenting 20px a
@@ -619,7 +617,7 @@ class BrowseMixin(MixinBase):
         # construction the panes have not been laid out and the sum is a
         # placeholder, which is what the fallback is for.
         total = self._data_split.width()
-        if total < _SPLIT_MIN_TOTAL:
+        if total < SPLIT_MIN_TOTAL:
             total = sum(self._data_split.sizes()) or 1200
         rail = getattr(self, "_data_rail_width", _RAIL_WIDTH) if rail_visible else 0
         if self._data_detail_stack.currentIndex() == _DETAIL_EMPTY:
@@ -1649,7 +1647,10 @@ class BrowseMixin(MixinBase):
         for transect in transects:
             transect_combo.addItem(transect.name, userData=transect.id)
         direction_combo = QComboBox()
-        direction_combo.addItems(list(PASS_DIRECTIONS))
+        for name in PASS_DIRECTIONS:
+            # The lowercase vocabulary as the item's data: the store's CHECK
+            # constraint is what the capitalised label would fail.
+            direction_combo.addItem(direction_arrow_icon(name), name.capitalize(), name)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
@@ -1660,7 +1661,7 @@ class BrowseMixin(MixinBase):
         form.addRow(buttons)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return None
-        return transect_combo.currentData(), direction_combo.currentText()
+        return transect_combo.currentData(), direction_combo.currentData()
 
     def _on_data_assign_clicked(self) -> None:
         entries = self._data_assign_targets()

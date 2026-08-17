@@ -9,6 +9,22 @@ from deepreefmap_gui.survey.models.common import utc_now_iso
 
 PASS_DIRECTIONS = ("forward", "reverse")
 
+# Which way along the tape, as a glyph. The arrow is what carries the direction
+# where colour cannot: on a selected row, and for a reader who sees neither.
+DIRECTION_ARROWS = {"forward": "\u2192", "reverse": "\u2190"}
+
+
+def direction_arrow(direction: str) -> str:
+    """The arrow for ``direction``, or an empty string for anything else."""
+    return DIRECTION_ARROWS.get((direction or "").strip().lower(), "")
+
+
+def direction_text(direction: str) -> str:
+    """The arrow and the word, as every surface in the app spells it."""
+    key = (direction or "").strip().lower()
+    arrow = DIRECTION_ARROWS.get(key)
+    return f"{arrow} {key.capitalize()}" if arrow else ""
+
 # The diver's assessment, on the fixed scale that normalises the free text in the
 # field spreadsheets ("meh", "good/meh", "very bad"). None is not assessed.
 PASS_QUALITIES = ("excellent", "very_good", "good", "meh", "bad", "very_bad")
