@@ -5,8 +5,11 @@ import pytest
 from _factories import VIDEO_PATH, make_transect, make_video
 
 from deepreefmap_gui.survey.models import (
+    PASS_QUALITIES,
     BatchItem,
+    Campaign,
     RunRecord,
+    Site,
     SurveyBatch,
     TransectPass,
     VideoAsset,
@@ -59,6 +62,40 @@ def test_pass_rejects_bad_trim_and_direction():
         make_pass(transect, video, direction="sideways")
 
 
+def test_pass_rejects_a_quality_outside_the_scale():
+    transect, video = make_transect(), make_video()
+    make_pass(transect, video, quality=None)
+    for quality in PASS_QUALITIES:
+        make_pass(transect, video, quality=quality)
+    with pytest.raises(ValueError):
+        make_pass(transect, video, quality="brilliant")
+
+
+def test_site_rejects_an_empty_name_and_impossible_coordinates():
+    Site(name="Reef", latitude=None, longitude=None)
+    with pytest.raises(ValueError):
+        Site(name="  ")
+    with pytest.raises(ValueError):
+        Site(name="Reef", latitude=91.0)
+    with pytest.raises(ValueError):
+        Site(name="Reef", longitude=-181.0)
+
+
+def test_campaign_rejects_an_empty_name_and_a_backwards_window():
+    Campaign(name="2025_10_eritrea")
+    with pytest.raises(ValueError):
+        Campaign(name=" ")
+    with pytest.raises(ValueError):
+        Campaign(name="2025_10_eritrea", begin_date="2025-10-20", end_date="2025-10-01")
+
+
+def test_transect_rejects_a_negative_fix_accuracy():
+    with pytest.raises(ValueError):
+        make_transect(start_accuracy_m=-1.0)
+    with pytest.raises(ValueError):
+        make_transect(end_accuracy_m=-1.0)
+
+
 def test_pass_duration_is_the_trimmed_window():
     """What the ETA and the repeatability stats divide by."""
     transect, video = make_transect(), make_video()
@@ -80,28 +117,35 @@ def test_run_record_rejects_unknown_status():
 
 
 def test_row_round_trip_preserves_every_model():
-    transect, video = make_transect(), make_video()
+    site, campaign = Site(name="Reef"), Campaign(name="2025_10_eritrea")
+    transect, video = make_transect(site_id=site.id), make_video()
     batch = SurveyBatch(name="Day 1")
-    pass_ = make_pass(transect, video, batch_id=batch.id, direction="reverse")
+    pass_ = make_pass(
+        transect, video, batch_id=batch.id, campaign_id=campaign.id, direction="reverse",
+        quality="meh", upside_down=True,
+    )
     run = RunRecord(pass_id=pass_.id, run_dir_name="t1__p01__20260720-0900", batch_id=batch.id)
     item = BatchItem(batch_id=batch.id, pass_id=pass_.id)
-    for model in (transect, video, batch, pass_, run, item):
+    for model in (site, campaign, transect, video, batch, pass_, run, item):
         row = to_row(model)
         assert all(not isinstance(v, uuid.UUID) for v in row.values())
         assert from_row(type(model), row) == model
 
 
 def test_document_round_trip():
-    transect, video = make_transect(), make_video()
+    site, campaign = Site(name="Reef"), Campaign(name="2025_10_eritrea")
+    transect, video = make_transect(site_id=site.id), make_video()
     batch = SurveyBatch(name="Day 1")
-    pass_ = make_pass(transect, video, batch_id=batch.id)
+    pass_ = make_pass(transect, video, batch_id=batch.id, campaign_id=campaign.id)
     run = RunRecord(pass_id=pass_.id, run_dir_name="run")
     item = BatchItem(batch_id=batch.id, pass_id=pass_.id)
     doc = build_document(
-        transects=[transect], videos=[video], batches=[batch], passes=[pass_],
-        runs=[run], batch_items=[item],
+        sites=[site], campaigns=[campaign], transects=[transect], videos=[video],
+        batches=[batch], passes=[pass_], runs=[run], batch_items=[item],
     )
     sections = parse_document(doc)
+    assert sections["sites"] == [site]
+    assert sections["campaigns"] == [campaign]
     assert sections["transects"] == [transect]
     assert sections["videos"] == [video]
     assert sections["batches"] == [batch]
@@ -189,6 +233,7 @@ def test_every_video_field_is_covered_by_a_carry_over_group():
         + VideoAsset.LOCATION_FIELDS
         + VideoAsset.CARRIED_FIELDS
         + VideoAsset.TRISTATE_FIELDS
+        + VideoAsset.SYNC_FIELDS
     )
     assert len(set(grouped)) == len(grouped), "a field is named in two groups"
     assert set(grouped) == {f.name for f in fields(VideoAsset)}

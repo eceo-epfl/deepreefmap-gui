@@ -9,7 +9,9 @@ from dataclasses import fields
 from typing import Any, TypeVar, cast, get_args, get_origin, get_type_hints
 
 from deepreefmap_gui.survey.models.batch_item import BatchItem
+from deepreefmap_gui.survey.models.campaign import Campaign
 from deepreefmap_gui.survey.models.run_record import RunRecord
+from deepreefmap_gui.survey.models.site import Site
 from deepreefmap_gui.survey.models.survey_batch import SurveyBatch
 from deepreefmap_gui.survey.models.transect import Transect
 from deepreefmap_gui.survey.models.transect_pass import TransectPass
@@ -17,11 +19,13 @@ from deepreefmap_gui.survey.models.video_asset import VideoAsset
 
 T = TypeVar("T")
 
-DOCUMENT_SCHEMA_VERSION = 1
+DOCUMENT_SCHEMA_VERSION = 2
 
-# Insert order respects foreign keys: passes need transects/videos/batches,
-# batch items and runs need passes.
+# Insert order respects foreign keys: transects need sites, passes need
+# transects/campaigns/videos/batches, batch items and runs need passes.
 DOCUMENT_SECTIONS: dict[str, type] = {
+    "sites": Site,
+    "campaigns": Campaign,
     "transects": Transect,
     "videos": VideoAsset,
     "batches": SurveyBatch,
@@ -95,9 +99,13 @@ def build_document(
     passes: Iterable[TransectPass],
     runs: Iterable[RunRecord],
     batch_items: Iterable[BatchItem] = (),
+    sites: Iterable[Site] = (),
+    campaigns: Iterable[Campaign] = (),
 ) -> dict[str, Any]:
     """One multi-object JSON document holding a whole survey."""
     sections = {
+        "sites": sites,
+        "campaigns": campaigns,
         "transects": transects,
         "videos": videos,
         "batches": batches,

@@ -15,7 +15,12 @@ import sqlite3
 import uuid
 
 import pytest
-from _factories import LEGACY_SCHEMAS, write_legacy_database
+from _factories import (
+    LEGACY_SCHEMAS,
+    V10_TRANSECT_NAMES,
+    write_legacy_database,
+    write_v10_database,
+)
 
 from deepreefmap_gui.survey import backup as bk
 from deepreefmap_gui.survey import store
@@ -61,6 +66,29 @@ def _schema(path):
     )
     conn.close()
     return shape
+
+
+def _rows(path):
+    """Every row of every table, keyed by table and read as its columns stand.
+
+    Columns a later step adds are not compared: what has to survive a rebuild is
+    the values that were already there.
+    """
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    tables = sorted(
+        r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        )
+    )
+    rows = {}
+    for table in tables:
+        # sync_state is keyed by setting name rather than by an id.
+        columns = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
+        order = "id" if "id" in columns else "rowid"
+        rows[table] = [dict(r) for r in conn.execute(f"SELECT * FROM {table} ORDER BY {order}")]
+    conn.close()
+    return rows
 
 
 def _stamp(path, version: int) -> None:
@@ -176,6 +204,87 @@ def test_rows_survive_being_carried_forward(tmp_path, version):
     conn.close()
 
 
+def test_a_populated_v10_survives_the_sync_columns(tmp_path):
+    """Scenario: a field laptop's survey, opened by the first build that syncs.
+
+    Expected behaviour: every row is still there with the values it had. The step
+    rebuilds transect and transect_pass, and a rebuild is where a column left out
+    of the INSERT is silently emptied instead of failing.
+    """
+    path = tmp_path / "survey.db"
+    ids = write_v10_database(path)
+    before = _rows(path)
+
+    store = SurveyStore(path)
+    try:
+        pass_ = store.get_pass(uuid.UUID(ids["pass"]))
+        assert pass_.video_ids() == [uuid.UUID(v) for v in ids["videos"]]
+        assert (pass_.direction, pass_.begin_s, pass_.end_s) == ("reverse", 5.5, 65.5)
+        assert (pass_.notes, pass_.label) == ("surge", "first swim")
+        assert pass_.batch_id == uuid.UUID(ids["batch"])
+        # Nothing assessed a pass that predates the scale.
+        assert (pass_.quality, pass_.campaign_id, pass_.upside_down) == (None, None, False)
+        assert store.list_batch_items(uuid.UUID(ids["batch"]))[0].overrides == {"fps": 4}
+        assert len(store.list_notifications()) == 1
+    finally:
+        store.close()
+
+    conn = sqlite3.connect(path)
+    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+    conn.close()
+    after = _rows(path)
+    for table, rows in before.items():
+        assert rows, f"{table} is empty, so it proves nothing"
+        assert [{c: row[c] for c in rows[0]} for row in after[table]] == rows, table
+
+
+def test_two_transect_names_differing_only_in_case_both_survive(tmp_path):
+    """Scenario: v10's UNIQUE was case-sensitive, so 'T1' and 't1' both got in.
+
+    Expected behaviour: the case-insensitive index can still be built, because
+    the later row is disambiguated rather than dropped. Failing here would leave
+    the survey unopenable, which is the one outcome worse than a renamed line.
+    """
+    path = tmp_path / "survey.db"
+    ids = write_v10_database(path)
+    conn = sqlite3.connect(path)
+    with conn:
+        conn.execute("UPDATE transect SET name = 't1' WHERE id = ?", (ids["transects"][1],))
+    conn.close()
+
+    store = SurveyStore(path)
+    try:
+        first, second = (store.get_transect(uuid.UUID(t)) for t in ids["transects"])
+        assert first.name == V10_TRANSECT_NAMES[0]
+        assert second.name.startswith("t1 (")
+        assert second.length_m == first.length_m
+    finally:
+        store.close()
+
+
+def test_the_sync_stamp_backfills_from_when_the_row_was_written(tmp_path):
+    """An empty updated_at would offer every existing row to the registry as the
+    oldest thing it has ever seen, and last-write-wins would discard the lot."""
+    path = tmp_path / "survey.db"
+    write_v10_database(path)
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    already_stamped = {r["id"]: r["updated_at"] for r in conn.execute("SELECT * FROM transect")}
+    conn.close()
+
+    SurveyStore(path).close()
+
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    for table in ("transect", "video_asset", "transect_pass", "run_record"):
+        rows = list(conn.execute(f"SELECT created_at, updated_at FROM {table}"))
+        assert all(r["updated_at"] >= r["created_at"] for r in rows), table
+    # transect kept a real updated_at of its own, which is not overwritten.
+    stamps = {r["id"]: r["updated_at"] for r in conn.execute("SELECT * FROM transect")}
+    assert stamps == already_stamped
+    conn.close()
+
+
 def test_a_database_below_the_floor_is_refused_without_being_touched(tmp_path):
     """A refusal must leave no trace: not a changed stamp, not a .bak.
 
@@ -207,7 +316,7 @@ def test_the_refusal_names_a_version_that_can_open_it(tmp_path):
         SurveyStore(path)
 
 
-def test_can_open_agrees_with_what_the_store_does(tmp_path):
+def test_can_open_agrees_with_what_the_storedoes(tmp_path):
     below = oldest_supported_version() - 1
     assert not can_open(below)
     assert not can_open(latest_schema_version() + 1)

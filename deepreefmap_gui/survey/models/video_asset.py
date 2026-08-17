@@ -54,6 +54,10 @@ class VideoAsset:
     gps: str = UNKNOWN
     id: uuid.UUID = field(default_factory=uuid.uuid4)
     created_at: str = field(default_factory=utc_now_iso)
+    updated_at: str = field(default_factory=utc_now_iso)
+    deleted_at: str | None = None
+    created_by: str | None = None
+    device_id: uuid.UUID | None = None
 
     # Every field belongs to exactly one group, and the two carry-over policies
     # below are written in terms of the groups rather than a list per call site.
@@ -77,6 +81,14 @@ class VideoAsset:
     # Tri-states, not optionals: 'unknown' is a value, so it needs the same
     # "only when the other side knows better" rule that None gets above.
     TRISTATE_FIELDS: ClassVar[tuple[str, ...]] = ("gravity", "gps")
+    # The surviving row's own sync history, so folding a duplicate in never
+    # adopts a stamp that belongs to a row about to disappear.
+    SYNC_FIELDS: ClassVar[tuple[str, ...]] = (
+        "updated_at",
+        "deleted_at",
+        "created_by",
+        "device_id",
+    )
 
     @classmethod
     def from_path(cls, path: Path) -> VideoAsset:

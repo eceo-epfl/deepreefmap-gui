@@ -9,6 +9,10 @@ from deepreefmap_gui.survey.models.common import utc_now_iso
 
 PASS_DIRECTIONS = ("forward", "reverse")
 
+# The diver's assessment, on the fixed scale that normalises the free text in the
+# field spreadsheets ("meh", "good/meh", "very bad"). None is not assessed.
+PASS_QUALITIES = ("excellent", "very_good", "good", "meh", "bad", "very_bad")
+
 
 @dataclass(slots=True)
 class TransectPass:
@@ -33,6 +37,11 @@ class TransectPass:
     end_s: float
     direction: str = "forward"
     batch_id: uuid.UUID | None = None
+    campaign_id: uuid.UUID | None = None
+    quality: str | None = None
+    # The camera was mounted the other way up, which the reconstruction has to
+    # know and no probe can tell it.
+    upside_down: bool = False
     notes: str = ""
     # What a person calls this section. Empty means nobody has named it, which
     # reads as the generated default rather than as a blank -- storing the
@@ -41,10 +50,16 @@ class TransectPass:
     extra_video_ids: list[uuid.UUID] = field(default_factory=list)
     id: uuid.UUID = field(default_factory=uuid.uuid4)
     created_at: str = field(default_factory=utc_now_iso)
+    updated_at: str = field(default_factory=utc_now_iso)
+    deleted_at: str | None = None
+    created_by: str | None = None
+    device_id: uuid.UUID | None = None
 
     def __post_init__(self) -> None:
         if self.direction not in PASS_DIRECTIONS:
             raise ValueError(f"direction must be one of {PASS_DIRECTIONS}, got {self.direction!r}")
+        if self.quality is not None and self.quality not in PASS_QUALITIES:
+            raise ValueError(f"quality must be one of {PASS_QUALITIES}, got {self.quality!r}")
         if self.begin_s < 0:
             raise ValueError(f"begin_s must be >= 0, got {self.begin_s}")
         if self.end_s <= self.begin_s:

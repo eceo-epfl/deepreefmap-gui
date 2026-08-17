@@ -13,6 +13,7 @@ import json
 import os
 import sqlite3
 import struct
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -277,6 +278,95 @@ def write_legacy_database(db_path, version: int):
 def write_v0_2_0_database(db_path):
     """A survey.db in the shape v0.2.0 left it, with no rows."""
     return write_legacy_database(db_path, 3)
+
+
+# The format written before the metadata registry existed, populated rather than
+# empty: migration 11 rebuilds transect and transect_pass and backfills
+# updated_at, and none of that is exercised by a schema with nothing in it.
+V10_TIMES = {
+    "transect": "2026-08-01T08:00:00+00:00",
+    "video": "2026-08-01T09:00:00+00:00",
+    "batch": "2026-08-01T10:00:00+00:00",
+    "pass": "2026-08-01T11:00:00+00:00",
+    "run": "2026-08-01T12:00:00+00:00",
+}
+
+V10_TRANSECT_NAMES = ("T1", "T2")
+
+
+def write_v10_database(db_path):
+    """A survey.db at v10 holding one row in every table it has.
+
+    Returns the ids, keyed by table. The shape comes from the store's own
+    baseline and steps: v10 is above the baseline, so stopping the list there is
+    exactly what the build that stamped it had.
+    """
+    from deepreefmap_gui.survey import store as store_module
+
+    conn = sqlite3.connect(db_path)
+    store_module.SurveyStore._apply(conn, store_module._BASELINE, store_module.SCHEMA_VERSION)
+    for migration in store_module._MIGRATIONS:
+        if migration.version <= 10:
+            store_module.SurveyStore._apply(conn, migration.sql, migration.version)
+
+    ids = {
+        "transects": [str(uuid.uuid4()) for _ in V10_TRANSECT_NAMES],
+        "videos": [str(uuid.uuid4()) for _ in range(2)],
+        "batch": str(uuid.uuid4()),
+        "pass": str(uuid.uuid4()),
+        "item": str(uuid.uuid4()),
+        "run": str(uuid.uuid4()),
+        "notification": str(uuid.uuid4()),
+    }
+    with conn:
+        for index, (transect_id, name) in enumerate(zip(ids["transects"], V10_TRANSECT_NAMES, strict=True)):
+            conn.execute(
+                "INSERT INTO transect (id, name, description, start_lat, start_lon, end_lat,"
+                " end_lon, length_m, depth_m, created_at, updated_at)"
+                " VALUES (?, ?, 'a line', -17.5, 177.1, -17.5005, 177.1005, 50.0, 8.0, ?, ?)",
+                (transect_id, name, V10_TIMES["transect"], f"2026-08-0{index + 2}T08:00:00+00:00"),
+            )
+        for index, video_id in enumerate(ids["videos"]):
+            conn.execute(
+                "INSERT INTO video_asset (id, file_name, path, hash, size_bytes, mtime,"
+                " duration_s, fps, created_at, captured_at, captured_source, width, height,"
+                " codec, probed_at, gravity, gps)"
+                f" VALUES (?, 'GX0{index + 1}0001.MP4', '/data/GX0{index + 1}0001.MP4', ?,"
+                " 1024, ?, 90.0, 30.0, ?, ?, 'container', 1920, 1080, 'hvc1', ?, 'yes', 'no')",
+                (video_id, f"{index + 1:02x}" * 16, V10_TIMES["video"], V10_TIMES["video"],
+                 V10_TIMES["video"], V10_TIMES["video"]),
+            )
+        conn.execute(
+            "INSERT INTO survey_batch (id, name, preset_name, created_at) VALUES (?,?,?,?)",
+            (ids["batch"], "Day 1", "survey_preset", V10_TIMES["batch"]),
+        )
+        conn.execute(
+            "INSERT INTO transect_pass (id, transect_id, video_id, batch_id, direction,"
+            " begin_s, end_s, notes, created_at, extra_video_ids, label)"
+            " VALUES (?, ?, ?, ?, 'reverse', 5.5, 65.5, 'surge', ?, ?, 'first swim')",
+            (ids["pass"], ids["transects"][0], ids["videos"][0], ids["batch"],
+             V10_TIMES["pass"], json.dumps([ids["videos"][1]])),
+        )
+        conn.execute(
+            "INSERT INTO batch_item (id, batch_id, pass_id, position, overrides, created_at)"
+            " VALUES (?, ?, ?, 3, '{\"fps\": 4}', ?)",
+            (ids["item"], ids["batch"], ids["pass"], V10_TIMES["pass"]),
+        )
+        conn.execute(
+            "INSERT INTO run_record (id, pass_id, run_dir_name, status, started_at,"
+            " finished_at, error, created_at, batch_id)"
+            " VALUES (?, ?, 't1__p01', 'succeeded', ?, ?, '', ?, ?)",
+            (ids["run"], ids["pass"], V10_TIMES["run"], V10_TIMES["run"], V10_TIMES["run"],
+             ids["batch"]),
+        )
+        conn.execute(
+            "INSERT INTO notification (id, fingerprint, kind, severity, scope, title,"
+            " created_at, updated_at) VALUES (?, 'disk', 'condition', 'warning', 'machine',"
+            " 'Disk filling up', ?, ?)",
+            (ids["notification"], V10_TIMES["run"], V10_TIMES["run"]),
+        )
+    conn.close()
+    return ids
 
 
 # --- video containers --------------------------------------------------------

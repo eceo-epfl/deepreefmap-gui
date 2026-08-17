@@ -42,19 +42,29 @@ def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 @dataclass(slots=True)
 class Transect:
-    """User-defined survey line; ``length_m`` is the tape length used for scaling."""
+    """User-defined survey line; ``length_m`` is the tape length used for scaling.
+
+    ``name`` is unique per site rather than globally: two reefs each have a "T1".
+    The accuracy figures are per end point, which is how a field GPS exports them.
+    """
 
     name: str
     start_lat: float
     start_lon: float
     end_lat: float
     end_lon: float
+    site_id: uuid.UUID | None = None
+    start_accuracy_m: float | None = None
+    end_accuracy_m: float | None = None
     length_m: float | None = None
     depth_m: float | None = None
     description: str = ""
     id: uuid.UUID = field(default_factory=uuid.uuid4)
     created_at: str = field(default_factory=utc_now_iso)
     updated_at: str = field(default_factory=utc_now_iso)
+    deleted_at: str | None = None
+    created_by: str | None = None
+    device_id: uuid.UUID | None = None
 
     def __post_init__(self) -> None:
         if not self.name.strip():
@@ -65,7 +75,12 @@ class Transect:
         for lon in (self.start_lon, self.end_lon):
             if not -180.0 <= lon <= 180.0:
                 raise ValueError(f"Longitude out of range: {lon}")
-        for value, label in ((self.length_m, "length_m"), (self.depth_m, "depth_m")):
+        for value, label in (
+            (self.length_m, "length_m"),
+            (self.depth_m, "depth_m"),
+            (self.start_accuracy_m, "start_accuracy_m"),
+            (self.end_accuracy_m, "end_accuracy_m"),
+        ):
             if value is not None and value < 0:
                 raise ValueError(f"{label} must be >= 0")
 

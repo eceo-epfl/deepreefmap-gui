@@ -6,6 +6,8 @@ import uuid
 
 import pytest
 from _factories import (
+    VIDEO_HASH,
+    VIDEO_PATH,
     make_batch,
     make_transect,
     make_video,
@@ -14,10 +16,116 @@ from _factories import (
     write_v0_2_0_database,
 )
 
-from deepreefmap_gui.survey.models import BatchItem, RunRecord, SurveyBatch, TransectPass
+from deepreefmap_gui.survey.models import (
+    BatchItem,
+    Campaign,
+    RunRecord,
+    Site,
+    SurveyBatch,
+    TransectPass,
+)
 from deepreefmap_gui.survey.models.convert import survey_manifest_block
-from deepreefmap_gui.survey.store import SurveyStore
+from deepreefmap_gui.survey.store import SYNC_SECTIONS, SurveyStore
 from deepreefmap_gui.survey.video_probe import UNKNOWN, YES
+
+
+def test_site_crud_round_trip(store):
+    site = Site(name="Kadda Dabali", country="Djibouti", latitude=11.6, longitude=43.1)
+    store.add_site(site)
+    assert store.get_site(site.id) == site
+    site.region = "Gulf of Tadjoura"
+    site.updated_at = "2000-01-01T00:00:00+00:00"
+    store.update_site(site)
+    stored = store.get_site(site.id)
+    assert stored.region == "Gulf of Tadjoura"
+    assert stored.updated_at > "2000-01-01T00:00:00+00:00"
+
+
+def test_site_names_are_unique_case_insensitively(store):
+    store.add_site(Site(name="Japanese Garden"))
+    with pytest.raises(sqlite3.IntegrityError):
+        store.add_site(Site(name="japanese garden"))
+
+
+def test_list_sites_orders_by_name(store):
+    store.add_site(Site(name="Wall"))
+    store.add_site(Site(name="Reef"))
+    assert [s.name for s in store.list_sites()] == ["Reef", "Wall"]
+
+
+def test_campaign_crud_round_trip(store):
+    campaign = Campaign(name="2025_10_eritrea", begin_date="2025-10-01", end_date="2025-10-20")
+    store.add_campaign(campaign)
+    assert store.get_campaign(campaign.id) == campaign
+    campaign.end_date = "2025-10-25"
+    campaign.updated_at = "2000-01-01T00:00:00+00:00"
+    store.update_campaign(campaign)
+    stored = store.get_campaign(campaign.id)
+    assert stored.end_date == "2025-10-25"
+    assert stored.updated_at > "2000-01-01T00:00:00+00:00"
+
+
+def test_campaign_names_are_unique_case_insensitively(store):
+    store.add_campaign(Campaign(name="2025_10_eritrea"))
+    with pytest.raises(sqlite3.IntegrityError):
+        store.add_campaign(Campaign(name="2025_10_ERITREA"))
+
+
+def test_list_campaigns_puts_the_newest_expedition_first(store):
+    store.add_campaign(Campaign(name="2024_04_fiji", begin_date="2024-04-02"))
+    store.add_campaign(Campaign(name="2025_10_eritrea", begin_date="2025-10-01"))
+    assert [c.name for c in store.list_campaigns()] == ["2025_10_eritrea", "2024_04_fiji"]
+
+
+def test_a_pass_names_a_campaign_and_a_quality(store):
+    campaign = Campaign(name="2025_10_eritrea")
+    store.add_campaign(campaign)
+    _, _, pass_ = seed_pass(store)
+    pass_.campaign_id = campaign.id
+    pass_.quality = "very_good"
+    pass_.upside_down = True
+    store.update_pass(pass_)
+    stored = store.get_pass(pass_.id)
+    assert (stored.campaign_id, stored.quality, stored.upside_down) == (
+        campaign.id, "very_good", True,
+    )
+
+
+def test_the_quality_scale_is_enforced_by_the_column_as_well(store):
+    """A row arriving from the registry is written straight into the table, so
+    the column carries the same scale the model validates."""
+    _, _, pass_ = seed_pass(store)
+    conn = sqlite3.connect(store.path)
+    with pytest.raises(sqlite3.IntegrityError), conn:
+        conn.execute(
+            "UPDATE transect_pass SET quality = 'brilliant' WHERE id = ?", (str(pass_.id),)
+        )
+    conn.close()
+
+
+def test_editing_a_syncable_row_moves_its_updated_at(store):
+    """Last-write-wins compares updated_at, so an edit that leaves it alone is
+    an edit the registry would discard."""
+    _, video, pass_ = seed_pass(store)
+    run = RunRecord(pass_id=pass_.id, run_dir_name="t1__p01")
+    store.add_run(run)
+    stale = "2000-01-01T00:00:00+00:00"
+    conn = sqlite3.connect(store.path)
+    with conn:
+        for table, row_id in (("video_asset", video.id), ("transect_pass", pass_.id),
+                              ("run_record", run.id)):
+            conn.execute(
+                f"UPDATE {table} SET updated_at = ? WHERE id = ?", (stale, str(row_id))
+            )
+    conn.close()
+
+    store.update_video(store.get_video(video.id))
+    store.update_pass(store.get_pass(pass_.id))
+    store.set_run_status(run.id, "succeeded")
+
+    assert store.get_video(video.id).updated_at > stale
+    assert store.get_pass(pass_.id).updated_at > stale
+    assert store.get_run(run.id).updated_at > stale
 
 
 def test_transect_crud_round_trip(store):
@@ -35,10 +143,55 @@ def test_transect_crud_round_trip(store):
     assert store.get_transect(transect.id) is None
 
 
-def test_transect_names_are_unique(store):
-    store.add_transect(make_transect())
+def test_transect_names_are_unique_per_site_and_case_insensitively(store):
+    """Scenario: two reefs each have a line the divers call T1.
+
+    Expected behaviour: both are accepted, and a second T1 on either is not,
+    however it is capitalised. Unassigned lines are held to the same rule, which
+    is the store's own doing: see the test below.
+    """
+    reef, wall = Site(name="Reef"), Site(name="Wall")
+    store.add_site(reef)
+    store.add_site(wall)
+    store.add_transect(make_transect(site_id=reef.id))
+    store.add_transect(make_transect(site_id=wall.id))
     with pytest.raises(sqlite3.IntegrityError):
-        store.add_transect(make_transect())
+        store.add_transect(make_transect("t1", site_id=reef.id))
+    store.add_transect(make_transect(site_id=None))
+    with pytest.raises(sqlite3.IntegrityError):
+        store.add_transect(make_transect("T1", site_id=None))
+    assert len(store.list_transects()) == 3
+
+
+def test_the_column_lets_two_unassigned_lines_share_a_name(store):
+    """Scenario: two laptops each filed a T1 against no site, and both are pulled.
+
+    Expected behaviour: the table takes them. A site of None is not a site, so a
+    unique index cannot tie the pair together, and the registry's own partial
+    index has the same hole. A stricter column here would refuse rows the server
+    has already accepted, which is a sync that can never finish.
+    """
+    store.add_transect(make_transect(site_id=None))
+    twin = make_transect(site_id=None)
+    conn = sqlite3.connect(store.path)
+    with conn:
+        conn.execute(
+            "INSERT INTO transect (id, name, description, start_lat, start_lon, end_lat,"
+            " end_lon, created_at, updated_at) VALUES (?, ?, '', 1, 2, 3, 4, ?, ?)",
+            (str(twin.id), twin.name, twin.created_at, twin.updated_at),
+        )
+    conn.close()
+    assert [t.name for t in store.list_transects()] == ["T1", "T1"]
+
+
+def test_a_tombstoned_transect_name_is_free_again(store):
+    site = Site(name="Reef")
+    store.add_site(site)
+    first = make_transect(site_id=site.id)
+    store.add_transect(first)
+    first.deleted_at = "2026-08-01T00:00:00+00:00"
+    store.update_transect(first)
+    store.add_transect(make_transect(site_id=site.id))
 
 
 def test_list_transects_orders_by_name(store):
@@ -199,7 +352,13 @@ def test_run_lookup_by_dir_name_and_delete(store):
 
 
 def test_json_export_import_round_trip(store, tmp_path):
-    _, _, pass_ = seed_pass(store)
+    site, campaign = Site(name="Reef"), Campaign(name="2025_10_eritrea")
+    store.add_site(site)
+    store.add_campaign(campaign)
+    _, _, pass_ = seed_pass(store, transect=make_transect(site_id=site.id))
+    pass_.campaign_id = campaign.id
+    pass_.quality = "good"
+    store.update_pass(pass_)
     batch = SurveyBatch(name="Day 1")
     store.add_batch(batch)
     store.add_batch_item(BatchItem(batch_id=batch.id, pass_id=pass_.id))
@@ -209,6 +368,8 @@ def test_json_export_import_round_trip(store, tmp_path):
 
     fresh = SurveyStore(tmp_path / "fresh.db")
     fresh.import_json(doc_path)
+    assert fresh.list_sites() == store.list_sites()
+    assert fresh.list_campaigns() == store.list_campaigns()
     assert fresh.list_transects() == store.list_transects()
     assert fresh.list_videos() == store.list_videos()
     assert fresh.list_passes() == store.list_passes()
@@ -953,3 +1114,321 @@ def test_deleting_a_session_leaves_other_sessions_runs(store):
 
     assert [r.run_dir_name for r in store.list_runs()] == ["one"]
     assert store.get_batch(first.id) is not None
+
+
+# --- Tombstones ---
+
+
+def test_a_deleted_pass_is_gone_from_every_list(store):
+    """A soft delete has to read as a delete: the row stays for the registry, and
+    nothing in the app may still see it."""
+    batch = make_batch(store)
+    transect, video, pass_ = seed_pass(store, batch=batch)
+
+    store.delete_pass(pass_.id)
+
+    assert store.get_pass(pass_.id) is None
+    assert store.list_passes() == []
+    assert store.list_passes(transect_id=transect.id) == []
+    assert store.list_passes(video_id=video.id) == []
+    assert store.passes_in_batch(batch.id) == []
+    assert store.list_all_batch_items() == []
+    assert store.pass_with_window(video.id, 0.0, 60.0) is None
+    assert store.transect_usage_counts() == {}
+    assert store.holds_id("passes", pass_.id)
+
+
+def test_a_deleted_clip_is_gone_from_every_lookup(store):
+    _transect, video, _pass = seed_pass(store)
+
+    assert store.delete_video(video.id) == 1
+
+    assert store.get_video(video.id) is None
+    assert store.list_videos() == []
+    assert store.find_video_by_hash(video.hash) is None
+    assert store.find_video_by_path(video.path) is None
+
+
+def test_a_deleted_run_is_gone_from_every_run_list(store):
+    batch = make_batch(store)
+    transect, _video, pass_ = seed_pass(store, batch=batch)
+    run = RunRecord(pass_id=pass_.id, run_dir_name="t1__p01", batch_id=batch.id)
+    store.add_run(run)
+    store.set_run_status(run.id, "succeeded")
+
+    store.delete_run(run.id)
+
+    assert store.get_run(run.id) is None
+    assert store.list_runs() == []
+    assert store.runs_for_pass(pass_.id) == []
+    assert store.runs_for_transect(transect.id) == []
+    assert store.runs_in_batch(batch.id) == []
+    assert store.run_by_dir_name("t1__p01") is None
+    assert store.succeeded_pass_ids() == set()
+    assert store.batch_run_count(batch.id) == 0
+    assert store.transect_usage_counts() == {transect.id: (1, 0)}
+
+
+def test_a_deleted_transects_name_is_free_again(store):
+    site = Site(name="Reef")
+    store.add_site(site)
+    first = make_transect(site_id=site.id)
+    store.add_transect(first)
+
+    store.delete_transect(first.id)
+
+    assert store.list_transects() == []
+    store.add_transect(make_transect(site_id=site.id))
+    assert len(store.list_transects()) == 1
+
+
+def test_a_deleted_clips_hash_is_free_again(store):
+    """Re-adding the file makes a new clip rather than reviving the tombstone: the
+    row the registry was told about is not what the operator asked back."""
+    first = store.upsert_video(make_video())
+    store.delete_video(first.id)
+
+    second = store.upsert_video(make_video())
+
+    assert second.id != first.id
+    assert [v.id for v in store.list_videos()] == [second.id]
+
+
+def test_the_delete_guards_still_refuse_in_the_same_words(store):
+    transect, video, pass_ = seed_pass(store)
+    store.add_run(RunRecord(pass_id=pass_.id, run_dir_name="t1__p01"))
+
+    with pytest.raises(ValueError, match="This pass has recorded runs and cannot be removed."):
+        store.delete_pass(pass_.id)
+    with pytest.raises(ValueError, match="This clip has recorded runs and cannot be removed."):
+        store.delete_video(video.id)
+    with pytest.raises(
+        ValueError, match="This transect has passes recorded against it and cannot be deleted."
+    ):
+        store.delete_transect(transect.id)
+
+    assert store.get_pass(pass_.id) is not None
+    assert store.get_video(video.id) is not None
+    assert store.get_transect(transect.id) is not None
+
+
+def test_a_tombstoned_pass_no_longer_holds_its_transect(store):
+    transect, _video, pass_ = seed_pass(store)
+    store.delete_pass(pass_.id)
+
+    store.delete_transect(transect.id)
+
+    assert store.get_transect(transect.id) is None
+
+
+def test_a_merged_away_duplicate_does_not_answer_for_the_keeper(store):
+    """Scenario: two rows for one clip are merged, then the file is scanned again.
+
+    Expected behaviour: the scan lands on the keeper. The loser is a tombstone
+    that still carries the hash, so every read of the hash has to skip it.
+    """
+    keeper = store.upsert_video(make_video())
+    # Written straight in: the deduplicating upsert will not make a duplicate,
+    # so the state under test has to be built.
+    loser = make_video()
+    store._add("video_asset", loser)
+
+    assert store.merge_videos(keeper.id, [loser.id]) == 0
+
+    assert store.find_video_by_hash(VIDEO_HASH).id == keeper.id
+    assert store.upsert_video(make_video()).id == keeper.id
+    assert [v.id for v in store.list_videos()] == [keeper.id]
+
+
+def test_a_rescan_does_not_undo_a_deleted_run(store, tmp_path):
+    """The manifest outlives a metadata-only delete, and the tombstone is what
+    stops the next rebuild from arguing with it."""
+    transect, _pass, run = seed_survey_run(store, tmp_path / "out", "t1__p01")
+    store.delete_run(run.id)
+
+    report = store.rebuild_from_scan(tmp_path / "out")
+
+    assert (report.runs, report.passes, report.transects) == (0, 0, 0)
+    assert store.list_runs() == []
+
+
+# --- Sync ---
+
+
+def test_changed_since_carries_tombstones_and_takes_either_name(store):
+    """A delete only travels as a row, so the push document has to include one.
+
+    The watermark here is the stamp the pass had a moment before it was deleted,
+    which is the same second: an exclusive comparison would lose the delete.
+    """
+    transect, _video, pass_ = seed_pass(store)
+    watermark = store.get_pass(pass_.id).updated_at
+    store.delete_pass(pass_.id)
+
+    changed = store.changed_since("passes", watermark)
+
+    assert [p.id for p in changed] == [pass_.id]
+    assert changed[0].deleted_at is not None
+    assert store.changed_since("transect_pass", watermark) == changed
+    assert [t.id for t in store.changed_since("transects")] == [transect.id]
+    assert store.changed_since("transects", "2099-01-01T00:00:00+00:00") == []
+
+
+def test_changed_since_refuses_a_section_that_does_not_sync(store):
+    with pytest.raises(KeyError):
+        store.changed_since("batches")
+
+
+def test_apply_from_server_inserts_what_this_device_has_never_seen(store):
+    pulled = {
+        "id": str(uuid.uuid4()),
+        "name": "Japanese Garden",
+        "country": "Djibouti",
+        "region": None,
+        "description": "",
+        "latitude": 11.6,
+        "longitude": 43.1,
+        "created_at": "2026-08-01T00:00:00+00:00",
+        "updated_at": "2026-08-01T00:00:00+00:00",
+        "deleted_at": None,
+        "created_by": "auth0|abc",
+        "device_id": None,
+        "server_seq": 4102,
+    }
+
+    result = store.apply_from_server("sites", [pulled])
+
+    assert (result.received, result.inserted, result.applied) == (1, 1, 1)
+    stored = store.get_site(uuid.UUID(pulled["id"]))
+    assert (stored.name, stored.created_by) == ("Japanese Garden", "auth0|abc")
+
+
+def test_apply_from_server_keeps_the_newer_of_the_two_copies(store):
+    site = Site(name="Reef", updated_at="2026-08-10T00:00:00+00:00")
+    store.add_site(site)
+
+    stale = {"id": str(site.id), "name": "Stale", "updated_at": "2026-08-01T00:00:00+00:00"}
+    same = {"id": str(site.id), "name": "Tied", "updated_at": site.updated_at}
+    assert store.apply_from_server("sites", [stale, same]).skipped == [site.id, site.id]
+    assert store.get_site(site.id).name == "Reef"
+
+    fresh = {"id": str(site.id), "name": "Fresher", "updated_at": "2026-08-20T00:00:00+00:00"}
+    result = store.apply_from_server("sites", [fresh])
+
+    assert (result.updated, result.skipped) == (1, [])
+    assert store.get_site(site.id).name == "Fresher"
+
+
+def test_apply_from_server_lands_a_tombstone(store):
+    site = Site(name="Reef", updated_at="2026-08-01T00:00:00+00:00")
+    store.add_site(site)
+
+    store.apply_from_server("sites", [{
+        "id": str(site.id),
+        "deleted_at": "2026-08-20T00:00:00+00:00",
+        "updated_at": "2026-08-20T00:00:00+00:00",
+    }])
+
+    assert store.get_site(site.id) is None
+    assert store.list_sites() == []
+    assert store.changed_since("sites")[0].deleted_at == "2026-08-20T00:00:00+00:00"
+
+
+def test_apply_from_server_leaves_what_only_this_device_knows(store):
+    """The registry holds no path, so a pulled clip row carries none. Writing the
+    whole row would blank the one thing that finds the file again."""
+    video = store.upsert_video(make_video())
+
+    store.apply_from_server("videos", [{
+        "id": str(video.id),
+        "file_name": "renamed.MP4",
+        "updated_at": "2026-08-20T00:00:00+00:00",
+    }])
+
+    stored = store.get_video(video.id)
+    assert (stored.file_name, stored.path) == ("renamed.MP4", VIDEO_PATH)
+    assert stored.hash == VIDEO_HASH
+
+
+def test_apply_from_server_gives_an_unseen_clip_no_path_at_all(store):
+    """A clip only the registry knows has no location on this device, and an empty
+    path never matches another row."""
+    pulled_id = uuid.uuid4()
+    store.apply_from_server("videos", [{
+        "id": str(pulled_id),
+        "file_name": "GX090001.MP4",
+        "hash": "ff" * 16,
+        "created_at": "2026-08-01T00:00:00+00:00",
+        "updated_at": "2026-08-01T00:00:00+00:00",
+    }])
+
+    assert store.get_video(pulled_id).path == ""
+    assert store.find_video_by_path("") is None
+
+
+def test_dependency_closure_is_a_closed_set_in_foreign_key_order(store):
+    """The registry refuses a child whose parent it has never seen, so a run
+    travels with its pass, that pass's clips, its transect and that transect's
+    site, whether or not any of them changed."""
+    site, campaign = Site(name="Reef"), Campaign(name="2025_10_eritrea")
+    store.add_site(site)
+    store.add_campaign(campaign)
+    transect, video, pass_ = seed_pass(store, transect=make_transect(site_id=site.id))
+    chapter = store.upsert_video(
+        make_video("cd" * 16, file_name="GX020001.MP4", path="/data/GX020001.MP4")
+    )
+    pass_.campaign_id = campaign.id
+    pass_.extra_video_ids = [chapter.id]
+    store.update_pass(pass_)
+    run = RunRecord(pass_id=pass_.id, run_dir_name="t1__p01")
+    store.add_run(run)
+
+    closure = store.dependency_closure("runs", [run.id])
+
+    assert list(closure) == [s for s in SYNC_SECTIONS if s in closure]
+    assert list(closure) == ["sites", "campaigns", "transects", "videos", "passes", "runs"]
+    assert [s.id for s in closure["sites"]] == [site.id]
+    assert [c.id for c in closure["campaigns"]] == [campaign.id]
+    assert [t.id for t in closure["transects"]] == [transect.id]
+    assert {v.id for v in closure["videos"]} == {video.id, chapter.id}
+    assert [p.id for p in closure["passes"]] == [pass_.id]
+    assert [r.id for r in closure["runs"]] == [run.id]
+
+
+def test_dependency_closure_carries_a_tombstoned_parent(store):
+    """A deleted clip is still the row the pass points at, so it has to be pushed
+    with it or the registry refuses the pass."""
+    _transect, video, pass_ = seed_pass(store, transect=None)
+    conn = sqlite3.connect(store.path)
+    with conn:
+        conn.execute(
+            "UPDATE video_asset SET deleted_at = ?, updated_at = ? WHERE id = ?",
+            ("2026-08-20T00:00:00+00:00", "2026-08-20T00:00:00+00:00", str(video.id)),
+        )
+    conn.close()
+
+    closure = store.dependency_closure("passes", [pass_.id])
+
+    assert [v.id for v in closure["videos"]] == [video.id]
+    assert closure["videos"][0].deleted_at is not None
+
+
+def test_dependency_closure_skips_an_id_that_is_not_here(store):
+    assert store.dependency_closure("runs", [uuid.uuid4()]) == {}
+
+
+def test_sync_state_is_machine_local_and_stays_out_of_the_document(store, tmp_path):
+    store.set_sync_state("server_url", "https://registry.example/api")
+    store.set_sync_state("cursor", "4821")
+
+    assert store.sync_state("cursor") == "4821"
+    store.set_sync_state("cursor", "4830")
+    assert store.sync_state("cursor") == "4830"
+    store.set_sync_state("cursor", None)
+    assert store.sync_state("cursor") is None
+    assert store.sync_state("never_written") is None
+
+    doc_path = tmp_path / "survey.json"
+    store.export_json(doc_path)
+    assert "sync_state" not in doc_path.read_text()
+    assert "registry.example" not in doc_path.read_text()

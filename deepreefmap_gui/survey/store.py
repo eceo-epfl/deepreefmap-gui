@@ -12,13 +12,14 @@ import logging
 import sqlite3
 import threading
 import uuid
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
 from deepreefmap_gui.survey.backup import write_backup
 from deepreefmap_gui.survey.models.batch_item import BatchItem
+from deepreefmap_gui.survey.models.campaign import Campaign
 from deepreefmap_gui.survey.models.common import utc_now_iso
 from deepreefmap_gui.survey.models.convert import (
     build_document,
@@ -29,6 +30,7 @@ from deepreefmap_gui.survey.models.convert import (
 from deepreefmap_gui.survey.models.exporters import load_survey_json, save_survey_json
 from deepreefmap_gui.survey.models.notification import Notification
 from deepreefmap_gui.survey.models.run_record import RUN_STATUSES, TERMINAL_STATUSES, RunRecord
+from deepreefmap_gui.survey.models.site import Site
 from deepreefmap_gui.survey.models.survey_batch import SurveyBatch
 from deepreefmap_gui.survey.models.transect import Transect
 from deepreefmap_gui.survey.models.transect_pass import TransectPass
@@ -364,7 +366,206 @@ _MIGRATIONS: list[Migration] = [
         ALTER TABLE transect_pass ADD COLUMN label TEXT NOT NULL DEFAULT '';
         """,
     ),
+    # What the metadata registry remembers, in the shape it remembers it. Rows
+    # carry client-minted ids, an updated_at that decides last-write-wins, and a
+    # deleted_at so a delete travels as a fact rather than as an absence. Cart
+    # rows, the notification log and everything device-local (paths, timings,
+    # probes) are deliberately not here: laptops compute, the server remembers.
+    #
+    # server_seq is not a column. It is the server's own monotonic cursor, and
+    # this side stores the last one it saw machine-locally.
+    Migration(
+        11,
+        "syncable rows carry sites, campaigns and their sync stamps",
+        """
+        CREATE TABLE site (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            country TEXT,
+            region TEXT,
+            description TEXT NOT NULL DEFAULT '',
+            latitude REAL,
+            longitude REAL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT '',
+            deleted_at TEXT,
+            created_by TEXT,
+            device_id TEXT
+        );
+        -- Case-insensitive and tombstone-aware, matching the registry's partial
+        -- unique index: a deleted site's name is free to use again.
+        CREATE UNIQUE INDEX site_name_lower ON site(LOWER(name)) WHERE deleted_at IS NULL;
+
+        CREATE TABLE campaign (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            begin_date TEXT,
+            end_date TEXT,
+            description TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT '',
+            deleted_at TEXT,
+            created_by TEXT,
+            device_id TEXT
+        );
+        CREATE UNIQUE INDEX campaign_name_lower
+            ON campaign(LOWER(name)) WHERE deleted_at IS NULL;
+
+        -- transect.name was unique globally, which sync cannot hold: two sites
+        -- may each have a "T1" and pulling the second would be refused. SQLite
+        -- cannot drop a UNIQUE in place, so the table is rebuilt.
+        CREATE TABLE transect_new (
+            id TEXT PRIMARY KEY,
+            site_id TEXT REFERENCES site(id),
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            start_lat REAL NOT NULL,
+            start_lon REAL NOT NULL,
+            start_accuracy_m REAL,
+            end_lat REAL NOT NULL,
+            end_lon REAL NOT NULL,
+            end_accuracy_m REAL,
+            length_m REAL,
+            depth_m REAL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT '',
+            deleted_at TEXT,
+            created_by TEXT,
+            device_id TEXT
+        );
+        INSERT INTO transect_new
+            (id, name, description, start_lat, start_lon, end_lat, end_lon,
+             length_m, depth_m, created_at, updated_at)
+            SELECT id, name, description, start_lat, start_lon, end_lat, end_lon,
+                   length_m, depth_m, created_at, updated_at
+            FROM transect;
+        DROP TABLE transect;
+        ALTER TABLE transect_new RENAME TO transect;
+
+        -- The old constraint was case-sensitive, so 'T1' and 't1' may both be
+        -- here and the new index would refuse to be built at all. The earliest
+        -- row keeps the name; the rest take their own id, which reads as the
+        -- collision it is instead of stranding the laptop on a failed migration.
+        UPDATE transect SET name = name || ' (' || SUBSTR(id, 1, 8) || ')'
+        WHERE EXISTS (
+            SELECT 1 FROM transect AS earlier
+            WHERE LOWER(earlier.name) = LOWER(transect.name)
+              AND earlier.rowid < transect.rowid
+        );
+        CREATE UNIQUE INDEX transect_site_name_lower
+            ON transect(site_id, LOWER(name)) WHERE deleted_at IS NULL;
+
+        -- quality needs a CHECK and SQLite cannot add one in place. video_id and
+        -- extra_video_ids stay exactly as they are: the registry's pass_video
+        -- join table is a wire shape, and the sync layer orders video_ids() into
+        -- it rather than this side keeping two records of one relationship.
+        CREATE TABLE transect_pass_new (
+            id TEXT PRIMARY KEY,
+            transect_id TEXT REFERENCES transect(id),
+            campaign_id TEXT REFERENCES campaign(id),
+            video_id TEXT NOT NULL REFERENCES video_asset(id),
+            batch_id TEXT REFERENCES survey_batch(id),
+            direction TEXT NOT NULL CHECK (direction IN ('forward', 'reverse')),
+            upside_down INTEGER NOT NULL DEFAULT 0,
+            begin_s REAL NOT NULL,
+            end_s REAL NOT NULL,
+            label TEXT NOT NULL DEFAULT '',
+            notes TEXT NOT NULL DEFAULT '',
+            quality TEXT CHECK (quality IS NULL OR quality IN
+                ('excellent', 'very_good', 'good', 'meh', 'bad', 'very_bad')),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT '',
+            deleted_at TEXT,
+            created_by TEXT,
+            device_id TEXT,
+            extra_video_ids TEXT NOT NULL DEFAULT '[]'
+        );
+        INSERT INTO transect_pass_new
+            (id, transect_id, video_id, batch_id, direction, begin_s, end_s,
+             label, notes, created_at, updated_at, extra_video_ids)
+            SELECT id, transect_id, video_id, batch_id, direction, begin_s, end_s,
+                   label, notes, created_at, created_at, extra_video_ids
+            FROM transect_pass;
+        DROP TABLE transect_pass;
+        ALTER TABLE transect_pass_new RENAME TO transect_pass;
+
+        ALTER TABLE video_asset ADD COLUMN updated_at TEXT NOT NULL DEFAULT '';
+        ALTER TABLE video_asset ADD COLUMN deleted_at TEXT;
+        ALTER TABLE video_asset ADD COLUMN created_by TEXT;
+        ALTER TABLE video_asset ADD COLUMN device_id TEXT;
+        ALTER TABLE run_record ADD COLUMN updated_at TEXT NOT NULL DEFAULT '';
+        ALTER TABLE run_record ADD COLUMN deleted_at TEXT;
+        ALTER TABLE run_record ADD COLUMN created_by TEXT;
+        ALTER TABLE run_record ADD COLUMN device_id TEXT;
+        -- Backfilled rather than left empty: last-write-wins compares these, and
+        -- an epoch stamp would offer every existing row to the server as the
+        -- oldest thing it has ever seen.
+        UPDATE video_asset SET updated_at = created_at;
+        UPDATE run_record SET updated_at = created_at;
+
+        -- A tombstone keeps its hash, so the index that finds a clip by content
+        -- skips it: a merged-away duplicate must not answer for the keeper.
+        DROP INDEX video_asset_hash;
+        CREATE INDEX video_asset_hash ON video_asset(hash) WHERE deleted_at IS NULL;
+
+        -- Where this device is in the conversation: the last server cursor, the
+        -- push watermark, the device id and the server url. It lives here rather
+        -- than in QSettings because two output roots are two devices' worth of
+        -- data, and it is never a document section and never pushed.
+        CREATE TABLE sync_state (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        """,
+    ),
 ]
+
+
+# The registry's sections and the table behind each, in the order a push
+# document must present them. pass_video and cover_row are absent on purpose:
+# this side keeps a pass's chapters on the pass and its cover in the run
+# directory, so the sync layer derives those two rather than reading a table.
+SYNC_SECTIONS: dict[str, str] = {
+    "sites": "site",
+    "campaigns": "campaign",
+    "transects": "transect",
+    "videos": "video_asset",
+    "passes": "transect_pass",
+    "runs": "run_record",
+}
+
+_TOMBSTONED_TABLES = frozenset(SYNC_SECTIONS.values())
+
+_SYNC_MODELS: dict[str, type] = {
+    "site": Site,
+    "campaign": Campaign,
+    "transect": Transect,
+    "video_asset": VideoAsset,
+    "transect_pass": TransectPass,
+    "run_record": RunRecord,
+}
+
+# Which attribute of a row names which parent section, for building a closed push
+# document. extra_video_ids is in there with video_id: on the wire both become
+# pass_video rows, and every chapter is a parent the registry has to hold first.
+_SYNC_PARENTS: dict[str, tuple[tuple[str, str], ...]] = {
+    "sites": (),
+    "campaigns": (),
+    "transects": (("site_id", "sites"),),
+    "videos": (),
+    "passes": (
+        ("transect_id", "transects"),
+        ("campaign_id", "campaigns"),
+        ("video_id", "videos"),
+        ("extra_video_ids", "videos"),
+    ),
+    "runs": (("pass_id", "passes"),),
+}
+
+# What a pulled row cannot carry and the model has no default for. The registry
+# does not hold a path, and a clip this device has never seen has no location.
+_WIRE_DEFAULTS: dict[str, dict[str, Any]] = {"videos": {"path": ""}}
 
 
 def latest_schema_version() -> int:
@@ -423,6 +624,49 @@ def resolved_path(path: str) -> str | None:
         return path
 
 
+def _section_of(name: str) -> str:
+    """The section behind either a section name or the table it is stored in."""
+    if name in SYNC_SECTIONS:
+        return name
+    for section, table in SYNC_SECTIONS.items():
+        if table == name:
+            return section
+    raise KeyError(f"{name!r} is not a syncable section or table")
+
+
+def _live(table: str) -> str:
+    """The tombstone filter for a table, ready to AND into a WHERE clause.
+
+    Sessions, cart rows and the notification log never sync, so they are deleted
+    outright and have nothing to filter. The constant keeps the generic readers
+    from having to know which kind of table they were handed.
+    """
+    return "deleted_at IS NULL" if table in _TOMBSTONED_TABLES else "1 = 1"
+
+
+def _from_wire(section: str, incoming: Any) -> tuple[dict[str, Any], set[str]]:
+    """A pulled row as a plain dict, with the names of the fields it carried.
+
+    A mapping is what a pull returns, and ``server_seq`` is dropped because this
+    side does not store it. A model is what a re-push or a test hands over, and
+    every one of its fields counts as carried.
+    """
+    if not isinstance(incoming, Mapping):
+        return to_row(incoming), {f.name for f in fields(incoming)}
+    carried = {name for name in incoming if name != "server_seq"}
+    return (
+        {**_WIRE_DEFAULTS.get(section, {}), **{k: incoming[k] for k in carried}},
+        carried,
+    )
+
+
+def _ids_of(value: Any) -> list[uuid.UUID]:
+    """Every id a foreign-key attribute names: none, one, or a list of them."""
+    if value is None:
+        return []
+    return list(value) if isinstance(value, list) else [value]
+
+
 def _insert_sql(table: str, row: dict[str, Any]) -> str:
     columns = ", ".join(row)
     params = ", ".join(f":{c}" for c in row)
@@ -432,6 +676,20 @@ def _insert_sql(table: str, row: dict[str, Any]) -> str:
 def _update_sql(table: str, row: dict[str, Any]) -> str:
     sets = ", ".join(f"{c} = :{c}" for c in row if c != "id")
     return f"UPDATE {table} SET {sets} WHERE id = :id"
+
+
+@dataclass
+class ApplyResult:
+    """What one pulled section did on landing, for the caller's report."""
+
+    received: int = 0
+    inserted: int = 0
+    updated: int = 0
+    skipped: list[uuid.UUID] = field(default_factory=list)
+
+    @property
+    def applied(self) -> int:
+        return self.inserted + self.updated
 
 
 @dataclass
@@ -573,37 +831,123 @@ class SurveyStore:
 
     def _get(self, table: str, cls: type, item_id: uuid.UUID) -> Any:
         row = self._conn().execute(
-            f"SELECT * FROM {table} WHERE id = ?", (str(item_id),)
+            f"SELECT * FROM {table} WHERE id = ? AND {_live(table)}", (str(item_id),)
         ).fetchone()
         return from_row(cls, row) if row is not None else None
 
     def _list(self, table: str, cls: type, order_by: str) -> list[Any]:
-        rows = self._conn().execute(f"SELECT * FROM {table} ORDER BY {order_by}").fetchall()
+        rows = self._conn().execute(
+            f"SELECT * FROM {table} WHERE {_live(table)} ORDER BY {order_by}"
+        ).fetchall()
         return [from_row(cls, r) for r in rows]
+
+    def _tombstone(self, table: str, item_id: uuid.UUID) -> None:
+        """Stamp a row deleted and leave it where it is.
+
+        A replicated row is deleted by being marked, never removed: a hard delete
+        leaves nothing to push, and the next pull would bring the row back.
+        Re-deleting an already tombstoned row is a no-op, so the original stamp
+        stands rather than being moved forward.
+        """
+        now = utc_now_iso()
+        with self._conn() as conn:
+            conn.execute(
+                f"UPDATE {table} SET deleted_at = ?, updated_at = ? "
+                f"WHERE id = ? AND deleted_at IS NULL",
+                (now, now, str(item_id)),
+            )
+
+    def holds_id(self, section_or_table: str, item_id: uuid.UUID) -> bool:
+        """Whether this id is in the table at all, tombstone included.
+
+        The get_* readers hide a tombstone, so anything that inserts a row under
+        an id it was given -- restoring from a manifest, adopting an orphan run --
+        has to ask this instead, or it collides on the primary key.
+        """
+        table = SYNC_SECTIONS[_section_of(section_or_table)]
+        row = self._conn().execute(
+            f"SELECT 1 FROM {table} WHERE id = ?", (str(item_id),)
+        ).fetchone()
+        return row is not None
+
+    # --- Sites ---
+
+    def add_site(self, site: Site) -> None:
+        self._add("site", site)
+
+    def update_site(self, site: Site) -> None:
+        site.updated_at = utc_now_iso()
+        self._update("site", site)
+
+    def get_site(self, site_id: uuid.UUID) -> Site | None:
+        return self._get("site", Site, site_id)
+
+    def list_sites(self) -> list[Site]:
+        return self._list("site", Site, "name")
+
+    # --- Campaigns ---
+
+    def add_campaign(self, campaign: Campaign) -> None:
+        self._add("campaign", campaign)
+
+    def update_campaign(self, campaign: Campaign) -> None:
+        campaign.updated_at = utc_now_iso()
+        self._update("campaign", campaign)
+
+    def get_campaign(self, campaign_id: uuid.UUID) -> Campaign | None:
+        return self._get("campaign", Campaign, campaign_id)
+
+    def list_campaigns(self) -> list[Campaign]:
+        # Newest expedition first: the one being worked is the one just begun.
+        return self._list("campaign", Campaign, "begin_date DESC, name")
 
     # --- Transects ---
 
     def add_transect(self, transect: Transect) -> None:
+        self._refuse_a_taken_name(transect)
         self._add("transect", transect)
 
     def update_transect(self, transect: Transect) -> None:
+        self._refuse_a_taken_name(transect)
         transect.updated_at = utc_now_iso()
         self._update("transect", transect)
 
-    def delete_transect(self, transect_id: uuid.UUID) -> None:
-        """Delete a transect that nothing was swum against.
+    def _refuse_a_taken_name(self, transect: Transect) -> None:
+        """Refuse a name a live transect on the same site already carries.
 
-        transect_pass.transect_id restricts rather than cascading or nulling:
-        the passes are the record of what was swum here, and a run manifest
-        already written names this transect.
+        transect_site_name_lower cannot say this. It is the registry's index, and
+        there a site of NULL differs from every other NULL, so two unassigned
+        lines called T1 satisfy it -- which they must, or a pull carrying both
+        could not land. The name a person is typing is a different question, and
+        it is answered here. A tombstone is not asking.
         """
-        try:
-            with self._conn() as conn:
-                conn.execute("DELETE FROM transect WHERE id = ?", (str(transect_id),))
-        except sqlite3.IntegrityError as exc:
+        if transect.deleted_at is not None:
+            return
+        row = self._conn().execute(
+            "SELECT 1 FROM transect WHERE id != ? AND deleted_at IS NULL "
+            "AND site_id IS ? AND LOWER(name) = LOWER(?)",
+            (
+                str(transect.id),
+                None if transect.site_id is None else str(transect.site_id),
+                transect.name,
+            ),
+        ).fetchone()
+        if row is not None:
+            raise sqlite3.IntegrityError(f"transect name {transect.name!r} is taken on this site")
+
+    def delete_transect(self, transect_id: uuid.UUID) -> None:
+        """Tombstone a transect that nothing was swum against.
+
+        The passes are the record of what was swum here, and a run manifest
+        already written names this transect, so a transect that still has one is
+        refused. Asked of the passes rather than of a foreign key: the row stays,
+        so the constraint that used to answer this never fires.
+        """
+        if self.list_passes(transect_id=transect_id):
             raise ValueError(
                 "This transect has passes recorded against it and cannot be deleted."
-            ) from exc
+            )
+        self._tombstone("transect", transect_id)
 
     def get_transect(self, transect_id: uuid.UUID) -> Transect | None:
         return self._get("transect", Transect, transect_id)
@@ -625,7 +969,7 @@ class SurveyStore:
             """
             SELECT transect_id, COUNT(*) AS n
             FROM transect_pass
-            WHERE transect_id IS NOT NULL
+            WHERE transect_id IS NOT NULL AND deleted_at IS NULL
             GROUP BY transect_id
             """
         ):
@@ -636,6 +980,8 @@ class SurveyStore:
             FROM run_record
             JOIN transect_pass ON transect_pass.id = run_record.pass_id
             WHERE transect_pass.transect_id IS NOT NULL
+              AND transect_pass.deleted_at IS NULL
+              AND run_record.deleted_at IS NULL
             GROUP BY transect_pass.transect_id
             """
         ):
@@ -667,14 +1013,22 @@ class SurveyStore:
             self._add("video_asset", asset)
             return asset
         existing.overlay_from(asset)
-        self._update("video_asset", existing)
+        self.update_video(existing)
         return existing
 
-    def find_video_by_hash(self, content_hash: str | None) -> VideoAsset | None:
+    def find_video_by_hash(
+        self, content_hash: str | None, include_deleted: bool = False
+    ) -> VideoAsset | None:
+        """The clip with this content hash, tombstones excluded by default.
+
+        ``include_deleted`` is for the rebuild path only, which needs the id a
+        manifest's clip was filed under so it does not mint a second row for it.
+        """
         if not content_hash:
             return None
+        live = "" if include_deleted else " AND deleted_at IS NULL"
         row = self._conn().execute(
-            "SELECT * FROM video_asset WHERE hash = ?", (content_hash,)
+            f"SELECT * FROM video_asset WHERE hash = ?{live}", (content_hash,)
         ).fetchone()
         return from_row(VideoAsset, row) if row is not None else None
 
@@ -699,6 +1053,7 @@ class SurveyStore:
         return self._list("video_asset", VideoAsset, "created_at, file_name")
 
     def update_video(self, asset: VideoAsset) -> None:
+        asset.updated_at = utc_now_iso()
         self._update("video_asset", asset)
 
     def merge_videos(self, keeper_id: uuid.UUID, loser_ids: list[uuid.UUID]) -> int:
@@ -731,14 +1086,19 @@ class SurveyStore:
             pass_.extra_video_ids = remapped[1:]
             self.update_pass(pass_)
             moved += 1
+        # A tombstone keeps its hash, and every read of the hash is filtered on
+        # deleted_at, so re-scanning the same file lands on the keeper.
+        now = utc_now_iso()
         with self._conn() as conn:
             conn.executemany(
-                "DELETE FROM video_asset WHERE id = ?", [(str(lid),) for lid in losers]
+                "UPDATE video_asset SET deleted_at = ?, updated_at = ? "
+                "WHERE id = ? AND deleted_at IS NULL",
+                [(now, now, str(lid)) for lid in losers],
             )
         return moved
 
     def delete_video(self, video_id: uuid.UUID) -> int:
-        """Drop a clip from the library, with the sections cut from it.
+        """Tombstone a clip, with the sections cut from it.
 
         Only the record goes: the file on disk is never touched. A run is the
         record of what it processed, so a clip any run reaches is refused
@@ -761,8 +1121,7 @@ class SurveyStore:
             pass_.video_id = remaining[0]
             pass_.extra_video_ids = remaining[1:]
             self.update_pass(pass_)
-        with self._conn() as conn:
-            conn.execute("DELETE FROM video_asset WHERE id = ?", (str(video_id),))
+        self._tombstone("video_asset", video_id)
         return deleted
 
     # --- Batches ---
@@ -779,7 +1138,9 @@ class SurveyStore:
     def batch_run_count(self, batch_id: uuid.UUID) -> int:
         """How many runs this session has placed. Zero means it is still a cart."""
         row = self._conn().execute(
-            "SELECT COUNT(*) AS n FROM run_record WHERE batch_id = ?", (str(batch_id),)
+            "SELECT COUNT(*) AS n FROM run_record "
+            "WHERE batch_id = ? AND deleted_at IS NULL",
+            (str(batch_id),),
         ).fetchone()
         return row["n"]
 
@@ -793,9 +1154,10 @@ class SurveyStore:
         rows = self._conn().execute(
             """
             SELECT * FROM run_record
-            WHERE batch_id = ?
-               OR (batch_id IS NULL AND pass_id IN
-                   (SELECT id FROM transect_pass WHERE batch_id = ?))
+            WHERE deleted_at IS NULL
+              AND (batch_id = ?
+                   OR (batch_id IS NULL AND pass_id IN
+                       (SELECT id FROM transect_pass WHERE batch_id = ?)))
             ORDER BY created_at
             """,
             (str(batch_id), str(batch_id)),
@@ -805,19 +1167,31 @@ class SurveyStore:
     def delete_batch(self, batch_id: uuid.UUID) -> None:
         """Forget a session: its cart rows and run records go, everything shared
         stays. Passes catalogued in it survive with no session of their own, and
-        clips and transects are never touched here."""
+        clips and transects are never touched here.
+
+        The session and its cart rows are removed outright, because neither ever
+        syncs. Its runs are replicated, so those are tombstoned: the delete has
+        to travel, or the next pull hands them back.
+        """
         key = str(batch_id)
+        now = utc_now_iso()
         with self._conn() as conn:
             conn.execute("DELETE FROM batch_item WHERE batch_id = ?", (key,))
             conn.execute(
                 """
-                DELETE FROM run_record
-                WHERE batch_id = ?
-                   OR (batch_id IS NULL AND pass_id IN
-                       (SELECT id FROM transect_pass WHERE batch_id = ?))
+                UPDATE run_record SET deleted_at = ?, updated_at = ?
+                WHERE deleted_at IS NULL
+                  AND (batch_id = ?
+                       OR (batch_id IS NULL AND pass_id IN
+                           (SELECT id FROM transect_pass WHERE batch_id = ?)))
                 """,
-                (key, key),
+                (now, now, key, key),
             )
+            # batch_id is device-local, so releasing a row is not an edit the
+            # registry needs to hear about and updated_at stays where it is. The
+            # tombstones are released too: the session row is about to go, and
+            # nothing may still name it.
+            conn.execute("UPDATE run_record SET batch_id = NULL WHERE batch_id = ?", (key,))
             conn.execute(
                 "UPDATE transect_pass SET batch_id = NULL WHERE batch_id = ?", (key,)
             )
@@ -917,7 +1291,7 @@ class SurveyStore:
             """
             SELECT transect_pass.* FROM transect_pass
             JOIN batch_item ON batch_item.pass_id = transect_pass.id
-            WHERE batch_item.batch_id = ?
+            WHERE batch_item.batch_id = ? AND transect_pass.deleted_at IS NULL
             ORDER BY batch_item.position, batch_item.rowid
             """,
             (str(batch_id),),
@@ -951,21 +1325,21 @@ class SurveyStore:
         return None
 
     def update_pass(self, pass_: TransectPass) -> None:
+        pass_.updated_at = utc_now_iso()
         self._update("transect_pass", pass_)
 
     def delete_pass(self, pass_id: uuid.UUID) -> None:
-        """Delete a pass and the cart rows that ordered it.
+        """Tombstone a pass and take out the cart rows that ordered it.
 
-        Only a run stops it: run_record.pass_id restricts, and the constraint
-        failure is turned into a sentence the caller can show.
+        Only a run stops it. The cart rows go for good rather than being marked:
+        they never sync, and the cascade that used to remove them cannot fire on
+        a row that stays.
         """
-        try:
-            with self._conn() as conn:
-                conn.execute("DELETE FROM transect_pass WHERE id = ?", (str(pass_id),))
-        except sqlite3.IntegrityError as exc:
-            raise ValueError(
-                "This pass has recorded runs and cannot be removed."
-            ) from exc
+        if self.runs_for_pass(pass_id):
+            raise ValueError("This pass has recorded runs and cannot be removed.")
+        with self._conn() as conn:
+            conn.execute("DELETE FROM batch_item WHERE pass_id = ?", (str(pass_id),))
+        self._tombstone("transect_pass", pass_id)
 
     def get_pass(self, pass_id: uuid.UUID) -> TransectPass | None:
         return self._get("transect_pass", TransectPass, pass_id)
@@ -976,7 +1350,8 @@ class SurveyStore:
         batch_id: uuid.UUID | None = None,
         video_id: uuid.UUID | None = None,
     ) -> list[TransectPass]:
-        clauses, params = [], []
+        clauses: list[str] = ["deleted_at IS NULL"]
+        params: list[str] = []
         if transect_id is not None:
             clauses.append("transect_id = ?")
             params.append(str(transect_id))
@@ -986,13 +1361,13 @@ class SurveyStore:
         if video_id is not None:
             clauses.append("video_id = ?")
             params.append(str(video_id))
-        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        where = " AND ".join(clauses)
         # created_at is second-precision, so passes queued in one action share it.
         # rowid breaks the tie by insertion order, which is the order the user
         # built the table in, and which a pass's first run-dir name is numbered
         # from (later attempts derive from that recorded name).
         rows = self._conn().execute(
-            f"SELECT * FROM transect_pass{where} ORDER BY created_at, rowid", params
+            f"SELECT * FROM transect_pass WHERE {where} ORDER BY created_at, rowid", params
         ).fetchall()
         return [from_row(TransectPass, r) for r in rows]
 
@@ -1004,8 +1379,8 @@ class SurveyStore:
     def set_run_status(self, run_id: uuid.UUID, status: str, error: str = "") -> None:
         if status not in RUN_STATUSES:
             raise ValueError(f"status must be one of {RUN_STATUSES}, got {status!r}")
-        sets = "status = ?, error = ?"
-        params: list[Any] = [status, error]
+        sets = "status = ?, error = ?, updated_at = ?"
+        params: list[Any] = [status, error, utc_now_iso()]
         if status == "running":
             sets += ", started_at = ?"
             params.append(utc_now_iso())
@@ -1030,31 +1405,41 @@ class SurveyStore:
         placeholders = ", ".join("?" for _ in non_terminal)
         with self._conn() as conn:
             cursor = conn.execute(
-                f"UPDATE run_record SET status = ?, finished_at = ?, error = ? "
-                f"WHERE status IN ({placeholders})",
-                ["interrupted", utc_now_iso(), _INTERRUPTED_REASON, *non_terminal],
+                f"UPDATE run_record SET status = ?, finished_at = ?, error = ?, "
+                f"updated_at = ? WHERE deleted_at IS NULL AND status IN ({placeholders})",
+                [
+                    "interrupted", utc_now_iso(), _INTERRUPTED_REASON, utc_now_iso(),
+                    *non_terminal,
+                ],
             )
         if cursor.rowcount:
             logger.info("Reconciled %d interrupted run(s) in %s", cursor.rowcount, self._db_path)
         return cursor.rowcount
 
     def delete_run(self, run_id: uuid.UUID) -> None:
-        with self._conn() as conn:
-            conn.execute("DELETE FROM run_record WHERE id = ?", (str(run_id),))
+        """Tombstone a run record.
+
+        The bytes are a separate decision: catalogue.delete_run_data removes the
+        directory, and on a full field laptop it still does. A tombstone is about
+        the metadata row, not about keeping the output.
+        """
+        self._tombstone("run_record", run_id)
 
     def get_run(self, run_id: uuid.UUID) -> RunRecord | None:
         return self._get("run_record", RunRecord, run_id)
 
     def run_by_dir_name(self, run_dir_name: str) -> RunRecord | None:
         row = self._conn().execute(
-            "SELECT * FROM run_record WHERE run_dir_name = ? ORDER BY created_at DESC LIMIT 1",
+            "SELECT * FROM run_record WHERE run_dir_name = ? AND deleted_at IS NULL "
+            "ORDER BY created_at DESC LIMIT 1",
             (run_dir_name,),
         ).fetchone()
         return from_row(RunRecord, row) if row is not None else None
 
     def runs_for_pass(self, pass_id: uuid.UUID) -> list[RunRecord]:
         rows = self._conn().execute(
-            "SELECT * FROM run_record WHERE pass_id = ? ORDER BY created_at, rowid",
+            "SELECT * FROM run_record WHERE pass_id = ? AND deleted_at IS NULL "
+            "ORDER BY created_at, rowid",
             (str(pass_id),),
         ).fetchall()
         return [from_row(RunRecord, r) for r in rows]
@@ -1065,6 +1450,8 @@ class SurveyStore:
             SELECT run_record.* FROM run_record
             JOIN transect_pass ON transect_pass.id = run_record.pass_id
             WHERE transect_pass.transect_id = ?
+              AND transect_pass.deleted_at IS NULL
+              AND run_record.deleted_at IS NULL
             ORDER BY run_record.created_at
             """,
             (str(transect_id),),
@@ -1078,7 +1465,10 @@ class SurveyStore:
         row. Scoped to a session when ``batch_id`` is given: a pass re-ordered
         in a new cart has succeeded before, but not yet in that session.
         """
-        sql = "SELECT DISTINCT pass_id FROM run_record WHERE status = 'succeeded'"
+        sql = (
+            "SELECT DISTINCT pass_id FROM run_record "
+            "WHERE status = 'succeeded' AND deleted_at IS NULL"
+        )
         params: list[str] = []
         if batch_id is not None:
             sql += " AND batch_id = ?"
@@ -1147,10 +1537,137 @@ class SurveyStore:
             )
         return cursor.rowcount
 
+    # --- Sync ---
+
+    def sync_state(self, key: str) -> str | None:
+        """One machine-local sync setting: a cursor, a watermark, a url, an id."""
+        row = self._conn().execute(
+            "SELECT value FROM sync_state WHERE key = ?", (key,)
+        ).fetchone()
+        return None if row is None else row["value"]
+
+    def set_sync_state(self, key: str, value: str | None) -> None:
+        """Write a sync setting, or forget it when ``value`` is None."""
+        with self._conn() as conn:
+            if value is None:
+                conn.execute("DELETE FROM sync_state WHERE key = ?", (key,))
+                return
+            conn.execute(
+                "INSERT INTO sync_state (key, value, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT (key) DO UPDATE SET value = excluded.value, "
+                "updated_at = excluded.updated_at",
+                (key, value, utc_now_iso()),
+            )
+
+    def changed_since(self, section: str, since: str | None = None) -> list[Any]:
+        """Every row of a section edited after ``since``, tombstones included.
+
+        This is what a push document is built from, so a tombstone has to be
+        here: a delete only travels as a row. ``since`` is the local push
+        watermark and None means everything. Takes either a section name
+        (``passes``) or the table behind it (``transect_pass``).
+
+        The watermark second is included, not excluded. Stamps are written to the
+        second, so an exclusive comparison loses an edit made in the same second
+        as the push that set the watermark; re-offering a row the registry already
+        holds costs it one skip.
+        """
+        table = SYNC_SECTIONS[_section_of(section)]
+        sql = f"SELECT * FROM {table}"
+        params: list[Any] = []
+        if since is not None:
+            sql += " WHERE updated_at >= ?"
+            params.append(since)
+        rows = self._conn().execute(f"{sql} ORDER BY updated_at, rowid", params).fetchall()
+        return [from_row(_SYNC_MODELS[table], r) for r in rows]
+
+    def apply_from_server(
+        self, section: str, rows: Iterable[Mapping[str, Any] | Any]
+    ) -> ApplyResult:
+        """Land pulled rows under last-write-wins on ``updated_at``.
+
+        A row that is not here is inserted; a row that is gets overwritten only
+        when the incoming stamp is strictly newer, so an equal stamp leaves the
+        stored copy alone. A tombstone lands like any other row, because
+        deleted_at is a column. Only the fields the pulled row actually carries
+        are written, so the device-local ones -- a clip's path, a run's session --
+        survive an update from a server that has never held them.
+
+        Sections have to be applied in SYNC_SECTIONS order: foreign keys are on,
+        and a child whose parent has not landed yet is refused.
+        """
+        section = _section_of(section)
+        table = SYNC_SECTIONS[section]
+        cls = _SYNC_MODELS[table]
+        result = ApplyResult()
+        with self._conn() as conn:
+            for incoming in rows:
+                wire, carried = _from_wire(section, incoming)
+                result.received += 1
+                stored = conn.execute(
+                    f"SELECT * FROM {table} WHERE id = ?", (wire["id"],)
+                ).fetchone()
+                if stored is None:
+                    row = to_row(from_row(cls, wire))
+                    conn.execute(_insert_sql(table, row), row)
+                    result.inserted += 1
+                    continue
+                # Merged over the stored row so the model is validated whole, and
+                # so a row that arrives partial says nothing about the rest.
+                row = to_row(from_row(cls, {**dict(stored), **wire}))
+                if str(row["updated_at"]) <= str(stored["updated_at"] or ""):
+                    result.skipped.append(uuid.UUID(row["id"]))
+                    continue
+                patch = {k: v for k, v in row.items() if k in carried}
+                patch["id"] = row["id"]
+                patch["updated_at"] = row["updated_at"]
+                conn.execute(_update_sql(table, patch), patch)
+                result.updated += 1
+        return result
+
+    def dependency_closure(
+        self, section: str, ids: Iterable[uuid.UUID]
+    ) -> dict[str, list[Any]]:
+        """The named rows plus every ancestor they need, in foreign-key order.
+
+        The registry refuses a child whose parent it has never seen, so a push
+        document has to be a closed set. Ancestors come whether or not they have
+        changed, and a tombstoned one comes too: it is still the row the child
+        points at. Empty sections are left out.
+        """
+        found: dict[str, dict[uuid.UUID, Any]] = {s: {} for s in SYNC_SECTIONS}
+        pending = [(_section_of(section), item_id) for item_id in ids]
+        while pending:
+            current, item_id = pending.pop()
+            if item_id in found[current]:
+                continue
+            model = self._row_including_deleted(SYNC_SECTIONS[current], item_id)
+            if model is None:
+                continue
+            found[current][item_id] = model
+            for attribute, parent in _SYNC_PARENTS[current]:
+                pending.extend(
+                    (parent, parent_id) for parent_id in _ids_of(getattr(model, attribute))
+                )
+        return {
+            name: sorted(rows.values(), key=lambda m: (m.created_at, str(m.id)))
+            for name, rows in found.items()
+            if rows
+        }
+
+    def _row_including_deleted(self, table: str, item_id: uuid.UUID) -> Any:
+        """One row as its model, tombstone and all: what sync reads, not what the app does."""
+        row = self._conn().execute(
+            f"SELECT * FROM {table} WHERE id = ?", (str(item_id),)
+        ).fetchone()
+        return from_row(_SYNC_MODELS[table], row) if row is not None else None
+
     # --- Documents ---
 
     def export_json(self, path: Path) -> None:
         doc = build_document(
+            sites=self.list_sites(),
+            campaigns=self.list_campaigns(),
             transects=self.list_transects(),
             videos=self.list_videos(),
             batches=self.list_batches(),
@@ -1164,6 +1681,8 @@ class SurveyStore:
         """Merge a survey document; rows whose ids already exist are left alone."""
         sections = parse_document(load_survey_json(path))
         tables = {
+            "sites": "site",
+            "campaigns": "campaign",
             "transects": "transect",
             "videos": "video_asset",
             "batches": "survey_batch",
@@ -1182,6 +1701,10 @@ class SurveyStore:
 
     def rebuild_from_scan(self, out_root: Path) -> RebuildReport:
         """Recreate survey rows from run manifests; existing rows are kept as-is.
+
+        A tombstone counts as existing and is never revived: the delete is a fact
+        the registry has been told, and a rescan of footage still on disk must not
+        argue with it.
 
         The notification log is not among them: manifests do not carry it, so a
         rebuilt database starts with an empty history. It is a record of what the
@@ -1226,7 +1749,7 @@ class SurveyStore:
             # rebuilt pass's origin and membership default to that session.
             self.add_batch_item(BatchItem(batch_id=batch_id, pass_id=pass_id))
         run_id = uuid.UUID(survey["run_id"])
-        if self.get_run(run_id) is None:
+        if not self.holds_id("runs", run_id):
             self.add_run(RunRecord(
                 id=run_id,
                 pass_id=pass_id,
@@ -1239,7 +1762,7 @@ class SurveyStore:
 
     def _restore_transect(self, snapshot: dict[str, Any], report: RebuildReport) -> uuid.UUID:
         transect_id = uuid.UUID(snapshot["id"])
-        if self.get_transect(transect_id) is None:
+        if not self.holds_id("transects", transect_id):
             self.add_transect(Transect(
                 id=transect_id,
                 name=snapshot["name"],
@@ -1280,7 +1803,7 @@ class SurveyStore:
         video_ids = []
         for index, path in enumerate(paths):
             content_hash = at(hashes, index)
-            existing = self.find_video_by_hash(content_hash)
+            existing = self.find_video_by_hash(content_hash, include_deleted=True)
             if existing is not None:
                 video_ids.append(existing.id)
                 continue
@@ -1305,7 +1828,7 @@ class SurveyStore:
         report: RebuildReport,
     ) -> uuid.UUID:
         pass_id = uuid.UUID(snapshot["id"])
-        if self.get_pass(pass_id) is None:
+        if not self.holds_id("passes", pass_id):
             self.add_pass(TransectPass(
                 id=pass_id,
                 transect_id=transect_id,

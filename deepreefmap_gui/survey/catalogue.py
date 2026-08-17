@@ -864,8 +864,13 @@ def ensure_pass_for_entry(
             mtime=mtimes[0],
         ))
         begin, end = _pass_window(entry)
+        # A tombstoned section still owns its manifest id, so what is adopted here
+        # takes a fresh one rather than colliding on the primary key.
+        pass_id = entry.manifest_pass_id
+        if pass_id is not None and store.holds_id("passes", pass_id):
+            pass_id = None
         pass_ = TransectPass(
-            id=entry.manifest_pass_id or uuid.uuid4(),
+            id=pass_id or uuid.uuid4(),
             transect_id=transect_id,
             video_id=video.id,
             begin_s=begin,
@@ -889,7 +894,9 @@ def _adopt_group(
     for entry in group:
         if store.run_by_dir_name(entry.dir_name) is None:
             run_id = entry.manifest_run_id
-            if run_id is not None and store.get_run(run_id) is not None:
+            # holds_id rather than get_run: a tombstoned row still owns the id,
+            # and reusing it would collide on the primary key.
+            if run_id is not None and store.holds_id("runs", run_id):
                 run_id = None
             store.add_run(RunRecord(
                 id=run_id or uuid.uuid4(),

@@ -30,6 +30,10 @@ class RunRecord:
     batch_id: uuid.UUID | None = None
     id: uuid.UUID = field(default_factory=uuid.uuid4)
     created_at: str = field(default_factory=utc_now_iso)
+    updated_at: str = field(default_factory=utc_now_iso)
+    deleted_at: str | None = None
+    created_by: str | None = None
+    device_id: uuid.UUID | None = None
 
     def __post_init__(self) -> None:
         if self.status not in RUN_STATUSES:
