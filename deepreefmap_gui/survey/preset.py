@@ -28,6 +28,7 @@ import yaml
 
 from deepreefmap_gui.io.atomic import atomic_write_text
 from deepreefmap_gui.paths import survey_preset_path
+from deepreefmap_gui.survey.preset_schema import coerce_settings
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +138,12 @@ class OrgPreset:
     # Named at construction for presets the registry published, because the
     # locked flag alone cannot tell those apart from the bundled default.
     origin: str = ""
+    # Settings this build could not apply, as (key, why). Only a registry preset
+    # can carry any: the bundled and administrator files are written against this
+    # build's own form. A preset with entries here is offered and reported, never
+    # silently patched, because the value that was dropped is the one the author
+    # meant and substituting for it would misdescribe the run.
+    dropped: tuple[tuple[str, str], ...] = ()
 
     @property
     def label(self) -> str:
@@ -145,6 +152,18 @@ class OrgPreset:
     @property
     def content_hash(self) -> str:
         return preset_content_hash(self.settings)
+
+    @property
+    def degraded(self) -> bool:
+        return bool(self.dropped)
+
+    @property
+    def dropped_summary(self) -> str:
+        """One line naming what was ignored, for the interface to show."""
+        if not self.dropped:
+            return ""
+        named = ", ".join(f"{describe_key(key)} ({why})" for key, why in self.dropped)
+        return f"This registry preset names settings this version cannot apply: {named}."
 
     @property
     def source(self) -> str:
@@ -230,18 +249,25 @@ def load_org_preset() -> OrgPreset:
 def registry_preset(name: str, version: int, settings: Mapping[str, Any]) -> OrgPreset:
     """A preset the registry published, as this build can run it.
 
-    A registry newer than this build may name settings this build has no field
-    for; those are dropped rather than fatal, because the console warned nobody
-    about this laptop's version. Keys the preset does not name take the shipped
-    defaults, so the result is always a whole preset. Never locked: the server
-    preset is additional to the standard, not an administrator's mandate.
+    Nothing published to a registry is trusted here. A console can write any
+    JSON into a preset, and this build may be older or newer than the one that
+    wrote it, so every value is checked against `preset_schema` before it can
+    reach a widget. Numbers are clamped to what the form accepts. A name no
+    enumeration here offers is dropped rather than substituted, because a run
+    under a different model than the preset names is worse than one that says
+    it could not run at all.
+
+    Keys the preset does not name take the shipped defaults, so the result is
+    always a whole preset. Never locked: the server preset is additional to the
+    standard, not an administrator's mandate.
     """
-    known = {k: v for k, v in settings.items() if k in PRESET_KEYS}
-    unknown = sorted(set(settings) - PRESET_KEYS)
-    if unknown:
-        logger.info(
-            "Ignoring registry preset keys this build has no field for: %s",
-            ", ".join(unknown),
+    known, dropped = coerce_settings(settings)
+    if dropped:
+        logger.warning(
+            "Registry preset %s v%s: ignoring %s",
+            name,
+            version,
+            "; ".join(f"{key} ({why})" for key, why in dropped),
         )
     return OrgPreset(
         name=name,
@@ -249,6 +275,7 @@ def registry_preset(name: str, version: int, settings: Mapping[str, Any]) -> Org
         settings={**_bundled_defaults(), **known},
         locked=False,
         origin="server",
+        dropped=tuple(dropped),
     )
 
 

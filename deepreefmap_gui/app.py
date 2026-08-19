@@ -288,8 +288,13 @@ class DeepReefMapWindow(
         self.setCentralWidget(central)
 
         # Last: it populates every page and re-divides the splitter, so the
-        # whole window has to exist first.
-        self._activate_interface()
+        # whole window has to exist first. Guarded because it applies the stored
+        # preset, whose content came from a registry: no settings bag, however
+        # wrong, may be able to stop this window being constructed.
+        try:
+            self._activate_interface()
+        except Exception:
+            logger.exception("Could not populate the interface from stored settings")
         self._install_shortcuts()
 
     def start_gpu_probe(self) -> None:

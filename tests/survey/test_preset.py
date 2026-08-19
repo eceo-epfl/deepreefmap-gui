@@ -381,3 +381,35 @@ def test_a_registry_preset_keeps_known_keys_and_fills_the_rest():
     assert "coral_iq" not in preset.settings
     assert preset.settings["mapping_name"], "unnamed keys take the shipped defaults"
     assert preset.label == "Deep reef (v2)"
+    assert preset.degraded, "a key this build has no field for is worth reporting"
+
+
+def test_a_registry_preset_clamps_a_number_the_form_would_refuse():
+    """Scenario: a console publishes fps 120 against a form that stops at 60.
+
+    Expected behaviour: the value is clamped rather than raising out of
+    `setValue`, which would leave the form half populated and, because the
+    selection is replayed at launch, stop the window constructing at all.
+    """
+    preset = registry_preset("Fast", 1, {"fps": 120})
+
+    assert preset.settings["fps"] == 60
+    assert not preset.degraded, "clamping is not a loss worth naming"
+
+
+def test_a_registry_preset_drops_a_model_this_build_cannot_offer():
+    """Substituting the default would run the survey under a model the preset
+    does not name, and stamp the run with the preset's identity regardless."""
+    preset = registry_preset("Future", 1, {"segmentation_name": "coralscapes-vit-xl-dpt"})
+
+    assert preset.degraded
+    assert [key for key, _ in preset.dropped] == ["segmentation_name"]
+    assert "coral identification model" in preset.dropped_summary
+    assert preset.settings["segmentation_name"] != "coralscapes-vit-xl-dpt"
+
+
+def test_a_registry_preset_drops_a_value_of_the_wrong_type():
+    preset = registry_preset("Broken", 1, {"fps": "five", "enable_tsdf": "true"})
+
+    assert [key for key, _ in preset.dropped] == ["fps"]
+    assert preset.settings["enable_tsdf"] is True, "a legible string still counts"

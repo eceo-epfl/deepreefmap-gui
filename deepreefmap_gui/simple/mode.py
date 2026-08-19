@@ -1068,13 +1068,23 @@ class InterfaceShellMixin(MixinBase):
         return preset
 
     def _populate_form_from_preset(self, preset: dict[str, Any]) -> None:
+        """Fill the form from a settings bag, one key at a time.
+
+        A key that will not go into its widget is skipped rather than allowed to
+        abandon the loop half way. Values reaching here have been coerced
+        against `preset_schema`, but a stored preset written by an older build
+        has not, and a form left part filled is a run configured as nobody asked.
+        """
         for key, attr in _PRESET_FIELD_WIDGETS:
-            value = preset[key]
+            value = preset.get(key)
             if key == "transect_crop_width" and value is None:
                 value = 0.0
             elif key in _NATIVE_SIZE_KEYS and value is None:
                 continue
-            _set_widget_value(getattr(self, attr), value)
+            try:
+                _set_widget_value(getattr(self, attr), value)
+            except (TypeError, ValueError, OverflowError):
+                logger.warning("Ignoring unusable preset value for %s: %r", key, value)
 
     def _reset_form_defaults(self) -> None:
         self._restore_form_settings(self._form_defaults)
