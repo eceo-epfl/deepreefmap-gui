@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from deepreefmap_gui.core.theme import ERROR, PRIMARY, SPACE_SM
+from deepreefmap_gui.core.theme import ERROR, PRIMARY, SPACE_SM, SUCCESS, WARNING
 from deepreefmap_gui.core.widgets import (
     clip_outcome_color,
     muted_label,
@@ -90,6 +90,7 @@ class VideoDetailPanel(DetailCard):
     reveal_requested = Signal(str)
     pass_activated = Signal(str)
     add_to_cart_requested = Signal(str)
+    archive_requested = Signal(str)
     retrim_requested = Signal(str)
     reassign_requested = Signal(str)
     delete_requested = Signal(str)
@@ -114,6 +115,23 @@ class VideoDetailPanel(DetailCard):
         self.link_btn.setAccessibleName("Show in folder")
         self.link_btn.clicked.connect(self._emit_reveal)
         self.add_title_button(self.link_btn)
+
+        # On request only, so a metered field uplink is never spent by accident.
+        self.archive_btn = QToolButton()
+        self.archive_btn.setText("Archive")
+        self.archive_btn.setAccessibleName("Archive this clip")
+        self.archive_btn.setProperty("quiet", "true")
+        self.archive_btn.setToolTip(
+            "Send this clip's original file to the registry's archive. "
+            "Needs a server connection."
+        )
+        self.archive_btn.clicked.connect(self._emit_archive)
+        self.add_title_button(self.archive_btn)
+
+        # What the registry holds of this clip, painted only from a live probe.
+        self.archive_state = QLabel("")
+        self.archive_state.setVisible(False)
+        self.title_row.addWidget(self.archive_state)
 
         heading_row = QHBoxLayout()
         heading_row.setContentsMargins(0, 0, 0, 0)
@@ -160,6 +178,31 @@ class VideoDetailPanel(DetailCard):
     def _emit_reveal(self) -> None:
         if self._entry is not None:
             self.reveal_requested.emit(str(self._entry.video.id))
+
+    def _emit_archive(self) -> None:
+        if self._entry is not None:
+            self.archive_requested.emit(str(self._entry.video.id))
+
+    def set_archive_state(self, state: str | None) -> None:
+        """Paint what the registry holds of this clip, or nothing when unknown.
+
+        Unknown covers offline, not enrolled, and a clip never offered: all
+        three are states where a badge would claim more than anybody checked.
+        """
+        faces = {
+            "archived": ("On server ✓", SUCCESS, "Archived and verified on the registry."),
+            "pending": ("Uploading…", WARNING, "Offered to the registry, not verified yet."),
+            "failed": ("Archive failed", ERROR, "The registry could not verify the upload. Archive again."),
+        }
+        face = faces.get(state or "")
+        if face is None:
+            self.archive_state.setVisible(False)
+            return
+        text, colour, tip = face
+        self.archive_state.setText(text)
+        self.archive_state.setStyleSheet(f"color: {colour};")
+        self.archive_state.setToolTip(tip)
+        self.archive_state.setVisible(True)
 
     @property
     def entry(self) -> VideoLibraryEntry | None:

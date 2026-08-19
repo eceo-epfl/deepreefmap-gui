@@ -47,6 +47,7 @@ class FakeRegistry:
         self._omitted = list(omitted)
         self.calls: list[str] = []
         self.pushed: list[dict] = []
+        self.initiated: list[dict] = []
 
     def pull(self, since=None, limit=1000):
         self.calls.append("pull")
@@ -78,6 +79,18 @@ class FakeRegistry:
             "applied": len(rows) - len(skipped),
             "skipped": skipped,
         }
+
+    def archive_initiate(self, payload):
+        self.calls.append("archive_initiate")
+        if self._fail is not None:
+            raise self._fail
+        self.initiated.append(dict(payload))
+        # The dedup answer: the queue runs for real, and nothing travels.
+        return {"object_id": f"o-{len(self.initiated)}", "status": "complete"}
+
+    def archive_complete(self, object_id, parts):
+        self.calls.append("archive_complete")
+        return {"object_id": object_id, "status": "uploaded"}
 
 
 @pytest.fixture(autouse=True)
@@ -456,6 +469,79 @@ def test_disconnecting_is_refusable(window, monkeypatch):
     assert credentials.load() is not None
 
 
+# --- the archive queue ---
+
+
+def test_an_unconnected_install_offers_no_archive_button(window):
+    window._set_simple_section(SERVER_SECTION)
+
+    assert not window._server_archive_btn.isVisibleTo(window)
+    assert not window._server_archive_btn.isEnabled()
+
+
+def test_the_archive_button_says_it_only_sends_on_request(window):
+    enrol_this_device()
+    window._set_simple_section(SERVER_SECTION)
+
+    assert window._server_archive_btn.isVisibleTo(window)
+    tooltip = window._server_archive_btn.toolTip()
+    assert "original clips" in tooltip and "finished run" in tooltip
+    assert "until this is pressed" in tooltip
+
+
+def test_archiving_sends_the_queue_and_reports_what_landed(window, qapp, registry, tmp_path):
+    from deepreefmap_gui.survey.models import VideoAsset
+
+    enrol_this_device()
+    clip = tmp_path / "GX010001.MP4"
+    clip.write_bytes(b"reef footage")
+    window._survey_store().upsert_video(VideoAsset(file_name=clip.name, path=str(clip)))
+    made = registry()
+    window._set_simple_section(SERVER_SECTION)
+
+    window._server_archive_btn.click()
+    assert settle(qapp, lambda: not window._server_archiving)
+
+    assert made[0].calls == ["archive_initiate"]
+    assert made[0].initiated[0]["kind"] == "video"
+    assert len(made[0].initiated[0]["sha256"]) == 64
+    message = window._server_notice._message.text()
+    assert message == "Archived 0 file(s), 1 already on the server."
+    assert window._server_archive_btn.isEnabled()
+
+
+def test_a_session_in_flight_holds_the_archive_back(window, registry):
+    enrol_this_device()
+    made = registry()
+    window._set_simple_section(SERVER_SECTION)
+    window._survey_worker_running = True
+
+    window._on_archive_now()
+
+    assert made == []
+    assert window._server_blocker._reason.text() == SESSION_RUNNING
+
+
+def test_an_archive_that_cannot_reach_the_registry_is_a_retry(window, qapp, registry, tmp_path):
+    from deepreefmap_gui.survey.models import VideoAsset
+
+    enrol_this_device()
+    clip = tmp_path / "GX010001.MP4"
+    clip.write_bytes(b"reef footage")
+    window._survey_store().upsert_video(VideoAsset(file_name=clip.name, path=str(clip)))
+    registry(fail=client_mod.ServerUnreachableError("Cannot reach the registry: timed out"))
+    window._set_simple_section(SERVER_SECTION)
+
+    window._on_archive_now()
+    assert settle(qapp, lambda: not window._server_archiving)
+
+    # The queue keeps going per file, so an unreachable registry lands as a
+    # failure count and a notification rather than as a blocker.
+    assert "1 failed" in window._server_notice._message.text()
+    posted = {note.fingerprint for note in window._notify.active()}
+    assert "archive.upload_failed" in posted
+
+
 # --- the status-bar badge ---
 
 
@@ -495,3 +581,55 @@ def test_the_badge_opens_the_server_page_when_not_connected(window, qapp):
     window._on_sync_badge_clicked()
 
     assert window._current_section() == SERVER_SECTION
+
+
+def test_a_single_clip_is_archived_from_its_id(window, qapp, registry, tmp_path):
+    """Scenario: the clip card's Archive button, on one clip of two.
+
+    Expected behaviour: exactly that clip is offered, and the notice counts it
+    as already on the server, since the fake registry answers the dedup case.
+    """
+    from _factories import make_video
+
+    enrol_this_device()
+    clip_file = tmp_path / "GX010001.MP4"
+    clip_file.write_bytes(b"reef " * 100)
+    other_file = tmp_path / "GX020001.MP4"
+    other_file.write_bytes(b"wall " * 100)
+    store = window._survey_store()
+    wanted = store.upsert_video(make_video("ab" * 16, path=str(clip_file)))
+    store.upsert_video(
+        make_video("cd" * 16, file_name="GX020001.MP4", path=str(other_file))
+    )
+    made = registry()
+
+    window._archive_video(str(wanted.id))
+    assert settle(qapp, lambda: not window._server_archiving)
+
+    assert len(made[0].initiated) == 1
+    assert made[0].initiated[0]["kind"] == "video"
+    assert "1 already on the server" in window._server_notice._message.text()
+
+
+def test_the_probe_paints_the_clip_badge(window, qapp):
+    from deepreefmap_gui.sync.archive import ArchiveStates
+
+    detail = window._video_detail
+
+    class Entry:
+        def __init__(self, video):
+            self.video = video
+
+    from _factories import make_video
+
+    video = window._survey_store().upsert_video(make_video("ab" * 16))
+    detail._entry = Entry(video)
+
+    window._apply_archive_states(ArchiveStates(videos={str(video.id): "archived"}))
+
+    assert detail.archive_state.isVisibleTo(detail)
+    assert "On server" in detail.archive_state.text()
+
+    window._apply_archive_states(None)
+
+    assert not detail.archive_state.isVisibleTo(detail)

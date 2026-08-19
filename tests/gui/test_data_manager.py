@@ -614,7 +614,12 @@ def test_the_menu_carries_what_the_row_no_longer_holds(out_root, make_window):
     write_run(out_root, "run_a")
     window = make_window()
     select_run(window, 0)
-    assert list(window._run_detail.menu_actions) == ["rename", "copy_command", "show_log"]
+    assert list(window._run_detail.menu_actions) == [
+        "rename",
+        "archive",
+        "copy_command",
+        "show_log",
+    ]
 
 
 def test_a_run_whose_data_went_cannot_have_its_command_copied(out_root, make_window, monkeypatch):

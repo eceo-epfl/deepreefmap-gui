@@ -397,6 +397,7 @@ class BrowseMixin(MixinBase):
         self._run_detail.open_requested.connect(self._on_data_open_clicked)
         self._run_detail.log_requested.connect(self._show_run_log)
         self._run_detail.rename_requested.connect(self._on_data_rename_clicked)
+        self._run_detail.archive_requested.connect(self._archive_run)
         self._data_detail_stack.addWidget(self._run_detail)
 
         # A summary and a way through, not a second chart. The transect's cover

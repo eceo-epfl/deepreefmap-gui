@@ -290,6 +290,7 @@ class VideoLibraryMixin(MixinBase):
         self._video_detail.delete_requested.connect(self._on_section_delete)
         self._video_detail.open_transect_requested.connect(self._open_transect_page)
         self._video_detail.reveal_requested.connect(self._on_video_reveal)
+        self._video_detail.archive_requested.connect(self._archive_video)
         # The pane keeps its place with nothing selected: a right half that
         # disappears re-lays the page every time a clip is picked or dropped.
         self._video_detail_stack = QStackedWidget()
@@ -633,6 +634,17 @@ class VideoLibraryMixin(MixinBase):
                 for entry in getattr(self, "_video_entries", [])
             },
         )
+        self._video_detail.set_archive_state(self._archive_state_for_video(clip.video.id))
+
+    def _paint_archive_badges(self) -> None:
+        """Repaint the archive badges from a fresh probe, on the cards showing."""
+        detail = getattr(self, "_video_detail", None)
+        if detail is not None and detail.entry is not None:
+            detail.set_archive_state(self._archive_state_for_video(detail.entry.video.id))
+        run_detail = getattr(self, "_run_detail", None)
+        entry = run_detail.entry if run_detail is not None else None
+        if run_detail is not None and entry is not None and entry.db_run is not None:
+            run_detail.set_archive_state(self._archive_state_for_run(entry.db_run.id))
 
     def _selected_clip(self) -> VideoLibraryEntry | None:
         return self._clip_by_id(self._video_list.selected)

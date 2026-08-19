@@ -138,9 +138,17 @@ def _read_device() -> dict[str, Any]:
 
 
 def _write_device(document: dict[str, Any]) -> None:
+    """Replace the identity file atomically.
+
+    This file is the device's identity: corrupt it and the laptop re-enrols as
+    a new device, orphaning everything the old one uploaded. A crash or a full
+    disk mid-write must leave the old file, never half of a new one.
+    """
     path = device_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    scratch = path.with_suffix(".json.tmp")
+    scratch.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    os.replace(scratch, path)
 
 
 def _store_token(token: str) -> str:
@@ -224,11 +232,15 @@ def _read_token(backend: str) -> str | None:
 def _write_token_file(token: str) -> None:
     path = token_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    # Created empty at 0600 first, so the token is never written to a readable file.
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    # Written to a private scratch file and renamed over the old one, so a
+    # crash mid-write cannot truncate the only copy of the token. Created
+    # empty at 0600 first, so the token is never in a readable file.
+    scratch = path.with_suffix(".json.tmp")
+    descriptor = os.open(scratch, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
         json.dump({"token": token}, handle)
-    os.chmod(path, 0o600)
+    os.chmod(scratch, 0o600)
+    os.replace(scratch, path)
     _require_private(path)
 
 

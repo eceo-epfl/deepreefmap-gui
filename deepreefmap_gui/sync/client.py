@@ -65,6 +65,10 @@ class ConflictError(SyncError):
     """A pushed row references a parent the server does not have, or collides on a name."""
 
 
+class NotFoundError(SyncError):
+    """The registry has no such record."""
+
+
 class RejectedError(SyncError):
     """The server refused the document as malformed."""
 
@@ -160,6 +164,48 @@ class SyncClient:
         non-fatal and go on to sync.
         """
         self._request("POST", "/sync/heartbeat", body=dict(report))
+
+    def archive_initiate(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """Begin or resume one content-addressed upload.
+
+        `complete` back is the dedup answer: the content is archived already and
+        nothing need travel. Archive responses are not stamped with a contract
+        version, so callers build a client without `agreed` for them.
+        """
+        return self._request("POST", "/archive/initiate", body=dict(payload))
+
+    def archive_complete(
+        self, object_id: str, parts: Sequence[Mapping[str, Any]]
+    ) -> dict[str, Any]:
+        """Assemble the uploaded parts. Verification runs server-side afterwards."""
+        return self._request(
+            "POST", f"/archive/{object_id}/complete", body={"parts": [dict(p) for p in parts]}
+        )
+
+    def archive_probe(self, sha256s: Sequence[str]) -> dict[str, Any]:
+        """The archived state of many contents at once, keyed by hash.
+
+        A hash absent from the answer has never been offered, which is an
+        answer rather than an error, unlike `archive_by_sha256`'s 404.
+        """
+        return self._request("POST", "/archive/probe", body={"sha256s": list(sha256s)})
+
+    def archive_runs_probe(self, run_ids: Sequence[str]) -> dict[str, Any]:
+        """Per run, how many artefacts the registry holds and how they stand."""
+        return self._request(
+            "POST", "/archive/runs-probe", body={"run_ids": [str(r) for r in run_ids]}
+        )
+
+    def archive_by_sha256(self, sha256_hex: str) -> dict[str, Any] | None:
+        """The archived state of this content, or None where nothing is."""
+        try:
+            return self._request("GET", f"/archive/by-sha256/{sha256_hex}")
+        except NotFoundError:
+            return None
+
+    def archive_download(self, object_id: str) -> str:
+        """A short-lived presigned URL for a verified object."""
+        return str(self._request("GET", f"/archive/{object_id}/download").get("url", ""))
 
     def _url(self, path: str) -> str:
         prefix = "" if self.base_url.endswith("/api") else "/api"
@@ -264,6 +310,8 @@ class SyncClient:
             return ConflictError(f"The registry rejected the document: {detail}")
         if status == 400:
             return RejectedError(f"The registry rejected the document: {detail}")
+        if status == 404:
+            return NotFoundError(f"The registry has no such record: {detail}")
         if status >= 500:
             return ServerFaultError(f"The registry failed on its own side ({status}): {detail}")
         return SyncError(f"Unexpected response {status} from the registry: {detail}")

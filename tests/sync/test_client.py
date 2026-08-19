@@ -333,6 +333,55 @@ def test_an_overlapping_range_in_the_header_leaves_the_status_to_speak(registry)
         make_client(registry).pull()
 
 
+def test_archive_by_sha256_answers_none_where_nothing_is_archived(registry) -> None:
+    """A 404 here is an answer, not a fault: the content has never been sent."""
+    missing = "a" * 64
+    registry.reply(
+        f"/api/archive/by-sha256/{missing}", 404, {"error": "Nothing archived under this hash"}
+    )
+
+    assert make_client(registry).archive_by_sha256(missing) is None
+
+
+def test_archive_by_sha256_returns_the_objects_state(registry) -> None:
+    held = "b" * 64
+    registry.reply(
+        f"/api/archive/by-sha256/{held}",
+        200,
+        {"object_id": "o-1", "status": "complete", "verified_at": "2026-08-01T00:00:00Z"},
+    )
+
+    answer = make_client(registry).archive_by_sha256(held)
+
+    assert answer is not None and answer["status"] == "complete"
+
+
+def test_archive_initiate_and_complete_post_where_the_registry_listens(registry) -> None:
+    registry.reply(
+        "/api/archive/initiate",
+        200,
+        {"object_id": "o-1", "status": "pending", "part_size_bytes": 4, "part_urls": []},
+    )
+    registry.reply("/api/archive/o-1/complete", 200, {"object_id": "o-1", "status": "uploaded"})
+    client = make_client(registry)
+
+    initiated = client.archive_initiate({"sha256": "c" * 64, "size_bytes": 4, "kind": "video"})
+    completed = client.archive_complete("o-1", [{"part_number": 1, "etag": "abc"}])
+
+    assert (initiated["status"], completed["status"]) == ("pending", "uploaded")
+    method, path, body, _ = registry.requests[-2]
+    assert (method, path, body["kind"]) == ("POST", "/api/archive/initiate", "video")
+    method, path, body, _ = registry.requests[-1]
+    assert (method, path) == ("POST", "/api/archive/o-1/complete")
+    assert body == {"parts": [{"part_number": 1, "etag": "abc"}]}
+
+
+def test_archive_download_returns_the_presigned_url(registry) -> None:
+    registry.reply("/api/archive/o-1/download", 200, {"url": "https://blobs/o-1?sig=x"})
+
+    assert make_client(registry).archive_download("o-1") == "https://blobs/o-1?sig=x"
+
+
 def test_offline_server_raises_unreachable() -> None:
     # Port 1 on loopback: nothing listens, so this is a connection refusal, not a lookup.
     with pytest.raises(ServerUnreachableError, match="Cannot reach"):

@@ -33,8 +33,10 @@ from PySide6.QtWidgets import (
 from deepreefmap_gui.core.icons import ICON_SM, check_icon, copy_icon, log_icon
 from deepreefmap_gui.core.image_view import ClickableLabel, ImageDialog
 from deepreefmap_gui.core.theme import (
+    ERROR,
     FONT_LG_PT,
     SPACE_SM,
+    SUCCESS,
     TEXT_MUTED,
     WARN_TEXT,
 )
@@ -265,6 +267,8 @@ class RunDetailPanel(DetailCard):
     """A titled card describing the selected run."""
 
     open_requested = Signal()
+    # The database run id whose outputs to archive, None on a folder-only run.
+    archive_requested = Signal(object)
     # The run directory whose run.log to show. A separate signal from
     # open_requested because the runs whose log matters most are the ones that
     # cannot be opened at all.
@@ -315,6 +319,11 @@ class RunDetailPanel(DetailCard):
         self.error.setVisible(False)
         layout.addWidget(self.error)
 
+        # What the registry's archive holds of this run, from a live probe only.
+        self.archive_state = QLabel("")
+        self.archive_state.setVisible(False)
+        layout.addWidget(self.archive_state)
+
         # Opening the run is what this pane is for, and it is the only button in
         # the row that says so. Everything occasional is behind More…: the pane
         # is 260px at its floor, which does not hold four labelled buttons
@@ -360,9 +369,55 @@ class RunDetailPanel(DetailCard):
         """Everything the menu offers on this run, in one list."""
         return (
             ("rename", "Rename…", self.rename_requested.emit),
+            ("archive", "Archive to server…", self._request_archive),
             ("copy_command", "Copy command", self._copy_command),
             ("show_log", "Show log", self._request_log),
         )
+
+    @property
+    def entry(self) -> RunEntry | None:
+        return self._entry
+
+    def set_archive_state(self, state: str | None) -> None:
+        """Paint the archive's answer, or nothing when nobody has asked it."""
+        faces = {
+            "archived": ("Outputs on server ✓", SUCCESS, "Every output archived and verified."),
+            "partial": (
+                "Outputs partly on server",
+                WARN_TEXT,
+                "Some outputs are archived; archive again to send the rest.",
+            ),
+            "pending": (
+                "Outputs uploading…",
+                WARN_TEXT,
+                "Offered to the registry, not verified yet.",
+            ),
+            "failed": (
+                "Archive failed",
+                ERROR,
+                "The registry could not verify an upload. Archive again.",
+            ),
+        }
+        face = faces.get(state or "")
+        if face is None:
+            self.archive_state.setVisible(False)
+            return
+        text, colour, tip = face
+        self.archive_state.setText(text)
+        self.archive_state.setStyleSheet(f"color: {colour};")
+        self.archive_state.setToolTip(tip)
+        self.archive_state.setVisible(True)
+
+    def _request_archive(self) -> None:
+        """Offer this run's outputs to the registry's archive.
+
+        Only a run the survey database knows can be archived: the registry
+        catalogues artefacts against the run row, and a folder-only run has no
+        row to hang them off.
+        """
+        entry = self._entry
+        if entry is not None and entry.db_run is not None:
+            self.archive_requested.emit(entry.db_run.id)
 
     def _fill_run_actions(self, menu: QMenu) -> dict[str, QAction]:
         return {key: menu.addAction(label, slot) for key, label, slot in self._run_action_specs()}

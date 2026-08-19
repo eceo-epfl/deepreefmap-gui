@@ -66,8 +66,9 @@ from deepreefmap_gui.server.state import (
     summarise,
 )
 from deepreefmap_gui.survey.models.common import utc_now_iso
-from deepreefmap_gui.survey.models.notification import INFO, SURVEY
+from deepreefmap_gui.survey.models.notification import INFO, SURVEY, WARNING
 from deepreefmap_gui.survey.store import SurveyStore
+from deepreefmap_gui.sync.archive import ArchiveReport
 from deepreefmap_gui.sync.contract import PULL_SECTIONS
 from deepreefmap_gui.sync.engine import SyncEngine
 
@@ -99,6 +100,16 @@ SESSION_RUNNING = "Wait for the current session to finish, then sync."
 
 PULLING = "Pulling changes (page {page})…"
 SENDING = "Sending {rows} row(s)…"
+
+ARCHIVE_NOW = "Archive to server"
+ARCHIVE_TOOLTIP = (
+    "Send the original clips and every finished run's outputs to the registry's "
+    "archive. Nothing is sent until this is pressed."
+)
+PLANNING_ARCHIVE = "Working out what to archive…"
+# One episode per pass over the queue: re-archiving resumes server-side, so the
+# same fingerprint updating in place is the right shape for a retry.
+ARCHIVE_FAILED = "archive.upload_failed"
 
 
 class ConflictNotifier:
@@ -160,6 +171,7 @@ class ServerPageMixin(MixinBase):
     """DeepReefMapWindow methods for the Server section and the sync it runs."""
 
     _server_syncing: bool = False
+    _server_archiving: bool = False
     _connect_dialog: ConnectDialog | None = None
     _server_state: ServerState | None = None
     # The client the running sync is using, kept for the version it learned.
@@ -249,6 +261,11 @@ class ServerPageMixin(MixinBase):
         self._server_sync_btn.clicked.connect(self._on_sync_now)
         row.addWidget(self._server_sync_btn)
 
+        self._server_archive_btn = QPushButton(ARCHIVE_NOW)
+        self._server_archive_btn.setToolTip(ARCHIVE_TOOLTIP)
+        self._server_archive_btn.clicked.connect(self._on_archive_now)
+        row.addWidget(self._server_archive_btn)
+
         self._server_disconnect_btn = QPushButton(DISCONNECT)
         self._server_disconnect_btn.setToolTip(DISCONNECT_NOTE)
         self._server_disconnect_btn.clicked.connect(self._on_disconnect_server)
@@ -284,8 +301,11 @@ class ServerPageMixin(MixinBase):
         self._server_card.setVisible(connected)
         self._server_waiting_card.setVisible(connected and bool(state.pending))
         self._server_connect_btn.setVisible(not connected)
+        busy = self._server_syncing or self._server_archiving
         self._server_sync_btn.setVisible(connected)
-        self._server_sync_btn.setEnabled(connected and not self._server_syncing)
+        self._server_sync_btn.setEnabled(connected and not busy)
+        self._server_archive_btn.setVisible(connected)
+        self._server_archive_btn.setEnabled(connected and not busy)
         self._server_disconnect_btn.setVisible(connected)
         self._server_disconnect_note.setVisible(connected)
         if state.fault:
@@ -313,6 +333,7 @@ class ServerPageMixin(MixinBase):
         self._server_spinner.setVisible(busy)
         self._server_progress.setText(text)
         self._server_sync_btn.setEnabled(not busy)
+        self._server_archive_btn.setEnabled(not busy)
         self._server_disconnect_btn.setEnabled(not busy)
 
     # --- connecting ---------------------------------------------------------
@@ -376,7 +397,7 @@ class ServerPageMixin(MixinBase):
 
     def _on_sync_now(self) -> None:
         """Pull, then push, on a worker thread."""
-        if self._server_syncing:
+        if self._server_syncing or self._server_archiving:
             return
         # A pull rewrites rows the batch worker is writing pass statuses into, so
         # the two never run at once.
@@ -452,6 +473,180 @@ class ServerPageMixin(MixinBase):
     def _on_sync_progress(self, text: str) -> None:
         if self._server_syncing:
             self._set_server_busy(True, text)
+
+    # --- archiving ------------------------------------------------------------
+
+    def _on_archive_now(self) -> None:
+        """Offer every clip and finished run to the blob archive, on a worker thread.
+
+        On request only: nothing here runs on a timer, so a metered field uplink
+        is never spent without someone pressing for it.
+        """
+        from deepreefmap_gui.sync import archive
+
+        self._archive_with_plan(archive.archive_plan)
+
+    def _archive_video(self, video_id: str) -> None:
+        """Offer one clip, from its own card. Same worker, a plan of one."""
+        from deepreefmap_gui.sync import archive
+
+        self._archive_with_plan(
+            lambda store, _out_root: archive.archive_plan_for_video(store, video_id)
+        )
+
+    def _archive_run(self, run_id: object) -> None:
+        """Offer one run's outputs, from its own card."""
+        from deepreefmap_gui.sync import archive
+
+        if run_id is None:
+            return
+        self._archive_with_plan(
+            lambda store, out_root: archive.archive_plan_for_run(store, out_root, str(run_id))
+        )
+
+    def _archive_with_plan(self, plan_builder: Callable[..., list]) -> None:
+        if self._server_syncing or self._server_archiving:
+            return
+        # Same guard as a sync: a running batch is still writing into the run
+        # directories this would be hashing and reading.
+        if self._survey_worker_running:
+            self._server_blocker.show_blocker(SESSION_RUNNING)
+            return
+        from deepreefmap_gui.sync import archive, credentials
+        from deepreefmap_gui.sync.client import SyncClient
+
+        store = self._try_survey_store()
+        if store is None:
+            return
+        try:
+            held = credentials.load()
+        except Exception as exc:
+            self._on_archive_done(describe_failure(exc))
+            return
+        if held is None:
+            self._refresh_server_page()
+            return
+        # No `agreed` here: archive responses carry no contract stamp, and a
+        # client that has adopted one refuses unstamped bodies.
+        client = SyncClient(held.base_url, held.token)
+        out_root = store.path.parent
+        self._server_archiving = True
+        self._server_notice.clear()
+        self._set_server_busy(True, PLANNING_ARCHIVE)
+
+        def report(text: str, done: int, total: int) -> None:
+            try:
+                self._sig_archive_progress.emit(f"{text} ({min(done + 1, total)} of {total})")
+            except (RuntimeError, TypeError):
+                logger.debug("The window closed before the archive finished")
+
+        def worker() -> None:
+            try:
+                jobs = plan_builder(store, out_root)
+                result: object = archive.run_archive(client, jobs, report)
+            except Exception as exc:
+                logger.warning("Archive failed: %s", exc)
+                result = describe_failure(exc)
+            try:
+                self._sig_archive_done.emit(result)
+            except (RuntimeError, TypeError):
+                logger.debug("The window closed before the archive finished")
+
+        threading.Thread(target=worker, daemon=True, name="registry-archive").start()
+
+    def _on_archive_progress(self, text: str) -> None:
+        if self._server_archiving:
+            self._set_server_busy(True, text)
+
+    # --- what the registry holds, for the badges ------------------------------
+
+    def _refresh_archive_badges(self) -> None:
+        """Ask the registry what it holds of this survey, off the GUI thread.
+
+        Enrolled only, and never cached as authoritative: a badge painted from
+        yesterday's answer would claim content is safe on a server that may no
+        longer hold it. Offline, the maps empty out and no badge is painted.
+        """
+        from deepreefmap_gui.sync import credentials
+        from deepreefmap_gui.sync.client import SyncClient
+
+        if getattr(self, "_archive_badge_scan_running", False):
+            return
+        store = self._try_survey_store()
+        if store is None:
+            return
+        try:
+            held = credentials.load()
+        except Exception:
+            held = None
+        if held is None:
+            self._apply_archive_states(None)
+            return
+        client = SyncClient(held.base_url, held.token)
+        self._archive_badge_scan_running = True
+
+        def worker() -> None:
+            from deepreefmap_gui.sync import archive
+
+            try:
+                states: object = archive.probe_archive_states(
+                    client, store.list_videos(), store.list_runs()
+                )
+            except Exception as exc:
+                logger.info("Archive badges not refreshed: %s", exc)
+                states = None
+            finally:
+                self._archive_badge_scan_running = False
+            try:
+                self._sig_archive_states.emit(states)
+            except (RuntimeError, TypeError):
+                logger.debug("The window closed before the archive probe answered")
+
+        threading.Thread(target=worker, daemon=True, name="archive-badges").start()
+
+    def _apply_archive_states(self, states: object) -> None:
+        from deepreefmap_gui.sync.archive import ArchiveStates
+
+        self._archive_states = states if isinstance(states, ArchiveStates) else None
+        self._paint_archive_badges()
+
+    def _archive_state_for_video(self, video_id: object) -> str | None:
+        states = getattr(self, "_archive_states", None)
+        return None if states is None else states.videos.get(str(video_id))
+
+    def _archive_state_for_run(self, run_id: object) -> str | None:
+        states = getattr(self, "_archive_states", None)
+        return None if states is None else states.runs.get(str(run_id))
+
+    def _on_archive_done(self, result: object) -> None:
+        self._server_archiving = False
+        self._set_server_busy(False)
+        if isinstance(result, Failure):
+            self._server_notice.clear()
+            self._server_blocker.show_blocker(
+                f"{result.title}. {result.detail}",
+                RECONNECT if result.reconnect else "",
+            )
+            self._refresh_server_page()
+            return
+        if not isinstance(result, ArchiveReport):
+            return
+        self._server_blocker.clear()
+        self._refresh_server_page()
+        self._refresh_archive_badges()
+        self._server_notice.show_notice(summarise_archive(result))
+        if result.failed:
+            label, reason = result.failed[0]
+            self._notify_post(
+                {
+                    "fingerprint": ARCHIVE_FAILED,
+                    "title": f"{len(result.failed)} file(s) did not reach the archive",
+                    "body": f"First failure: {label}: {reason} Archive again to resume.",
+                    "severity": WARNING,
+                    "scope": SURVEY,
+                    "section": SERVER_SECTION,
+                }
+            )
 
     # --- the status-bar badge -------------------------------------------------
 
@@ -607,6 +802,19 @@ def _fact_rows(state: ServerState) -> list[tuple[str, str]]:
         ("Pulled up to", "Nothing yet" if state.cursor is None else str(state.cursor)),
         ("Waiting to send", f"{state.waiting} row(s)"),
     ]
+
+
+def summarise_archive(report: ArchiveReport) -> str:
+    """One line for the notice strip, counting where every file ended up."""
+    parts = [
+        f"Archived {report.archived} file(s)",
+        f"{report.already} already on the server",
+    ]
+    if report.uploading_verification:
+        parts.append(f"{report.uploading_verification} being verified")
+    if report.failed:
+        parts.append(f"{len(report.failed)} failed")
+    return ", ".join(parts) + "."
 
 
 def _heartbeat(client: object) -> None:
