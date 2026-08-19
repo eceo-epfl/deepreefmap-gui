@@ -293,11 +293,6 @@
           "nullable": false
         },
         {
-          "kind": "text",
-          "name": "sha256",
-          "nullable": true
-        },
-        {
           "kind": "timestamp",
           "name": "created_at",
           "nullable": false

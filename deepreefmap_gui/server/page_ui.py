@@ -813,8 +813,6 @@ def summarise_archive(report: ArchiveReport) -> str:
         f"Archived {report.archived} file(s)",
         f"{report.already} already on the server",
     ]
-    if report.uploading_verification:
-        parts.append(f"{report.uploading_verification} being verified")
     if report.failed:
         parts.append(f"{len(report.failed)} failed")
     return ", ".join(parts) + "."

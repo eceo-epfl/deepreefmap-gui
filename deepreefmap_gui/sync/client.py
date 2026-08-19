@@ -177,18 +177,18 @@ class SyncClient:
     def archive_complete(
         self, object_id: str, parts: Sequence[Mapping[str, Any]]
     ) -> dict[str, Any]:
-        """Assemble the uploaded parts. Verification runs server-side afterwards."""
+        """Assemble the uploaded parts into the finished object."""
         return self._request(
             "POST", f"/archive/{object_id}/complete", body={"parts": [dict(p) for p in parts]}
         )
 
-    def archive_probe(self, sha256s: Sequence[str]) -> dict[str, Any]:
+    def archive_probe(self, hashes: Sequence[str]) -> dict[str, Any]:
         """The archived state of many contents at once, keyed by hash.
 
         A hash absent from the answer has never been offered, which is an
-        answer rather than an error, unlike `archive_by_sha256`'s 404.
+        answer rather than an error, unlike `archive_by_hash`'s 404.
         """
-        return self._request("POST", "/archive/probe", body={"sha256s": list(sha256s)})
+        return self._request("POST", "/archive/probe", body={"hashes": list(hashes)})
 
     def archive_runs_probe(self, run_ids: Sequence[str]) -> dict[str, Any]:
         """Per run, how many artefacts the registry holds and how they stand."""
@@ -196,15 +196,15 @@ class SyncClient:
             "POST", "/archive/runs-probe", body={"run_ids": [str(r) for r in run_ids]}
         )
 
-    def archive_by_sha256(self, sha256_hex: str) -> dict[str, Any] | None:
+    def archive_by_hash(self, content_hash: str) -> dict[str, Any] | None:
         """The archived state of this content, or None where nothing is."""
         try:
-            return self._request("GET", f"/archive/by-sha256/{sha256_hex}")
+            return self._request("GET", f"/archive/by-hash/{content_hash}")
         except NotFoundError:
             return None
 
     def archive_download(self, object_id: str) -> str:
-        """A short-lived presigned URL for a verified object."""
+        """A short-lived presigned URL for a completed object."""
         return str(self._request("GET", f"/archive/{object_id}/download").get("url", ""))
 
     def _url(self, path: str) -> str:

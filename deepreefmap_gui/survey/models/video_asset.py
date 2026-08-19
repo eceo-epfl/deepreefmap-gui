@@ -39,10 +39,6 @@ class VideoAsset:
     file_name: str
     path: str
     hash: str | None = None
-    # The full-file digest, beside the sampled identity hash: the one standard
-    # tooling and object storage can verify. Filled by the archive path, never
-    # at ingest, because it reads the whole clip.
-    sha256: str | None = None
     size_bytes: int | None = None
     mtime: str | None = None
     duration_s: float | None = None
@@ -69,7 +65,6 @@ class VideoAsset:
     LOCATION_FIELDS: ClassVar[tuple[str, ...]] = ("file_name", "path")
     CARRIED_FIELDS: ClassVar[tuple[str, ...]] = (
         "hash",
-        "sha256",
         "size_bytes",
         "mtime",
         "duration_s",

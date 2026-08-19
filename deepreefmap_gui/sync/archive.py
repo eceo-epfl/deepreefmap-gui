@@ -2,10 +2,14 @@
 
 Two kinds of content travel. Every clip the survey knows about with a readable
 file goes up as a `video` blob, and every file inside a succeeded run's
-directory goes up as an `artifact` under that run. The store is
-content-addressed and the server verifies every claimed hash itself, so
-re-running the queue costs one initiate per file already archived and sends
-nothing twice.
+directory goes up as an `artifact` under that run. The store is addressed by
+imohash, the same sampled identity a clip already carries from ingest, so
+planning a pass never reads a file end to end and re-running the queue costs
+one initiate per archived file and sends nothing twice.
+
+Integrity of the bytes is the store's own: S3 answers every part with the MD5
+it computed of what it stored, and a part whose ETag disagrees with the buffer
+just sent is retried rather than assembled.
 
 No Qt here, deliberately: the Server page runs this on a worker thread and
 marshals progress back through signals, the same shape as `engine.py`.
@@ -14,8 +18,8 @@ marshals progress back through signals, the same shape as `engine.py`.
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
@@ -23,24 +27,30 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from deepreefmap_gui.io.video_hash import hash_video
 from deepreefmap_gui.survey.models import RunRecord, VideoAsset
 from deepreefmap_gui.survey.store import SurveyStore
 from deepreefmap_gui.sync.client import ServerUnreachableError, SyncError
 
 logger = logging.getLogger(__name__)
 
-# Streamed, because a clip can be tens of gigabytes.
-HASH_CHUNK_BYTES = 1024 * 1024
-
 # One PUT moves a whole part, 32 MiB at the server's default, and a field
 # uplink can be slow enough that the client timeout is what would kill it.
 UPLOAD_TIMEOUT = 600.0
+
+# Presigned URLs lapse. Re-initiating costs one request and mints a fresh set,
+# so the loop does that before a part could outlive the batch it came in. The
+# margin covers a part already in flight when the check is made.
+PRESIGN_MARGIN = 30.0
+DEFAULT_PRESIGN_TTL = 900.0
+
+# A clip that cannot finish in this many rounds of fresh URLs is not going to.
+MAX_PRESIGN_ROUNDS = 40
 
 KIND_VIDEO = "video"
 KIND_ARTIFACT = "artifact"
 
 STATUS_PENDING = "pending"
-STATUS_UPLOADED = "uploaded"
 STATUS_COMPLETE = "complete"
 STATUS_FAILED = "failed"
 
@@ -65,16 +75,8 @@ class ArchiveTransport(Protocol):
     ) -> dict[str, Any]: ...
 
 
-def sha256_file(path: Path) -> str:
-    """SHA-256 of the whole file, as the 64 lowercase hex characters the server wants."""
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while True:
-            chunk = handle.read(HASH_CHUNK_BYTES)
-            if not chunk:
-                break
-            digest.update(chunk)
-    return digest.hexdigest()
+class PresignExpiredError(SyncError):
+    """A part URL lapsed before its turn. The caller re-initiates and resumes."""
 
 
 def upload_part(url: str, chunk: bytes) -> str:
@@ -90,12 +92,21 @@ def upload_part(url: str, chunk: bytes) -> str:
         with urllib.request.urlopen(request, timeout=UPLOAD_TIMEOUT) as response:  # noqa: S310
             etag = response.headers.get("ETag", "")
     except urllib.error.HTTPError as exc:
+        # 403 is what a lapsed signature looks like from here.
+        if exc.code == 403:
+            raise PresignExpiredError("The part URL is no longer valid.") from exc
         raise SyncError(f"The blob store refused a part ({exc.code}).") from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise ServerUnreachableError(f"Cannot reach the blob store: {exc}.") from exc
     if not etag:
         raise SyncError("The blob store answered a part without an ETag.")
-    return etag.strip('"')
+    etag = etag.strip('"')
+    # The store's own checksum of what it stored. Comparing it to the buffer in
+    # hand is the whole integrity check, and it costs no second read.
+    expected = hashlib.md5(chunk, usedforsecurity=False).hexdigest()
+    if etag != expected:
+        raise SyncError("The blob store stored a part that differs from the one sent.")
+    return etag
 
 
 @dataclass(frozen=True)
@@ -104,7 +115,7 @@ class ArchiveJob:
 
     label: str
     path: Path
-    sha256: str
+    content_hash: str
     size_bytes: int
     kind: str
     run_id: str | None = None
@@ -112,7 +123,7 @@ class ArchiveJob:
 
     def initiate_payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
-            "sha256": self.sha256,
+            "content_hash": self.content_hash,
             "size_bytes": self.size_bytes,
             "kind": self.kind,
         }
@@ -126,16 +137,13 @@ class ArchiveJob:
 class ArchiveReport:
     """What one pass over the queue did.
 
-    ``archived`` counts files sent and assembled this pass, which the server is
-    now verifying. ``uploading_verification`` counts files somebody sent before
-    that are still being verified. Failures carry their reason per file because
-    the queue keeps going: re-running resumes server-side, so a flaky connection
-    costs a retry rather than the whole batch.
+    ``archived`` counts files sent and assembled this pass. Failures carry their
+    reason per file because the queue keeps going: re-running resumes
+    server-side, so a flaky connection costs a retry rather than the whole batch.
     """
 
     archived: int = 0
     already: int = 0
-    uploading_verification: int = 0
     failed: list[tuple[str, str]] = field(default_factory=list)
 
 
@@ -175,9 +183,9 @@ def _video_jobs(store: SurveyStore) -> list[ArchiveJob]:
 def _jobs_for_video(store: SurveyStore, video: VideoAsset) -> list[ArchiveJob]:
     """This clip's job, where its file can still be read.
 
-    The full-file digest is computed here where the row lacks one, and written
-    back so the next pass, and the registry's `video_asset.sha256` linkage, get
-    it for free. Nothing else on the row is touched.
+    Identity is the row's own ``hash``, so a blob and its registry row meet on a
+    value both already hold. A row without one is hashed here and written back:
+    imohash samples the file, so this costs nothing even for a 4 GB chapter.
     """
     path = Path(video.path)
     try:
@@ -186,20 +194,18 @@ def _jobs_for_video(store: SurveyStore, video: VideoAsset) -> list[ArchiveJob]:
         return []
     if not path.is_file():
         return []
-    digest = video.sha256
+    digest = video.hash
     if not digest:
-        try:
-            digest = sha256_file(path)
-        except OSError as exc:
-            logger.info("Cannot hash %s: %s", path, exc)
+        digest = hash_video(path)
+        if not digest:
             return []
-        video.sha256 = digest
+        video.hash = digest
         store.update_video(video)
     return [
         ArchiveJob(
             label=video.file_name,
             path=path,
-            sha256=digest,
+            content_hash=digest,
             size_bytes=size_bytes,
             kind=KIND_VIDEO,
         )
@@ -223,7 +229,6 @@ def _jobs_for_run(run: RunRecord, out_root: Path) -> list[ArchiveJob]:
 
 
 def _run_dir_jobs(run_dir: Path, run_dir_name: str, run_id: str) -> list[ArchiveJob]:
-    digests, manifest_mtime = _manifest_digests(run_dir)
     jobs: list[ArchiveJob] = []
     for path in sorted(run_dir.rglob("*")):
         if not path.is_file():
@@ -235,17 +240,17 @@ def _run_dir_jobs(run_dir: Path, run_dir_name: str, run_id: str) -> list[Archive
         relpath = rel.as_posix()
         try:
             stat = path.stat()
-            digest = _recorded_digest(digests, manifest_mtime, path, relpath) or sha256_file(
-                path
-            )
         except OSError as exc:
             logger.info("Cannot read %s: %s", path, exc)
+            continue
+        digest = hash_video(path)
+        if not digest:
             continue
         jobs.append(
             ArchiveJob(
                 label=f"{run_dir_name}/{relpath}",
                 path=path,
-                sha256=digest,
+                content_hash=digest,
                 size_bytes=stat.st_size,
                 kind=KIND_ARTIFACT,
                 run_id=run_id,
@@ -255,52 +260,13 @@ def _run_dir_jobs(run_dir: Path, run_dir_name: str, run_id: str) -> list[Archive
     return jobs
 
 
-def _manifest_digests(run_dir: Path) -> tuple[dict[str, str], float | None]:
-    """The manifest's recorded output digests, and when the manifest was written."""
-    path = run_dir / "run_manifest.json"
-    try:
-        manifest = json.loads(path.read_text(encoding="utf-8"))
-        written = path.stat().st_mtime
-    except (OSError, json.JSONDecodeError):
-        return {}, None
-    recorded = manifest.get("output_file_digests") if isinstance(manifest, dict) else None
-    if not isinstance(recorded, dict):
-        return {}, written
-    return {
-        name: digest
-        for name, digest in recorded.items()
-        if isinstance(digest, str) and _is_sha256_hex(digest)
-    }, written
-
-
-def _recorded_digest(
-    digests: dict[str, str], manifest_mtime: float | None, path: Path, relpath: str
-) -> str | None:
-    """The manifest's digest for this file, where it still describes it.
-
-    Manifest v5 records digests but no sizes, so freshness is judged by time:
-    the manifest is the last thing a run writes, and a file rewritten after it
-    has drifted from what was recorded.
-    """
-    digest = digests.get(relpath)
-    if digest is None or manifest_mtime is None:
-        return None
-    if path.stat().st_mtime > manifest_mtime:
-        return None
-    return digest
-
-
-def _is_sha256_hex(text: str) -> bool:
-    return len(text) == 64 and all(c in "0123456789abcdef" for c in text)
-
-
 # --- probing --------------------------------------------------------------------
 
 
 class ProbeTransport(Protocol):
     """The two bulk lookups one badge refresh makes on a registry client."""
 
-    def archive_probe(self, sha256s: Sequence[str]) -> dict[str, Any]: ...
+    def archive_probe(self, hashes: Sequence[str]) -> dict[str, Any]: ...
 
     def archive_runs_probe(self, run_ids: Sequence[str]) -> dict[str, Any]: ...
 
@@ -324,10 +290,10 @@ def probe_archive_states(
 ) -> ArchiveStates:
     """Ask the registry what it holds of these clips and runs, in two calls.
 
-    A clip with no recorded digest cannot be asked about, so it stays unknown
+    A clip with no recorded hash cannot be asked about, so it stays unknown
     rather than being hashed here: this runs on every list refresh.
     """
-    hashes = {str(video.id): video.sha256 for video in videos if video.sha256}
+    hashes = {str(video.id): video.hash for video in videos if video.hash}
     blob_states: Mapping[str, Any] = {}
     if hashes:
         answer = client.archive_probe(sorted(set(hashes.values())))
@@ -409,22 +375,65 @@ def _send_one(
     done: int,
     total: int,
 ) -> None:
-    answer = client.archive_initiate(job.initiate_payload())
-    status = answer.get("status")
-    if status == STATUS_COMPLETE:
-        report.already += 1
-        return
-    if status == STATUS_UPLOADED:
-        # Assembled already, by whoever: the server is re-hashing it now.
-        report.uploading_verification += 1
-        return
-    part_size = int(answer.get("part_size_bytes") or 0)
-    part_urls = answer.get("part_urls") or []
-    if status != STATUS_PENDING or part_size < 1:
-        raise SyncError(f"The registry answered an unusable upload state ({status}).")
-    etags: list[tuple[int, str]] = []
+    """Offer one file, uploading whatever the registry says is still missing.
+
+    Presigned URLs lapse well inside the time a 4 GB clip takes on a field
+    uplink, so the loop re-initiates when the current batch is close to expiry
+    and resumes from the parts the registry reports. That also makes a lapse
+    that happens anyway survivable: the URL answers 403, and the next round
+    mints a fresh one for the same part.
+    """
+    for attempt in range(MAX_PRESIGN_ROUNDS):
+        answer = client.archive_initiate(job.initiate_payload())
+        minted_at = time.monotonic()
+        status = answer.get("status")
+        if status == STATUS_COMPLETE:
+            # Nothing left to send: either dedup, or an earlier round finished it.
+            if attempt:
+                report.archived += 1
+            else:
+                report.already += 1
+            return
+        part_size = int(answer.get("part_size_bytes") or 0)
+        part_urls = answer.get("part_urls") or []
+        if status != STATUS_PENDING or part_size < 1:
+            raise SyncError(f"The registry answered an unusable upload state ({status}).")
+        if not part_urls:
+            # Every part is stored already; assemble and stop.
+            client.archive_complete(str(answer["object_id"]), [])
+            report.archived += 1
+            return
+
+        ttl = float(answer.get("presign_ttl_seconds") or DEFAULT_PRESIGN_TTL)
+        # One part may run the whole upload timeout, so a URL is only started
+        # while the batch still has room for that plus a margin.
+        usable = ttl - UPLOAD_TIMEOUT - PRESIGN_MARGIN
+        if usable <= 0:
+            usable = ttl / 2
+
+        if _upload_batch(job, part_urls, part_size, minted_at, usable, progress, done, total):
+            client.archive_complete(str(answer["object_id"]), [])
+            report.archived += 1
+            return
+        # Ran out of signature life. Re-initiate and carry on where S3 got to.
+    raise SyncError(f"Could not finish {job.label} before its upload URLs kept lapsing.")
+
+
+def _upload_batch(
+    job: ArchiveJob,
+    part_urls: Sequence[Mapping[str, Any]],
+    part_size: int,
+    minted_at: float,
+    usable: float,
+    progress: ProgressFn,
+    done: int,
+    total: int,
+) -> bool:
+    """PUT this batch of parts, returning whether it got through all of them."""
     with job.path.open("rb") as handle:
         for sent, part in enumerate(part_urls):
+            if time.monotonic() - minted_at >= usable:
+                return False
             number = int(part["part_number"])
             progress(
                 f"Archiving {job.label} (part {sent + 1} of {len(part_urls)})…",
@@ -434,9 +443,8 @@ def _send_one(
             # Only the missing parts were presigned, so the offset comes from
             # the part number rather than from read position.
             handle.seek((number - 1) * part_size)
-            etags.append((number, upload_part(str(part["url"]), handle.read(part_size))))
-    parts = [
-        {"part_number": number, "etag": etag} for number, etag in sorted(etags)
-    ]
-    client.archive_complete(str(answer["object_id"]), parts)
-    report.archived += 1
+            try:
+                upload_part(str(part["url"]), handle.read(part_size))
+            except PresignExpiredError:
+                return False
+    return True

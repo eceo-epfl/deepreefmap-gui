@@ -545,9 +545,6 @@ _MIGRATIONS: list[Migration] = [
         ALTER TABLE run_record ADD COLUMN stage_durations TEXT;
         ALTER TABLE run_record ADD COLUMN stage_peaks TEXT;
 
-        -- The full-file digest beside the sampled identity hash: the one
-        -- standard tooling and object storage can verify.
-        ALTER TABLE video_asset ADD COLUMN sha256 TEXT;
         """,
     ),
     # Presets the registry publishes, pulled whole. Pull-only, so the rows

@@ -506,7 +506,7 @@ def test_archiving_sends_the_queue_and_reports_what_landed(window, qapp, registr
 
     assert made[0].calls == ["archive_initiate"]
     assert made[0].initiated[0]["kind"] == "video"
-    assert len(made[0].initiated[0]["sha256"]) == 64
+    assert len(made[0].initiated[0]["content_hash"]) == 32
     message = window._server_notice._message.text()
     assert message == "Archived 0 file(s), 1 already on the server."
     assert window._server_archive_btn.isEnabled()
