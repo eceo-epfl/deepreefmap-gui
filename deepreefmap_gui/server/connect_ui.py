@@ -32,7 +32,11 @@ TITLE = "Connect to server"
 INTRO = "Paste the connect code from the registry's web interface. It enrols this installation, not you."
 
 NAME_LABEL = "Device name"
-NAME_HINT = "Everything this computer uploads is attributed to this name."
+NAME_HINT = (
+    "Everything this computer uploads is attributed to this name, and everyone "
+    "in the organisation can see it. It starts as the machine's own name, so "
+    "change it here if that names a person."
+)
 
 CONNECT = "Connect"
 CONNECTING = "Connecting…"

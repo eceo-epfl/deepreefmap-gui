@@ -11,10 +11,11 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any
 
 from deepreefmap_gui.survey.analysis import LongCoverRow, _run_manifest_provenance
@@ -195,14 +196,52 @@ def run_rows_to_wire(runs: Sequence[RunRecord], out_root: Path) -> list[dict[str
     before the database held provenance fall back to reading the run directory,
     degrading to nulls where it has been pruned. Taken from the model rather
     than the encoded row so the JSON fields travel as objects, not text.
+
+    Error strings and deviating paths are scrubbed on the way out: a pipeline
+    error routinely embeds an absolute path, and an absolute path routinely
+    embeds a username. The registry is shared, so it gets neither.
     """
     wire_rows = []
     for run, row in zip(runs, rows_to_wire("runs", runs), strict=True):
         stored = {name: getattr(run, name) for name in _PROVENANCE_FIELDS}
         if all(value is None for value in stored.values()):
             stored = run_provenance(out_root, run.run_dir_name)
-        wire_rows.append({**row, **stored})
+        merged = {**row, **stored}
+        if merged.get("error"):
+            merged["error"] = scrub_home_paths(str(merged["error"]))
+        if isinstance(merged.get("preset_deviations"), dict):
+            merged["preset_deviations"] = _scrub_deviations(merged["preset_deviations"])
+        wire_rows.append(merged)
     return wire_rows
+
+
+# Home directories on the three platforms field laptops run. The username is
+# the segment after the prefix, which is exactly the part that must not travel.
+_HOME_PREFIXES = re.compile(
+    r'(?:[A-Za-z]:[\\/]Users[\\/][^\\/\s:*?"<>|]+|/home/[^/\s]+|/Users/[^/\s]+)'
+)
+
+
+def scrub_home_paths(text: str) -> str:
+    """Every home-directory prefix in ``text`` replaced with ``~``."""
+    return _HOME_PREFIXES.sub("~", text)
+
+
+def _scrub_deviations(deviations: dict[str, Any]) -> dict[str, Any]:
+    """Deviating values that are paths reduced to their file names.
+
+    A machine-local checkpoint path says nothing to the registry beyond which
+    file was used, and the rest of it describes somebody's disk.
+    """
+    scrubbed: dict[str, Any] = {}
+    for key, value in deviations.items():
+        if isinstance(value, str) and (
+            value.startswith(("/", "~")) or re.match(r"^[A-Za-z]:[\\/]", value)
+        ):
+            scrubbed[key] = PurePath(value.replace("\\", "/")).name
+        else:
+            scrubbed[key] = value
+    return scrubbed
 
 
 def pass_video_rows(pass_: TransectPass) -> list[dict[str, Any]]:

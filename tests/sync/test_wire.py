@@ -574,3 +574,43 @@ def test_a_cover_row_is_json_the_registry_can_check(tmp_path):
     rows = wire.cover_rows_to_wire([make_cover_row(run_id=str(run.id))], {str(run.id): run}, tmp_path)
 
     assert json.loads(json.dumps(rows)) == rows
+
+
+# --- scrubbing ---
+
+
+def test_an_error_leaves_its_usernames_behind(tmp_path):
+    run = RunRecord(
+        pass_id=uuid.uuid4(),
+        run_dir_name="t1__p01",
+        status="failed",
+        error=r"open C:\Users\kim.nguyen\footage\GX01.MP4 and /home/kim/out failed",
+        gui_version="0.9.0",
+    )
+
+    row = wire.run_rows_to_wire([run], tmp_path)[0]
+
+    assert "kim" not in row["error"]
+    assert row["error"] == r"open ~\footage\GX01.MP4 and ~/out failed"
+
+
+def test_a_deviating_path_travels_as_its_file_name(tmp_path):
+    run = RunRecord(
+        pass_id=uuid.uuid4(),
+        run_dir_name="t1__p01",
+        status="succeeded",
+        gui_version="0.9.0",
+        preset_deviations={
+            "loger_model_path": "/home/kim/ckpts/loger_v3.pth",
+            "scs_checkpoint_path": r"C:\Users\kim\scs.ckpt",
+            "fps": 4,
+        },
+    )
+
+    row = wire.run_rows_to_wire([run], tmp_path)[0]
+
+    assert row["preset_deviations"] == {
+        "loger_model_path": "loger_v3.pth",
+        "scs_checkpoint_path": "scs.ckpt",
+        "fps": 4,
+    }
