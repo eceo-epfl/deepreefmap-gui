@@ -1,7 +1,10 @@
-"""HTTP client for the metadata registry: enrolment, schema, status, pull and push.
+"""HTTP client for the metadata registry: enrolment, pull and push.
 
 stdlib urllib, as elsewhere in this package. Every call is one attempt: sync is
 driven by the operator or by a timer, so a retry here would only stack requests.
+
+Every request declares the contract range and the sections this build reads. The
+registry stamps the version the exchange ran at, and the client adopts it.
 """
 
 from __future__ import annotations
@@ -15,11 +18,19 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
 from deepreefmap_gui.sync.connect_code import ConnectCode
+from deepreefmap_gui.sync.contract import (
+    CONTRACT_RANGE,
+    CONTRACT_VERSION,
+    MIN_CONTRACT_VERSION,
+    PULL_SECTIONS,
+)
 
 logger = logging.getLogger(__name__)
 
-# The contract this client speaks. Bump only with the row shapes it sends.
-CONTRACT_VERSION = 1
+# What this build declares on every request: the versions it reads, and the
+# sections it will land off a pull. A push declares its sections by carrying them.
+CONTRACT_HEADER = "Deepreefmap-Contract"
+SECTIONS_HEADER = "Deepreefmap-Sections"
 
 DEFAULT_TIMEOUT = 15.0
 # Enrolment mints a token behind argon2, so it is slower than a data call.
@@ -82,10 +93,21 @@ class SyncClient:
 
     `base_url` is whatever the connect code carried, with or without its `/api`
     suffix, since an operator copying an address from a browser gets either.
+
+    `agreed` is the contract version this registry has already stamped, None
+    where it has never stamped one. It is a fact about the registry rather than
+    about the client, so the caller loads it and stores it again afterwards.
     """
 
-    def __init__(self, base_url: str, token: str | None = None, timeout: float = DEFAULT_TIMEOUT) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        token: str | None = None,
+        timeout: float = DEFAULT_TIMEOUT,
+        agreed: int | None = None,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
+        self.agreed = agreed
         self._token = token
         self._timeout = timeout
 
@@ -95,6 +117,7 @@ class SyncClient:
         device_name: str,
         platform: str | None = None,
         gui_version: str | None = None,
+        library_version: str | None = None,
     ) -> Enrolment:
         """Trade a connect code for this device's long-lived token."""
         body = {
@@ -102,21 +125,21 @@ class SyncClient:
             "device_name": device_name,
             "platform": platform,
             "gui_version": gui_version,
+            "library_version": library_version,
         }
-        payload = self._request("POST", "/enrol", body=body, authorise=False, timeout=ENROL_TIMEOUT)
+        payload = self._request(
+            "POST",
+            "/enrol",
+            body=body,
+            authorise=False,
+            declare_sections=False,
+            timeout=ENROL_TIMEOUT,
+        )
         return Enrolment(
             device_id=str(payload.get("device_id", "")),
             token=str(payload.get("token", "")),
             enrolled_by=str(payload.get("enrolled_by") or ""),
         )
-
-    def schema(self) -> dict[str, Any]:
-        """The replicated table set, contract-checked."""
-        return self._request("GET", "/sync/schema")
-
-    def status(self) -> dict[str, Any]:
-        """Server cursor and live row counts, for a status line."""
-        return self._request("GET", "/sync/status")
 
     def pull(self, since: int | None = None, limit: int = PULL_LIMIT) -> dict[str, Any]:
         """One page of changed rows. Keep calling while `has_more` is true."""
@@ -130,6 +153,14 @@ class SyncClient:
         document = {"contract_version": CONTRACT_VERSION, "sections": sections}
         return self._request("POST", "/sync/push", body=document)
 
+    def heartbeat(self, report: Mapping[str, Any]) -> None:
+        """Report this device's software and static hardware, onto its own row.
+
+        A courtesy, not a precondition: callers treat any failure here as
+        non-fatal and go on to sync.
+        """
+        self._request("POST", "/sync/heartbeat", body=dict(report))
+
     def _url(self, path: str) -> str:
         prefix = "" if self.base_url.endswith("/api") else "/api"
         return f"{self.base_url}{prefix}{path}"
@@ -140,10 +171,14 @@ class SyncClient:
         path: str,
         body: Any | None = None,
         authorise: bool = True,
+        declare_sections: bool = True,
         timeout: float | None = None,
     ) -> dict[str, Any]:
         url = self._url(path)
-        headers = {"Accept": "application/json"}
+        # Declared here rather than per call, so no route can be added without it.
+        headers = {"Accept": "application/json", CONTRACT_HEADER: CONTRACT_RANGE}
+        if declare_sections:
+            headers[SECTIONS_HEADER] = ",".join(PULL_SECTIONS)
         data = None
         if body is not None:
             data = json.dumps(body).encode()
@@ -157,21 +192,61 @@ class SyncClient:
         request = urllib.request.Request(url, data=data, headers=headers, method=method)  # noqa: S310
         try:
             with urllib.request.urlopen(request, timeout=timeout or self._timeout) as response:  # noqa: S310
-                payload = json.load(response)
+                raw = response.read()
         except urllib.error.HTTPError as exc:
             raise self._http_error(exc, authorise) from exc
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             unreachable = f"Cannot reach {self.base_url}: {exc}. Check the network and try again."
             raise ServerUnreachableError(unreachable) from exc
+        # A 204 carries nothing to read, and nothing to verify: the contract
+        # range still travels in the response header and is checked on errors.
+        if not raw.strip():
+            logger.info("%s %s ok", method, path.split("?", maxsplit=1)[0])
+            return {}
+        try:
+            payload = json.loads(raw)
         except json.JSONDecodeError as exc:
             raise ServerFaultError(f"{url} did not answer with JSON.") from exc
         if not isinstance(payload, dict):
             raise ServerFaultError(f"{url} answered with {type(payload).__name__}, not an object.")
-        _verify_contract(payload)
+        self._verify_contract(payload)
         logger.info("%s %s ok", method, path.split("?", maxsplit=1)[0])
         return payload
 
+    def _verify_contract(self, payload: Mapping[str, Any]) -> None:
+        """Check the version a response was served under, and adopt it.
+
+        The stamp is what this exchange agreed on, `min` of the two maximums, so
+        any version inside this build's own range is a version it can read, and
+        the stamp moves up on its own when the registry's maximum does. Only a
+        stamp outside the range is a refusal.
+
+        Before anything has been agreed an unstamped response is tolerated,
+        because contract 1 shipped before the registry stamped anything. After
+        that, silence is a registry that has gone backwards, and tolerating it
+        would leave a sync running under a version nobody named.
+        """
+        stamped = payload.get("contract_version")
+        if stamped is None:
+            if self.agreed is None:
+                return
+            raise ContractMismatchError(
+                f"This app speaks metadata contract {self.agreed} and the registry did not "
+                "say which it speaks. Update the registry before syncing."
+            )
+        if not MIN_CONTRACT_VERSION <= stamped <= CONTRACT_VERSION:
+            raise ContractMismatchError(
+                f"This app speaks metadata contract {CONTRACT_RANGE} and the registry served "
+                f"this under {stamped}. Update whichever is older before syncing."
+            )
+        self.agreed = int(stamped)
+
     def _http_error(self, exc: urllib.error.HTTPError, authorise: bool) -> SyncError:
+        # Before the body, and whatever the status: a proxy can rewrite a body and
+        # cannot drop this, and a range with nothing in common explains the rest.
+        disjoint = _disjoint_range(exc.headers.get(CONTRACT_HEADER))
+        if disjoint is not None:
+            return disjoint
         detail = _error_detail(exc)
         status = exc.code
         if status == 401 and not authorise:
@@ -199,19 +274,48 @@ def enrol(
     device_name: str,
     platform: str | None = None,
     gui_version: str | None = None,
+    library_version: str | None = None,
 ) -> Enrolment:
     """Enrol against the address inside the code, so no address is configured here."""
-    return SyncClient(code.base_url).enrol(code, device_name, platform=platform, gui_version=gui_version)
-
-
-def _verify_contract(payload: Mapping[str, Any]) -> None:
-    version = payload.get("contract_version")
-    if version is None or version == CONTRACT_VERSION:
-        return
-    raise ContractMismatchError(
-        f"This app speaks metadata contract {CONTRACT_VERSION} and the registry speaks {version}. "
-        "Update whichever is older before syncing."
+    return SyncClient(code.base_url).enrol(
+        code,
+        device_name,
+        platform=platform,
+        gui_version=gui_version,
+        library_version=library_version,
     )
+
+
+def _disjoint_range(header: str | None) -> ContractMismatchError | None:
+    """The registry's own range, when it shares no version with this build's.
+
+    Every response carries it, errors included, so this is the one reading that
+    survives a proxy rewriting the body. An absent or malformed value says
+    nothing and is left to the status code.
+    """
+    bounds = _parse_range(header)
+    if bounds is None:
+        return None
+    low, high = bounds
+    if low <= CONTRACT_VERSION and high >= MIN_CONTRACT_VERSION:
+        return None
+    return ContractMismatchError(
+        f"This app speaks metadata contract {CONTRACT_RANGE} and the registry speaks "
+        f"{low}-{high}. Update whichever is older before syncing."
+    )
+
+
+def _parse_range(header: str | None) -> tuple[int, int] | None:
+    """``min-max``, or a bare version as a range of one."""
+    if not header:
+        return None
+    low, _, high = header.strip().partition("-")
+    try:
+        bounds = (int(low), int(high or low))
+    except ValueError:
+        logger.warning("Ignoring an unreadable contract header %r", header)
+        return None
+    return bounds if bounds[0] <= bounds[1] else None
 
 
 def _error_detail(exc: urllib.error.HTTPError) -> str:

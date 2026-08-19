@@ -30,19 +30,14 @@ def make_code(code_secret):
 
 @pytest.fixture(autouse=True)
 def _isolate_credentials(tmp_path, monkeypatch):
-    """Keep the device file and the token file out of the real user data dir."""
+    """Keep the device file, the token file and the real keyring out of the suite."""
     monkeypatch.setenv("DEEPREEFMAP_SYNC_DEVICE", str(tmp_path / "sync_device.json"))
     monkeypatch.setenv("DEEPREEFMAP_SYNC_TOKEN", str(tmp_path / "sync_token.json"))
-
-
-@pytest.fixture(autouse=True)
-def _no_real_keyring(monkeypatch):
-    """No secret service unless a test asks for one, so the file backend is default."""
     monkeypatch.setattr("deepreefmap_gui.sync.credentials._keyring", lambda: None)
 
 
 class FakeKeyring:
-    """A keyring that remembers passwords in a dict, keyed as the real one is."""
+    """A keyring that answers, for the tests that need the store to exist."""
 
     def __init__(self) -> None:
         self.store: dict[tuple[str, str], str] = {}
@@ -54,14 +49,14 @@ class FakeKeyring:
         return self.store.get((service, username))
 
     def delete_password(self, service: str, username: str) -> None:
-        del self.store[(service, username)]
+        self.store.pop((service, username), None)
 
 
 @pytest.fixture
 def fake_keyring(monkeypatch) -> FakeKeyring:
-    keyring = FakeKeyring()
-    monkeypatch.setattr("deepreefmap_gui.sync.credentials._keyring", lambda: keyring)
-    return keyring
+    answering = FakeKeyring()
+    monkeypatch.setattr("deepreefmap_gui.sync.credentials._keyring", lambda: answering)
+    return answering
 
 
 @pytest.fixture

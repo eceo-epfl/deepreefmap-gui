@@ -12,8 +12,10 @@ import logging
 import sqlite3
 import threading
 import uuid
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field, fields
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -519,6 +521,34 @@ _MIGRATIONS: list[Migration] = [
         );
         """,
     ),
+    # Provenance and timings copied onto the run row when it finishes, so a
+    # pruned run directory no longer degrades the next push to nulls. The dict
+    # columns hold JSON text; NULL there means "nothing recorded", which is a
+    # different fact from an empty object.
+    Migration(
+        12,
+        "runs carry their provenance, clips their full-file digest",
+        """
+        ALTER TABLE run_record ADD COLUMN gui_version TEXT;
+        ALTER TABLE run_record ADD COLUMN library_version TEXT;
+        ALTER TABLE run_record ADD COLUMN segmentation_model TEXT;
+        ALTER TABLE run_record ADD COLUMN mapping_backend TEXT;
+        ALTER TABLE run_record ADD COLUMN taxonomy_version INTEGER;
+        ALTER TABLE run_record ADD COLUMN taxonomy_hash TEXT;
+        ALTER TABLE run_record ADD COLUMN model_revisions TEXT;
+        ALTER TABLE run_record ADD COLUMN preset_name TEXT;
+        ALTER TABLE run_record ADD COLUMN preset_version INTEGER;
+        ALTER TABLE run_record ADD COLUMN preset_hash TEXT;
+        ALTER TABLE run_record ADD COLUMN preset_deviations TEXT;
+        ALTER TABLE run_record ADD COLUMN run_duration_s REAL;
+        ALTER TABLE run_record ADD COLUMN stage_durations TEXT;
+        ALTER TABLE run_record ADD COLUMN stage_peaks TEXT;
+
+        -- The full-file digest beside the sampled identity hash: the one
+        -- standard tooling and object storage can verify.
+        ALTER TABLE video_asset ADD COLUMN sha256 TEXT;
+        """,
+    ),
 ]
 
 
@@ -565,6 +595,10 @@ _SYNC_PARENTS: dict[str, tuple[tuple[str, str], ...]] = {
 
 # What a pulled row cannot carry and the model has no default for. The registry
 # does not hold a path, and a clip this device has never seen has no location.
+# What a registry row that cannot be built raises. AttributeError is in here for
+# an explicit null in a field a model calls a string method on.
+_UNREADABLE_ROW = (TypeError, ValueError, KeyError, AttributeError)
+
 _WIRE_DEFAULTS: dict[str, dict[str, Any]] = {"videos": {"path": ""}}
 
 
@@ -660,6 +694,28 @@ def _from_wire(section: str, incoming: Any) -> tuple[dict[str, Any], set[str]]:
     )
 
 
+# How far ahead of this machine's clock an incoming stamp may sit. Generous,
+# because it only has to catch stamps that would win every comparison forever,
+# not ordinary skew the registry already clamps on push.
+_STAMP_TOLERANCE = timedelta(hours=24)
+
+
+def _check_stamp(value: Any) -> None:
+    """Refuse an ``updated_at`` that would break last-write-wins.
+
+    Stamps are compared as strings, so one that does not parse, or one from the
+    far future, would beat every honest stamp on every sync. Raises ValueError,
+    which the apply loop records as an unreadable row.
+    """
+    if value is None:
+        return
+    moment = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    if moment > datetime.now(timezone.utc) + _STAMP_TOLERANCE:
+        raise ValueError(f"updated_at {value!r} is in the future")
+
+
 def _ids_of(value: Any) -> list[uuid.UUID]:
     """Every id a foreign-key attribute names: none, one, or a list of them."""
     if value is None:
@@ -686,6 +742,10 @@ class ApplyResult:
     inserted: int = 0
     updated: int = 0
     skipped: list[uuid.UUID] = field(default_factory=list)
+    # Rows no model could be built from, as (what names the row, what went wrong).
+    # The id where the row carried a readable one, section and index where it did
+    # not.
+    unreadable: list[tuple[str, str]] = field(default_factory=list)
 
     @property
     def applied(self) -> int:
@@ -742,6 +802,32 @@ class SurveyStore:
             conn.execute("PRAGMA busy_timeout = 5000")
             self._local.conn = conn
         return conn
+
+    @contextmanager
+    def transaction(self) -> Iterator[sqlite3.Connection]:
+        """One transaction over everything run inside it, nestable.
+
+        sqlite3 commits when a connection used as a context manager exits, so
+        two nested ``with conn:`` blocks silently split what should be one
+        atomic write. A depth counter keeps the outermost block the only one
+        that commits or rolls back, which is what lets a whole pulled page --
+        every section, the held rows, the cursor -- land or vanish together.
+        """
+        conn = self._conn()
+        depth = getattr(self._local, "tx_depth", 0)
+        if depth:
+            self._local.tx_depth = depth + 1
+            try:
+                yield conn
+            finally:
+                self._local.tx_depth = depth
+            return
+        self._local.tx_depth = 1
+        try:
+            with conn:
+                yield conn
+        finally:
+            self._local.tx_depth = 0
 
     def _migrate(self) -> None:
         conn = self._conn()
@@ -824,7 +910,7 @@ class SurveyStore:
 
     def _update(self, table: str, model: Any) -> None:
         row = to_row(model)
-        with self._conn() as conn:
+        with self.transaction() as conn:
             cursor = conn.execute(_update_sql(table, row), row)
         if cursor.rowcount == 0:
             raise KeyError(f"No {table} row with id {row['id']}")
@@ -1328,6 +1414,15 @@ class SurveyStore:
         pass_.updated_at = utc_now_iso()
         self._update("transect_pass", pass_)
 
+    def set_pass_chapters(self, pass_: TransectPass) -> None:
+        """Write a pass's chapter list exactly as given, keeping its stamp.
+
+        A chapter order adopted from a pull is the registry's own data, not a
+        local edit: stamping it would mark the pass pending and re-push an
+        unchanged row on every sync.
+        """
+        self._update("transect_pass", pass_)
+
     def delete_pass(self, pass_id: uuid.UUID) -> None:
         """Tombstone a pass and take out the cart rows that ordered it.
 
@@ -1427,6 +1522,22 @@ class SurveyStore:
 
     def get_run(self, run_id: uuid.UUID) -> RunRecord | None:
         return self._get("run_record", RunRecord, run_id)
+
+    def record_run_provenance(self, run_id: uuid.UUID, provenance: Mapping[str, Any]) -> None:
+        """Copy a finished run's provenance onto its row.
+
+        The manifest stays the source at the moment of writing; the row is the
+        durable copy, so pruning the run directory later loses nothing. Unknown
+        keys are ignored so a newer manifest never breaks an older build.
+        """
+        run = self.get_run(run_id)
+        if run is None:
+            return
+        for name, value in provenance.items():
+            if hasattr(run, name):
+                setattr(run, name, value)
+        run.updated_at = utc_now_iso()
+        self._update("run_record", run)
 
     def run_by_dir_name(self, run_dir_name: str) -> RunRecord | None:
         row = self._conn().execute(
@@ -1548,7 +1659,7 @@ class SurveyStore:
 
     def set_sync_state(self, key: str, value: str | None) -> None:
         """Write a sync setting, or forget it when ``value`` is None."""
-        with self._conn() as conn:
+        with self.transaction() as conn:
             if value is None:
                 conn.execute("DELETE FROM sync_state WHERE key = ?", (key,))
                 return
@@ -1595,26 +1706,44 @@ class SurveyStore:
 
         Sections have to be applied in SYNC_SECTIONS order: foreign keys are on,
         and a child whose parent has not landed yet is refused.
+
+        A row no model can be built from is named in ``unreadable`` and skipped,
+        so the rest of the page lands and the cursor moves on. So is a row whose
+        ``updated_at`` does not parse or sits in the future: last-write-wins
+        compares stamps as strings, so a garbage or far-future stamp would win
+        every comparison forever. An integrity error is not caught: a child whose
+        parent is missing has to take the page down, because the alternative is a
+        survey with a hole in it.
         """
         section = _section_of(section)
         table = SYNC_SECTIONS[section]
         cls = _SYNC_MODELS[table]
         result = ApplyResult()
-        with self._conn() as conn:
-            for incoming in rows:
-                wire, carried = _from_wire(section, incoming)
+        with self.transaction() as conn:
+            for index, incoming in enumerate(rows):
                 result.received += 1
+                try:
+                    wire, carried = _from_wire(section, incoming)
+                    row_id = str(wire["id"])
+                    _check_stamp(wire.get("updated_at"))
+                except _UNREADABLE_ROW as exc:
+                    result.unreadable.append((f"{section}[{index}]", str(exc)))
+                    continue
                 stored = conn.execute(
-                    f"SELECT * FROM {table} WHERE id = ?", (wire["id"],)
+                    f"SELECT * FROM {table} WHERE id = ?", (row_id,)
                 ).fetchone()
+                # Merged over the stored row so the model is validated whole, and
+                # so a row that arrives partial says nothing about the rest.
+                merged = wire if stored is None else {**dict(stored), **wire}
+                try:
+                    row = to_row(from_row(cls, merged))
+                except _UNREADABLE_ROW as exc:
+                    result.unreadable.append((row_id, str(exc)))
+                    continue
                 if stored is None:
-                    row = to_row(from_row(cls, wire))
                     conn.execute(_insert_sql(table, row), row)
                     result.inserted += 1
                     continue
-                # Merged over the stored row so the model is validated whole, and
-                # so a row that arrives partial says nothing about the rest.
-                row = to_row(from_row(cls, {**dict(stored), **wire}))
                 if str(row["updated_at"]) <= str(stored["updated_at"] or ""):
                     result.skipped.append(uuid.UUID(row["id"]))
                     continue

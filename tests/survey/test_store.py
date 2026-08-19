@@ -3,6 +3,7 @@ import re
 import sqlite3
 import threading
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from _factories import (
@@ -1381,6 +1382,93 @@ def test_apply_from_server_gives_an_unseen_clip_no_path_at_all(store):
 
     assert store.get_video(pulled_id).path == ""
     assert store.find_video_by_path("") is None
+
+
+def test_apply_from_server_skips_a_row_it_cannot_build_and_names_it(store):
+    """Scenario: the registry sends a site with no name, which the model requires.
+
+    Expected behaviour: the row is named and left out, the rest of the section
+    lands, and the caller is free to move the cursor past the page.
+    """
+    good_id, bad_id = uuid.uuid4(), uuid.uuid4()
+
+    result = store.apply_from_server("sites", [
+        {"id": str(bad_id), "description": "", "updated_at": "2026-08-01T00:00:00+00:00"},
+        {"id": str(good_id), "name": "Reef", "updated_at": "2026-08-01T00:00:00+00:00"},
+    ])
+
+    assert result.received == 2
+    assert result.inserted == 1
+    assert [named for named, _why in result.unreadable] == [str(bad_id)]
+    assert store.get_site(good_id).name == "Reef"
+    assert store.get_site(bad_id) is None
+
+
+def test_record_run_provenance_lands_on_the_row_and_keeps_the_empty_map(store):
+    """Scenario: a run finishes and its manifest values are copied onto the row.
+
+    Expected behaviour: the dict columns keep the difference between "nothing
+    departed" (an empty map) and "nothing recorded" (None), because an audit
+    reads those as two different facts.
+    """
+    _transect, _video, pass_ = seed_pass(store)
+    run = RunRecord(pass_id=pass_.id, run_dir_name="t1__p01")
+    store.add_run(run)
+
+    store.record_run_provenance(run.id, {
+        "gui_version": "0.9.0",
+        "library_version": "1.2.3",
+        "preset_deviations": {},
+        "model_revisions": None,
+        "run_duration_s": 12.5,
+        "not_a_column": "ignored",
+    })
+
+    stored = store.get_run(run.id)
+    assert stored.gui_version == "0.9.0"
+    assert stored.library_version == "1.2.3"
+    assert stored.preset_deviations == {}
+    assert stored.model_revisions is None
+    assert stored.run_duration_s == 12.5
+    assert stored.updated_at >= run.updated_at
+
+
+def test_apply_from_server_skips_a_row_carrying_a_value_the_model_refuses(store):
+    _transect, _video, pass_ = seed_pass(store)
+
+    soon = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    result = store.apply_from_server("passes", [{
+        "id": str(pass_.id),
+        "direction": "sideways",
+        "updated_at": soon,
+    }])
+
+    assert result.applied == 0
+    assert result.unreadable[0][0] == str(pass_.id)
+    assert "sideways" in result.unreadable[0][1]
+    assert store.get_pass(pass_.id).direction == "forward"
+
+
+def test_apply_from_server_skips_a_row_whose_value_is_null(store):
+    """JSON carries an explicit null where a model expects a string, and the
+    model reaches for a string method on it."""
+    good_id, bad_id = uuid.uuid4(), uuid.uuid4()
+
+    result = store.apply_from_server("sites", [
+        {"id": str(bad_id), "name": None, "updated_at": "2026-07-01T10:00:00+00:00"},
+        {"id": str(good_id), "name": "Reef", "updated_at": "2026-07-01T10:00:00+00:00"},
+    ])
+
+    assert result.inserted == 1
+    assert [named for named, _why in result.unreadable] == [str(bad_id)]
+    assert store.get_site(good_id).name == "Reef"
+
+
+def test_apply_from_server_names_a_row_with_no_readable_id_by_where_it_sat(store):
+    result = store.apply_from_server("sites", [{"name": "Nameless"}])
+
+    assert result.unreadable[0][0] == "sites[0]"
+    assert store.list_sites() == []
 
 
 def test_dependency_closure_is_a_closed_set_in_foreign_key_order(store):

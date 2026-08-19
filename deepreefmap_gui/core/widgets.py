@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
+from typing import Protocol, cast
 
 from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
@@ -844,19 +845,17 @@ class ColumnSizer(QObject):
             return
         reserved = sum(self._pinned.values())
         spec = self._spec
-        free = {
-            "fixed": {c: w for c, w in spec.fixed.items() if c not in self._pinned},
-            "weights": {c: w for c, w in spec.weights.items() if c not in self._pinned},
-            "optional": tuple((c, w) for c, w in spec.optional if c not in self._pinned),
-        }
-        minimums = {c: spec.minimums[c] for c in free["weights"]}
+        fixed = {c: w for c, w in spec.fixed.items() if c not in self._pinned}
+        weights = {c: w for c, w in spec.weights.items() if c not in self._pinned}
+        optional = tuple((c, w) for c, w in spec.optional if c not in self._pinned)
+        minimums = {c: spec.minimums[c] for c in weights}
         widths = fitted_column_widths(
             max(0, available - reserved),
             ColumnSpec(
-                fixed=free["fixed"],
-                weights=free["weights"],
+                fixed=fixed,
+                weights=weights,
                 minimums=minimums,
-                optional=free["optional"],
+                optional=optional,
             ),
         )
         widths.update(self._pinned)
@@ -941,6 +940,12 @@ class ColumnSizer(QObject):
         return False
 
 
+class _SizerHost(Protocol):
+    """A view once its sizer is attached."""
+
+    column_sizer: ColumnSizer
+
+
 def install_column_sizer(
     view: QTableWidget | QTreeWidget,
     spec: ColumnSpec,
@@ -955,7 +960,7 @@ def install_column_sizer(
     ``eventFilter`` then has no state to work from.
     """
     sizer = ColumnSizer(view, spec, settings_key=settings_key, settings=settings)
-    view.column_sizer = sizer
+    cast("_SizerHost", view).column_sizer = sizer
     return sizer
 
 
@@ -1084,8 +1089,10 @@ DIRECTION_COLORS = {
 }
 
 
-def direction_html(direction: str) -> str:
+def direction_html(direction: str | None) -> str:
     """The direction as rich text, for the fact rows that render markup."""
+    if direction is None:
+        return ""
     text = direction_text(direction)
     if not text:
         return ""

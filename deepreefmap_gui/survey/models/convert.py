@@ -50,11 +50,18 @@ def from_row(cls: type[T], row: Mapping[str, Any]) -> T:
             # A document exported before this field existed, so the default stands.
             continue
         hint = hints[f.name]
-        if get_origin(hint) is list:
-            value = _decode_list(hint, value)
-        elif get_origin(hint) is dict:
+        # An optional container keeps its None: for those fields an empty value
+        # is a recorded fact and an absent one is not, and collapsing the two
+        # would lose the distinction the column exists to carry.
+        if value is None and _is_optional(hint):
+            kwargs[f.name] = None
+            continue
+        bare = _strip_none(hint)
+        if get_origin(bare) is list:
+            value = _decode_list(bare, value)
+        elif get_origin(bare) is dict:
             value = _decode_dict(value)
-        elif hint is bool:
+        elif bare is bool:
             # sqlite has no boolean type, so the column comes back as 0 or 1.
             value = bool(value)
         elif value is not None and _accepts_uuid(hint):
@@ -89,6 +96,16 @@ def _decode_dict(value: Any) -> dict[str, Any]:
 
 def _accepts_uuid(hint: Any) -> bool:
     return hint is uuid.UUID or uuid.UUID in get_args(hint)
+
+
+def _is_optional(hint: Any) -> bool:
+    return type(None) in get_args(hint)
+
+
+def _strip_none(hint: Any) -> Any:
+    """The hint with None removed, so `dict[...] | None` decodes as its dict."""
+    args = tuple(a for a in get_args(hint) if a is not type(None))
+    return args[0] if _is_optional(hint) and len(args) == 1 else hint
 
 
 def build_document(

@@ -100,6 +100,7 @@ from deepreefmap_gui.survey.preset import (
 )
 from deepreefmap_gui.survey.statuses import status_label
 from deepreefmap_gui.survey.store import SurveyStore
+from deepreefmap_gui.sync import wire
 
 logger = logging.getLogger(__name__)
 
@@ -2603,6 +2604,11 @@ class SimpleBatchMixin(MixinBase):
                         **settings,
                     )
                     store.set_run_status(job.run.id, "succeeded")
+                    # The manifest is complete now, timings included, so this is
+                    # the one moment its provenance can be copied onto the row.
+                    store.record_run_provenance(
+                        job.run.id, wire.run_provenance(out_root, job.dir_name)
+                    )
                     ok += 1
                     # Only a pass that ran to the end says anything about what
                     # the rest of the batch will cost.

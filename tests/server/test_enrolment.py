@@ -9,7 +9,12 @@ from deepreefmap_gui.server.state import LAST_SYNC_KEY
 from deepreefmap_gui.survey.store import SYNC_SECTIONS
 from deepreefmap_gui.sync import client, credentials
 from deepreefmap_gui.sync.connect_code import ConnectCodeError
-from deepreefmap_gui.sync.engine import CURSOR_KEY, WATERMARK_PREFIX
+from deepreefmap_gui.sync.engine import (
+    CONTRACT_SECTIONS_KEY,
+    CONTRACT_VERSION_KEY,
+    CURSOR_KEY,
+    WATERMARK_PREFIX,
+)
 
 TOKEN = "drmd_" + "0" * 16 + "_" + "1" * 64
 
@@ -19,7 +24,7 @@ def registry(monkeypatch):
     """Answer every enrolment, and remember which address was asked."""
     asked: dict[str, object] = {}
 
-    def _request(self, method, path, body=None, authorise=True, timeout=None):
+    def _request(self, method, path, body=None, authorise=True, declare_sections=True, timeout=None):
         asked["url"] = self.base_url
         asked["path"] = path
         asked["body"] = body
@@ -51,7 +56,7 @@ def test_a_spent_code_leaves_a_credential_behind(connect_code, registry):
     assert held is not None
     assert held.token == TOKEN
     assert held.base_url == "https://reef.example.org"
-    assert connected.backend == credentials.BACKEND_FILE
+    assert connected.base_url == "https://reef.example.org"
 
 
 def test_the_registry_is_told_what_this_device_is(connect_code, registry):
@@ -67,7 +72,7 @@ def test_the_name_is_sent_once_and_never_again(connect_code, registry, monkeypat
     """Renaming is a web interface action: attribution is not the device's to edit."""
     sent: list[str] = []
 
-    def record(self, method, path, body=None, authorise=True, timeout=None):
+    def record(self, method, path, body=None, authorise=True, declare_sections=True, timeout=None):
         if body and "device_name" in body:
             sent.append(path)
         return {"device_id": "device-1", "token": TOKEN}
@@ -125,13 +130,16 @@ def test_an_enrolment_with_no_token_stores_nothing(connect_code, registry):
 def test_disconnecting_forgets_the_position_as_well_as_the_token(connect_code, registry, store):
     """Scenario: a laptop is moved from one registry to another.
 
-    Expected behaviour: the cursor goes with the token. A cursor is one registry's
-    own sequence, so carrying it across would skip every row the next registry
-    wrote below that number.
+    Expected behaviour: the cursor goes with the token, and so does everything
+    negotiated. A cursor is one registry's own sequence, so carrying it across
+    would skip every row the next registry wrote below that number, and the next
+    registry has said nothing about a contract yet.
     """
     connect(connect_code(), "Dive laptop")
     store.set_sync_state(CURSOR_KEY, "4830")
     store.set_sync_state(LAST_SYNC_KEY, "2026-01-01T00:00:00Z")
+    store.set_sync_state(CONTRACT_VERSION_KEY, "1")
+    store.set_sync_state(CONTRACT_SECTIONS_KEY, "campaigns,sites")
     for section in SYNC_SECTIONS:
         store.set_sync_state(f"{WATERMARK_PREFIX}{section}", "2026-01-01T00:00:00Z")
 
@@ -140,6 +148,8 @@ def test_disconnecting_forgets_the_position_as_well_as_the_token(connect_code, r
     assert credentials.load() is None
     assert store.sync_state(CURSOR_KEY) is None
     assert store.sync_state(LAST_SYNC_KEY) is None
+    assert store.sync_state(CONTRACT_VERSION_KEY) is None
+    assert store.sync_state(CONTRACT_SECTIONS_KEY) is None
     assert all(store.sync_state(f"{WATERMARK_PREFIX}{s}") is None for s in SYNC_SECTIONS)
 
 

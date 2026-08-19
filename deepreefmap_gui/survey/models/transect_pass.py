@@ -14,12 +14,12 @@ PASS_DIRECTIONS = ("forward", "reverse")
 DIRECTION_ARROWS = {"forward": "\u2192", "reverse": "\u2190"}
 
 
-def direction_arrow(direction: str) -> str:
+def direction_arrow(direction: str | None) -> str:
     """The arrow for ``direction``, or an empty string for anything else."""
     return DIRECTION_ARROWS.get((direction or "").strip().lower(), "")
 
 
-def direction_text(direction: str) -> str:
+def direction_text(direction: str | None) -> str:
     """The arrow and the word, as every surface in the app spells it."""
     key = (direction or "").strip().lower()
     arrow = DIRECTION_ARROWS.get(key)

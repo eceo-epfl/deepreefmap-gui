@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import base64
+import json
+
 import pytest
 
 from deepreefmap_gui.server.connect_ui import (
@@ -9,10 +12,20 @@ from deepreefmap_gui.server.connect_ui import (
     CONNECTING,
     INTRO,
     NAME_HINT,
+    SERVER_LABEL,
+    UNREADABLE,
     ConnectDialog,
 )
+from deepreefmap_gui.sync.connect_code import CODE_PREFIX
 
-CODE = "drm1." + "ab" * 32
+
+def make_code(url: str = "https://reef.example.org") -> str:
+    """A pasted code, as the registry's web interface hands one out."""
+    payload = json.dumps({"url": url, "code": "ab" * 32})
+    return CODE_PREFIX + base64.urlsafe_b64encode(payload.encode()).decode().rstrip("=")
+
+
+CODE = make_code()
 
 
 @pytest.fixture
@@ -26,6 +39,38 @@ def test_connect_waits_for_something_to_be_pasted(dialog):
     assert not dialog._connect_btn.isEnabled()
 
     dialog._code_edit.setPlainText(CODE)
+
+    assert dialog._connect_btn.isEnabled()
+
+
+def test_the_server_is_named_before_the_button_works(dialog):
+    """An operator pastes a code out of an email, so which host it trusts is shown
+    while there is still a chance to not press Connect."""
+    dialog._code_edit.setPlainText(make_code("https://reef.epfl.ch"))
+
+    assert dialog._server.isVisibleTo(dialog)
+    assert dialog._server.text() == f"{SERVER_LABEL} https://reef.epfl.ch"
+    assert dialog._connect_btn.isEnabled()
+
+
+def test_a_code_that_does_not_decode_never_reaches_the_network(dialog):
+    dialog._code_edit.setPlainText("drm1." + "not a code")
+
+    assert dialog._server.text() == UNREADABLE
+    assert not dialog._connect_btn.isEnabled()
+
+
+def test_a_plain_http_server_is_refused_rather_than_warned_about(dialog):
+    """The device token crosses that network in the clear, so this is not advice."""
+    dialog._code_edit.setPlainText(make_code("http://reef.example.org"))
+
+    assert "http://reef.example.org" in dialog._server.text()
+    assert not dialog._connect_btn.isEnabled()
+
+
+def test_a_loopback_server_over_plain_http_still_connects(dialog):
+    """A local stack never leaves the machine, and is how the app is developed."""
+    dialog._code_edit.setPlainText(make_code("http://localhost:88"))
 
     assert dialog._connect_btn.isEnabled()
 

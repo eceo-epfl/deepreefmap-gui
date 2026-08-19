@@ -10,7 +10,7 @@ parentless card lands on the monitor the cursor is on.
 
 from __future__ import annotations
 
-from typing import Callable
+from typing import Callable, Protocol, cast
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QRect, Qt
 from PySide6.QtGui import QGuiApplication
@@ -90,6 +90,12 @@ class HoverDismissFilter(QObject):
         return False
 
 
+class _DismissHost(Protocol):
+    """An owner once its filters are attached."""
+
+    _hover_dismiss_filters: list[HoverDismissFilter]
+
+
 def install_dismiss_filter(owner: QWidget, hide: Callable[[], None]) -> HoverDismissFilter:
     """Watch ``owner``'s window and call ``hide`` when the pointer leaves it.
 
@@ -103,7 +109,7 @@ def install_dismiss_filter(owner: QWidget, hide: Callable[[], None]) -> HoverDis
     kept = getattr(owner, "_hover_dismiss_filters", None)
     if kept is None:
         kept = []
-        owner._hover_dismiss_filters = kept
+        cast("_DismissHost", owner)._hover_dismiss_filters = kept
     kept.append(handler)
     return handler
 

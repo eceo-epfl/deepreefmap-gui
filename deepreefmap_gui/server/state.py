@@ -1,8 +1,8 @@
 """What the Server page reads, and how it words what went wrong.
 
 Two facts make a connection: a credential, which is per machine, and a position,
-which is per survey database. So the address, the device id and the token backend
-come from `sync/credentials.py`, while the pull cursor, the push watermarks and
+which is per survey database. So the address and the device id come from
+`sync/credentials.py`, while the pull cursor, the push watermarks and
 the time of the last sync come from the database under the output root. Switching
 output root switches the position and keeps the credential.
 
@@ -16,11 +16,18 @@ import platform
 import socket
 from dataclasses import dataclass, field
 
-from deepreefmap_gui.survey.store import SYNC_SECTIONS, SurveyStore
+from deepreefmap_gui.survey.store import SurveyStore
 from deepreefmap_gui.sync import client, credentials
 from deepreefmap_gui.sync.connect_code import ConnectCodeError
 from deepreefmap_gui.sync.credentials import CredentialsError
-from deepreefmap_gui.sync.engine import CURSOR_KEY, WATERMARK_PREFIX, PullReport, PushReport
+from deepreefmap_gui.sync.engine import (
+    AUTHORED_SECTIONS,
+    CONTRACT_VERSION_KEY,
+    CURSOR_KEY,
+    WATERMARK_PREFIX,
+    PullReport,
+    PushReport,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +59,13 @@ SECTION_LABELS = {
 
 NOTHING_TO_SYNC = "Nothing to sync: the registry already has everything from here."
 
+# Said when the registry held sections back because this build never asked for
+# them. Their names would mean nothing to a diver, so it counts them instead.
+OMITTED_SECTIONS = (
+    "The registry keeps {kinds} kind(s) of record this version of the app cannot read. "
+    "Everything else synced. Update the app when you are next at a desk."
+)
+
 # Said after any failure that leaves work undone. True of all of them: a push is
 # one transaction, and both halves resume from where they stopped.
 RETRY_LATER = "Nothing was lost. The next sync sends whatever this one did not."
@@ -68,7 +82,6 @@ class ServerState:
     device_name: str = ""
     # Audit only, and empty unless the registry reported it.
     enrolled_by: str = ""
-    backend: str = ""
     cursor: int | None = None
     last_sync: str | None = None
     # Per section, and only what is actually waiting: a section with nothing to
@@ -96,20 +109,18 @@ def read_state(
     store: SurveyStore | None, device_name: str = "", enrolled_by: str = ""
 ) -> ServerState:
     """The whole Server page in one read. Never raises: a fault is a field."""
-    backend = credentials.credential_backend()
     try:
         held = credentials.load()
     except CredentialsError as exc:
-        return ServerState(backend=backend, device_name=device_name, fault=str(exc))
+        return ServerState(device_name=device_name, fault=str(exc))
     if held is None:
-        return ServerState(backend=backend, device_name=device_name)
+        return ServerState(device_name=device_name)
     return ServerState(
         connected=True,
         base_url=held.base_url,
         device_id=held.device_id,
         device_name=device_name,
         enrolled_by=enrolled_by,
-        backend=backend,
         cursor=read_cursor(store),
         last_sync=store.sync_state(LAST_SYNC_KEY) if store is not None else None,
         pending=pending_rows(store) if store is not None else {},
@@ -129,15 +140,39 @@ def read_cursor(store: SurveyStore | None) -> int | None:
         return None
 
 
+def read_agreed_contract(store: SurveyStore | None) -> int | None:
+    """The contract version this registry has stamped, or None until one has.
+
+    Carried across sessions so the tolerance for an unstamped response ends for
+    good once a registry has answered with one.
+    """
+    stored = store.sync_state(CONTRACT_VERSION_KEY) if store is not None else None
+    if stored is None:
+        return None
+    try:
+        return int(stored)
+    except ValueError:
+        logger.warning("Ignoring an unreadable agreed contract version %r", stored)
+        return None
+
+
+def remember_agreed_contract(store: SurveyStore | None, version: int | None) -> None:
+    """Keep what the registry stamped, so the next session starts knowing it."""
+    if store is None or version is None:
+        return
+    store.set_sync_state(CONTRACT_VERSION_KEY, str(version))
+
+
 def pending_rows(store: SurveyStore) -> dict[str, int]:
     """Rows edited here since each section was last accepted, per section.
 
     Strictly after the watermark, matching the engine: the watermark is the stamp
     the registry accepted, so a row carrying it is the row that was accepted.
     Counting it as waiting would leave every synced survey owing something.
+    Authored sections only: a pulled site is the registry's data, not a debt.
     """
     counts: dict[str, int] = {}
-    for section in SYNC_SECTIONS:
+    for section in AUTHORED_SECTIONS:
         watermark = store.sync_state(f"{WATERMARK_PREFIX}{section}")
         waiting = sum(
             1
@@ -150,8 +185,12 @@ def pending_rows(store: SurveyStore) -> dict[str, int]:
 
 
 def summarise(pull: PullReport, push: PushReport) -> str:
-    """One line for the page: what came down, what went up, what was refused."""
-    if not pull.applied and not push.sent:
+    """One line for the page: what came down, what went up, what was refused.
+
+    Sections the registry withheld are said here rather than as a blocker. The
+    sync did everything it could, and a blocker reads as work that did not land.
+    """
+    if not pull.applied and not push.sent and not pull.stopped and not pull.omitted_sections:
         return NOTHING_TO_SYNC
     line = f"Pulled {pull.applied} row(s), sent {push.applied} row(s)."
     skipped = len(push.skipped)
@@ -159,6 +198,10 @@ def summarise(pull: PullReport, push: PushReport) -> str:
         line += f" The registry already held {skipped} of ours newer."
     if pull.overwritten:
         line += f" {len(pull.overwritten)} edit(s) made here were replaced."
+    if pull.stopped:
+        line += " The pull stopped early, so the registry still has more waiting."
+    if pull.omitted_sections:
+        line += f" {OMITTED_SECTIONS.format(kinds=len(pull.omitted_sections))}"
     return line
 
 
@@ -201,3 +244,42 @@ def default_device_name() -> str:
 def platform_name() -> str:
     """What the registry records as this device's platform."""
     return f"{platform.system()} {platform.machine()}".strip()
+
+
+def library_version() -> str:
+    """The reconstruction library this device runs, for the device row."""
+    from deepreefmap import __version__
+
+    return __version__
+
+
+def heartbeat_report() -> dict[str, object]:
+    """What a device says about itself: software, and static hardware only.
+
+    Free space, available RAM and the disk path stay off the wire. They are an
+    activity trace of one person's laptop, and a disk path can embed a username.
+    """
+    from deepreefmap_gui.packaging.releases import current_version
+    from deepreefmap_gui.profiling.system_probe import probe_system
+
+    profile = probe_system(wait_for_gpu=False).to_dict()
+    gpu = profile.get("gpu") or {}
+    return {
+        "gui_version": current_version(),
+        "library_version": library_version(),
+        "platform": platform_name(),
+        "system_profile": {
+            "os_name": profile.get("os_name"),
+            "os_release": profile.get("os_release"),
+            "cpu_logical": profile.get("cpu_logical"),
+            "cpu_physical": profile.get("cpu_physical"),
+            "total_ram_bytes": profile.get("total_ram_bytes"),
+            "total_swap_bytes": profile.get("total_swap_bytes"),
+            "disk_total_bytes": profile.get("disk_total_bytes"),
+            "gpu": {
+                "kind": gpu.get("kind"),
+                "name": gpu.get("name"),
+                "total_vram_bytes": gpu.get("total_vram_bytes"),
+            },
+        },
+    }

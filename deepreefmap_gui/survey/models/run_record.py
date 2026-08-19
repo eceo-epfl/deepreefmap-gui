@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
+from typing import Any
 
 from deepreefmap_gui.survey.models.common import utc_now_iso
 from deepreefmap_gui.survey.statuses import RUN_STATUSES, TERMINAL_STATUSES
@@ -19,6 +20,11 @@ class RunRecord:
     belong to a later session than the pass itself.
     ``run_dir_name`` is relative to the output root so a moved folder keeps working.
     Cover numbers stay in the run directory's benthic_cover.json, never in the database.
+
+    The provenance block is copied out of run_manifest.json when the run
+    finishes, so pruning a run directory no longer degrades the next push to
+    nulls. None means nothing was recorded; for the dict fields an empty value
+    is itself a recorded fact, which is why they are optional rather than empty.
     """
 
     pass_id: uuid.UUID
@@ -28,6 +34,20 @@ class RunRecord:
     finished_at: str | None = None
     error: str = ""
     batch_id: uuid.UUID | None = None
+    gui_version: str | None = None
+    library_version: str | None = None
+    segmentation_model: str | None = None
+    mapping_backend: str | None = None
+    taxonomy_version: int | None = None
+    taxonomy_hash: str | None = None
+    model_revisions: dict[str, Any] | None = None
+    preset_name: str | None = None
+    preset_version: int | None = None
+    preset_hash: str | None = None
+    preset_deviations: dict[str, Any] | None = None
+    run_duration_s: float | None = None
+    stage_durations: dict[str, Any] | None = None
+    stage_peaks: dict[str, Any] | None = None
     id: uuid.UUID = field(default_factory=uuid.uuid4)
     created_at: str = field(default_factory=utc_now_iso)
     updated_at: str = field(default_factory=utc_now_iso)

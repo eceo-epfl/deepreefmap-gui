@@ -58,12 +58,15 @@ from deepreefmap_gui.server.state import (
     ServerState,
     default_device_name,
     describe_failure,
+    heartbeat_report,
+    read_agreed_contract,
     read_state,
+    remember_agreed_contract,
     summarise,
 )
 from deepreefmap_gui.survey.models.common import utc_now_iso
 from deepreefmap_gui.survey.models.notification import INFO, SURVEY
-from deepreefmap_gui.sync.credentials import BACKEND_KEYRING
+from deepreefmap_gui.sync.contract import PULL_SECTIONS
 from deepreefmap_gui.sync.engine import SyncEngine
 
 logger = logging.getLogger(__name__)
@@ -91,9 +94,6 @@ DISCONNECT_NOTE = (
 )
 
 SESSION_RUNNING = "Wait for the current session to finish, then sync."
-
-WHERE_KEYRING = "the operating system keyring"
-WHERE_FILE = "a private file in this user's data directory"
 
 PULLING = "Pulling changes (page {page})…"
 SENDING = "Sending {rows} row(s)…"
@@ -160,6 +160,8 @@ class ServerPageMixin(MixinBase):
     _server_syncing: bool = False
     _connect_dialog: ConnectDialog | None = None
     _server_state: ServerState | None = None
+    # The client the running sync is using, kept for the version it learned.
+    _sync_client: Any | None = None
 
     # --- building -----------------------------------------------------------
 
@@ -363,8 +365,7 @@ class ServerPageMixin(MixinBase):
             dialog.accept()
         self._server_blocker.clear()
         self._refresh_server_page()
-        where = WHERE_KEYRING if connected.backend == BACKEND_KEYRING else WHERE_FILE
-        message = f"Connected to {connected.base_url}. The device token is kept in {where}."
+        message = f"Connected to {connected.base_url}."
         if connected.warning:
             message = f"{message} {connected.warning}"
         self._server_notice.show_notice(message, SYNC_NOW)
@@ -383,12 +384,14 @@ class ServerPageMixin(MixinBase):
         engine = self._build_sync_engine()
         if engine is None:
             return
+        client = self._sync_client
         self._server_syncing = True
         self._server_notice.clear()
         self._set_server_busy(True, PULLING.format(page=1))
 
         def worker() -> None:
             try:
+                _heartbeat(client)
                 pulled = engine.pull()
                 pushed = engine.push()
             except Exception as exc:
@@ -423,16 +426,25 @@ class ServerPageMixin(MixinBase):
         if held is None:
             self._refresh_server_page()
             return None
-        transport = ProgressTransport(
-            SyncClient(held.base_url, held.token), self._sig_sync_progress.emit
-        )
+        client = SyncClient(held.base_url, held.token, agreed=read_agreed_contract(store))
+        self._sync_client = client
+        transport = ProgressTransport(client, self._sig_sync_progress.emit)
         return SyncEngine(
             store,
             transport,
             out_root=store.path.parent,
             classes_config=self._classes_config,
             notifications=ConflictNotifier(self._sig_notify.emit),
+            # The artefact this build vendored is what the client declared, so
+            # the two cannot disagree about which sections were asked for.
+            pull_sections=PULL_SECTIONS,
         )
+
+    def _remember_agreed_contract(self) -> None:
+        client = self._sync_client
+        self._sync_client = None
+        if client is not None:
+            remember_agreed_contract(self._try_survey_store(), client.agreed)
 
     def _on_sync_progress(self, text: str) -> None:
         if self._server_syncing:
@@ -441,6 +453,9 @@ class ServerPageMixin(MixinBase):
     def _on_sync_done(self, reports: object, failure: object) -> None:
         self._server_syncing = False
         self._set_server_busy(False)
+        # Before anything branches: a sync that failed halfway may still have been
+        # told which contract it was running under, and that answer keeps.
+        self._remember_agreed_contract()
         if isinstance(failure, Failure):
             self._server_notice.clear()
             self._server_blocker.show_blocker(
@@ -489,7 +504,7 @@ def _device_rows(state: ServerState) -> list[tuple[str, str]]:
 
 
 def _fact_rows(state: ServerState) -> list[tuple[str, str]]:
-    where = WHERE_KEYRING if state.backend == BACKEND_KEYRING else WHERE_FILE
+    """The connection and the position, as the page lists them."""
     age = relative_age(state.last_sync, utc_now_iso()) if state.last_sync else ""
     if not state.last_sync:
         last = "Never"
@@ -499,8 +514,21 @@ def _fact_rows(state: ServerState) -> list[tuple[str, str]]:
         last = f"{age} ago ({state.last_sync})"
     return [
         ("Server", state.base_url),
-        ("Token kept in", where),
         ("Last sync", last),
         ("Pulled up to", "Nothing yet" if state.cursor is None else str(state.cursor)),
         ("Waiting to send", f"{state.waiting} row(s)"),
     ]
+
+
+def _heartbeat(client: object) -> None:
+    """Best-effort self-report before the sync proper.
+
+    Never fatal: the sync matters more than the courtesy, and a registry too
+    old to know the route answers 404, which is also fine.
+    """
+    if client is None:
+        return
+    try:
+        client.heartbeat(heartbeat_report())  # type: ignore[attr-defined]
+    except Exception as exc:
+        logger.info("Heartbeat not delivered: %s", exc)

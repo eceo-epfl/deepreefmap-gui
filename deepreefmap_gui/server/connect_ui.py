@@ -25,7 +25,7 @@ from deepreefmap_gui.core.spinner import BusySpinner
 from deepreefmap_gui.core.theme import ERROR, TEXT_MUTED, WEIGHT_SEMIBOLD
 from deepreefmap_gui.core.widgets import muted_label
 from deepreefmap_gui.server.state import default_device_name
-from deepreefmap_gui.sync.connect_code import CODE_PREFIX
+from deepreefmap_gui.sync.connect_code import CODE_PREFIX, ConnectCodeError, decode_connect_code
 
 TITLE = "Connect to server"
 
@@ -36,6 +36,10 @@ NAME_HINT = "Everything this computer uploads is attributed to this name."
 
 CONNECT = "Connect"
 CONNECTING = "Connecting…"
+
+# The address the code carries, shown before the button works.
+SERVER_LABEL = "Connects to"
+UNREADABLE = "That is not a connect code."
 
 
 class ConnectDialog(QDialog):
@@ -63,6 +67,11 @@ class ConnectDialog(QDialog):
         self._code_edit.setFixedHeight(88)
         self._code_edit.textChanged.connect(self._sync_connect_enabled)
         layout.addWidget(self._code_edit)
+
+        self._server = QLabel("")
+        self._server.setWordWrap(True)
+        self._server.setVisible(False)
+        layout.addWidget(self._server)
 
         layout.addWidget(muted_label(NAME_LABEL))
         self._name_edit = QLineEdit(default_device_name())
@@ -111,11 +120,13 @@ class ConnectDialog(QDialog):
         self._spinner.setVisible(busy)
         self._busy_label.setText(CONNECTING if busy else "")
         self._connect_btn.setText(CONNECTING if busy else CONNECT)
-        self._connect_btn.setEnabled(not busy and bool(self.code()))
         self._code_edit.setReadOnly(busy)
         self._name_edit.setReadOnly(busy)
         if busy:
+            self._connect_btn.setEnabled(False)
             self._message.setVisible(False)
+        else:
+            self._sync_connect_enabled()
 
     def show_failure(self, title: str, detail: str) -> None:
         """Say why it did not work, and leave what was typed alone to be fixed."""
@@ -137,4 +148,34 @@ class ConnectDialog(QDialog):
         self.submitted.emit(code, self.device_name())
 
     def _sync_connect_enabled(self) -> None:
-        self._connect_btn.setEnabled(bool(self.code()) and not self._code_edit.isReadOnly())
+        """Decode what has been typed, name the server, and gate the button on it.
+
+        A plain-http address outside this machine is refused: the token would cross
+        that network in the clear.
+        """
+        typed = self.code()
+        if not typed:
+            self._server.setVisible(False)
+            self._connect_btn.setEnabled(False)
+            return
+
+        try:
+            code = decode_connect_code(typed)
+        except ConnectCodeError:
+            self._say(UNREADABLE, bad=True)
+            self._connect_btn.setEnabled(False)
+            return
+
+        if code.insecure_transport:
+            self._say(f"{code.base_url}. {code.warning}", bad=True)
+            self._connect_btn.setEnabled(False)
+            return
+
+        self._say(f"{SERVER_LABEL} {code.base_url}", bad=False)
+        self._connect_btn.setEnabled(not self._code_edit.isReadOnly())
+
+    def _say(self, text: str, *, bad: bool) -> None:
+        colour = ERROR if bad else TEXT_MUTED
+        self._server.setStyleSheet(f"color: {colour};")
+        self._server.setText(text)
+        self._server.setVisible(True)

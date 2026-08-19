@@ -9,12 +9,12 @@ from __future__ import annotations
 import time
 
 import pytest
+from _factories import make_transect
 
 from deepreefmap_gui.server.page_ui import (
     NOT_CONNECTED,
     ONBOARDED_BY,
     SESSION_RUNNING,
-    WHERE_FILE,
 )
 from deepreefmap_gui.server.state import (
     DEVICE_NAME_KEY,
@@ -24,24 +24,27 @@ from deepreefmap_gui.server.state import (
     SERVER_SECTION,
 )
 from deepreefmap_gui.simple.mode import DESTINATIONS, NON_DESTINATIONS, SIMPLE_SECTIONS
-from deepreefmap_gui.survey.models import Site
 from deepreefmap_gui.sync import client as client_mod
-from deepreefmap_gui.sync import credentials
-from deepreefmap_gui.sync.engine import CONFLICT_DISCARDED
+from deepreefmap_gui.sync import contract, credentials
+from deepreefmap_gui.sync.engine import CONFLICT_DISCARDED, CONTRACT_VERSION_KEY
 
 SERVER_URL = "https://reef.example.org"
 TOKEN = "drmd_" + "0" * 16 + "_" + "1" * 64
 CURSOR = 4830
+AGREED = contract.CONTRACT_VERSION
 
 
 class FakeRegistry:
     """Answers like the registry, and records the order it was asked in."""
 
-    def __init__(self, base_url="", token="", fail=None, skipped=None):
+    def __init__(self, base_url="", token="", fail=None, skipped=None, omitted=()):
         self.base_url = base_url
         self.token = token
+        # What the real client learns from the stamp on a response.
+        self.agreed = None
         self._fail = fail
         self._skipped = skipped or {}
+        self._omitted = list(omitted)
         self.calls: list[str] = []
         self.pushed: list[dict] = []
 
@@ -49,7 +52,14 @@ class FakeRegistry:
         self.calls.append("pull")
         if self._fail is not None:
             raise self._fail
-        return {"contract_version": 1, "cursor": CURSOR, "has_more": False, "sections": {}}
+        self.agreed = AGREED
+        return {
+            "contract_version": AGREED,
+            "cursor": CURSOR,
+            "has_more": False,
+            "sections": {},
+            "omitted_sections": self._omitted,
+        }
 
     def push(self, sections):
         self.calls.append("push")
@@ -88,9 +98,10 @@ def registry(monkeypatch):
     """The one registry every sync in this file talks to."""
     made: list[FakeRegistry] = []
 
-    def build(*, fail=None, skipped=None):
-        def factory(base_url, token=None, timeout=None):
-            fake = FakeRegistry(base_url, token or "", fail=fail, skipped=skipped)
+    def build(*, fail=None, skipped=None, omitted=()):
+        def factory(base_url, token=None, timeout=None, agreed=None):
+            fake = FakeRegistry(base_url, token or "", fail=fail, skipped=skipped, omitted=omitted)
+            fake.agreed = agreed
             made.append(fake)
             return fake
 
@@ -162,13 +173,14 @@ def test_an_unconnected_install_offers_only_the_connect_button(window):
     assert NOT_CONNECTED in window._server_empty._message.text()
 
 
-def test_a_connected_install_names_the_server_and_where_the_token_is(window):
+def test_a_connected_install_names_the_server_and_the_position(window):
+    """Where the token is kept is not something an operator can act on, so the page
+    lists the connection and the sync position and nothing else."""
     enrol_this_device()
     window._set_simple_section(SERVER_SECTION)
 
     shown = facts(window)
     assert shown["Server"] == SERVER_URL
-    assert shown["Token kept in"] == WHERE_FILE
     assert shown["Last sync"] == "Never"
     assert shown["Pulled up to"] == "Nothing yet"
     assert window._server_disconnect_note.isVisibleTo(window)
@@ -193,7 +205,7 @@ def test_a_registry_that_reports_no_one_shows_no_onboarder(window):
 
 def test_the_page_counts_what_is_waiting_to_go(window):
     enrol_this_device()
-    window._survey_store().add_site(Site(name="Reef Wall"))
+    window._survey_store().add_transect(make_transect(name="Reef Wall"))
 
     window._set_simple_section(SERVER_SECTION)
 
@@ -219,7 +231,6 @@ def test_a_successful_connection_reports_the_server_it_found(window, qapp, monke
             base_url=SERVER_URL,
             device_id="device-1",
             device_name=device_name,
-            backend=credentials.BACKEND_FILE,
             enrolled_by="Kim Nguyen",
         )
 
@@ -231,7 +242,6 @@ def test_a_successful_connection_reports_the_server_it_found(window, qapp, monke
 
     message = window._server_notice._message.text()
     assert SERVER_URL in message
-    assert WHERE_FILE in message
     assert secret not in message
     assert secret not in caplog.text
     assert window._settings.value(DEVICE_NAME_KEY) == "Dive laptop"
@@ -260,7 +270,7 @@ def test_a_refused_code_is_reported_on_the_page_when_the_dialog_has_gone(
 
 def test_a_sync_pulls_before_it_pushes_and_reports_both(window, qapp, registry):
     enrol_this_device()
-    window._survey_store().add_site(Site(name="Reef Wall"))
+    window._survey_store().add_transect(make_transect(name="Reef Wall"))
     made = registry()
     window._set_simple_section(SERVER_SECTION)
     seen: list[str] = []
@@ -271,7 +281,7 @@ def test_a_sync_pulls_before_it_pushes_and_reports_both(window, qapp, registry):
 
     assert made[0].calls == ["pull", "push"]
     assert made[0].token == TOKEN
-    assert made[0].pushed[0]["sites"][0]["name"] == "Reef Wall"
+    assert made[0].pushed[0]["transects"][0]["name"] == "Reef Wall"
     assert [text.split(" (")[0] for text in seen] == ["Pulling changes", "Sending 1 row(s)…"]
     assert "sent 1 row(s)" in window._server_notice._message.text()
     assert window._survey_store().sync_state(LAST_SYNC_KEY)
@@ -342,6 +352,60 @@ def test_a_contract_mismatch_names_both_versions(window, qapp, registry):
 
     reason = window._server_blocker._reason.text()
     assert "contract 1" in reason and "speaks 2" in reason
+    # A fresh connect code fixes nothing here: one side needs updating.
+    assert window._server_blocker._action.text() == ""
+
+
+def test_a_registry_that_stops_saying_which_contract_it_speaks_is_refused(
+    window, qapp, registry
+):
+    """Once a registry has stamped, silence from it is a registry gone backwards."""
+    enrol_this_device()
+    registry(
+        fail=client_mod.ContractMismatchError(
+            f"This app speaks metadata contract {AGREED} and the registry did not say "
+            "which it speaks. Update the registry before syncing."
+        )
+    )
+    window._set_simple_section(SERVER_SECTION)
+
+    window._on_sync_now()
+    assert settle(qapp, lambda: not window._server_syncing)
+
+    reason = window._server_blocker._reason.text()
+    assert "did not say which it speaks" in reason
+    assert window._server_blocker._action.text() == ""
+
+
+def test_the_agreed_contract_is_kept_and_handed_to_the_next_sync(window, qapp, registry):
+    """There is no handshake call, so the stamp on a pull is the whole negotiation."""
+    enrol_this_device()
+    made = registry()
+    window._set_simple_section(SERVER_SECTION)
+
+    window._on_sync_now()
+    assert settle(qapp, lambda: not window._server_syncing)
+
+    assert window._survey_store().sync_state(CONTRACT_VERSION_KEY) == str(AGREED)
+
+    window._on_sync_now()
+    assert settle(qapp, lambda: not window._server_syncing)
+
+    assert made[1].agreed == AGREED
+
+
+def test_a_withheld_section_is_a_warning_and_not_a_blocker(window, qapp, registry):
+    """The sync did everything it could, and a blocker reads as work that did not land."""
+    enrol_this_device()
+    registry(omitted=["moorings", "quadrats"])
+    window._set_simple_section(SERVER_SECTION)
+
+    window._on_sync_now()
+    assert settle(qapp, lambda: not window._server_syncing)
+
+    message = window._server_notice._message.text()
+    assert "2 kind(s) of record this version of the app cannot read" in message
+    assert not window._server_blocker.isVisibleTo(window)
 
 
 def test_a_row_the_registry_held_newer_reaches_the_bell(window, qapp, registry):
@@ -352,9 +416,9 @@ def test_a_row_the_registry_held_newer_reaches_the_bell(window, qapp, registry):
     would interrupt whoever is mid-dive.
     """
     enrol_this_device()
-    site = Site(name="Reef Wall")
-    window._survey_store().add_site(site)
-    registry(skipped={"sites": [site.id]})
+    transect = make_transect(name="Reef Wall")
+    window._survey_store().add_transect(transect)
+    registry(skipped={"transects": [transect.id]})
     window._set_simple_section(SERVER_SECTION)
     window._set_simple_section("videos")
 

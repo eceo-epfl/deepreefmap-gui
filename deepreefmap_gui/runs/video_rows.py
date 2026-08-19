@@ -1324,7 +1324,8 @@ class SectionRow(QWidget):
         if self.strip is not None:
             span = span_for_pass(pass_, duration_s, status, run_count)
             self.strip.setVisible(span is not None)
-            if span is not None:
+            # There is no span without a duration, so this only restates the length.
+            if span is not None and duration_s is not None:
                 self.strip.set_spans(
                     [span],
                     float(duration_s),

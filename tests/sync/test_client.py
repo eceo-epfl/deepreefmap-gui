@@ -16,7 +16,11 @@ import pytest
 
 from deepreefmap_gui.sync import client as client_mod
 from deepreefmap_gui.sync.client import (
+    CONTRACT_HEADER,
+    CONTRACT_RANGE,
     CONTRACT_VERSION,
+    PULL_SECTIONS,
+    SECTIONS_HEADER,
     AccessDeniedError,
     ConflictError,
     ContractMismatchError,
@@ -38,11 +42,11 @@ class FakeRegistry:
 
     def __init__(self) -> None:
         self.base_url = ""
-        self.responses: dict[str, tuple[int, dict]] = {}
+        self.responses: dict[str, tuple[int, dict, dict]] = {}
         self.requests: list[tuple[str, str, dict | None, dict]] = []
 
-    def reply(self, path: str, status: int, body: dict) -> None:
-        self.responses[path] = (status, body)
+    def reply(self, path: str, status: int, body: dict, headers: dict | None = None) -> None:
+        self.responses[path] = (status, body, headers or {})
 
 
 @pytest.fixture
@@ -53,11 +57,15 @@ def registry():
         def _serve(self, body):
             path = self.path.split("?")[0]
             fake.requests.append((self.command, self.path, body, dict(self.headers)))
-            status, payload = fake.responses.get(path, (404, {"error": f"no route {path}"}))
+            status, payload, headers = fake.responses.get(
+                path, (404, {"error": f"no route {path}"}, {})
+            )
             raw = json.dumps(payload).encode()
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(raw)))
+            for name, value in headers.items():
+                self.send_header(name, value)
             self.end_headers()
             self.wfile.write(raw)
 
@@ -83,15 +91,29 @@ def registry():
         thread.join(timeout=5)
 
 
-def make_client(registry, token=TOKEN, suffix=""):
-    return SyncClient(registry.base_url + suffix, token=token, timeout=5.0)
+def make_client(registry, token=TOKEN, suffix="", agreed=None):
+    return SyncClient(registry.base_url + suffix, token=token, timeout=5.0, agreed=agreed)
+
+
+def serve_pull(registry, **overrides):
+    """A pull page the client will accept, for tests about something else."""
+    page = {
+        "contract_version": CONTRACT_VERSION,
+        "cursor": 40,
+        "has_more": False,
+        "sections": {},
+        "omitted_sections": [],
+    }
+    registry.reply("/api/sync/pull", 200, {**page, **overrides})
 
 
 def test_enrol_spends_the_code_and_returns_a_token(registry, make_code, code_secret) -> None:
     registry.reply("/api/enrol", 200, {"device_id": "d-1", "token": TOKEN, "enrolled_by": "sub-1"})
     code = decode_connect_code(make_code(registry.base_url))
 
-    enrolment = make_client(registry, token=None).enrol(code, "Field laptop 2", platform="linux", gui_version="0.3.3")
+    enrolment = make_client(registry, token=None).enrol(
+        code, "Field laptop 2", platform="linux", gui_version="0.3.3", library_version="1.1.0"
+    )
 
     assert (enrolment.device_id, enrolment.token, enrolment.enrolled_by) == ("d-1", TOKEN, "sub-1")
     method, path, body, headers = registry.requests[-1]
@@ -101,6 +123,7 @@ def test_enrol_spends_the_code_and_returns_a_token(registry, make_code, code_sec
         "device_name": "Field laptop 2",
         "platform": "linux",
         "gui_version": "0.3.3",
+        "library_version": "1.1.0",
     }
     assert "Authorization" not in headers
 
@@ -114,23 +137,19 @@ def test_module_enrol_uses_the_address_inside_the_code(registry, make_code) -> N
     assert enrolment.token == TOKEN
 
 
-def test_schema_status_pull_and_push_carry_the_bearer_token(registry) -> None:
-    registry.reply("/api/sync/schema", 200, {"contract_version": CONTRACT_VERSION, "tables": []})
-    registry.reply("/api/sync/status", 200, {"contract_version": CONTRACT_VERSION, "cursor": 12, "counts": {}})
-    registry.reply(
-        "/api/sync/pull",
-        200,
-        {"contract_version": CONTRACT_VERSION, "cursor": 40, "has_more": False, "sections": {"sites": []}},
-    )
+def test_pull_and_push_carry_the_bearer_token(registry) -> None:
+    serve_pull(registry, sections={"sites": []})
     registry.reply(
         "/api/sync/push",
         200,
-        {"cursor": 41, "sections": {"sites": {"received": 1, "applied": 1, "skipped": []}}},
+        {
+            "contract_version": CONTRACT_VERSION,
+            "cursor": 41,
+            "sections": {"sites": {"received": 1, "applied": 1, "skipped": []}},
+        },
     )
     client = make_client(registry)
 
-    assert client.schema()["tables"] == []
-    assert client.status()["cursor"] == 12
     assert client.pull(since=10, limit=25)["cursor"] == 40
     assert client.push({"sites": [{"id": "s-1"}]})["cursor"] == 41
 
@@ -141,8 +160,38 @@ def test_schema_status_pull_and_push_carry_the_bearer_token(registry) -> None:
     assert push_body == {"contract_version": CONTRACT_VERSION, "sections": {"sites": [{"id": "s-1"}]}}
 
 
+def test_every_call_declares_the_contract_and_the_sections(registry) -> None:
+    """Built in one place, so no route can be added that forgets one.
+
+    The declared set is what a pull will land, not every section the contract names:
+    the registry reads it to decide what to withhold, and naming upload-only sections
+    would have it report them as withheld on every page.
+    """
+    serve_pull(registry)
+    registry.reply("/api/sync/push", 200, {"contract_version": CONTRACT_VERSION, "sections": {}})
+    client = make_client(registry)
+
+    client.pull()
+    client.push({"sites": []})
+
+    for _method, _path, _body, headers in registry.requests:
+        assert headers[CONTRACT_HEADER] == CONTRACT_RANGE
+        assert headers[SECTIONS_HEADER] == ",".join(PULL_SECTIONS)
+
+
+def test_enrolment_declares_the_contract_and_no_sections(registry, make_code) -> None:
+    """A section list narrows a pull. Minting a token has nothing to narrow."""
+    registry.reply("/api/enrol", 200, {"device_id": "d-1", "token": TOKEN})
+
+    make_client(registry, token=None).enrol(decode_connect_code(make_code(registry.base_url)), "Laptop")
+
+    headers = registry.requests[-1][3]
+    assert headers[CONTRACT_HEADER] == CONTRACT_RANGE
+    assert SECTIONS_HEADER not in headers
+
+
 def test_pull_limit_is_clamped_to_the_server_maximum(registry) -> None:
-    registry.reply("/api/sync/pull", 200, {"contract_version": CONTRACT_VERSION, "cursor": 1, "sections": {}})
+    serve_pull(registry)
 
     make_client(registry).pull(limit=client_mod.MAX_PULL_LIMIT * 2)
 
@@ -150,11 +199,11 @@ def test_pull_limit_is_clamped_to_the_server_maximum(registry) -> None:
 
 
 def test_base_url_already_ending_in_api_is_not_doubled(registry) -> None:
-    registry.reply("/api/sync/status", 200, {"contract_version": CONTRACT_VERSION, "cursor": 0, "counts": {}})
+    serve_pull(registry)
 
-    make_client(registry, suffix="/api").status()
+    make_client(registry, suffix="/api").pull()
 
-    assert registry.requests[-1][1] == "/api/sync/status"
+    assert registry.requests[-1][1].startswith("/api/sync/pull")
 
 
 @pytest.mark.parametrize(
@@ -169,18 +218,18 @@ def test_base_url_already_ending_in_api_is_not_doubled(registry) -> None:
     ],
 )
 def test_http_status_maps_to_its_exception(registry, status, expected, message) -> None:
-    registry.reply("/api/sync/status", status, {"error": "server said so"})
+    registry.reply("/api/sync/pull", status, {"error": "server said so"})
 
     with pytest.raises(expected, match=message) as raised:
-        make_client(registry).status()
+        make_client(registry).pull()
     assert "server said so" in str(raised.value)
 
 
 def test_revoked_device_message_says_what_to_do(registry) -> None:
-    registry.reply("/api/sync/status", 401, {"error": "Device revoked"})
+    registry.reply("/api/sync/pull", 401, {"error": "Device revoked"})
 
     with pytest.raises(DeviceRevokedError, match="new connect code"):
-        make_client(registry).status()
+        make_client(registry).pull()
 
 
 def test_rejected_connect_code_is_not_reported_as_a_revoked_device(registry, make_code) -> None:
@@ -191,30 +240,115 @@ def test_rejected_connect_code_is_not_reported_as_a_revoked_device(registry, mak
 
 
 def test_contract_mismatch_names_both_versions(registry) -> None:
-    registry.reply("/api/sync/status", 200, {"contract_version": CONTRACT_VERSION + 1, "cursor": 0, "counts": {}})
+    serve_pull(registry, contract_version=CONTRACT_VERSION + 1)
 
     with pytest.raises(ContractMismatchError) as raised:
-        make_client(registry).status()
+        make_client(registry).pull()
     assert str(CONTRACT_VERSION) in str(raised.value)
     assert str(CONTRACT_VERSION + 1) in str(raised.value)
+
+
+def test_the_first_stamp_is_adopted_as_the_agreed_version(registry) -> None:
+    """There is no handshake call: the agreed version arrives on ordinary work."""
+    serve_pull(registry)
+    client = make_client(registry)
+
+    client.pull()
+
+    assert client.agreed == CONTRACT_VERSION
+
+
+def test_an_unstamped_response_is_tolerated_before_anything_is_agreed(registry) -> None:
+    """Contract 1 shipped before the registry stamped, so silence is not a fault yet."""
+    registry.reply("/api/sync/pull", 200, {"cursor": 3, "has_more": False, "sections": {}})
+    client = make_client(registry)
+
+    assert client.pull()["cursor"] == 3
+    assert client.agreed is None
+
+
+def test_an_unstamped_response_is_refused_once_a_registry_has_stamped(registry) -> None:
+    registry.reply("/api/sync/pull", 200, {"cursor": 3, "has_more": False, "sections": {}})
+
+    with pytest.raises(ContractMismatchError) as raised:
+        make_client(registry, agreed=CONTRACT_VERSION).pull()
+
+    assert "did not say which it speaks" in str(raised.value)
+    assert str(CONTRACT_VERSION) in str(raised.value)
+
+
+def test_a_stamp_outside_this_builds_range_names_both(registry) -> None:
+    serve_pull(registry, contract_version=CONTRACT_VERSION + 2)
+
+    with pytest.raises(ContractMismatchError) as raised:
+        make_client(registry, agreed=CONTRACT_VERSION).pull()
+
+    assert str(CONTRACT_VERSION) in str(raised.value)
+    assert str(CONTRACT_VERSION + 2) in str(raised.value)
+
+
+def test_the_agreed_version_follows_the_registry_up_inside_our_range(registry, monkeypatch) -> None:
+    """Scenario: this build speaks a range, and the registry's maximum rises to
+    meet more of it, so the version the two agree on rises with it.
+
+    Expected behaviour: the higher stamp is adopted, not refused. It is a version
+    this build reads, and refusing it would leave Disconnect as the only way out
+    of a legitimate registry upgrade.
+    """
+    later = CONTRACT_VERSION + 1
+    # A build whose range reaches one past what the registry served last time.
+    monkeypatch.setattr(client_mod, "CONTRACT_VERSION", later)
+    serve_pull(registry, contract_version=later)
+    client = make_client(registry, agreed=CONTRACT_VERSION)
+
+    client.pull()
+
+    assert client.agreed == later
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 409, 500])
+def test_a_disjoint_range_in_the_header_raises_whatever_the_status(registry, status) -> None:
+    """The header survives a proxy rewriting the body, so it is read first."""
+    ahead = f"{CONTRACT_VERSION + 3}-{CONTRACT_VERSION + 4}"
+    registry.reply(
+        "/api/sync/pull", status, {"error": "server said so"}, {CONTRACT_HEADER: ahead}
+    )
+
+    with pytest.raises(ContractMismatchError) as raised:
+        make_client(registry).pull()
+
+    assert ahead in str(raised.value)
+    assert CONTRACT_RANGE in str(raised.value)
+
+
+def test_an_overlapping_range_in_the_header_leaves_the_status_to_speak(registry) -> None:
+    registry.reply(
+        "/api/sync/pull",
+        403,
+        {"error": "server said so"},
+        {CONTRACT_HEADER: f"{client_mod.MIN_CONTRACT_VERSION}-{CONTRACT_VERSION + 9}"},
+    )
+
+    with pytest.raises(AccessDeniedError):
+        make_client(registry).pull()
 
 
 def test_offline_server_raises_unreachable() -> None:
     # Port 1 on loopback: nothing listens, so this is a connection refusal, not a lookup.
     with pytest.raises(ServerUnreachableError, match="Cannot reach"):
-        SyncClient("http://127.0.0.1:1", token=TOKEN, timeout=2.0).status()
+        SyncClient("http://127.0.0.1:1", token=TOKEN, timeout=2.0).pull()
 
 
 def test_missing_token_is_reported_before_any_request(registry) -> None:
     with pytest.raises(DeviceRevokedError, match="not connected"):
-        make_client(registry, token=None).status()
+        make_client(registry, token=None).pull()
     assert registry.requests == []
 
 
 def test_token_never_appears_in_logs(registry, caplog) -> None:
-    registry.reply("/api/sync/status", 200, {"contract_version": CONTRACT_VERSION, "cursor": 0, "counts": {}})
+    serve_pull(registry)
 
     with caplog.at_level(logging.DEBUG):
-        make_client(registry).status()
+        make_client(registry).pull()
 
     assert TOKEN not in caplog.text

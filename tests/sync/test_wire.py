@@ -330,6 +330,52 @@ def test_an_unrecorded_configuration_is_not_an_unchanged_one(tmp_path):
     assert wire.run_provenance(tmp_path, "t1__p02")["preset_deviations"] is None
 
 
+def test_a_run_row_carries_its_stored_provenance_without_the_manifest(tmp_path):
+    """The row is the durable copy: once provenance is recorded on it, pruning
+    the run directory costs nothing on the next push."""
+    run = RunRecord(
+        pass_id=uuid.uuid4(),
+        run_dir_name="pruned",
+        status="succeeded",
+        gui_version="0.9.0",
+        library_version="1.2.3",
+        segmentation_model="segformer-b2",
+        mapping_backend="loger_star",
+        taxonomy_version=2,
+        taxonomy_hash="ab" * 32,
+        model_revisions={"repo": "c0ffee"},
+        preset_name="reef_default",
+        preset_version=1,
+        preset_hash="deadbeef1234",
+        preset_deviations={},
+        run_duration_s=321.5,
+        stage_durations={"mapping": 200.0},
+        stage_peaks={"ram_bytes": 1024},
+    )
+
+    row = wire.run_rows_to_wire([run], tmp_path)[0]
+
+    assert row["library_version"] == "1.2.3"
+    assert row["model_revisions"] == {"repo": "c0ffee"}
+    assert row["preset_deviations"] == {}
+    assert row["preset_version"] == 1
+    assert row["preset_hash"] == "deadbeef1234"
+    assert row["run_duration_s"] == 321.5
+    assert row["stage_durations"] == {"mapping": 200.0}
+    assert row["stage_peaks"] == {"ram_bytes": 1024}
+
+
+def test_a_legacy_run_row_still_reads_its_manifest(tmp_path):
+    run = seed_manifest(tmp_path, run_duration_s=88.0, stage_durations={"mapping": 60.0})
+
+    row = wire.run_rows_to_wire([run], tmp_path)[0]
+
+    assert row["library_version"] == "1.2.3"
+    assert row["preset_deviations"] == {"fps": 4}
+    assert row["run_duration_s"] == 88.0
+    assert row["stage_durations"] == {"mapping": 60.0}
+
+
 def test_the_metric_source_follows_fusion(tmp_path):
     write_run(tmp_path, "fused", enable_tsdf=True)
     write_run(tmp_path, "plain", enable_tsdf=False)
@@ -462,6 +508,28 @@ def test_an_expedition_keeps_its_dates_as_days():
     )[0]
 
     assert (row["begin_date"], row["end_date"]) == ("2025-10-01", "2025-10-20")
+
+
+# --- Unknown sections ---
+
+
+def test_a_section_this_build_has_no_reading_of_is_named():
+    unknown = wire.unknown_sections({
+        "sites": [{"id": "a"}],
+        "quadrats": [{"id": "b"}],
+        "observations": [{"id": "c"}],
+    })
+
+    assert unknown == ("observations", "quadrats")
+
+
+def test_the_two_derived_sections_are_known():
+    """Neither has a table behind it here, and both arrive on an ordinary pull."""
+    assert wire.unknown_sections({wire.PASS_VIDEOS: [{"id": "a"}], wire.COVER_ROWS: [{}]}) == ()
+
+
+def test_a_section_named_with_nothing_in_it_is_not_data():
+    assert wire.unknown_sections({"quadrats": [], "observations": None}) == ()
 
 
 # --- Inbound ---

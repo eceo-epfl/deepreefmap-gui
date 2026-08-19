@@ -17,11 +17,6 @@ def _isolate_credentials(tmp_path, monkeypatch):
     """Keep the device file and the token file out of the real user data dir."""
     monkeypatch.setenv("DEEPREEFMAP_SYNC_DEVICE", str(tmp_path / "sync_device.json"))
     monkeypatch.setenv("DEEPREEFMAP_SYNC_TOKEN", str(tmp_path / "sync_token.json"))
-
-
-@pytest.fixture(autouse=True)
-def _no_real_keyring(monkeypatch):
-    """No secret service unless a test asks for one, so the file backend is default."""
     monkeypatch.setattr("deepreefmap_gui.sync.credentials._keyring", lambda: None)
 
 

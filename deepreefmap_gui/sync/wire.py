@@ -22,6 +22,7 @@ from deepreefmap_gui.survey.models.convert import to_row
 from deepreefmap_gui.survey.models.run_record import RunRecord
 from deepreefmap_gui.survey.models.transect_pass import TransectPass
 from deepreefmap_gui.survey.store import SYNC_SECTIONS
+from deepreefmap_gui.sync import contract
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,29 @@ WIRE_SECTIONS: tuple[str, ...] = (
     "runs",
     COVER_ROWS,
 )
+
+
+def _assert_sections_match_the_contract() -> None:
+    """The vendored artefact and this module must name the same sections.
+
+    The section list is what the client declares it can read, and it decides which
+    rows the registry sends. An artefact vendored out of step with this module
+    would have the app asking for a section it cannot land, or silently declining
+    one it can. Checked at import so a mis-vendored file is a failed start-up
+    rather than a half-applied sync on a boat.
+    """
+    if tuple(contract.SECTIONS) == WIRE_SECTIONS:
+        return
+    unreadable = sorted(set(contract.SECTIONS) - set(WIRE_SECTIONS))
+    unpublished = sorted(set(WIRE_SECTIONS) - set(contract.SECTIONS))
+    raise AssertionError(
+        f"the vendored contract lists {contract.SECTIONS} and this build reads "
+        f"{WIRE_SECTIONS}. Sections it names that cannot be read: {unreadable}. "
+        f"Sections read here that it does not name: {unpublished}."
+    )
+
+
+_assert_sections_match_the_contract()
 
 # Fields that stay on the device. A path and an mtime describe this laptop's disk,
 # so sending them would put absolute paths in a shared registry; probed_at and
@@ -83,7 +107,12 @@ _PROVENANCE_FIELDS = (
     "taxonomy_hash",
     "model_revisions",
     "preset_name",
+    "preset_version",
+    "preset_hash",
     "preset_deviations",
+    "run_duration_s",
+    "stage_durations",
+    "stage_peaks",
 )
 
 
@@ -160,11 +189,20 @@ def rows_to_wire(section: str, models: Iterable[Any]) -> list[dict[str, Any]]:
 
 
 def run_rows_to_wire(runs: Sequence[RunRecord], out_root: Path) -> list[dict[str, Any]]:
-    """Run rows with the provenance the database does not hold, read per run."""
-    return [
-        {**row, **run_provenance(out_root, run.run_dir_name)}
-        for run, row in zip(runs, rows_to_wire("runs", runs), strict=True)
-    ]
+    """Run rows with their provenance, from the row or failing that the manifest.
+
+    The row is the durable copy, written when the run finished. Runs recorded
+    before the database held provenance fall back to reading the run directory,
+    degrading to nulls where it has been pruned. Taken from the model rather
+    than the encoded row so the JSON fields travel as objects, not text.
+    """
+    wire_rows = []
+    for run, row in zip(runs, rows_to_wire("runs", runs), strict=True):
+        stored = {name: getattr(run, name) for name in _PROVENANCE_FIELDS}
+        if all(value is None for value in stored.values()):
+            stored = run_provenance(out_root, run.run_dir_name)
+        wire_rows.append({**row, **stored})
+    return wire_rows
 
 
 def pass_video_rows(pass_: TransectPass) -> list[dict[str, Any]]:
@@ -256,10 +294,16 @@ def run_provenance(out_root: Path, run_dir_name: str) -> dict[str, Any]:
     provenance["taxonomy_hash"] = _text(block.get("taxonomy_hash"))
     provenance["model_revisions"] = block.get("model_versions") or None
     provenance["preset_name"] = _text(config.get("preset_name")) or _text(survey.get("preset_name"))
+    provenance["preset_version"] = _whole(config.get("preset_version"))
+    provenance["preset_hash"] = _text(config.get("preset_hash"))
     # An empty deviations map means "nothing departed from the preset", which is a
     # different fact from a run that recorded no configuration at all.
     if "deviations" in config:
         provenance["preset_deviations"] = config["deviations"]
+    top_level = _manifest(out_root, run_dir_name)
+    provenance["run_duration_s"] = _seconds(top_level.get("run_duration_s"))
+    provenance["stage_durations"] = _block(top_level, "stage_durations") or None
+    provenance["stage_peaks"] = _block(top_level, "stage_peaks") or None
     return provenance
 
 
@@ -302,6 +346,13 @@ def _whole(value: Any) -> int | None:
         return None
 
 
+def _seconds(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 # --- Inbound ---
 
 
@@ -316,6 +367,19 @@ def rows_from_wire(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
         _restamp({k: v for k, v in row.items() if k != "server_seq"}, from_wire_time)
         for row in rows
     ]
+
+
+def unknown_sections(sections: Mapping[str, Any]) -> tuple[str, ...]:
+    """Section names in a page that this build has no reading of, sorted.
+
+    A section named with nothing in it is not data, so it is not in here: only a
+    section carrying rows can cost the caller anything by being passed over.
+    """
+    return tuple(sorted(
+        name
+        for name, rows in sections.items()
+        if name not in WIRE_SECTIONS and isinstance(rows, (list, tuple)) and rows
+    ))
 
 
 def fold_pass_videos(

@@ -54,6 +54,9 @@ dependencies = [
   #   opencv-python form/video_scrub.py; matches what deepreefmap[gopro] resolves
   #   huggingface-hub  models/manager.py: cache scan, auth and delete are ours
   "platformdirs>=4.0",
+  # Device token at rest. Imported lazily from sync/credentials.py and only
+  # reached from the Server page, so a missing backend degrades to a file.
+  "keyring>=24",
   "numpy>=1.26",
   "opencv-python>=4.9",
   "huggingface-hub>=0.30",
@@ -104,6 +107,9 @@ build-backend = "setuptools.build_meta"
 include = ["deepreefmap_gui*"]
 
 [tool.setuptools.package-data]
+# The registry's contract artefact, which every version constant is derived from
+# at import. A wheel without it cannot start.
+"deepreefmap_gui.sync.contract" = ["*.json"]
 "deepreefmap_gui.resources" = [
   "*.png", "*.icns", "fonts/*.ttf", "fonts/*.txt", "configs/*.yaml",
   # The icon set, vendored so an offline laptop still has one.
