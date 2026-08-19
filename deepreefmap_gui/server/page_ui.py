@@ -756,6 +756,9 @@ class ServerPageMixin(MixinBase):
         self._server_blocker.clear()
         self._refresh_server_page()
         self._refresh_sync_badge()
+        # A sync proves the registry is reachable, which is when the archive
+        # badges are worth asking about.
+        self._refresh_archive_badges()
         self._server_notice.show_notice(summarise(pulled, pushed))
         # A pull rewrites the survey underneath every list drawn from it.
         self._refresh_transect_list()

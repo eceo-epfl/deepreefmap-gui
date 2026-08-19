@@ -235,3 +235,31 @@ def test_the_scene_write_is_the_last_thing_the_bar_shows():
     model.update("scene_save", 2, 2)
 
     assert before < halfway < model.total_percent() == 100
+
+
+def test_the_scene_write_leaves_a_web_cloud_beside_it(run_data):
+    """The browser export reuses the index the scene write built, so the two
+    files always describe the same points."""
+    from deepreefmap_gui.io.web_cloud import WEB_CLOUD_FILENAME, read_web_cloud
+
+    run_dir, data = run_data
+
+    _write(run_dir, data, MANIFEST)
+
+    header, views = read_web_cloud(run_dir / WEB_CLOUD_FILENAME)
+    assert header["point_count"] == views["xyz"].shape[0] > 0
+    assert [c["id"] for c in header["classes"]] == [CLASS_ID]
+
+
+def test_a_web_cloud_failure_does_not_take_the_scene_with_it(run_data, monkeypatch):
+    import deepreefmap_gui.io.web_cloud as web_cloud
+
+    run_dir, data = run_data
+    monkeypatch.setattr(
+        web_cloud, "write_web_cloud", lambda *a, **k: (_ for _ in ()).throw(OSError("full"))
+    )
+
+    out = _write(run_dir, data, MANIFEST)
+
+    assert out is not None and out.exists()
+    assert not (run_dir / web_cloud.WEB_CLOUD_FILENAME).exists()

@@ -404,7 +404,9 @@ def test_the_agreed_contract_is_kept_and_handed_to_the_next_sync(window, qapp, r
     window._on_sync_now()
     assert settle(qapp, lambda: not window._server_syncing)
 
-    assert made[1].agreed == AGREED
+    # The archive badge probe builds clients of its own, so pick the syncs.
+    synced = [client for client in made if "pull" in client.calls]
+    assert synced[1].agreed == AGREED
 
 
 def test_a_withheld_section_is_a_warning_and_not_a_blocker(window, qapp, registry):
