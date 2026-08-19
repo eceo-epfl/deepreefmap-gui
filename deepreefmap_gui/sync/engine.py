@@ -70,6 +70,9 @@ HELD_MAX = 1000
 # fingerprints because they are two outcomes: one edit did not land and the other
 # was overwritten by somebody else's.
 CONFLICT_DISCARDED = "sync.local_edit_discarded"
+# The same conflict on a section this device only ever sends. No pull reconciles
+# it, so it is worth saying differently rather than promising a download.
+CONFLICT_STRANDED = "sync.local_edit_stranded"
 CONFLICT_OVERWRITTEN = "sync.local_edit_overwritten"
 # A local edit to a row another device owns, which the registry will never take.
 CONFLICT_REFUSED = "sync.local_edit_refused"
@@ -152,6 +155,20 @@ class PushReport:
     def skipped(self) -> list[uuid.UUID]:
         """Rows the registry already held a newer copy of: information, not an error."""
         return [row_id for section in self.sections.values() for row_id in section.skipped]
+
+    def skipped_by_direction(self) -> tuple[list[uuid.UUID], list[uuid.UUID]]:
+        """Skipped rows split by whether a later pull can bring the winner down.
+
+        Only a section this device also pulls reconciles on its own. For one it
+        merely authors, the registry's newer copy stays where it is and the two
+        records simply differ, which is a different thing to tell the operator.
+        """
+        downloadable: list[uuid.UUID] = []
+        stranded: list[uuid.UUID] = []
+        for name, section in self.sections.items():
+            bucket = downloadable if name in contract.PULL_SECTIONS else stranded
+            bucket.extend(section.skipped)
+        return downloadable, stranded
 
     @property
     def refused(self) -> list[uuid.UUID]:
@@ -739,13 +756,21 @@ class SyncEngine:
             )
 
     def _report_push_conflicts(self, report: PushReport) -> None:
-        skipped = report.skipped
-        if skipped:
+        downloadable, stranded = report.skipped_by_direction()
+        if downloadable:
             self._post(
                 CONFLICT_DISCARDED,
-                f"The registry already held {len(skipped)} row(s) newer than ours",
+                f"The registry already held {len(downloadable)} row(s) newer than ours",
                 "Those edits were not accepted. The next sync brings the registry's "
                 "version down, which is what the survey will show.",
+            )
+        if stranded:
+            self._post(
+                CONFLICT_STRANDED,
+                f"The registry already held {len(stranded)} row(s) newer than ours",
+                "Those edits were not accepted, and this app does not download "
+                "these rows, so the two records now differ. Make the change in "
+                "the web console if it should stand.",
             )
         refused = report.refused
         if refused:
