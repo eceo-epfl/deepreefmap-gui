@@ -180,9 +180,10 @@ def _restamp(row: dict[str, Any], convert: Callable[[str | None], str | None]) -
 def rows_to_wire(section: str, models: Iterable[Any]) -> list[dict[str, Any]]:
     """Desktop models as wire rows for one of the sections backed by a table.
 
-    ``created_by`` and ``device_id`` travel even though the registry stamps them
-    from the credential and discards what it was sent, because pull output is
-    guaranteed to be valid push input field for field.
+    ``device_id`` travels even though the registry stamps it from the credential
+    and discards what it was sent, because pull output is guaranteed to be valid
+    push input field for field. Provenance is the device, nothing personal:
+    the schema carries no ``created_by``.
     """
     if section not in SYNC_SECTIONS:
         raise KeyError(f"{section!r} is not a section with a table behind it")

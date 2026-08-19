@@ -1309,7 +1309,6 @@ def test_apply_from_server_inserts_what_this_device_has_never_seen(store):
         "created_at": "2026-08-01T00:00:00+00:00",
         "updated_at": "2026-08-01T00:00:00+00:00",
         "deleted_at": None,
-        "created_by": "auth0|abc",
         "device_id": None,
         "server_seq": 4102,
     }
@@ -1318,7 +1317,7 @@ def test_apply_from_server_inserts_what_this_device_has_never_seen(store):
 
     assert (result.received, result.inserted, result.applied) == (1, 1, 1)
     stored = store.get_site(uuid.UUID(pulled["id"]))
-    assert (stored.name, stored.created_by) == ("Japanese Garden", "auth0|abc")
+    assert stored.name == "Japanese Garden"
 
 
 def test_apply_from_server_keeps_the_newer_of_the_two_copies(store):
@@ -1537,3 +1536,24 @@ def test_sync_state_is_machine_local_and_stays_out_of_the_document(store, tmp_pa
     store.export_json(doc_path)
     assert "sync_state" not in doc_path.read_text()
     assert "registry.example" not in doc_path.read_text()
+
+
+def test_apply_from_server_ignores_a_column_the_model_no_longer_carries(store):
+    """Scenario: a registry from before the created_by column was removed.
+
+    Expected behaviour: the stray key is dropped and the row lands, because a
+    schema difference in a column nobody reads must never strand a pull.
+    """
+    pulled = {
+        "id": str(uuid.uuid4()),
+        "name": "Reef",
+        "description": "",
+        "created_by": "auth0|abc",
+        "created_at": "2026-08-01T00:00:00+00:00",
+        "updated_at": "2026-08-01T00:00:00+00:00",
+    }
+
+    result = store.apply_from_server("sites", [pulled])
+
+    assert (result.received, result.inserted) == (1, 1)
+    assert store.get_site(uuid.UUID(pulled["id"])).name == "Reef"

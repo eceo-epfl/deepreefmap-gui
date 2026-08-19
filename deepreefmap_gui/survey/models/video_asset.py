@@ -60,7 +60,6 @@ class VideoAsset:
     created_at: str = field(default_factory=utc_now_iso)
     updated_at: str = field(default_factory=utc_now_iso)
     deleted_at: str | None = None
-    created_by: str | None = None
     device_id: uuid.UUID | None = None
 
     # Every field belongs to exactly one group, and the two carry-over policies
@@ -91,7 +90,6 @@ class VideoAsset:
     SYNC_FIELDS: ClassVar[tuple[str, ...]] = (
         "updated_at",
         "deleted_at",
-        "created_by",
         "device_id",
     )
 

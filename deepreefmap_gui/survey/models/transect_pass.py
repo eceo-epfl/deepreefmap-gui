@@ -68,7 +68,6 @@ class TransectPass:
     created_at: str = field(default_factory=utc_now_iso)
     updated_at: str = field(default_factory=utc_now_iso)
     deleted_at: str | None = None
-    created_by: str | None = None
     device_id: uuid.UUID | None = None
 
     def __post_init__(self) -> None:

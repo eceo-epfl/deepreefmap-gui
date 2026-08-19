@@ -131,7 +131,6 @@ def sync_fields(**overrides):
         "created_at": EARLIER,
         "updated_at": LATER,
         "deleted_at": None,
-        "created_by": "auth0|abc",
         "device_id": None,
         "server_seq": 4102,
         **overrides,

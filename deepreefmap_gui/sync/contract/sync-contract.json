@@ -80,11 +80,6 @@
           "nullable": true
         },
         {
-          "kind": "text",
-          "name": "created_by",
-          "nullable": true
-        },
-        {
           "kind": "uuid",
           "name": "device_id",
           "nullable": true
@@ -133,11 +128,6 @@
         {
           "kind": "timestamp",
           "name": "deleted_at",
-          "nullable": true
-        },
-        {
-          "kind": "text",
-          "name": "created_by",
           "nullable": true
         },
         {
@@ -224,11 +214,6 @@
         {
           "kind": "timestamp",
           "name": "deleted_at",
-          "nullable": true
-        },
-        {
-          "kind": "text",
-          "name": "created_by",
           "nullable": true
         },
         {
@@ -328,11 +313,6 @@
           "nullable": true
         },
         {
-          "kind": "text",
-          "name": "created_by",
-          "nullable": true
-        },
-        {
           "kind": "uuid",
           "name": "device_id",
           "nullable": true
@@ -409,11 +389,6 @@
           "nullable": true
         },
         {
-          "kind": "text",
-          "name": "created_by",
-          "nullable": true
-        },
-        {
           "kind": "uuid",
           "name": "device_id",
           "nullable": true
@@ -457,11 +432,6 @@
         {
           "kind": "timestamp",
           "name": "deleted_at",
-          "nullable": true
-        },
-        {
-          "kind": "text",
-          "name": "created_by",
           "nullable": true
         },
         {
@@ -596,11 +566,6 @@
           "nullable": true
         },
         {
-          "kind": "text",
-          "name": "created_by",
-          "nullable": true
-        },
-        {
           "kind": "uuid",
           "name": "device_id",
           "nullable": true
@@ -672,11 +637,6 @@
           "nullable": true
         },
         {
-          "kind": "text",
-          "name": "created_by",
-          "nullable": true
-        },
-        {
           "kind": "uuid",
           "name": "device_id",
           "nullable": true
@@ -725,11 +685,6 @@
         {
           "kind": "timestamp",
           "name": "deleted_at",
-          "nullable": true
-        },
-        {
-          "kind": "text",
-          "name": "created_by",
           "nullable": true
         },
         {
