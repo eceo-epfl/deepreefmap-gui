@@ -199,6 +199,94 @@ class _MarkingViewer:
             self._inner.wait_forever()
 
 
+def _geometry_source(output_dir: Path) -> str | None:
+    """Whether the saved mapping carries world points, without loading them.
+
+    A mapping npz saved without world geometry holds an empty placeholder array,
+    so the zip member's size separates the two cases at header cost.
+    """
+    import zipfile
+
+    npz_path = output_dir / "mapping_outputs.npz"
+    if not npz_path.exists():
+        return None
+    try:
+        with zipfile.ZipFile(npz_path) as zf:
+            info = zf.getinfo("world_points.npy")
+    except (KeyError, zipfile.BadZipFile, OSError):
+        return None
+    return "world_points" if info.file_size > 256 else "depth_unprojection"
+
+
+def _scale_type(output_dir: Path) -> str | None:
+    import numpy as np
+
+    npz_path = output_dir / "mapping_outputs.npz"
+    if not npz_path.exists():
+        return None
+    try:
+        with np.load(npz_path) as data:
+            if "scale_type" in data.files:
+                return str(data["scale_type"])
+    except Exception:
+        logger.warning("Could not read scale_type from %s", npz_path, exc_info=True)
+    return None
+
+
+def _run_identity_extra(output_dir: Path, kwargs: dict, run_started_at: str) -> dict:
+    """Identity and launch-parameter fields for the run manifest.
+
+    The library's manifest records only what it needs to reload a run. Which
+    clips went in (hashed for related-run grouping), every launch parameter, and
+    the library version are the app's to record: it launched the run in-process
+    and knows them all. Never raises: losing provenance must not lose the run.
+    """
+    try:
+        from deepreefmap import __version__ as deepreefmap_version
+
+        from deepreefmap_gui.io.video_hash import describe_videos
+
+        video_paths = [Path(p) for p in kwargs.get("video_paths", [])]
+        metas = describe_videos(video_paths)
+        transect_length = kwargs.get("transect_length")
+        transect_crop_width = kwargs.get("transect_crop_width")
+        extra: dict = {
+            "input_videos": [str(p) for p in video_paths],
+            "video_hashes": [m["hash"] for m in metas],
+            "video_sizes": [m["size_bytes"] for m in metas],
+            "video_mtimes": [m["mtime"] for m in metas],
+            "fps": kwargs.get("fps"),
+            "begin_s": kwargs.get("begin_s"),
+            "end_s": kwargs.get("end_s"),
+            "processing_width": kwargs.get("processing_width"),
+            "processing_height": kwargs.get("processing_height"),
+            "grid_bins": kwargs.get("grid_bins"),
+            "replacement_radius_factor": kwargs.get("replacement_radius_factor"),
+            "replacement_radius_estimation_frames": kwargs.get("replacement_radius_estimation_frames"),
+            "replacement_radius_override": kwargs.get("replacement_radius_override"),
+            "enable_tsdf": bool(kwargs.get("enable_tsdf", False)),
+            "mapping_options": dict(kwargs.get("mapping_options") or {}),
+            "refine_intrinsics_from_mapper": bool(kwargs.get("refine_intrinsics_from_mapper", False)),
+            "deepreefmap_version": deepreefmap_version,
+            "run_timestamp": run_started_at,
+            "transect": {
+                "length": transect_length,
+                "crop_width": transect_crop_width,
+                "applied": transect_length is not None and transect_crop_width is not None,
+            },
+        }
+        geometry_source = _geometry_source(output_dir)
+        if geometry_source is not None:
+            extra["geometry_source"] = geometry_source
+        scale_type = _scale_type(output_dir)
+        if scale_type is not None:
+            extra["scale_type"] = scale_type
+        return extra
+    except Exception:
+        logger.warning("Failed to build run identity fields", exc_info=True)
+        return {}
+
+
 def _record_run_command(output_dir: Path, kwargs: dict) -> dict:
     """The CLI equivalent of this run, dropped in the run dir and returned for
     the manifest.
@@ -242,15 +330,23 @@ def instrumented_reconstruction(
     memory peak is recorded too, and a failure is logged rather than raised: the
     scene file is a cache, and losing it must not lose the run.
     """
+    from datetime import datetime, timezone
+
     from deepreefmap.pipeline.orchestrator import run_reconstruction
 
+    from deepreefmap_gui.io.classes_default import resolve_classes_path
     from deepreefmap_gui.profiling.run_history import record_run_from_manifest
 
+    run_started_at = datetime.now(timezone.utc).isoformat()
     output_dir = Path(kwargs["output_dir"])
     instr = RunInstrumentation(output_dir)
     proxy = _MarkingViewer(kwargs.pop("viewer", None), instr)
     extra = dict(manifest_extra or {})
     extra.update(_record_run_command(output_dir, kwargs))
+    # The library's preprocess cache key reads the classes file directly, so a
+    # None (bundled default) must become the packaged copy's absolute path
+    # before the run rather than a repo-relative path resolved against cwd.
+    kwargs["classes_path"] = resolve_classes_path(kwargs.get("classes_path"))
     # The pipeline's manifest does not carry the batch size, and a VRAM peak is
     # only comparable to an estimate made at the same one.
     if "preprocess_batch_size" in kwargs:
@@ -262,6 +358,7 @@ def instrumented_reconstruction(
         # keeps them. Only when there are any: an absent key reads as clean.
         if proxy.warnings:
             extra["quality_warnings"] = list(proxy.warnings)
+        extra.update(_run_identity_extra(output_dir, kwargs, run_started_at))
         # Fold the run name, survey block and timings in before the scene file is
         # written: the scene embeds the manifest and is read back in place of it,
         # so a scene built from the raw pipeline manifest would come back missing

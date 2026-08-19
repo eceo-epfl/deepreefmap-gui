@@ -41,6 +41,8 @@ def preprocess_key_for_settings(
     """
     from deepreefmap.pipeline import resume as resume_mod
 
+    from deepreefmap_gui.io.classes_default import resolve_classes_path
+
     return resume_mod.preprocess_key(
         video_paths=video_paths,
         fps=settings["fps"],
@@ -51,7 +53,7 @@ def preprocess_key_for_settings(
         segmentation_name=(
             "__skip__" if settings["skip_segmentation"] else settings["segmentation_name"]
         ),
-        classes_path=settings["classes_path"],
+        classes_path=resolve_classes_path(settings["classes_path"]),
         processing_width=settings["processing_width"],
         processing_height=settings["processing_height"],
     )

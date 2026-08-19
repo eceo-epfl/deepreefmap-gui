@@ -66,6 +66,9 @@ dependencies = [
   # (models/manager.py). Note [dev] already declares types-tqdm.
   "packaging>=23",
   "tqdm>=4.66",
+  # Sampled video hashing for clip identity (io/video_hash.py). Formerly a
+  # library dependency; moved here with the video-hash code.
+  "imohash>=1.1.0",
 ]
 
 [project.optional-dependencies]
@@ -274,10 +277,12 @@ extend-ignore-names = [
 [tool.mypy]
 python_version = "3.10"
 
-# Use the library's types but leave checking its internals to its own repo.
+# The library ships no py.typed marker, so treat it as untyped rather than
+# erroring on every import; checking its internals stays in its own repo.
 [[tool.mypy.overrides]]
 module = ["deepreefmap.*"]
 follow_imports = "silent"
+ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = [
@@ -286,6 +291,7 @@ module = [
   "psutil.*",
   "zarr.*",
   "numcodecs.*",
+  "imohash.*",
 ]
 ignore_missing_imports = true
 

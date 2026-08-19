@@ -21,7 +21,6 @@ from deepreefmap.pipeline import resume as resume_mod
 from deepreefmap.pipeline.artifacts import FrameBatch, MappingSequenceResult, SemanticPointCloud
 from deepreefmap.pipeline.run_loader import (
     SEMANTIC_MODE,
-    _world_points_fallback_warning,
     load_cached_run,
 )
 
@@ -211,6 +210,30 @@ def _upgrade_scene_file(run_dir: Path, loaded: GuiLoadedRun) -> None:
         logger.warning("Scene file upgrade failed, leaving the old one alone", exc_info=True)
 
 
+def _world_points_fallback_warning(
+    manifest: dict[str, Any], mapping_result: MappingSequenceResult | None
+) -> str | None:
+    """Detect a LoGeR run whose cloud silently fell back to depth-unprojection.
+
+    An older ``mapping_outputs.npz`` may carry no ``world_points``, so a resumed
+    run rebuilds geometry from depth+pose: degraded, not failed. A recorded
+    ``geometry_source == "depth_unprojection"`` is intentional and not flagged.
+    """
+    if str(manifest.get("mapping_backend", "")) not in {"loger", "loger_star"}:
+        return None
+    if getattr(mapping_result, "world_points", None) is not None:
+        return None
+    if manifest.get("geometry_source") == "depth_unprojection":
+        return None
+    msg = (
+        "LoGeR run loaded without per-point world geometry (mapping_outputs.npz "
+        "predates world_points persistence); the cloud uses the depth-unprojection "
+        "fallback. Re-run the reconstruction for full LoGeR geometry."
+    )
+    logger.warning(msg)
+    return msg
+
+
 def _wrap_loaded_run(loaded) -> GuiLoadedRun:
     """Re-express a library ``LoadedRun`` as a ``GuiLoadedRun`` (scene fields default)."""
     return GuiLoadedRun(
@@ -224,7 +247,7 @@ def _wrap_loaded_run(loaded) -> GuiLoadedRun:
         reference_cloud=loaded.reference_cloud,
         geometry_xyz=loaded.geometry_xyz,
         geometry_rgb=loaded.geometry_rgb,
-        world_points_warning=loaded.world_points_warning,
+        world_points_warning=_world_points_fallback_warning(loaded.manifest, loaded.mapping_result),
     )
 
 

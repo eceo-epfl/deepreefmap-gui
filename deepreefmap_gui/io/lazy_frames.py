@@ -90,10 +90,10 @@ class RunDirFrameAccessor:
         return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
     def get_labels(self, positional_index: int) -> np.ndarray:
-        # Not a plain .png read: runs predating the PNG label cache store .npy,
-        # widened to int32. The library owns both the suffix search and the
-        # narrowing back to uint8, so call it rather than restate it here.
-        from deepreefmap.pipeline.resume import read_labels_file, resolve_labels_path
+        # Not a plain .png read: main-line runs store .npy widened to int32,
+        # branch-era runs store uint8 .png. Our label_cache module owns both the
+        # suffix search and the narrowing back to uint8.
+        from deepreefmap_gui.io.label_cache import read_labels_file, resolve_labels_path
 
         stem = self._stem(positional_index)
         path = resolve_labels_path(self._labels_dir, stem)

@@ -575,7 +575,7 @@ def launch(classes_path: Path | None = None, view_run_dir: Path | None = None) -
     icon_path = resources.files("deepreefmap_gui.resources").joinpath("icon.png")
     qt_app.setWindowIcon(QIcon(str(icon_path)))
     _install_crash_dialog()
-    classes_config = load_classes(classes_path)
+    classes_config = load_classes(classes_path) if classes_path is not None else load_classes()
     window = DeepReefMapWindow(classes_config, classes_path)
     window.show()
     # Queued, so the window is on screen and painted first, and bound to the
