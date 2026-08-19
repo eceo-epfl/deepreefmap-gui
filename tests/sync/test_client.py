@@ -160,6 +160,44 @@ def test_pull_and_push_carry_the_bearer_token(registry) -> None:
     assert push_body == {"contract_version": CONTRACT_VERSION, "sections": {"sites": [{"id": "s-1"}]}}
 
 
+def test_push_declares_the_negotiated_version_not_this_builds_maximum(registry) -> None:
+    """Scenario: this build speaks a newer contract than the registry does.
+
+    Expected behaviour: the push document names the version the exchange settled
+    on. The registry checks the document against `min` of the two maximums, so
+    declaring this build's own maximum would make every push a 400 the moment
+    the two sides differ. Asserted on the negotiation itself rather than through
+    a fake registry, because only one contract version exists to serve today.
+    """
+    client = make_client(registry)
+
+    client._learn_range(f"{client_mod.MIN_CONTRACT_VERSION}-{CONTRACT_VERSION + 3}")
+    assert client._declared_version() == CONTRACT_VERSION, "never above what this build speaks"
+
+    client._learn_range(f"{client_mod.MIN_CONTRACT_VERSION}-{CONTRACT_VERSION}")
+    assert client._declared_version() == CONTRACT_VERSION
+
+    client.server_max = CONTRACT_VERSION - 1
+    assert client._declared_version() == CONTRACT_VERSION - 1, "follow an older registry down"
+
+
+def test_push_follows_a_registry_that_has_been_upgraded(registry) -> None:
+    """The range on the answer is read every time, so a registry that gained a
+    version since the last sync is pushed to under the new one, not a stored
+    agreement that is now stale."""
+    serve_pull(registry, contract_version=CONTRACT_VERSION)
+    registry.reply(
+        "/api/sync/push", 200, {"contract_version": CONTRACT_VERSION, "sections": {}}
+    )
+    client = make_client(registry)
+    client.agreed = client_mod.MIN_CONTRACT_VERSION
+
+    client.pull()
+    client.push({"sites": []})
+
+    assert registry.requests[-1][2]["contract_version"] == CONTRACT_VERSION
+
+
 def test_every_call_declares_the_contract_and_the_sections(registry) -> None:
     """Built in one place, so no route can be added that forgets one.
 
@@ -333,25 +371,25 @@ def test_an_overlapping_range_in_the_header_leaves_the_status_to_speak(registry)
         make_client(registry).pull()
 
 
-def test_archive_by_sha256_answers_none_where_nothing_is_archived(registry) -> None:
+def test_archive_by_hash_answers_none_where_nothing_is_archived(registry) -> None:
     """A 404 here is an answer, not a fault: the content has never been sent."""
-    missing = "a" * 64
+    missing = "a" * 32
     registry.reply(
-        f"/api/archive/by-sha256/{missing}", 404, {"error": "Nothing archived under this hash"}
+        f"/api/archive/by-hash/{missing}", 404, {"error": "Nothing archived under this hash"}
     )
 
-    assert make_client(registry).archive_by_sha256(missing) is None
+    assert make_client(registry).archive_by_hash(missing) is None
 
 
-def test_archive_by_sha256_returns_the_objects_state(registry) -> None:
-    held = "b" * 64
+def test_archive_by_hash_returns_the_objects_state(registry) -> None:
+    held = "b" * 32
     registry.reply(
-        f"/api/archive/by-sha256/{held}",
+        f"/api/archive/by-hash/{held}",
         200,
-        {"object_id": "o-1", "status": "complete", "verified_at": "2026-08-01T00:00:00Z"},
+        {"object_id": "o-1", "status": "complete", "completed_at": "2026-08-01T00:00:00Z"},
     )
 
-    answer = make_client(registry).archive_by_sha256(held)
+    answer = make_client(registry).archive_by_hash(held)
 
     assert answer is not None and answer["status"] == "complete"
 

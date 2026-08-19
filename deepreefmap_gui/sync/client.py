@@ -101,6 +101,11 @@ class SyncClient:
     `agreed` is the contract version this registry has already stamped, None
     where it has never stamped one. It is a fact about the registry rather than
     about the client, so the caller loads it and stores it again afterwards.
+
+    `server_max` is the top of the range the registry declared on its most
+    recent answer, learned fresh on every response rather than persisted: a
+    registry that has just been upgraded must not be pushed to under the older
+    version a stored value would name.
     """
 
     def __init__(
@@ -112,6 +117,7 @@ class SyncClient:
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.agreed = agreed
+        self.server_max: int | None = None
         self._token = token
         self._timeout = timeout
 
@@ -153,9 +159,28 @@ class SyncClient:
         return self._request("GET", f"/sync/pull?{urllib.parse.urlencode(params)}")
 
     def push(self, sections: Sections) -> dict[str, Any]:
-        """Apply a closed document. `contract_version` is stamped here, not by callers."""
-        document = {"contract_version": CONTRACT_VERSION, "sections": sections}
+        """Apply a closed document. `contract_version` is stamped here, not by callers.
+
+        The version declared is the negotiated one, `min` of the two maximums,
+        which is what the registry checks the document against. Declaring this
+        build's own maximum instead would be refused by every older registry.
+        """
+        document = {"contract_version": self._declared_version(), "sections": sections}
         return self._request("POST", "/sync/push", body=document)
+
+    def _declared_version(self) -> int:
+        """The version this exchange runs under: neither side's maximum alone.
+
+        `server_max` comes from the header on the answer just received, so a
+        registry upgraded since the last sync is pushed to under its new
+        version rather than a stale agreement.
+        """
+        known = [CONTRACT_VERSION]
+        if self.server_max is not None:
+            known.append(self.server_max)
+        elif self.agreed is not None:
+            known.append(self.agreed)
+        return min(known)
 
     def heartbeat(self, report: Mapping[str, Any]) -> None:
         """Report this device's software and static hardware, onto its own row.
@@ -238,6 +263,7 @@ class SyncClient:
         request = urllib.request.Request(url, data=data, headers=headers, method=method)  # noqa: S310
         try:
             with urllib.request.urlopen(request, timeout=timeout or self._timeout) as response:  # noqa: S310
+                self._learn_range(response.headers.get(CONTRACT_HEADER))
                 raw = response.read()
         except urllib.error.HTTPError as exc:
             raise self._http_error(exc, authorise) from exc
@@ -258,6 +284,12 @@ class SyncClient:
         self._verify_contract(payload)
         logger.info("%s %s ok", method, path.split("?", maxsplit=1)[0])
         return payload
+
+    def _learn_range(self, header: str | None) -> None:
+        """Adopt the registry's declared maximum from any answer it gives."""
+        bounds = _parse_range(header)
+        if bounds is not None:
+            self.server_max = bounds[1]
 
     def _verify_contract(self, payload: Mapping[str, Any]) -> None:
         """Check the version a response was served under, and adopt it.
@@ -290,6 +322,7 @@ class SyncClient:
     def _http_error(self, exc: urllib.error.HTTPError, authorise: bool) -> SyncError:
         # Before the body, and whatever the status: a proxy can rewrite a body and
         # cannot drop this, and a range with nothing in common explains the rest.
+        self._learn_range(exc.headers.get(CONTRACT_HEADER))
         disjoint = _disjoint_range(exc.headers.get(CONTRACT_HEADER))
         if disjoint is not None:
             return disjoint
