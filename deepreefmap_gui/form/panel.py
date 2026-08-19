@@ -51,6 +51,7 @@ from PySide6.QtWidgets import (
 from deepreefmap_gui.core.icons import log_icon
 from deepreefmap_gui.core.spinner import BusySpinner, SpinnerStopButton
 from deepreefmap_gui.core.storage_bar import StorageBars
+from deepreefmap_gui.core.sync_badge import SyncBadge
 from deepreefmap_gui.core.theme import (
     BAR_HEIGHT,
     BLOCK,
@@ -1110,6 +1111,11 @@ class FormPanelMixin(MixinBase):
         gpu_row.addWidget(self._gpu_indicator)
         self._gpu_indicator_box.setVisible(False)
         row.addWidget(self._gpu_indicator_box)
+        # The registry link sits beside the drives: the two facts a diver
+        # checks before packing up are "did it fit" and "is it on the server".
+        self._sync_badge = SyncBadge()
+        self._sync_badge.clicked.connect(self._on_sync_badge_clicked)
+        row.addWidget(self._sync_badge)
         # Storage rides on this row rather than a band of its own: the bars are
         # BAR_HEIGHT tall inside a row already twice that, so the one number
         # that can stop a run mid-dive costs no height to keep on screen.
@@ -1133,8 +1139,11 @@ class FormPanelMixin(MixinBase):
         self._storage_timer = QTimer(self)
         self._storage_timer.setInterval(_STORAGE_REFRESH_MS)
         self._storage_timer.timeout.connect(self._refresh_storage_bars)
+        # The badge shares the cadence: its read is one COUNT per section.
+        self._storage_timer.timeout.connect(self._refresh_sync_badge)
         self._storage_timer.start()
         self._refresh_storage_bars()
+        self._refresh_sync_badge()
         return bar
 
     def _paint_gpu_indicator(self, gpu: object) -> None:

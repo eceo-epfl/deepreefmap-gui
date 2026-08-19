@@ -1692,6 +1692,21 @@ class SurveyStore:
         rows = self._conn().execute(f"{sql} ORDER BY updated_at, rowid", params).fetchall()
         return [from_row(_SYNC_MODELS[table], r) for r in rows]
 
+    def count_changed_since(self, section: str, since: str | None = None) -> int:
+        """How many rows are waiting to push, without loading any of them.
+
+        Strictly after the watermark, matching the engine: the row carrying the
+        watermark is the row that was accepted. The badge polls this on a
+        timer, which is why it must stay a count and never a row load.
+        """
+        table = SYNC_SECTIONS[_section_of(section)]
+        sql = f"SELECT COUNT(*) AS n FROM {table}"
+        params: list[Any] = []
+        if since is not None:
+            sql += " WHERE updated_at > ?"
+            params.append(since)
+        return int(self._conn().execute(sql, params).fetchone()["n"])
+
     def apply_from_server(
         self, section: str, rows: Iterable[Mapping[str, Any] | Any]
     ) -> ApplyResult:

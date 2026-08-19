@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from deepreefmap_gui.core import sync_badge
 from deepreefmap_gui.core.icons import ICON_SM, server_icon
 from deepreefmap_gui.core.spinner import BusySpinner
 from deepreefmap_gui.core.theme import FONT_LG, SPACE_SM, SUCCESS, WEIGHT_SEMIBOLD
@@ -66,6 +67,7 @@ from deepreefmap_gui.server.state import (
 )
 from deepreefmap_gui.survey.models.common import utc_now_iso
 from deepreefmap_gui.survey.models.notification import INFO, SURVEY
+from deepreefmap_gui.survey.store import SurveyStore
 from deepreefmap_gui.sync.contract import PULL_SECTIONS
 from deepreefmap_gui.sync.engine import SyncEngine
 
@@ -388,6 +390,7 @@ class ServerPageMixin(MixinBase):
         self._server_syncing = True
         self._server_notice.clear()
         self._set_server_busy(True, PULLING.format(page=1))
+        self._refresh_sync_badge()
 
         def worker() -> None:
             try:
@@ -450,6 +453,90 @@ class ServerPageMixin(MixinBase):
         if self._server_syncing:
             self._set_server_busy(True, text)
 
+    # --- the status-bar badge -------------------------------------------------
+
+    def _refresh_sync_badge(self) -> None:
+        """Re-read the registry state for the badge, off the thread painting it.
+
+        The read is a credential file plus one COUNT per authored section, but
+        it still leaves the GUI thread: a store can sit on a mount that has
+        gone away, and the badge refreshes on a timer.
+        """
+        if getattr(self, "_sync_badge", None) is None:
+            return
+        if getattr(self, "_sync_badge_scan_running", False):
+            # Queued rather than dropped: a refresh asked for mid-read describes
+            # a state the running read has already missed.
+            self._sync_badge_rerun = True
+            return
+        store = self._try_survey_store()
+        self._sync_badge_scan_running = True
+        threading.Thread(
+            target=self._read_sync_badge, args=(store,), name="sync-badge", daemon=True
+        ).start()
+
+    def _read_sync_badge(self, store: SurveyStore | None) -> None:
+        try:
+            state = read_state(store)
+        except Exception:
+            logger.exception("Could not read the registry state for the badge")
+            state = None
+        try:
+            self._sig_sync_badge.emit(state)
+        except (RuntimeError, TypeError):
+            logger.debug("The window closed before the badge state was read")
+
+    def _apply_sync_badge(self, state: object) -> None:
+        self._sync_badge_scan_running = False
+        badge = getattr(self, "_sync_badge", None)
+        if badge is None:
+            return
+        # Kept beside the badge so the click can act on what is being shown
+        # rather than re-reading a state that may have moved since.
+        self._sync_badge_state = state if isinstance(state, ServerState) else None
+        badge.show_face(self._badge_face(self._sync_badge_state))
+        if getattr(self, "_sync_badge_rerun", False):
+            self._sync_badge_rerun = False
+            self._refresh_sync_badge()
+
+    def _badge_face(self, state: ServerState | None) -> sync_badge.SyncBadgeFace:
+        if self._server_syncing:
+            return sync_badge.SYNCING
+        if state is None or state.fault:
+            return sync_badge.FAULT if state is not None else sync_badge.NOT_CONNECTED
+        if not state.connected:
+            return sync_badge.NOT_CONNECTED
+        if state.waiting:
+            breakdown = ", ".join(
+                f"{count} {SECTION_LABELS.get(name, name).lower()}"
+                for name, count in sorted(state.pending.items())
+            )
+            return sync_badge.waiting_face(state.waiting, breakdown)
+        age = relative_age(state.last_sync, utc_now_iso()) if state.last_sync else ""
+        return sync_badge.synced_face(age)
+
+    def _on_sync_badge_clicked(self) -> None:
+        """Sync when a sync is what is needed, otherwise open the Server page.
+
+        Not enrolled, faulted, or a session running: the page is where the
+        answer or the fix lives, so the press lands there. The running-batch
+        guard inside _on_sync_now still holds either way.
+        """
+        state = getattr(self, "_sync_badge_state", None)
+        if self._server_syncing:
+            return
+        ready = (
+            isinstance(state, ServerState)
+            and state.connected
+            and not state.fault
+            and not self._survey_worker_running
+        )
+        if ready:
+            self._on_sync_now()
+            self._refresh_sync_badge()
+            return
+        self._set_simple_section(SERVER_SECTION)
+
     def _on_sync_done(self, reports: object, failure: object) -> None:
         self._server_syncing = False
         self._set_server_busy(False)
@@ -463,6 +550,7 @@ class ServerPageMixin(MixinBase):
                 RECONNECT if failure.reconnect else "",
             )
             self._refresh_server_page()
+            self._refresh_sync_badge()
             return
         if not isinstance(reports, tuple):
             return
@@ -472,6 +560,7 @@ class ServerPageMixin(MixinBase):
             store.set_sync_state(LAST_SYNC_KEY, utc_now_iso())
         self._server_blocker.clear()
         self._refresh_server_page()
+        self._refresh_sync_badge()
         self._server_notice.show_notice(summarise(pulled, pushed))
         # A pull rewrites the survey underneath every list drawn from it.
         self._refresh_transect_list()

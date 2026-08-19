@@ -170,15 +170,13 @@ def pending_rows(store: SurveyStore) -> dict[str, int]:
     the registry accepted, so a row carrying it is the row that was accepted.
     Counting it as waiting would leave every synced survey owing something.
     Authored sections only: a pulled site is the registry's data, not a debt.
+    Counted in SQL rather than loaded, because the status-bar badge reads this
+    on a timer.
     """
     counts: dict[str, int] = {}
     for section in AUTHORED_SECTIONS:
         watermark = store.sync_state(f"{WATERMARK_PREFIX}{section}")
-        waiting = sum(
-            1
-            for row in store.changed_since(section, watermark)
-            if watermark is None or row.updated_at > watermark
-        )
+        waiting = store.count_changed_since(section, watermark)
         if waiting:
             counts[section] = waiting
     return counts

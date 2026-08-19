@@ -322,6 +322,7 @@ if TYPE_CHECKING:
         _sig_enrol_done = Signal(object, object)
         _sig_sync_progress = Signal(str)
         _sig_sync_done = Signal(object, object)
+        _sig_sync_badge = Signal(object)
 
         # --- cross-mixin methods -----------------------------------------
         # Each is tagged with the mixin that defines it. The list is flat, and
@@ -417,6 +418,9 @@ if TYPE_CHECKING:
         def _build_server_page(self) -> QWidget: ...  # ServerPageMixin
         def _build_server_nav_button(self) -> QToolButton: ...  # ServerPageMixin
         def _refresh_server_page(self) -> None: ...  # ServerPageMixin
+        def _refresh_sync_badge(self) -> None: ...  # ServerPageMixin
+        def _apply_sync_badge(self, state: object) -> None: ...  # ServerPageMixin
+        def _on_sync_badge_clicked(self) -> None: ...  # ServerPageMixin
         def _host_machine_panels(self) -> None: ...  # SimpleMachineMixin
         def _machine_verdict(self) -> SectionState: ...  # SimpleMachineMixin
         def _refresh_activity_view(self) -> None: ...  # SimpleMachineMixin

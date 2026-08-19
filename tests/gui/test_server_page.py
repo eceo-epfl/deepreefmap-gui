@@ -454,3 +454,44 @@ def test_disconnecting_is_refusable(window, monkeypatch):
     window._on_disconnect_server()
 
     assert credentials.load() is not None
+
+
+# --- the status-bar badge ---
+
+
+def test_the_badge_counts_what_is_waiting(window, qapp):
+    enrol_this_device()
+    window._survey_store().add_transect(make_transect())
+
+    window._refresh_sync_badge()
+
+    assert settle(qapp, lambda: "1 to send" in window._sync_badge._label.text())
+    assert "1 transects" in window._sync_badge.toolTip()
+
+
+def test_the_badge_syncs_on_press_when_it_can(window, qapp, registry):
+    enrol_this_device()
+    window._survey_store().add_transect(make_transect())
+    made = registry()
+    window._refresh_sync_badge()
+    assert settle(
+        qapp,
+        lambda: getattr(window, "_sync_badge_state", None) is not None
+        and window._sync_badge_state.connected,
+    )
+
+    window._on_sync_badge_clicked()
+    assert settle(qapp, lambda: not window._server_syncing)
+
+    assert made[0].calls == ["pull", "push"]
+    assert settle(qapp, lambda: "Synced" in window._sync_badge._label.text())
+
+
+def test_the_badge_opens_the_server_page_when_not_connected(window, qapp):
+    window._refresh_sync_badge()
+    assert settle(qapp, lambda: getattr(window, "_sync_badge_state", None) is not None)
+    assert "No registry" in window._sync_badge._label.text()
+
+    window._on_sync_badge_clicked()
+
+    assert window._current_section() == SERVER_SECTION
