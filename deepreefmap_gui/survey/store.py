@@ -32,6 +32,7 @@ from deepreefmap_gui.survey.models.convert import (
 from deepreefmap_gui.survey.models.exporters import load_survey_json, save_survey_json
 from deepreefmap_gui.survey.models.notification import Notification
 from deepreefmap_gui.survey.models.run_record import RUN_STATUSES, TERMINAL_STATUSES, RunRecord
+from deepreefmap_gui.survey.models.server_preset import ServerPreset
 from deepreefmap_gui.survey.models.site import Site
 from deepreefmap_gui.survey.models.survey_batch import SurveyBatch
 from deepreefmap_gui.survey.models.transect import Transect
@@ -549,6 +550,26 @@ _MIGRATIONS: list[Migration] = [
         ALTER TABLE video_asset ADD COLUMN sha256 TEXT;
         """,
     ),
+    # Presets the registry publishes, pulled whole. Pull-only, so the rows
+    # carry the registry's stamps and nothing here ever pushes one back.
+    Migration(
+        13,
+        "the registry's presets are pulled into their own table",
+        """
+        CREATE TABLE server_preset (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            version INTEGER NOT NULL DEFAULT 1,
+            settings TEXT NOT NULL DEFAULT '{}',
+            description TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT '',
+            deleted_at TEXT,
+            created_by TEXT,
+            device_id TEXT
+        );
+        """,
+    ),
 ]
 
 
@@ -563,6 +584,9 @@ SYNC_SECTIONS: dict[str, str] = {
     "videos": "video_asset",
     "passes": "transect_pass",
     "runs": "run_record",
+    # Pull-only and last, matching the registry's apply order. Never authored
+    # here: the contract keeps it out of the push sections.
+    "presets": "server_preset",
 }
 
 _TOMBSTONED_TABLES = frozenset(SYNC_SECTIONS.values())
@@ -574,6 +598,7 @@ _SYNC_MODELS: dict[str, type] = {
     "video_asset": VideoAsset,
     "transect_pass": TransectPass,
     "run_record": RunRecord,
+    "server_preset": ServerPreset,
 }
 
 # Which attribute of a row names which parent section, for building a closed push
@@ -591,6 +616,7 @@ _SYNC_PARENTS: dict[str, tuple[tuple[str, str], ...]] = {
         ("extra_video_ids", "videos"),
     ),
     "runs": (("pass_id", "passes"),),
+    "presets": (),
 }
 
 # What a pulled row cannot carry and the model has no default for. The registry
@@ -1522,6 +1548,22 @@ class SurveyStore:
 
     def get_run(self, run_id: uuid.UUID) -> RunRecord | None:
         return self._get("run_record", RunRecord, run_id)
+
+    def list_server_presets(self) -> list[ServerPreset]:
+        """The registry's presets, newest version of each name first in its group."""
+        rows = self._conn().execute(
+            "SELECT * FROM server_preset WHERE deleted_at IS NULL "
+            "ORDER BY LOWER(name), version DESC"
+        ).fetchall()
+        return [from_row(ServerPreset, r) for r in rows]
+
+    def get_server_preset(self, name: str, version: int) -> ServerPreset | None:
+        row = self._conn().execute(
+            "SELECT * FROM server_preset WHERE LOWER(name) = LOWER(?) AND version = ? "
+            "AND deleted_at IS NULL",
+            (name, int(version)),
+        ).fetchone()
+        return from_row(ServerPreset, row) if row is not None else None
 
     def record_run_provenance(self, run_id: uuid.UUID, provenance: Mapping[str, Any]) -> None:
         """Copy a finished run's provenance onto its row.

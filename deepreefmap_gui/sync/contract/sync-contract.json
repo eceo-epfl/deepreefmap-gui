@@ -4,7 +4,8 @@
   "pull_sections": [
     "sites",
     "campaigns",
-    "transects"
+    "transects",
+    "presets"
   ],
   "push_sections": [
     "transects",
@@ -22,7 +23,8 @@
     "passes",
     "pass_videos",
     "runs",
-    "cover_rows"
+    "cover_rows",
+    "presets"
   ],
   "tables": [
     {
@@ -682,6 +684,62 @@
       ],
       "section": "cover_rows",
       "table": "cover_row"
+    },
+    {
+      "columns": [
+        {
+          "kind": "uuid",
+          "name": "id",
+          "nullable": false
+        },
+        {
+          "kind": "text",
+          "name": "name",
+          "nullable": false
+        },
+        {
+          "kind": "int",
+          "name": "version",
+          "nullable": false
+        },
+        {
+          "kind": "json",
+          "name": "settings",
+          "nullable": false
+        },
+        {
+          "kind": "text",
+          "name": "description",
+          "nullable": false
+        },
+        {
+          "kind": "timestamp",
+          "name": "created_at",
+          "nullable": false
+        },
+        {
+          "kind": "timestamp",
+          "name": "updated_at",
+          "nullable": false
+        },
+        {
+          "kind": "timestamp",
+          "name": "deleted_at",
+          "nullable": true
+        },
+        {
+          "kind": "text",
+          "name": "created_by",
+          "nullable": true
+        },
+        {
+          "kind": "uuid",
+          "name": "device_id",
+          "nullable": true
+        }
+      ],
+      "section": "presets",
+      "table": "preset"
     }
   ]
 }

@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 PASS_VIDEOS = "pass_videos"
 COVER_ROWS = "cover_rows"
+PRESETS = "presets"
 
 # The only estimator that travels. The pooled figure is a pure function of the
 # per-pass counts, denominators and the latest-run-per-pass rule, so storing it
@@ -47,6 +48,9 @@ WIRE_SECTIONS: tuple[str, ...] = (
     PASS_VIDEOS,
     "runs",
     COVER_ROWS,
+    # Registry-published run settings, pull-only, behind everything else
+    # because nothing here references them.
+    PRESETS,
 )
 
 

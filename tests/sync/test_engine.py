@@ -1218,3 +1218,26 @@ def test_adopting_a_chapter_order_does_not_mark_the_pass_pending(store, tmp_path
     landed = store.get_pass(pass_.id)
     assert landed.video_ids() == [chapter.id, video.id]
     assert landed.updated_at == before
+
+
+def test_a_published_preset_lands_in_its_own_table(store, tmp_path):
+    """Presets are the one section the registry authors for devices to read."""
+    preset_id = uuid.uuid4()
+    registry = FakeRegistry(pages=[page(10, {
+        "presets": [{
+            "id": str(preset_id),
+            "name": "Deep reef",
+            "version": 2,
+            "settings": {"fps": 4, "mapping_name": "loger_star"},
+            "description": "Slower descent sites",
+            **sync_fields(),
+        }],
+    })])
+
+    report = SyncEngine(store, registry, out_root=tmp_path).pull()
+
+    assert report.sections["presets"].inserted == 1
+    landed = store.list_server_presets()
+    assert [(p.name, p.version) for p in landed] == [("Deep reef", 2)]
+    assert landed[0].settings == {"fps": 4, "mapping_name": "loger_star"}
+    assert store.get_server_preset("deep REEF", 2) is not None

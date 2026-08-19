@@ -86,7 +86,9 @@ def test_the_pull_sections_are_a_subset_of_the_whole() -> None:
     assert set(contract.PULL_SECTIONS) <= set(contract.SECTIONS)
 
 
-@pytest.mark.parametrize("section", sorted(SYNC_SECTIONS))
+# Presets are pull-only and never enter a push document, so there is no pushed
+# row to hold to the requirement.
+@pytest.mark.parametrize("section", sorted(set(SYNC_SECTIONS) - {"presets"}))
 def test_a_pushed_row_carries_every_column_the_registry_requires(section) -> None:
     """A required column added server-side shows up here, not as a rejected push."""
     row = wire.rows_to_wire(section, [one_of_each()[section]])[0]

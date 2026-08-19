@@ -397,6 +397,7 @@ if TYPE_CHECKING:
         def _populate_form_from_preset(self, preset: dict[str, Any]) -> None: ...  # InterfaceShellMixin
         def _adopt_form_as_preset(self) -> None: ...  # InterfaceShellMixin
         def _reload_active_preset(self) -> None: ...  # InterfaceShellMixin
+        def _on_choose_server_preset(self) -> None: ...  # InterfaceShellMixin
         def _restore_standard_settings(self) -> None: ...  # InterfaceShellMixin
         def _survey_deviations(self) -> dict: ...  # InterfaceShellMixin
         def _on_edit_run_settings(self) -> None: ...  # SimpleBatchMixin

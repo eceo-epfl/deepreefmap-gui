@@ -13,6 +13,7 @@ processing. Anything wrong with one of them is named once, in the alert box.
 
 from __future__ import annotations
 
+import json
 import logging
 from functools import partial
 from pathlib import Path
@@ -90,11 +91,17 @@ from deepreefmap_gui.survey.preset import (
     describe_keys,
     deviations_from_org,
     load_active_preset,
+    load_machine_override,
+    registry_preset,
     save_machine_override,
 )
 from deepreefmap_gui.survey.store import SURVEY_DB_NAME, SurveyStore, latest_schema_version
 
 logger = logging.getLogger(__name__)
+
+# Which server preset this survey chose, stored beside the sync cursor because
+# the runs it shapes live in that survey. Absent means the standard settings.
+SERVER_PRESET_KEY = "preset.server_selection"
 
 # Peers, not steps. None is a prerequisite for another: a pass with no transect
 # processes perfectly well, so ordering them as a sequence would claim a
@@ -347,6 +354,9 @@ class InterfaceShellMixin(MixinBase):
         A malformed admin file is caught here rather than allowed to abort window
         construction: the gate then blocks with a reason the diver can read,
         instead of the app refusing to open on a field laptop.
+
+        A server preset the operator selected takes the organisation slot,
+        unless an administrator's file is in force: a mandate outranks a menu.
         """
         try:
             self._active_preset = load_active_preset()
@@ -355,7 +365,84 @@ class InterfaceShellMixin(MixinBase):
             self._survey_preset = None
             logger.warning("Settings unavailable: %s", exc)
             return
+        server = self._selected_server_preset()
+        if server is not None and not self._active_preset.org.locked:
+            self._active_preset = ActivePreset(
+                org=server, overrides=load_machine_override(server)
+            )
         self._survey_preset = self._active_preset.settings
+
+    def _selected_server_preset(self) -> OrgPreset | None:
+        """The server preset this survey chose, or None when it chose none.
+
+        None also covers a selection the registry has since removed: the run
+        must not silently keep stale settings under a name the console deleted,
+        so the standard comes back and the label says which settings are live.
+        """
+        store = self._try_survey_store()
+        if store is None:
+            return None
+        raw = store.sync_state(SERVER_PRESET_KEY)
+        if not raw:
+            return None
+        try:
+            wanted = json.loads(raw)
+            row = store.get_server_preset(str(wanted["name"]), int(wanted["version"]))
+        except (ValueError, KeyError, TypeError):
+            logger.warning("Ignoring an unreadable server preset selection")
+            return None
+        if row is None:
+            logger.info("The selected server preset is no longer on the registry")
+            return None
+        return registry_preset(row.name, row.version, row.settings)
+
+    def _on_choose_server_preset(self) -> None:
+        """Offer the presets the registry publishes, additional to the standard."""
+        if self._survey_worker_running:
+            self._status_label.setText("Unavailable while processing.")
+            return
+        if self._active_preset is not None and self._active_preset.org.locked:
+            self._status_label.setText(
+                f"{self._active_preset.org.name} is set by your organisation, "
+                "so server presets cannot replace it."
+            )
+            return
+        store = self._try_survey_store()
+        presets = store.list_server_presets() if store is not None else []
+        if not presets:
+            self._status_label.setText(
+                "No presets from the server yet. They arrive with a sync once "
+                "the web console publishes one."
+            )
+            return
+        labels = [
+            f"{p.label} · {p.description}" if p.description else p.label for p in presets
+        ]
+        from PySide6.QtWidgets import QInputDialog
+
+        chosen, accepted = QInputDialog.getItem(
+            self,
+            "Server presets",
+            "Published by your organisation's registry:",
+            labels,
+            0,
+            False,
+        )
+        if not accepted or store is None:
+            return
+        preset = presets[labels.index(chosen)]
+        store.set_sync_state(
+            SERVER_PRESET_KEY,
+            json.dumps({"name": preset.name, "version": preset.version}),
+        )
+        self._reload_active_preset()
+        if self._survey_preset is not None:
+            self._populate_form_from_preset(self._survey_preset)
+        self._recompute_survey_start()
+        self._status_label.setText(
+            f"Settings are now {preset.label}, from the server."
+        )
+        self._survey_preset_label.setText(self._survey_preset_summary())
 
     def _restore_standard_settings(self) -> None:
         """Drop this machine's changes and go back to the organisation preset."""
@@ -365,6 +452,11 @@ class InterfaceShellMixin(MixinBase):
         # Ask before restoring, or the answer is always "nothing changed".
         deviated = bool(self._survey_deviations())
         had_override = clear_machine_override()
+        store = self._try_survey_store()
+        had_server = False
+        if store is not None and store.sync_state(SERVER_PRESET_KEY):
+            store.set_sync_state(SERVER_PRESET_KEY, None)
+            had_server = True
         self._reload_active_preset()
         if self._survey_preset is not None:
             self._populate_form_from_preset(self._survey_preset)
@@ -377,7 +469,7 @@ class InterfaceShellMixin(MixinBase):
             self._status_label.setText(
                 "Settings could not be read. The form has reverted to its defaults."
             )
-        elif had_override or deviated:
+        elif had_override or deviated or had_server:
             self._status_label.setText(
                 f"Settings are back to {self._active_preset.org.label}."
             )

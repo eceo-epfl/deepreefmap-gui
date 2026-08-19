@@ -55,6 +55,7 @@ SECTION_LABELS = {
     "videos": "Clips",
     "passes": "Sections",
     "runs": "Runs",
+    "presets": "Presets",
 }
 
 NOTHING_TO_SYNC = "Nothing to sync: the registry already has everything from here."

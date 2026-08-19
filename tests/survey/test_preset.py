@@ -25,6 +25,7 @@ from deepreefmap_gui.survey.preset import (
     parse_machine_override,
     parse_preset,
     preset_content_hash,
+    registry_preset,
     save_machine_override,
 )
 
@@ -369,3 +370,14 @@ def test_load_active_preset_reports_both_layers(machine_path, org):
     assert active.overrides == {MACHINE_KEY: 1}
     assert active.org.name == org.name
     assert active.settings[MACHINE_KEY] == 1
+
+
+def test_a_registry_preset_keeps_known_keys_and_fills_the_rest():
+    preset = registry_preset("Deep reef", 2, {"fps": 4, "coral_iq": 11})
+
+    assert preset.source == "server"
+    assert not preset.locked
+    assert preset.settings["fps"] == 4
+    assert "coral_iq" not in preset.settings
+    assert preset.settings["mapping_name"], "unnamed keys take the shipped defaults"
+    assert preset.label == "Deep reef (v2)"

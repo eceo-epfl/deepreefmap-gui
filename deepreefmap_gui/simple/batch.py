@@ -578,6 +578,14 @@ class SimpleBatchMixin(MixinBase):
         )
         self._survey_restore_btn.clicked.connect(self._restore_standard_settings)
         preset_row.addWidget(self._survey_restore_btn)
+        self._survey_server_preset_btn = QPushButton("Server presets…")
+        self._survey_server_preset_btn.setProperty("quiet", "true")
+        self._survey_server_preset_btn.setToolTip(
+            "Use a preset your organisation published on the registry. "
+            "Additional to the standard settings, never a replacement."
+        )
+        self._survey_server_preset_btn.clicked.connect(self._on_choose_server_preset)
+        preset_row.addWidget(self._survey_server_preset_btn)
         self._survey_audit_btn = QPushButton("Settings history…")
         self._survey_audit_btn.setProperty("quiet", "true")
         self._survey_audit_btn.setToolTip("Which settings every processed run actually used.")
@@ -893,6 +901,8 @@ class SimpleBatchMixin(MixinBase):
         lines = [f"Settings: {org.label}"]
         if org.locked:
             lines[0] += ", set by your organisation"
+        elif org.source == "server":
+            lines[0] += ", from the server"
         # Split by what this machine is allowed to keep rather than by what is
         # already on disk: the answer must not change depending on whether the
         # settings dialog has closed yet. The page carries it, not the status

@@ -134,6 +134,9 @@ class OrgPreset:
     version: int
     settings: dict[str, Any]
     locked: bool
+    # Named at construction for presets the registry published, because the
+    # locked flag alone cannot tell those apart from the bundled default.
+    origin: str = ""
 
     @property
     def label(self) -> str:
@@ -145,6 +148,8 @@ class OrgPreset:
 
     @property
     def source(self) -> str:
+        if self.origin:
+            return self.origin
         return "admin" if self.locked else "bundled"
 
 
@@ -220,6 +225,31 @@ def load_org_preset() -> OrgPreset:
     text = _bundled_text()
     name, version = parse_preset_identity(text, default_name=_UNNAMED_BUNDLED_PRESET)
     return OrgPreset(name=name, version=version, settings=parse_preset(text), locked=False)
+
+
+def registry_preset(name: str, version: int, settings: Mapping[str, Any]) -> OrgPreset:
+    """A preset the registry published, as this build can run it.
+
+    A registry newer than this build may name settings this build has no field
+    for; those are dropped rather than fatal, because the console warned nobody
+    about this laptop's version. Keys the preset does not name take the shipped
+    defaults, so the result is always a whole preset. Never locked: the server
+    preset is additional to the standard, not an administrator's mandate.
+    """
+    known = {k: v for k, v in settings.items() if k in PRESET_KEYS}
+    unknown = sorted(set(settings) - PRESET_KEYS)
+    if unknown:
+        logger.info(
+            "Ignoring registry preset keys this build has no field for: %s",
+            ", ".join(unknown),
+        )
+    return OrgPreset(
+        name=name,
+        version=int(version),
+        settings={**_bundled_defaults(), **known},
+        locked=False,
+        origin="server",
+    )
 
 
 def load_machine_override(org: OrgPreset) -> dict[str, Any]:
