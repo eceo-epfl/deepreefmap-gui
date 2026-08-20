@@ -247,7 +247,36 @@ def _plan_run(plan: ArchivePlan, run: RunRecord, out_root: Path) -> None:
     if not run_dir.is_dir():
         plan.skipped.append((run.run_dir_name, "its output directory is gone"))
         return
+    _backfill_web_cloud(plan, run_dir, run.run_dir_name)
     _plan_run_dir(plan, run_dir, run.run_dir_name, str(run.id))
+
+
+def _backfill_web_cloud(plan: ArchivePlan, run_dir: Path, run_dir_name: str) -> None:
+    """Build the browser export for a run reconstructed before it existed.
+
+    Written beside the scene here, at archive time, because this is the moment
+    the run travels to where the export is viewed. A run without one arrives in
+    the web console with no cloud to draw, which reads as a broken upload.
+    """
+    from deepreefmap_gui.io.scene_file import find_scene_file
+    from deepreefmap_gui.io.web_cloud import WEB_CLOUD_FILENAME, write_web_cloud_from_scene
+
+    label = f"{run_dir_name}/{WEB_CLOUD_FILENAME}"
+    if (run_dir / WEB_CLOUD_FILENAME).exists():
+        return
+    scene = find_scene_file(run_dir)
+    if scene is None:
+        # The scene generates on first open; until then there is nothing to
+        # build the export from, and the run's other files still travel.
+        plan.skipped.append((label, "open the run once to build its web view first"))
+        return
+    try:
+        built = write_web_cloud_from_scene(scene, run_dir / WEB_CLOUD_FILENAME, run_dir=run_dir)
+    except Exception:
+        logger.warning("Could not backfill the web cloud for %s", run_dir, exc_info=True)
+        built = False
+    if not built:
+        plan.skipped.append((label, "the web view could not be built from the saved scene"))
 
 
 def _plan_run_dir(plan: ArchivePlan, run_dir: Path, run_dir_name: str, run_id: str) -> None:

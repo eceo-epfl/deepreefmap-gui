@@ -514,3 +514,43 @@ def test_probe_makes_no_calls_with_nothing_to_ask(store):
     assert (states.videos, states.runs) == ({}, {})
     assert registry.asked_hashes == []
     assert registry.asked_runs == []
+
+
+def test_a_run_with_a_scene_but_no_web_cloud_grows_one_at_archive_time(store, out_root):
+    """Archive time is when the run travels to where the export is viewed, so a
+    run from before the export existed builds one from its scene on the way."""
+    from _factories import make_classes_config, make_scene
+
+    from deepreefmap_gui.io.scene_file import save_scene_file
+    from deepreefmap_gui.io.web_cloud import WEB_CLOUD_FILENAME
+
+    run, run_dir = add_succeeded_run(store, out_root)
+    scene = make_scene(class_ids=(1, 5), points_by_class={1: 7, 5: 4})
+    save_scene_file(
+        run_dir / "reef.scene.zarr.zip",
+        manifest={"name": "reef", "mode": "semantic"},
+        classes_config=make_classes_config((1, 5)),
+        mapping_result=scene.mapping,
+        frame_batch=scene.frame_batch,
+        final_cloud_index=scene.cloud_index,
+    )
+
+    plan = archive.archive_plan_for_run(store, out_root, run.id)
+
+    assert (run_dir / WEB_CLOUD_FILENAME).is_file()
+    assert WEB_CLOUD_FILENAME in {job.relpath for job in plan.jobs}
+
+
+def test_a_run_that_was_never_opened_says_how_to_get_its_web_view(store, out_root):
+    from deepreefmap_gui.io.web_cloud import WEB_CLOUD_FILENAME
+
+    run, run_dir = add_succeeded_run(store, out_root)
+    (run_dir / "ortho.png").write_bytes(b"png bytes")
+
+    plan = archive.archive_plan_for_run(store, out_root, run.id)
+
+    assert WEB_CLOUD_FILENAME not in {job.relpath for job in plan.jobs}
+    assert (
+        f"run-1/{WEB_CLOUD_FILENAME}",
+        "open the run once to build its web view first",
+    ) in plan.skipped

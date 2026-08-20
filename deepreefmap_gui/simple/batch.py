@@ -917,6 +917,17 @@ class SimpleBatchMixin(MixinBase):
                 f"Changed for this session only: {describe_keys(organisation)}."
                 f" {org.name} sets these, so they go back to standard next launch."
             )
+        # What a registry preset named and this build ignored: the value that
+        # was dropped is the one the author meant, so applying the rest without
+        # saying so would misdescribe the batch.
+        if org.degraded:
+            lines.append(org.dropped_summary)
+        withdrawn = getattr(self, "_server_preset_withdrawn", "")
+        if withdrawn:
+            lines.append(
+                f"The selected server preset {withdrawn} is no longer on the "
+                "registry, so the standard settings are in force."
+            )
         s = self._collect_run_settings()
         lines.append(
             f"{s['segmentation_name']} + {s['mapping_name']}"
