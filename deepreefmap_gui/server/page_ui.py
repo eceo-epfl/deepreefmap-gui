@@ -69,7 +69,7 @@ from deepreefmap_gui.server.state import (
 from deepreefmap_gui.survey.models.common import utc_now_iso
 from deepreefmap_gui.survey.models.notification import INFO, SURVEY, WARNING
 from deepreefmap_gui.survey.store import SurveyStore
-from deepreefmap_gui.sync.archive import ArchiveReport
+from deepreefmap_gui.sync.archive import ArchivePlan, ArchiveReport
 from deepreefmap_gui.sync.contract import PULL_SECTIONS
 from deepreefmap_gui.sync.engine import SyncEngine
 
@@ -184,6 +184,10 @@ class ServerPageMixin(MixinBase):
     _connect_dialog: ConnectDialog | None = None
     # The client the running sync is using, kept for the version it learned.
     _sync_client: Any | None = None
+    # The archive flow between its two workers: the client the plan was built
+    # for, and the plan awaiting confirmation or upload.
+    _archive_client: Any | None = None
+    _archive_plan_pending: ArchivePlan | None = None
 
     # --- building -----------------------------------------------------------
 
@@ -609,7 +613,6 @@ class ServerPageMixin(MixinBase):
         """Back on the GUI thread with the plan: land the digests, ask, upload."""
         from deepreefmap_gui.profiling.system_probe import format_bytes
         from deepreefmap_gui.sync import archive
-        from deepreefmap_gui.sync.archive import ArchivePlan, ArchiveReport
 
         if isinstance(result, Failure):
             self._on_archive_done(result)
@@ -638,6 +641,8 @@ class ServerPageMixin(MixinBase):
             self._set_server_busy(False)
             return
         client = self._archive_client
+        if client is None:
+            return
         jobs = result.jobs
         self._archive_cancel = threading.Event()
         self._server_archive_cancel_btn.setText(CANCEL_ARCHIVE)
