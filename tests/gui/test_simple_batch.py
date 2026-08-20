@@ -2360,3 +2360,9 @@ def test_a_withdrawn_server_preset_falls_back_out_loud(window):
     label = window._survey_preset_label.text()
     assert "no longer on the registry" in label
     assert "standard settings are in force" in label
+
+
+def test_every_table_names_a_column_width_store(window):
+    """Dragged column widths survive a restart on every page with a table."""
+    assert window._pass_column_sizer._settings_key == "passes"
+    assert window._transect_list.column_sizer._settings_key == "transects"

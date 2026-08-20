@@ -182,7 +182,6 @@ class ServerPageMixin(MixinBase):
     _server_syncing: bool = False
     _server_archiving: bool = False
     _connect_dialog: ConnectDialog | None = None
-    _server_state: ServerState | None = None
     # The client the running sync is using, kept for the version it learned.
     _sync_client: Any | None = None
 
@@ -322,7 +321,6 @@ class ServerPageMixin(MixinBase):
         state = read_state(
             self._try_survey_store(), self._server_device_name(), self._server_enrolled_by()
         )
-        self._server_state = state
         connected = state.connected
         self._server_empty.setVisible(not connected)
         self._server_device_card.setVisible(connected)

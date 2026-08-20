@@ -664,7 +664,7 @@ class SimpleBatchMixin(MixinBase):
             optional=_PASS_COLUMNS_OPTIONAL,
         )
         self._pass_column_sizer = install_column_sizer(
-            self._survey_pass_table, self._pass_columns
+            self._survey_pass_table, self._pass_columns, settings_key="passes"
         )
         # Footage is imported under Videos and staged from there, so this table
         # takes no drops from outside: a clip dropped here would arrive with no

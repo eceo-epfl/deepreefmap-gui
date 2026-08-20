@@ -350,7 +350,7 @@ class SimplePlanMixin(MixinBase):
         for column in range(1, PLAN_SPACER_COLUMN):
             header_item.setTextAlignment(column, Qt.AlignmentFlag.AlignRight)
         enable_sorting(self._transect_list)
-        install_column_sizer(self._transect_list, _PLAN_COLUMN_SPEC)
+        install_column_sizer(self._transect_list, _PLAN_COLUMN_SPEC, settings_key="transects")
         self._transect_list.currentItemChanged.connect(lambda *_: self._on_transect_selected())
         # The empty state stands in for the list until there is something in it,
         # so a fresh install says how to get started instead of showing a void.
