@@ -8,6 +8,7 @@ the scene file in the background for next time.
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 import threading
@@ -24,6 +25,8 @@ from deepreefmap.pipeline.run_loader import (
     load_cached_run,
 )
 
+from deepreefmap_gui.io.atomic import atomic_write_json
+from deepreefmap_gui.io.classes_default import resolve_classes_path
 from deepreefmap_gui.io.lazy_frames import FrameAccessor, RunDirFrameAccessor
 from deepreefmap_gui.io.scene_file import (
     SCENE_FILE_SUFFIX,
@@ -120,12 +123,40 @@ def load_run(
             pass
 
     # --- Slow path (library loader) ---
+    _heal_manifest_classes(run_dir)
     result = _wrap_loaded_run(load_cached_run(run_dir, point_filter_config=point_filter_config))
 
     if regenerate_scene_file and scene_file_pending(result):
         generate_scene_file_async(run_dir, result)
 
     return result
+
+
+def _heal_manifest_classes(run_dir: Path) -> None:
+    """Repoint the manifest at the bundled classes YAML when its own is gone.
+
+    A manifest records the classes YAML by path, and that path dies easily: a
+    reinstalled venv, a run dir copied off the field laptop, an older app
+    version that wrote it relative. The library's loader raises on a dangling
+    path. The bundled YAML is the file nearly every run used anyway, so a run
+    with defaults keeps opening. A missing custom YAML still fails loudly
+    rather than silently recolouring someone's classes.
+    """
+    manifest_path = run_dir / "run_manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        recorded = manifest.get("classes", "configs/classes_coralscapes.yaml")
+        path = Path(str(recorded))
+        if path.exists() or (run_dir / path).exists():
+            return
+        if path.name != "classes_coralscapes.yaml":
+            return
+        manifest["classes"] = str(resolve_classes_path(None))
+        atomic_write_json(manifest_path, manifest)
+        logger.info("Manifest classes path was dangling; repointed to the bundled YAML")
+    except Exception:
+        # The loader will surface whatever is actually wrong with the manifest.
+        pass
 
 
 def scene_file_pending(result: GuiLoadedRun) -> bool:

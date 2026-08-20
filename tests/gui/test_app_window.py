@@ -17,6 +17,7 @@ def test_a_pass_seeds_its_cache_from_a_matching_prior_run(window, tmp_path) -> N
     second attempt at the same clip reuses the frames the first one prepared."""
     from deepreefmap.pipeline import resume as resume_mod
 
+    from deepreefmap_gui.io.classes_default import resolve_classes_path
     from deepreefmap_gui.runs.seeding import seed_from_settings
 
     video = tmp_path / "clip.mp4"
@@ -34,7 +35,7 @@ def test_a_pass_seeds_its_cache_from_a_matching_prior_run(window, tmp_path) -> N
         end_s=None,
         camera_profile_name=window._profile_combo.currentText(),
         segmentation_name=window._seg_combo.currentText(),
-        classes_path=window._classes_path,
+        classes_path=resolve_classes_path(window._classes_path),
         processing_width=window._proc_width_spin.value(),
         processing_height=window._proc_height_spin.value(),
     )

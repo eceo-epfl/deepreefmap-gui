@@ -319,6 +319,7 @@ def test_the_command_reaches_run_reconstruction_with_the_kwargs_it_came_from(
     """
     import deepreefmap.pipeline.orchestrator as orchestrator
     from deepreefmap.cli.main import app
+    from deepreefmap.config.classes import DEFAULT_CLASSES_PATH
     from typer.testing import CliRunner
 
     captured: dict = {}
@@ -350,6 +351,11 @@ def test_the_command_reaches_run_reconstruction_with_the_kwargs_it_came_from(
             continue
         if key == "output_dir":
             assert Path(captured[key]) == expected
+            continue
+        if key == "classes_path" and expected is None:
+            # Leaving --classes off means the packaged default, which the CLI
+            # fills in itself rather than passing None through.
+            assert captured[key] == DEFAULT_CLASSES_PATH
             continue
         assert captured[key] == expected, key
 

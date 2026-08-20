@@ -1237,6 +1237,9 @@ class QtPointCloudViewer(ViewerPickingMixin, QWidget):
                     # The scene was replaced during the pump; the remaining
                     # actors and `fi` belong to different scenes.
                     return
+            # The identity check above hands fi the attribute's Optional type
+            # back, as far as mypy is concerned. It cannot be None here.
+            assert fi is not None
             if cid not in enabled_classes:
                 actor.SetVisibility(False)
                 continue

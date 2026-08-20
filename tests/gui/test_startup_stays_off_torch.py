@@ -55,7 +55,7 @@ def test_building_the_window_does_not_import_torch() -> None:
         import deepreefmap_gui.app as app_mod
 
         qt_app = QApplication([])
-        app_mod.DeepReefMapWindow(load_classes(None), None)
+        app_mod.DeepReefMapWindow(load_classes(), None)
         print("TORCH=%s" % ("torch" in sys.modules))
         """
     )
