@@ -326,6 +326,7 @@ if TYPE_CHECKING:
         _sig_sync_done = Signal(object, object)
         _sig_sync_badge = Signal(object)
         _sig_archive_progress = Signal(str)
+        _sig_archive_plan = Signal(object)
         _sig_archive_done = Signal(object)
         _sig_archive_states = Signal(object)
 
@@ -428,6 +429,7 @@ if TYPE_CHECKING:
         def _archive_video(self, video_id: str) -> None: ...  # ServerPageMixin
         def _archive_run(self, run_id: object) -> None: ...  # ServerPageMixin
         def _refresh_archive_badges(self) -> None: ...  # ServerPageMixin
+        def _maybe_refresh_archive_badges(self) -> None: ...  # ServerPageMixin
         def _apply_archive_states(self, states: object) -> None: ...  # ServerPageMixin
         def _archive_state_for_video(self, video_id: object) -> str | None: ...  # ServerPageMixin
         def _archive_state_for_run(self, run_id: object) -> str | None: ...  # ServerPageMixin

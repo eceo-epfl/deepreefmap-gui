@@ -635,6 +635,8 @@ class VideoLibraryMixin(MixinBase):
             },
         )
         self._video_detail.set_archive_state(self._archive_state_for_video(clip.video.id))
+        # First card of the session asks the registry; the answer repaints it.
+        self._maybe_refresh_archive_badges()
 
     def _paint_archive_badges(self) -> None:
         """Repaint the archive badges from a fresh probe, on the cards showing."""

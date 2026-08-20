@@ -1192,6 +1192,18 @@ class SurveyStore:
         asset.updated_at = utc_now_iso()
         self._update("video_asset", asset)
 
+    def set_video_hash(self, video_id: object, digest: str) -> None:
+        """Record a digest computed elsewhere, without stamping the row edited.
+
+        Identifying a file changes nothing about the clip, so ``updated_at``
+        stays: bumping it would queue the row for the next push over a value the
+        archive already carries on its own call.
+        """
+        with self.transaction() as conn:
+            conn.execute(
+                "UPDATE video_asset SET hash = ? WHERE id = ?", (digest, str(video_id))
+            )
+
     def merge_videos(self, keeper_id: uuid.UUID, loser_ids: list[uuid.UUID]) -> int:
         """Fold duplicate clip rows into one, and repoint what pointed at them.
 
