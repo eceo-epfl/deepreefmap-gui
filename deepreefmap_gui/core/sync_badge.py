@@ -51,6 +51,13 @@ FAULT = SyncBadgeFace(
 )
 
 
+def fault_face(detail: str) -> SyncBadgeFace:
+    """The fault face carrying what the failed sync actually said."""
+    if not detail:
+        return FAULT
+    return SyncBadgeFace(FAULT.text, FAULT.colour, f"{detail} Press to open the Server page.")
+
+
 def waiting_face(count: int, breakdown: str) -> SyncBadgeFace:
     detail = f" ({breakdown})" if breakdown else ""
     return SyncBadgeFace(

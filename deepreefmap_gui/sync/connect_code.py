@@ -18,7 +18,8 @@ SECRET_HEX_LEN = 64
 
 INSECURE_TRANSPORT_WARNING = (
     "This code points at a plain http address, so the token and your metadata "
-    "travel unencrypted. Expected on a LAN server, wrong over the internet."
+    "would travel unencrypted. Ask for an https address: only this machine's "
+    "own loopback may use plain http."
 )
 
 _SECRET = re.compile(f"^[0-9a-f]{{{SECRET_HEX_LEN}}}$")

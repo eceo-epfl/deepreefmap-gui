@@ -55,6 +55,7 @@ from deepreefmap_gui.server.state import (
     LAST_SYNC_KEY,
     SECTION_LABELS,
     SERVER_SECTION,
+    SYNC_ERROR_KEY,
     Failure,
     ServerState,
     default_device_name,
@@ -310,6 +311,11 @@ class ServerPageMixin(MixinBase):
         self._server_disconnect_note.setVisible(connected)
         if state.fault:
             self._server_blocker.show_blocker(state.fault, RECONNECT)
+        elif state.sync_fault:
+            # The persisted outcome of the last sync, so the page still has the
+            # answer after a restart. No action: the message itself says whether
+            # a retry or a new code fixes it.
+            self._server_blocker.show_blocker(state.sync_fault, "")
         if connected:
             self._server_device_label.setText(state.device_name or default_device_name())
             self._server_device_facts.set_rows(_device_rows(state))
@@ -386,12 +392,14 @@ class ServerPageMixin(MixinBase):
         self._settings.setValue(ENROLLED_BY_KEY, connected.enrolled_by)
         if dialog is not None:
             dialog.accept()
+        store = self._try_survey_store()
+        if store is not None:
+            # A fresh enrolment supersedes whatever the last sync said.
+            store.set_sync_state(SYNC_ERROR_KEY, None)
         self._server_blocker.clear()
         self._refresh_server_page()
-        message = f"Connected to {connected.base_url}."
-        if connected.warning:
-            message = f"{message} {connected.warning}"
-        self._server_notice.show_notice(message, SYNC_NOW)
+        self._refresh_sync_badge()
+        self._server_notice.show_notice(f"Connected to {connected.base_url}.", SYNC_NOW)
 
     # --- syncing ------------------------------------------------------------
 
@@ -701,6 +709,10 @@ class ServerPageMixin(MixinBase):
             return sync_badge.FAULT if state is not None else sync_badge.NOT_CONNECTED
         if not state.connected:
             return sync_badge.NOT_CONNECTED
+        # Ahead of the pending count: rows waiting behind a failed sync are not
+        # going anywhere until whatever it said is read.
+        if state.sync_fault:
+            return sync_badge.fault_face(state.sync_fault)
         if state.waiting:
             breakdown = ", ".join(
                 f"{count} {SECTION_LABELS.get(name, name).lower()}"
@@ -724,6 +736,7 @@ class ServerPageMixin(MixinBase):
             isinstance(state, ServerState)
             and state.connected
             and not state.fault
+            and not state.sync_fault
             and not self._survey_worker_running
         )
         if ready:
@@ -740,11 +753,18 @@ class ServerPageMixin(MixinBase):
         self._remember_agreed_contract()
         if isinstance(failure, Failure):
             self._server_notice.clear()
+            store = self._try_survey_store()
+            if store is not None:
+                # Written before anything repaints: the badge reads from disk,
+                # so an unwritten failure is a green badge on the next tick.
+                store.set_sync_state(SYNC_ERROR_KEY, f"{failure.title}. {failure.detail}")
+            # The page refresh first: it paints the persisted message without an
+            # action, and this blocker carries the reconnect offer over it.
+            self._refresh_server_page()
             self._server_blocker.show_blocker(
                 f"{failure.title}. {failure.detail}",
                 RECONNECT if failure.reconnect else "",
             )
-            self._refresh_server_page()
             self._refresh_sync_badge()
             return
         if not isinstance(reports, tuple):
@@ -753,6 +773,7 @@ class ServerPageMixin(MixinBase):
         store = self._try_survey_store()
         if store is not None:
             store.set_sync_state(LAST_SYNC_KEY, utc_now_iso())
+            store.set_sync_state(SYNC_ERROR_KEY, None)
         self._server_blocker.clear()
         self._refresh_server_page()
         self._refresh_sync_badge()

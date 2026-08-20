@@ -16,13 +16,14 @@ from dataclasses import dataclass
 from deepreefmap_gui.packaging.releases import current_version
 from deepreefmap_gui.server.state import (
     LAST_SYNC_KEY,
+    SYNC_ERROR_KEY,
     default_device_name,
     library_version,
     platform_name,
 )
 from deepreefmap_gui.survey.store import SYNC_SECTIONS, SurveyStore
 from deepreefmap_gui.sync import client, credentials
-from deepreefmap_gui.sync.connect_code import decode_connect_code
+from deepreefmap_gui.sync.connect_code import ConnectCodeError, decode_connect_code
 from deepreefmap_gui.sync.engine import (
     CONTRACT_SECTIONS_KEY,
     CONTRACT_VERSION_KEY,
@@ -48,8 +49,6 @@ class Connected:
     # The human who minted the code, as the registry reports them. Shown as
     # audit, never as attribution.
     enrolled_by: str = ""
-    # The connect code's own caveat, ie. a plain http address.
-    warning: str = ""
 
 
 def connect(pasted: str, device_name: str = "") -> Connected:
@@ -59,6 +58,10 @@ def connect(pasted: str, device_name: str = "") -> Connected:
     interface action, so attribution is not mutable by the device it names.
     """
     code = decode_connect_code(pasted)
+    # The dialog already refuses this with its button, but the secret and the
+    # token cross the network here, so the refusal cannot live only in the UI.
+    if code.insecure_transport:
+        raise ConnectCodeError(code.warning or "")
     name = device_name.strip() or default_device_name()
     enrolment = client.enrol(
         code,
@@ -79,7 +82,6 @@ def connect(pasted: str, device_name: str = "") -> Connected:
         device_id=enrolment.device_id,
         device_name=name,
         enrolled_by=enrolment.enrolled_by,
-        warning=code.warning or "",
     )
 
 
@@ -99,7 +101,14 @@ def forget(store: SurveyStore | None) -> None:
     credentials.forget()
     if store is None:
         return
-    for key in (CURSOR_KEY, LAST_SYNC_KEY, CONTRACT_VERSION_KEY, CONTRACT_SECTIONS_KEY, HELD_KEY):
+    for key in (
+        CURSOR_KEY,
+        LAST_SYNC_KEY,
+        SYNC_ERROR_KEY,
+        CONTRACT_VERSION_KEY,
+        CONTRACT_SECTIONS_KEY,
+        HELD_KEY,
+    ):
         store.set_sync_state(key, None)
     for section in SYNC_SECTIONS:
         store.set_sync_state(f"{WATERMARK_PREFIX}{section}", None)

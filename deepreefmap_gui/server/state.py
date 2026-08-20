@@ -39,6 +39,11 @@ SERVER_SECTION = "server"
 # not the machine's.
 LAST_SYNC_KEY = "sync.last_sync_at"
 
+# What the last sync said when it failed, cleared by the next success. The
+# status-bar badge repaints from disk on a timer, so a failure that is not
+# written here vanishes on its next repaint and the badge claims all is well.
+SYNC_ERROR_KEY = "sync.last_error"
+
 # In QSettings rather than the survey, because what this laptop calls itself is
 # about the laptop. A colleague opening the same output root has their own.
 DEVICE_NAME_KEY = "sync_device_name"
@@ -90,6 +95,10 @@ class ServerState:
     pending: dict[str, int] = field(default_factory=dict)
     # Why the credential could not be read, when it could not be.
     fault: str = ""
+    # What the last sync said when it failed, until one succeeds. A revoked
+    # token is still a readable credential, so `connected` alone would paint
+    # a healthy badge over a connection the registry has refused.
+    sync_fault: str = ""
 
     @property
     def waiting(self) -> int:
@@ -125,6 +134,7 @@ def read_state(
         cursor=read_cursor(store),
         last_sync=store.sync_state(LAST_SYNC_KEY) if store is not None else None,
         pending=pending_rows(store) if store is not None else {},
+        sync_fault=(store.sync_state(SYNC_ERROR_KEY) or "") if store is not None else "",
     )
 
 

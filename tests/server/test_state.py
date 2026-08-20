@@ -7,6 +7,7 @@ from _factories import make_transect
 from deepreefmap_gui.server.state import (
     NOTHING_TO_SYNC,
     RETRY_LATER,
+    SYNC_ERROR_KEY,
     default_device_name,
     describe_failure,
     pending_rows,
@@ -71,6 +72,18 @@ def test_an_unreadable_credential_is_a_fault_rather_than_a_crash(store, monkeypa
 
     assert not state.connected
     assert "mode 644" in state.fault
+
+
+def test_the_last_syncs_failure_is_read_back_beside_the_credential(store):
+    """A revoked token is still a readable credential, so the failure has to be
+    its own field or the badge paints a healthy connection."""
+    credentials.save("https://reef.example.org", TOKEN)
+    store.set_sync_state(SYNC_ERROR_KEY, "This device is no longer enrolled.")
+
+    state = read_state(store)
+
+    assert state.connected
+    assert state.sync_fault == "This device is no longer enrolled."
 
 
 def test_the_row_that_earned_the_watermark_is_not_still_waiting(store):

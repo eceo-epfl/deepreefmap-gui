@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from deepreefmap_gui.server.enrolment import connect, forget
-from deepreefmap_gui.server.state import LAST_SYNC_KEY
+from deepreefmap_gui.server.state import LAST_SYNC_KEY, SYNC_ERROR_KEY
 from deepreefmap_gui.survey.store import SYNC_SECTIONS
 from deepreefmap_gui.sync import client, credentials
 from deepreefmap_gui.sync.connect_code import ConnectCodeError
@@ -98,16 +98,20 @@ def test_an_empty_name_falls_back_to_the_hostname(connect_code, registry, monkey
     assert connected.device_name == "reef-laptop"
 
 
-def test_a_plain_http_code_carries_its_caveat(connect_code, registry):
-    connected = connect(connect_code(url="http://192.168.1.10:8080"), "Dive laptop")
+def test_a_plain_http_code_is_refused_before_the_network(connect_code, registry):
+    """The dialog's disabled button is UI: the library is where the secret would
+    cross the wire, so the refusal has to live here too."""
+    with pytest.raises(ConnectCodeError, match="unencrypted"):
+        connect(connect_code(url="http://192.168.1.10:8080"), "Dive laptop")
 
-    assert "unencrypted" in connected.warning
+    assert registry == {}
+    assert credentials.load() is None
 
 
-def test_a_loopback_code_is_unremarkable(connect_code, registry):
+def test_a_loopback_code_enrols_over_plain_http(connect_code, registry):
     connected = connect(connect_code(url="http://localhost:8080"), "Dive laptop")
 
-    assert connected.warning == ""
+    assert connected.base_url == "http://localhost:8080"
 
 
 def test_a_string_that_is_not_a_code_never_reaches_the_network(connect_code, registry):
@@ -138,6 +142,7 @@ def test_disconnecting_forgets_the_position_as_well_as_the_token(connect_code, r
     connect(connect_code(), "Dive laptop")
     store.set_sync_state(CURSOR_KEY, "4830")
     store.set_sync_state(LAST_SYNC_KEY, "2026-01-01T00:00:00Z")
+    store.set_sync_state(SYNC_ERROR_KEY, "This device is no longer enrolled.")
     store.set_sync_state(CONTRACT_VERSION_KEY, "1")
     store.set_sync_state(CONTRACT_SECTIONS_KEY, "campaigns,sites")
     for section in SYNC_SECTIONS:
@@ -148,6 +153,7 @@ def test_disconnecting_forgets_the_position_as_well_as_the_token(connect_code, r
     assert credentials.load() is None
     assert store.sync_state(CURSOR_KEY) is None
     assert store.sync_state(LAST_SYNC_KEY) is None
+    assert store.sync_state(SYNC_ERROR_KEY) is None
     assert store.sync_state(CONTRACT_VERSION_KEY) is None
     assert store.sync_state(CONTRACT_SECTIONS_KEY) is None
     assert all(store.sync_state(f"{WATERMARK_PREFIX}{s}") is None for s in SYNC_SECTIONS)

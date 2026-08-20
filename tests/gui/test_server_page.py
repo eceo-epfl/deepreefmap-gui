@@ -22,6 +22,7 @@ from deepreefmap_gui.server.state import (
     LAST_SYNC_KEY,
     NOTHING_TO_SYNC,
     SERVER_SECTION,
+    SYNC_ERROR_KEY,
 )
 from deepreefmap_gui.simple.mode import DESTINATIONS, NON_DESTINATIONS, SIMPLE_SECTIONS
 from deepreefmap_gui.sync import client as client_mod
@@ -572,6 +573,43 @@ def test_the_badge_syncs_on_press_when_it_can(window, qapp, registry):
     assert settle(qapp, lambda: not window._server_syncing)
 
     assert made[0].calls == ["pull", "push"]
+    assert settle(qapp, lambda: "Synced" in window._sync_badge._label.text())
+
+
+def test_a_failed_sync_keeps_the_badge_faulted_across_repaints(window, qapp, registry):
+    """Scenario: the registry revoked this device while the laptop was away.
+
+    Expected behaviour: the badge shows the fault rather than a stale green tick.
+    The badge repaints from disk on a timer, so the fault has to survive a
+    re-read, and a press lands on the Server page instead of another doomed sync.
+    """
+    enrol_this_device()
+    made = registry(fail=client_mod.DeviceRevokedError("access has been revoked"))
+    window._on_sync_now()
+    assert settle(qapp, lambda: not window._server_syncing)
+
+    window._refresh_sync_badge()
+    assert settle(qapp, lambda: "Sync fault" in window._sync_badge._label.text())
+    assert "access has been revoked" in window._sync_badge.toolTip()
+
+    pulls_before = sum(fake.calls.count("pull") for fake in made)
+    window._on_sync_badge_clicked()
+
+    assert sum(fake.calls.count("pull") for fake in made) == pulls_before
+    assert window._current_section() == SERVER_SECTION
+    assert "access has been revoked" in window._server_blocker._reason.text()
+
+
+def test_a_successful_sync_clears_the_badge_fault(window, qapp, registry):
+    enrol_this_device()
+    window._survey_store().set_sync_state(SYNC_ERROR_KEY, "The registry did not answer.")
+    registry()
+
+    window._on_sync_now()
+    assert settle(qapp, lambda: not window._server_syncing)
+
+    assert window._survey_store().sync_state(SYNC_ERROR_KEY) is None
+    window._refresh_sync_badge()
     assert settle(qapp, lambda: "Synced" in window._sync_badge._label.text())
 
 
