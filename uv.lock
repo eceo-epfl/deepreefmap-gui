@@ -737,11 +737,10 @@ wheels = [
 [[package]]
 name = "deepreefmap"
 version = "1.1.0"
-source = { git = "https://github.com/eceo-epfl/deepreefmap.git?rev=786dad18aa12db7501b95508c322032b4e36bffe#786dad18aa12db7501b95508c322032b4e36bffe" }
+source = { git = "https://github.com/eceo-epfl/deepreefmap.git?rev=3b3db91b4b1bb1fdb294fc7634af791a9d10786b#3b3db91b4b1bb1fdb294fc7634af791a9d10786b" }
 dependencies = [
     { name = "huggingface-hub" },
     { name = "imageio", extra = ["ffmpeg"] },
-    { name = "imohash" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-15-deepreefmap-gui-cu126' and extra == 'extra-15-deepreefmap-gui-cu130') or (extra == 'extra-15-deepreefmap-gui-cu126' and extra == 'extra-15-deepreefmap-gui-rocm') or (extra == 'extra-15-deepreefmap-gui-cu130' and extra == 'extra-15-deepreefmap-gui-rocm')" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*' or (extra == 'extra-15-deepreefmap-gui-cu126' and extra == 'extra-15-deepreefmap-gui-cu130') or (extra == 'extra-15-deepreefmap-gui-cu126' and extra == 'extra-15-deepreefmap-gui-rocm') or (extra == 'extra-15-deepreefmap-gui-cu130' and extra == 'extra-15-deepreefmap-gui-rocm')" },
     { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-15-deepreefmap-gui-cu126' and extra == 'extra-15-deepreefmap-gui-cu130') or (extra == 'extra-15-deepreefmap-gui-cu126' and extra == 'extra-15-deepreefmap-gui-rocm') or (extra == 'extra-15-deepreefmap-gui-cu130' and extra == 'extra-15-deepreefmap-gui-rocm')" },
@@ -832,7 +831,7 @@ rocm = [
 
 [package.metadata]
 requires-dist = [
-    { name = "deepreefmap", extras = ["loger", "gopro"], git = "https://github.com/eceo-epfl/deepreefmap.git?rev=786dad18aa12db7501b95508c322032b4e36bffe" },
+    { name = "deepreefmap", extras = ["loger", "gopro"], git = "https://github.com/eceo-epfl/deepreefmap.git?rev=3b3db91b4b1bb1fdb294fc7634af791a9d10786b" },
     { name = "huggingface-hub", specifier = ">=0.30" },
     { name = "imohash", specifier = ">=1.1.0" },
     { name = "keyring", specifier = ">=24" },

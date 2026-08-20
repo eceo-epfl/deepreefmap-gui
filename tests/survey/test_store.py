@@ -1354,7 +1354,7 @@ def test_apply_from_server_lands_a_tombstone(store):
 def test_apply_from_server_leaves_what_only_this_device_knows(store):
     """The registry holds no path, so a pulled clip row carries none. Writing the
     whole row would blank the one thing that finds the file again."""
-    video = store.upsert_video(make_video())
+    video = store.upsert_video(make_video(updated_at="2026-08-10T00:00:00+00:00"))
 
     store.apply_from_server("videos", [{
         "id": str(video.id),
