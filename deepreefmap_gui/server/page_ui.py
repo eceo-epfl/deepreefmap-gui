@@ -83,6 +83,12 @@ NOT_CONNECTED_HINT = "Paste a connect code to join a registry."
 
 DEVICE_CARD = "This device"
 ATTRIBUTION_NOTE = "Uploads are attributed to this name. Rename it in the web interface."
+
+REFERENCE_NOTE = (
+    "Sites and campaigns are edited in the web interface. Here they are chosen: "
+    "a transect names its site on the Transects page, and a section names its "
+    "campaign when it is filed."
+)
 ONBOARDED_BY = "Onboarded by"
 
 CONNECT = "Connect to server"
@@ -223,6 +229,17 @@ class ServerPageMixin(MixinBase):
         waiting_layout.addWidget(self._server_waiting)
         body.addWidget(self._server_waiting_card)
 
+        # What the registry has sent down, read-only: sites and campaigns are
+        # authored in the web interface and only chosen here — on the Transects
+        # page and when a section is filed.
+        self._server_reference_card, reference_layout = section_card("From the registry")
+        reference_note = muted_label(REFERENCE_NOTE)
+        reference_note.setWordWrap(True)
+        reference_layout.addWidget(reference_note)
+        self._server_reference = KeyValueList()
+        reference_layout.addWidget(self._server_reference)
+        body.addWidget(self._server_reference_card)
+
         body.addWidget(self._build_server_actions())
         note = muted_label(DISCONNECT_NOTE)
         note.setWordWrap(True)
@@ -331,6 +348,10 @@ class ServerPageMixin(MixinBase):
                     for section, count in state.pending.items()
                 ]
             )
+        reference = _reference_rows(self._try_survey_store()) if connected else []
+        self._server_reference_card.setVisible(bool(reference))
+        if reference:
+            self._server_reference.set_rows(reference)
 
     def _server_device_name(self) -> str:
         stored = self._settings.value(DEVICE_NAME_KEY, "")
@@ -809,6 +830,24 @@ class ServerPageMixin(MixinBase):
         self._server_notice.clear()
         self._server_blocker.clear()
         self._refresh_server_page()
+
+
+def _reference_rows(store: SurveyStore | None) -> list[tuple[str, str]]:
+    """The pulled sites and campaigns, one row each, or nothing to hide the card.
+
+    Names, not counts: a diver checking this page wants to see that the reef
+    they are about to file against actually came down.
+    """
+    if store is None:
+        return []
+    rows: list[tuple[str, str]] = []
+    for site in store.list_sites():
+        where = ", ".join(part for part in (site.region, site.country) if part)
+        rows.append((site.name, where or "Site"))
+    for campaign in store.list_campaigns():
+        span = " to ".join(part for part in (campaign.begin_date, campaign.end_date) if part)
+        rows.append((campaign.name, span or "Campaign"))
+    return rows
 
 
 def _device_rows(state: ServerState) -> list[tuple[str, str]]:

@@ -576,6 +576,32 @@ def test_the_badge_syncs_on_press_when_it_can(window, qapp, registry):
     assert settle(qapp, lambda: "Synced" in window._sync_badge._label.text())
 
 
+def test_pulled_sites_and_campaigns_are_listed_by_name(window):
+    """The card names what came down: a diver about to file against a reef wants
+    to see that the reef actually arrived, not a count of rows."""
+    from deepreefmap_gui.survey.models import Campaign, Site
+
+    enrol_this_device()
+    store = window._survey_store()
+    store.add_site(Site(name="Japanese Garden", country="Djibouti"))
+    store.add_campaign(Campaign(name="2026_08_fiji", begin_date="2026-08-01"))
+
+    window._set_simple_section(SERVER_SECTION)
+
+    assert window._server_reference_card.isVisibleTo(window)
+    rows = _rows(window._server_reference)
+    assert rows["Japanese Garden"] == "Djibouti"
+    assert rows["2026_08_fiji"] == "2026-08-01"
+
+
+def test_the_reference_card_hides_until_something_has_been_pulled(window):
+    enrol_this_device()
+
+    window._set_simple_section(SERVER_SECTION)
+
+    assert not window._server_reference_card.isVisibleTo(window)
+
+
 def test_the_badge_does_not_claim_synced_with_no_survey_open(window, qapp, monkeypatch):
     """Enrolled but no output root: nothing was counted, which is not the same
     answer as everything having been sent."""

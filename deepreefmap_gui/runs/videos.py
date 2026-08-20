@@ -959,12 +959,16 @@ class VideoLibraryMixin(MixinBase):
         if not accepted and not assign.left_for_page:
             return
         transect_id, direction = assign.choice() if accepted else (None, "forward")
+        # The dialog's pick when it was answered; the survey's remembered
+        # default when the section is written unfiled on the way out.
+        campaign_id = assign.campaign_choice() if accepted else store.default_campaign_id()
         pass_ = TransectPass(
             transect_id=transect_id,
             video_id=clip.video.id,
             begin_s=begin_s,
             end_s=end_s,
             direction=direction,
+            campaign_id=campaign_id,
         )
         store.add_pass(pass_)
         self._refresh_video_library()
