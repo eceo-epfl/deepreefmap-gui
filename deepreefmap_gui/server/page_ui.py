@@ -316,6 +316,11 @@ class ServerPageMixin(MixinBase):
             # answer after a restart. No action: the message itself says whether
             # a retry or a new code fixes it.
             self._server_blocker.show_blocker(state.sync_fault, "")
+        else:
+            # A refresh repaints the whole page from disk, so a transient
+            # message ("wait for the session to finish") must not outlive the
+            # condition it described.
+            self._server_blocker.clear()
         if connected:
             self._server_device_label.setText(state.device_name or default_device_name())
             self._server_device_facts.set_rows(_device_rows(state))
@@ -359,13 +364,12 @@ class ServerPageMixin(MixinBase):
         # gets the outcome, on the page instead.
         self._connect_dialog = None
 
-    def _start_enrolment(self, code: str, device_name: str) -> None:
+    def _start_enrolment(self, code: str) -> None:
         """Enrol on a worker thread. The code is never logged and never stored."""
-        name = device_name.strip() or default_device_name()
 
         def worker() -> None:
             try:
-                connected = enrolment_mod.connect(code, name)
+                connected = enrolment_mod.connect(code)
             except Exception as exc:
                 logger.warning("Enrolment failed: %s", exc)
                 payload: tuple[object, object] = (None, describe_failure(exc))
@@ -719,6 +723,10 @@ class ServerPageMixin(MixinBase):
                 for name, count in sorted(state.pending.items())
             )
             return sync_badge.waiting_face(state.waiting, breakdown)
+        # No survey open means nothing was counted, which is not the same
+        # answer as everything having been sent.
+        if not state.has_survey:
+            return sync_badge.NO_SURVEY
         age = relative_age(state.last_sync, utc_now_iso()) if state.last_sync else ""
         return sync_badge.synced_face(age)
 

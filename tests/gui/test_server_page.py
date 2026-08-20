@@ -238,20 +238,20 @@ def test_a_successful_connection_reports_the_server_it_found(window, qapp, monke
     secret = "ab" * 32
     pasted = f"drm1.{secret}"
 
-    def fake_connect(code, device_name=""):
+    def fake_connect(code):
         assert code == pasted
-        credentials.save(SERVER_URL, TOKEN)
+        credentials.save(SERVER_URL, TOKEN, device_id="device-1")
         return enrolment_mod.Connected(
             base_url=SERVER_URL,
             device_id="device-1",
-            device_name=device_name,
+            device_name="Dive laptop",
             enrolled_by="Kim Nguyen",
         )
 
     monkeypatch.setattr(enrolment_mod, "connect", fake_connect)
     window._set_simple_section(SERVER_SECTION)
     with caplog.at_level("DEBUG"):
-        window._start_enrolment(pasted, "Dive laptop")
+        window._start_enrolment(pasted)
         assert settle(qapp, lambda: window._server_notice.isVisibleTo(window))
 
     message = window._server_notice._message.text()
@@ -270,12 +270,12 @@ def test_a_refused_code_is_reported_on_the_page_when_the_dialog_has_gone(
     """The dialog can be cancelled mid-enrolment, and the answer still arrives."""
     from deepreefmap_gui.server import enrolment as enrolment_mod
 
-    def fake_connect(code, device_name=""):
+    def fake_connect(code):
         raise client_mod.EnrolmentRejectedError("that code has already been used")
 
     monkeypatch.setattr(enrolment_mod, "connect", fake_connect)
     window._set_simple_section(SERVER_SECTION)
-    window._start_enrolment("drm1.whatever", "Dive laptop")
+    window._start_enrolment("drm1.whatever")
 
     assert settle(qapp, lambda: window._server_blocker.isVisibleTo(window))
     assert "already been used" in window._server_blocker._reason.text()
@@ -574,6 +574,35 @@ def test_the_badge_syncs_on_press_when_it_can(window, qapp, registry):
 
     assert made[0].calls == ["pull", "push"]
     assert settle(qapp, lambda: "Synced" in window._sync_badge._label.text())
+
+
+def test_the_badge_does_not_claim_synced_with_no_survey_open(window, qapp, monkeypatch):
+    """Enrolled but no output root: nothing was counted, which is not the same
+    answer as everything having been sent."""
+    enrol_this_device()
+    monkeypatch.setattr(window, "_try_survey_store", lambda: None)
+
+    window._refresh_sync_badge()
+
+    assert settle(qapp, lambda: "Connected" in window._sync_badge._label.text())
+    assert "Synced" not in window._sync_badge._label.text()
+    assert "Open an output folder" in window._sync_badge.toolTip()
+
+
+def test_a_transient_blocker_clears_on_the_next_page_refresh(window, registry):
+    """The session-running message describes a moment, not a stored fault, so a
+    repaint after the session must not keep showing it."""
+    enrol_this_device()
+    registry()
+    window._set_simple_section(SERVER_SECTION)
+    window._survey_worker_running = True
+    window._on_sync_now()
+    assert window._server_blocker._reason.text() == SESSION_RUNNING
+
+    window._survey_worker_running = False
+    window._refresh_server_page()
+
+    assert not window._server_blocker.isVisibleTo(window)
 
 
 def test_a_failed_sync_keeps_the_badge_faulted_across_repaints(window, qapp, registry):
