@@ -205,6 +205,8 @@ if TYPE_CHECKING:
         _capacity_caption: QLabel
         _capacity_detail: QLabel
         _capacity_advice: QLabel
+        # One graded pool each, keyed "ram" / "vram".
+        _capacity_rows: dict[str, Any]
         _status_label: QLabel
         _model_cache_label: QLabel
         _update_status_label: QLabel
