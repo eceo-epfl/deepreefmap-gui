@@ -90,6 +90,7 @@ from deepreefmap_gui.core.theme import (
     SELECTION_BG,
     SELECTION_CONTROL_BG,
     SELECTION_CONTROL_BORDER,
+    SPACE_LG,
     SPACE_MD,
     SPACE_SM,
     SPACE_XS,
@@ -2209,12 +2210,17 @@ class VideoLibraryList(QScrollArea):
         self._sections_by_video = {}
         self._group_headings = {}
         for group in groups:
-            self._body_layout.addSpacing(SPACE_SM)
+            # Only a top-level group gets air above it: a spacer stays when its
+            # heading is hidden, so nested ones folded away would leave gaps.
+            if not group.depth:
+                self._body_layout.addSpacing(SPACE_SM)
             heading = QToolButton()
             heading.setCheckable(True)
             heading.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
             heading.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            heading.setStyleSheet(f"text-align: left; background: {BUTTON}; color: {WINDOW_TEXT};")
+            # Nested groups (the folder view) step in under their parent.
+            indent = f" margin-left: {group.depth * SPACE_LG}px;" if group.depth else ""
+            heading.setStyleSheet(f"text-align: left; background: {BUTTON}; color: {WINDOW_TEXT};{indent}")
             heading.toggled.connect(lambda expanded, key=group.key: self._toggle_group(key, expanded))
             self._group_headings[group.key] = heading
             self._body_layout.addWidget(heading)
@@ -2273,16 +2279,50 @@ class VideoLibraryList(QScrollArea):
         # it under the cursor.
         self._shape = self._shape_of(self._groups)
 
-    def _update_group_headings(self) -> None:
+    def _tree(self) -> tuple[dict[str, DateGroup], dict[str | None, list[DateGroup]]]:
+        """The groups by key and by parent, built once per pass over the list."""
+        by_key = {group.key: group for group in self._groups}
+        children: dict[str | None, list[DateGroup]] = {}
         for group in self._groups:
-            complete = sum("complete" in job_filters(entry) for entry in group.entries)
-            expanded = self._group_expanded.get(group.key, complete != len(group.entries))
+            children.setdefault(group.parent, []).append(group)
+        return by_key, children
+
+    @staticmethod
+    def _subtree_entries(
+        group: DateGroup, children: dict[str | None, list[DateGroup]]
+    ) -> list[VideoLibraryEntry]:
+        """A group's clips and those of every group nested under it."""
+        found: list[VideoLibraryEntry] = []
+        stack = [group]
+        while stack:
+            current = stack.pop()
+            found.extend(current.entries)
+            stack.extend(children.get(current.key, []))
+        return found
+
+    def _ancestors_open(self, group: DateGroup, by_key: dict[str, DateGroup]) -> bool:
+        """Whether every group above this one is unfolded."""
+        parent = by_key.get(group.parent) if group.parent else None
+        while parent is not None:
+            if not self._group_headings[parent.key].isChecked():
+                return False
+            parent = by_key.get(parent.parent) if parent.parent else None
+        return True
+
+    def _update_group_headings(self) -> None:
+        _by_key, children = self._tree()
+        for group in self._groups:
+            # A folder counts what lies below it too, so a transect heading says
+            # how much footage it holds even though its clips sit in its passes.
+            entries = self._subtree_entries(group, children)
+            complete = sum("complete" in job_filters(entry) for entry in entries)
+            expanded = self._group_expanded.get(group.key, complete != len(entries))
             heading = self._group_headings[group.key]
             heading.blockSignals(True)
             heading.setChecked(expanded)
             heading.blockSignals(False)
             heading.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
-            count = len(group.entries)
+            count = len(entries)
             noun = "clip" if count == 1 else "clips"
             heading.setText(f"{group.title}  ·  {count} {noun}  ·  {complete} complete")
             heading.setToolTip("Collapse group" if expanded else "Expand group")
@@ -2293,8 +2333,11 @@ class VideoLibraryList(QScrollArea):
         self._apply_expansion()
 
     def _apply_expansion(self) -> None:
+        by_key, _children = self._tree()
         for group in self._groups:
-            expanded = self._group_headings[group.key].isChecked()
+            shown = self._ancestors_open(group, by_key)
+            self._group_headings[group.key].setVisible(shown)
+            expanded = shown and self._group_headings[group.key].isChecked()
             for entry in group.entries:
                 video_id = str(entry.video.id)
                 self._rows[video_id].setVisible(expanded)

@@ -249,3 +249,40 @@ def test_a_rolled_back_database_is_not_re_inspected_on_every_ask(
         assert window._try_survey_store() is None
 
     assert calls == []
+
+
+def test_a_survey_an_older_build_set_aside_is_offered_back_at_open(make_window, out_root, monkeypatch):
+    """The drive went to a laptop with an older build and came back rolled back."""
+    import shutil
+
+    from PySide6.QtWidgets import QMessageBox
+
+    from deepreefmap_gui.survey.backup import set_aside
+
+    out_root.mkdir(parents=True, exist_ok=True)
+    db = out_root / SURVEY_DB_NAME
+    store = SurveyStore(db)
+    store.close()
+    shutil.copy(db, out_root / "early.db")
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE campaign SET updated_at = '2098-01-01T00:00:00+00:00'")
+        conn.execute(
+            "INSERT INTO transect (id, name, created_at, updated_at) VALUES "
+            "('00000000-0000-0000-0000-000000000001', 'LATER', '2098-01-01T00:00:00+00:00', "
+            "'2098-01-01T00:00:00+00:00')"
+        )
+    set_aside(db, latest_schema_version())
+    shutil.copy(out_root / "early.db", db)
+    asked = []
+
+    def say_yes(*args, **kwargs):
+        asked.append(args[2])
+        return QMessageBox.StandardButton.Yes
+
+    monkeypatch.setattr(QMessageBox, "question", say_yes)
+
+    window = _window_on(make_window, out_root, monkeypatch)
+    window.check_survey_database()
+
+    assert [t.name for t in window._survey_store().list_transects()] == ["LATER"]
+    assert asked and "Put it back?" in asked[0]

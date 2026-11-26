@@ -143,6 +143,7 @@ _GROUP_HINTS = {
 }
 # A cart row is either in the session or out of it; the row's button takes it out.
 _DELETE_HINT = "Take this pass out of the session."
+DOWN_NOT_QUEUED = "Shot by a down-looking camera: described, but not processed."
 
 # Button text per fix destination, so the strip names the place it goes rather
 # than describing the journey. The header entry point uses the same words.
@@ -952,9 +953,15 @@ class SimpleBatchMixin(MixinBase):
             count = states.count(QUEUED) if is_cart else 0
         button.set_count(count)
 
-    def _cart_add(self, pass_id: uuid.UUID) -> None:
-        """Record cart membership without repainting; already a member is a no-op."""
+    def _cart_add(self, pass_id: uuid.UUID) -> bool:
+        """Record cart membership without repainting; already a member is a no-op.
+
+        A pass shot by a down-looking camera is refused: it is described like the
+        others but the pipeline reconstructs oblique footage only.
+        """
         store = self._survey_store()
+        if store.pass_looks_down(pass_id):
+            return False
         batch = self._ensure_cart_batch()
         store.add_batch_item(BatchItem(batch_id=batch.id, pass_id=pass_id))
         # A pass with no origin session adopts this one.
@@ -962,6 +969,7 @@ class SimpleBatchMixin(MixinBase):
         if pass_ is not None and pass_.batch_id is None:
             pass_.batch_id = batch.id
             store.update_pass(pass_)
+        return True
 
     def _add_pass_to_cart(self, pass_id: uuid.UUID) -> None:
         """Queue a pass for the next session, from anywhere in the app.
@@ -969,7 +977,9 @@ class SimpleBatchMixin(MixinBase):
         Trim, direction and transect ride on the pass itself; settings are
         per-order and read at checkout.
         """
-        self._cart_add(pass_id)
+        if not self._cart_add(pass_id):
+            self._status_label.setText(DOWN_NOT_QUEUED)
+            return
         self._refresh_survey_batch_tab()
         self._status_label.setText("Added to the queue.")
 
@@ -1531,8 +1541,7 @@ class SimpleBatchMixin(MixinBase):
             if not 0 <= index < len(self._survey_rows):
                 continue
             pass_id = self._survey_rows[index].pass_id
-            if pass_id is not None:
-                self._cart_add(pass_id)
+            if pass_id is not None and self._cart_add(pass_id):
                 carted += 1
         if not carted:
             return
@@ -2381,21 +2390,23 @@ class SimpleBatchMixin(MixinBase):
     def _pass_dir_name(self, pass_: TransectPass, transect: Transect | None, store: SurveyStore) -> str:
         """A directory of its own for every attempt at a pass.
 
-        The first attempt is named ``{stem}__pNN__{passid8}``. A later attempt
-        derives from the first run's recorded name and appends ``__rNN``, so a
-        renamed transect or a deleted sibling cannot move a pass that already
-        ran. Attempts never share a directory: repeats are the reproducibility
-        data, and each keeps its own log and manifest. Resume speed relies on
-        seed_run_dir_from_match scanning every sibling, earlier attempts
-        included, and hard-linking matching frames.
+        The first attempt is named ``{stem}__pNN__{passid8}`` under the output
+        root, or, when the pass's clip sits in an expedition tree under it,
+        ``<transect>/<pass>/<dir>/RESULTS/{camera|clip}__{passid8}`` beside the
+        footage. A later attempt derives from the first run's recorded name and
+        appends ``__rNN``, so a renamed transect, a deleted sibling or a moved
+        clip cannot move a pass that already ran. Attempts never share a
+        directory: repeats are the reproducibility data, and each keeps its own
+        log and manifest. Resume speed relies on seed_run_dir_from_match scanning
+        every sibling, earlier attempts included, and hard-linking matching frames.
 
         A pass with no transect is named after its clip instead, which is the
         only thing it has to be recognised by in a folder listing.
         """
+        out_root = Path(self._out_root_input.text()).expanduser()
         prior = store.runs_for_pass(pass_.id)
         if prior:
             base = re.sub(r"__r\d+$", "", prior[0].run_dir_name)
-            out_root = Path(self._out_root_input.text()).expanduser()
             attempt = len(prior) + 1
             while True:
                 name = f"{base}__r{attempt:02d}"
@@ -2403,6 +2414,13 @@ class SimpleBatchMixin(MixinBase):
                 if taken is None and not (out_root / name).exists():
                     return name
                 attempt += 1
+        first = store.get_video(pass_.video_id)
+        if first is not None:
+            from deepreefmap_gui.survey.expedition import results_dir_for
+
+            in_tree = results_dir_for(out_root, first, pass_.id)
+            if in_tree is not None:
+                return in_tree
         if transect is not None:
             siblings = store.list_passes(transect_id=pass_.transect_id)
             stem = transect.name
@@ -2419,7 +2437,15 @@ class SimpleBatchMixin(MixinBase):
     def _on_survey_start(self) -> None:
         if self._survey_preset is None or self._survey_worker_running:
             return
+        if self._expedition_importing:
+            self._status_label.setText("Wait for the expedition import to finish before starting a batch.")
+            return
         remaining = self._survey_remaining_rows()
+        store = self._survey_store()
+        looks_down = [store.pass_looks_down(row.pass_id) for row in remaining if row.pass_id is not None]
+        if any(looks_down):
+            remaining = [row for row, down in zip(remaining, looks_down, strict=True) if not down]
+            self._status_label.setText(f"Left out {passes_phrase(sum(looks_down))} shot looking down: not processed.")
         # Confirm before any run records are written, so a Cancel leaves the
         # batch exactly as it was.
         if not remaining or not self._confirm_batch_space(len(remaining)):

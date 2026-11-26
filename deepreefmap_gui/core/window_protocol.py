@@ -98,6 +98,7 @@ if TYPE_CHECKING:
         _performance_comparison: PerformanceComparison
         _survey_cancel_event: threading.Event | None
         _survey_worker_running: bool
+        _expedition_importing: bool
         _server_archiving: bool
         # Single-file, but declared anyway: each is assigned an empty literal in
         # its mixin, which mypy cannot infer an element type for on its own.
@@ -322,6 +323,7 @@ if TYPE_CHECKING:
         _sig_run_sizes_done = Signal(object)
         _sig_clip_links_done = Signal(object)
         _sig_videos_probed = Signal(object)
+        _sig_expedition_imported = Signal(object)
         _sig_storage_usage = Signal(object)
         _sig_storage_page = Signal(object)
         _sig_envs_done = Signal(object)
@@ -508,7 +510,7 @@ if TYPE_CHECKING:
         def _refresh_survey_batch_tab(self) -> None: ...  # SimpleBatchMixin
         def _add_pass_to_cart(self, pass_id: uuid.UUID) -> None: ...  # SimpleBatchMixin
         def _take_pass_out_of_cart(self, pass_id: uuid.UUID) -> None: ...  # SimpleBatchMixin
-        def _cart_add(self, pass_id: uuid.UUID) -> None: ...  # SimpleBatchMixin
+        def _cart_add(self, pass_id: uuid.UUID) -> bool: ...  # SimpleBatchMixin
         def _refresh_survey_transect_names(self) -> None: ...  # SimpleBatchMixin
         def _rows_over_memory(self) -> int: ...  # SimpleBatchMixin
         def _refresh_settings_cells(self) -> None: ...  # SimpleBatchMixin

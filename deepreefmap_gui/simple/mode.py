@@ -1105,10 +1105,13 @@ class InterfaceShellMixin(MixinBase):
         """
         db_path = Path(self._out_root_input.text()).expanduser() / SURVEY_DB_NAME
         store = self._survey_store_obj
-        if store is not None and store.path != db_path and self._survey_worker_running:
+        if store is not None and store.path != db_path and (
+            self._survey_worker_running or self._expedition_importing
+        ):
             logger.warning(
-                "Output root changed to %s while a batch is running; keeping %s until it ends",
+                "Output root changed to %s while %s; keeping %s until it ends",
                 db_path,
+                "a batch is running" if self._survey_worker_running else "an expedition import is running",
                 store.path,
             )
             return store
@@ -1202,6 +1205,7 @@ class InterfaceShellMixin(MixinBase):
         """
         health = self._survey_db_health()
         if health.openable:
+            self._bring_back_newer_survey(health.path)
             return
         from deepreefmap_gui.survey.recovery import (
             RecoveryKind,
@@ -1250,6 +1254,46 @@ class InterfaceShellMixin(MixinBase):
         except Exception as exc:
             logger.exception("Survey recovery failed")
             QMessageBox.critical(self, "Survey database", f"That did not work: {exc}")
+            return
+        self._after_recovery(message)
+
+    def _bring_back_newer_survey(self, db_path: Path) -> None:
+        """Offer to undo an older build's rollback: its set-aside survey holds more work."""
+        from deepreefmap_gui.survey.recovery import (
+            bring_back,
+            bring_back_question,
+            keep_set_aside,
+            set_aside_survey_with_more,
+        )
+
+        try:
+            found = set_aside_survey_with_more(db_path)
+        except Exception:
+            logger.exception("Could not compare the survey with the copies set aside beside it")
+            return
+        if found is None:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Survey database",
+            bring_back_question(found),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            try:
+                keep_set_aside(found)
+            except OSError:
+                logger.warning("Could not mark %s as kept", found.path, exc_info=True)
+            return
+        try:
+            store = self._survey_store_obj
+            if store is not None:
+                store.close()
+            message = bring_back(found, db_path)
+        except Exception as exc:
+            logger.exception("Could not bring back the survey an older version set aside")
+            QMessageBox.warning(self, "Survey database", f"That did not work: {exc}")
             return
         self._after_recovery(message)
 

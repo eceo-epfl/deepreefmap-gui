@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import shutil
 import uuid
 from collections import Counter
@@ -26,9 +27,11 @@ from deepreefmap_gui.survey.models.site import Site
 from deepreefmap_gui.survey.models.survey_batch import SurveyBatch, session_label
 from deepreefmap_gui.survey.models.transect import Transect
 from deepreefmap_gui.survey.models.transect_pass import TransectPass
-from deepreefmap_gui.survey.models.video_asset import VideoAsset
+from deepreefmap_gui.survey.models.video_asset import VIEW_DOWN, VideoAsset
+from deepreefmap_gui.survey.run_dirs import run_dir_candidates, run_dir_name
 from deepreefmap_gui.survey.statuses import (
     CLIP_FAILED,
+    CLIP_LOOKS_DOWN,
     CLIP_PENDING,
     CLIP_PROCESSED,
     CLIP_UNPROCESSED,
@@ -38,6 +41,13 @@ from deepreefmap_gui.survey.statuses import (
     status_outcome,
 )
 from deepreefmap_gui.survey.store import SurveyStore
+
+# What makes a folder in an expedition's RESULTS a run rather than someone's folder.
+_RUN_MARKERS = ("run_manifest.json", "run.log", ".cache/preprocess.json")
+RESULTS_DIR = "RESULTS"
+_FOOTAGE_SUFFIXES = {".mp4", ".mov", ".avi", ".mkv", ".lrv", ".360"}
+_PASS_FOLDER = re.compile(r"^pass_?\d+", re.IGNORECASE)
+_DIRECTION_FOLDERS = {"fwd", "bwd", "forward", "reverse", "back", "raw"}
 
 logger = logging.getLogger(__name__)
 
@@ -261,21 +271,23 @@ def scan_out_root(out_root: Path) -> list[RunEntry]:
     entries: list[RunEntry] = []
     if not out_root.is_dir():
         return entries
-    for child in out_root.iterdir():
+    for child in run_dir_candidates(out_root):
         manifest_path = child / "run_manifest.json"
-        if not (child.is_dir() and manifest_path.exists()):
+        if not manifest_path.exists():
             continue
         manifest: dict = {}
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             logger.warning("Unreadable manifest in %s", child)
-        entries.append(_entry_from_manifest(child, manifest, manifest_path.stat().st_mtime))
+        entries.append(
+            _entry_from_manifest(child, manifest, manifest_path.stat().st_mtime, run_dir_name(out_root, child))
+        )
     entries.sort(key=lambda e: e.sort_key, reverse=True)
     return entries
 
 
-def _entry_from_manifest(run_dir: Path, manifest: dict, mtime: float) -> RunEntry:
+def _entry_from_manifest(run_dir: Path, manifest: dict, mtime: float, dir_name: str | None = None) -> RunEntry:
     name = manifest.get("name")
     # The name the person gave it, alone. The folder is machine-safe and
     # unique but says nothing, and it is one hover away in the row's tooltip
@@ -288,7 +300,7 @@ def _entry_from_manifest(run_dir: Path, manifest: dict, mtime: float) -> RunEntr
     points = manifest.get("semantic_reference_points") or manifest.get("metric_points")
     return RunEntry(
         run_dir=run_dir,
-        dir_name=run_dir.name,
+        dir_name=dir_name or run_dir.name,
         manifest=manifest,
         display_name=display,
         sort_key=run_sort_key(manifest, mtime),
@@ -324,18 +336,19 @@ def scan_incomplete_runs(
     if not out_root.is_dir():
         return entries
     records = {r.run_dir_name for r in store.list_runs()} if store is not None else set()
-    for child in out_root.iterdir():
-        if not child.is_dir() or child.name in known:
+    for child in run_dir_candidates(out_root):
+        name = run_dir_name(out_root, child)
+        if name in known:
             continue
         if (child / "run_manifest.json").exists():
             continue
-        if child.name not in records and not (child / "run.log").exists():
+        if name not in records and not (child / "run.log").exists():
             continue
         try:
             mtime = child.stat().st_mtime
         except OSError:
             mtime = 0.0
-        entries.append(_incomplete_entry(child, mtime))
+        entries.append(_incomplete_entry(child, mtime, name))
     return entries
 
 
@@ -384,10 +397,10 @@ def _missing_entry(out_root: Path, run: RunRecord) -> RunEntry:
     )
 
 
-def _incomplete_entry(run_dir: Path, mtime: float) -> RunEntry:
+def _incomplete_entry(run_dir: Path, mtime: float, dir_name: str | None = None) -> RunEntry:
     return RunEntry(
         run_dir=run_dir,
-        dir_name=run_dir.name,
+        dir_name=dir_name or run_dir.name,
         manifest={},
         display_name=run_dir.name,
         sort_key=mtime,
@@ -723,6 +736,8 @@ class VideoLibraryEntry:
         """
         if self.orphan:
             return VIDEO_UNPROCESSED
+        if self.video.view == VIEW_DOWN:
+            return CLIP_LOOKS_DOWN
         states = clip_states(self)
         if any(state in {"failed", "interrupted", "incomplete"} for state in states):
             return VIDEO_FAILED
@@ -902,8 +917,8 @@ def rename_run(run_dir: Path, new_name: str) -> dict:
 
 
 def delete_run(out_root: Path, run_dir: Path, store: SurveyStore | None) -> None:
-    """Remove a finished run directory and its database row. Only direct children
-    of the output root that carry a manifest are ever deleted."""
+    """Remove a finished run directory and its database row. Only run directories
+    that carry a manifest are ever deleted (see ``require_run_dir``)."""
     if not (run_dir.resolve() / "run_manifest.json").exists():
         raise ValueError(f"{run_dir} has no run manifest")
     delete_run_dir(out_root, run_dir, store)
@@ -911,11 +926,10 @@ def delete_run(out_root: Path, run_dir: Path, store: SurveyStore | None) -> None
 
 def delete_run_dir(out_root: Path, run_dir: Path, store: SurveyStore | None) -> None:
     """Remove a run directory that may have no manifest (a crashed run) plus any
-    database row. The direct-child guard still holds: only folders sitting
-    directly under the output root are ever removed."""
+    database row. ``require_run_dir`` decides what counts as a run directory."""
     delete_run_data(out_root, run_dir)
     if store is not None:
-        run = store.run_by_dir_name(run_dir.resolve().name)
+        run = store.run_by_dir_name(run_dir_name(out_root.resolve(), run_dir.resolve()))
         if run is not None:
             store.delete_run(run.id)
 
@@ -924,20 +938,52 @@ def require_run_dir(out_root: Path, run_dir: Path) -> Path:
     """The resolved run directory, once it is proven to be one.
 
     The one gate everything that deletes run data goes through, so a bug that
-    hands over a path from somewhere else cannot reach a filesystem call. Direct
-    children of the output root only: a run directory is never nested, and
-    anything deeper is somebody's own folder.
+    hands over a path from somewhere else cannot reach a filesystem call. Two
+    places only: directly under the output root, as runs have always been
+    written, or in an expedition tree's ``<transect>/<pass>/<dir>/RESULTS/``,
+    where it must also carry a run's own files to count. Anything holding
+    footage or survey folders is refused wherever it sits: under an expedition
+    root a transect folder is a direct child too, and it is the raw videos.
     """
     resolved = run_dir.resolve()
-    if resolved.parent != out_root.resolve():
-        raise ValueError(f"{run_dir} is not directly under {out_root}")
+    root = out_root.resolve()
+    try:
+        parts = resolved.relative_to(root).parts
+    except ValueError:
+        parts = ()
+    direct = len(parts) == 1
+    nested = len(parts) == 5 and parts[3] == RESULTS_DIR and any(
+        (resolved / marker).exists() for marker in _RUN_MARKERS
+    )
+    if not (direct or nested):
+        raise ValueError(f"{run_dir} is not a run directory of {out_root}")
+    if holds_survey_footage(resolved):
+        raise ValueError(f"{run_dir} holds survey footage, not a run")
     return resolved
+
+
+def holds_survey_footage(directory: Path) -> bool:
+    """Whether a folder has videos in it, or the folders an expedition keeps them in.
+
+    Looks one level down, which is where a transect's pass folders and a pass's
+    fwd/bwd sit; a run directory has none of these.
+    """
+    try:
+        children = list(directory.iterdir())
+    except OSError:
+        return False
+    for child in children:
+        name = child.name
+        if child.is_file() and child.suffix.lower() in _FOOTAGE_SUFFIXES:
+            return True
+        if child.is_dir() and (name == RESULTS_DIR or _PASS_FOLDER.match(name) or name.lower() in _DIRECTION_FOLDERS):
+            return True
+    return False
 
 
 def delete_run_data(out_root: Path, run_dir: Path) -> None:
     """Remove a run directory and nothing else: the database row stays, so the
-    run lives on as a data-removed record. Only direct children of the output
-    root are ever removed."""
+    run lives on as a data-removed record. ``require_run_dir`` is the gate."""
     shutil.rmtree(require_run_dir(out_root, run_dir))
 
 

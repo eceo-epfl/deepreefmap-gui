@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 import threading
 import uuid
@@ -16,7 +17,7 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, fields
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from deepreefmap_gui.survey.backup import write_backup
@@ -899,6 +900,15 @@ _MIGRATIONS: list[Migration] = [
         "run performance observations",
         "ALTER TABLE run_record ADD COLUMN performance_observation TEXT;",
     ),
+    # Which way a clip's camera looks. A down-looking camera rides the same rig
+    # and is described like the rest, but the pipeline reconstructs oblique
+    # footage only, so a down clip is kept out of processing.
+    Migration(
+        25,
+        "a clip records which way its camera looks",
+        "ALTER TABLE video_asset ADD COLUMN view TEXT NOT NULL DEFAULT 'oblique' "
+        "CHECK (view IN ('oblique', 'down'));",
+    ),
 ]
 
 
@@ -1013,6 +1023,57 @@ def _no_route_forward(version: int) -> str:
         f"survey.db is schema v{version}, which this build cannot carry forward "
         f"(it reads v{_OLDEST_CARRIED} and up).{advice}"
     )
+
+
+def stored_clip_path(root: Path, path: str) -> str:
+    """How a clip's path is written: relative, with forward slashes, inside ``root``.
+
+    A full path from another machine (``E:\\EXPE\\T1\\x.MP4`` read on a Mac,
+    ``/Volumes/EXPE/T1/x.MP4`` read on Windows) is placed under ``root`` too
+    when the same file is there: the drive moved, the clip did not.
+    """
+    if not path or not _is_absolute(path):
+        return path
+    if Path(path).is_absolute():
+        try:
+            relative = os.path.relpath(os.path.abspath(path), os.path.abspath(root))
+        except ValueError:  # another drive on Windows
+            relative = os.pardir
+        if not (relative == os.curdir or relative.startswith(os.pardir) or os.path.isabs(relative)):
+            return PurePath(relative).as_posix()
+    found = _found_under(root, path)
+    return found if found is not None else path
+
+
+def _found_under(root: Path, path: str) -> str | None:
+    """The tail of a full path that names a file under ``root``, or None.
+
+    The part after the folder's own name is tried first; failing that (the
+    folder was renamed), each shorter tail in turn, so a clip is only re-placed
+    where a file of that name actually is.
+    """
+    windows = PureWindowsPath(path).drive or "\\" in path
+    parts = (PureWindowsPath(path) if windows else PurePosixPath(path)).parts[1:]
+    tails = []
+    if root.name in parts:
+        tails.append(parts[len(parts) - parts[::-1].index(root.name):])
+    tails += [parts[i:] for i in range(len(parts))]
+    for tail in tails:
+        if tail and root.joinpath(*tail).is_file():
+            return PurePosixPath(*tail).as_posix()
+    return None
+
+
+def full_clip_path(root: Path, stored: str) -> str:
+    """Where a stored clip path points from here: joined to ``root`` when relative."""
+    if not stored or _is_absolute(stored):
+        return stored
+    return str(root.joinpath(*PurePosixPath(stored).parts))
+
+
+def _is_absolute(path: str) -> bool:
+    """Absolute on this system or on Windows, so C:\\x read on a Mac is not taken as relative."""
+    return Path(path).is_absolute() or PureWindowsPath(path).is_absolute() or path.startswith(("/", "\\"))
 
 
 def resolved_path(path: str) -> str | None:
@@ -1273,6 +1334,7 @@ class SurveyStore:
         self._issued = ""
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._migrate()
+        self.relativise_clip_paths()
         # A store is opened once per output root, on the GUI thread, before any
         # batch touches it, so opening is the one moment where every non-terminal
         # row is certain to be a leftover rather than live work. The count is
@@ -1284,6 +1346,47 @@ class SurveyStore:
     @property
     def path(self) -> Path:
         return self._db_path
+
+    # --- Clip paths ---
+    #
+    # A clip inside the folder this database sits in is stored relative to that
+    # folder, with forward slashes, and handed out joined to wherever the folder
+    # is mounted now. The same expedition drive then reads the same on a Mac
+    # (/Volumes/X/...) and on Windows (E:\\...), and survives a new mount point
+    # or drive letter. A clip elsewhere keeps its full path.
+
+    @property
+    def root(self) -> Path:
+        return self._db_path.parent
+
+    def relativise_clip_paths(self) -> int:
+        """Rewrite full paths of clips inside this folder in the relative form.
+
+        Run at every open, so a database written before this, or by a build that
+        stored full paths, comes into line. The path is device-local and never
+        synced, so no stamp moves.
+        """
+        changed = []
+        for row in self._conn().execute("SELECT id, path FROM video_asset WHERE path != ''"):
+            stored = stored_clip_path(self.root, row["path"])
+            if stored != row["path"]:
+                changed.append((stored, row["id"]))
+        if changed:
+            with self.transaction() as conn:
+                conn.executemany("UPDATE video_asset SET path = ? WHERE id = ?", changed)
+        return len(changed)
+
+    def _model(self, cls: type, row: Any) -> Any:
+        model: Any = from_row(cls, row)
+        if isinstance(model, VideoAsset):
+            model.path = full_clip_path(self.root, model.path)
+        return model
+
+    def _row(self, model: Any) -> dict[str, Any]:
+        row = to_row(model)
+        if isinstance(model, VideoAsset):
+            row["path"] = stored_clip_path(self.root, row["path"])
+        return row
 
     def close(self) -> None:
         """Close the calling thread's connection (worker threads close their own)."""
@@ -1433,7 +1536,7 @@ class SurveyStore:
             return self._issued
 
     def _add(self, table: str, model: Any) -> None:
-        row = to_row(model)
+        row = self._row(model)
         floor = self._watermark_floor() if table in _TOMBSTONED_TABLES else ""
         if floor and str(row["updated_at"]) <= floor:
             # Moved forward, never replaced: a caller that set a stamp on purpose
@@ -1444,7 +1547,7 @@ class SurveyStore:
             conn.execute(_insert_sql(table, row), row)
 
     def _update(self, table: str, model: Any) -> None:
-        row = to_row(model)
+        row = self._row(model)
         with self.transaction() as conn:
             cursor = conn.execute(_update_sql(table, row), row)
         if cursor.rowcount == 0:
@@ -1454,13 +1557,13 @@ class SurveyStore:
         row = self._conn().execute(
             f"SELECT * FROM {table} WHERE id = ? AND {_live(table)}", (str(item_id),)
         ).fetchone()
-        return from_row(cls, row) if row is not None else None
+        return self._model(cls, row) if row is not None else None
 
     def _list(self, table: str, cls: type, order_by: str) -> list[Any]:
         rows = self._conn().execute(
             f"SELECT * FROM {table} WHERE {_live(table)} ORDER BY {order_by}"
         ).fetchall()
-        return [from_row(cls, r) for r in rows]
+        return [self._model(cls, r) for r in rows]
 
     def _tombstone(self, table: str, item_id: uuid.UUID) -> None:
         """Stamp a row deleted and leave it where it is.
@@ -1645,7 +1748,7 @@ class SurveyStore:
             ORDER BY name
             """
         ).fetchall()
-        return [from_row(Transect, row) for row in rows]
+        return [self._model(Transect, row) for row in rows]
 
     def transect_usage_counts(self) -> dict[uuid.UUID, tuple[int, int]]:
         """(passes, runs) per transect, for every transect that has either.
@@ -1722,7 +1825,7 @@ class SurveyStore:
         row = self._conn().execute(
             f"SELECT * FROM video_asset WHERE hash = ?{live}", (content_hash,)
         ).fetchone()
-        return from_row(VideoAsset, row) if row is not None else None
+        return self._model(VideoAsset, row) if row is not None else None
 
     def find_video_by_path(self, path: str) -> VideoAsset | None:
         """The clip recorded at this path, matched on the resolved location.
@@ -1743,6 +1846,24 @@ class SurveyStore:
 
     def list_videos(self) -> list[VideoAsset]:
         return self._list("video_asset", VideoAsset, "created_at, file_name")
+
+    def pass_looks_down(self, pass_id: uuid.UUID) -> bool:
+        """Whether the pass was shot by a down-looking camera, and so is never processed."""
+        row = self._conn().execute(
+            "SELECT 1 FROM transect_pass JOIN video_asset ON video_asset.id = transect_pass.video_id "
+            "WHERE transect_pass.id = ? AND video_asset.view = 'down'",
+            (str(pass_id),),
+        ).fetchone()
+        return row is not None
+
+    def camera_labels(self) -> list[str]:
+        """Every camera name already given to a live clip, for picking rather than retyping."""
+        rows = self._conn().execute(
+            "SELECT DISTINCT camera_label FROM video_asset "
+            f"WHERE {_live('video_asset')} AND camera_label IS NOT NULL AND camera_label != '' "
+            "ORDER BY camera_label COLLATE NOCASE"
+        ).fetchall()
+        return [str(r[0]) for r in rows]
 
     def update_video(self, asset: VideoAsset) -> None:
         asset.updated_at = self._stamp()
@@ -1879,7 +2000,7 @@ class SurveyStore:
             """,
             (str(batch_id), str(batch_id)),
         ).fetchall()
-        return [from_row(RunRecord, r) for r in rows]
+        return [self._model(RunRecord, r) for r in rows]
 
     def delete_batch(self, batch_id: uuid.UUID) -> None:
         """Forget a session: its cart rows and run records go, everything shared
@@ -1925,7 +2046,7 @@ class SurveyStore:
         ).fetchone()
         if row is None:
             return None
-        batch = from_row(SurveyBatch, row)
+        batch = self._model(SurveyBatch, row)
         return batch if self.batch_run_count(batch.id) == 0 else None
 
     # --- Batch items ---
@@ -1936,7 +2057,7 @@ class SurveyStore:
         A new row lands at the end of the processing order, which is where a
         thing added to a queue belongs until it is dragged somewhere else.
         """
-        row = to_row(item)
+        row = self._row(item)
         with self._conn() as conn:
             last = conn.execute(
                 "SELECT MAX(position) FROM batch_item WHERE batch_id = ?",
@@ -1996,11 +2117,11 @@ class SurveyStore:
             "SELECT * FROM batch_item WHERE batch_id = ? ORDER BY position, rowid",
             (str(batch_id),),
         ).fetchall()
-        return [from_row(BatchItem, r) for r in rows]
+        return [self._model(BatchItem, r) for r in rows]
 
     def list_all_batch_items(self) -> list[BatchItem]:
         rows = self._conn().execute("SELECT * FROM batch_item ORDER BY rowid").fetchall()
-        return [from_row(BatchItem, r) for r in rows]
+        return [self._model(BatchItem, r) for r in rows]
 
     def passes_in_batch(self, batch_id: uuid.UUID) -> list[TransectPass]:
         """The session's worklist, in the order it will be processed."""
@@ -2013,7 +2134,7 @@ class SurveyStore:
             """,
             (str(batch_id),),
         ).fetchall()
-        return [from_row(TransectPass, r) for r in rows]
+        return [self._model(TransectPass, r) for r in rows]
 
     # --- Passes ---
 
@@ -2099,7 +2220,7 @@ class SurveyStore:
         rows = self._conn().execute(
             f"SELECT * FROM transect_pass WHERE {where} ORDER BY created_at, rowid", params
         ).fetchall()
-        return [from_row(TransectPass, r) for r in rows]
+        return [self._model(TransectPass, r) for r in rows]
 
     # --- Runs ---
 
@@ -2167,7 +2288,7 @@ class SurveyStore:
             "SELECT * FROM server_preset WHERE deleted_at IS NULL "
             "ORDER BY LOWER(name), version DESC"
         ).fetchall()
-        return [from_row(ServerPreset, r) for r in rows]
+        return [self._model(ServerPreset, r) for r in rows]
 
     def get_server_preset(self, name: str, version: int) -> ServerPreset | None:
         row = self._conn().execute(
@@ -2175,14 +2296,14 @@ class SurveyStore:
             "AND deleted_at IS NULL",
             (name, int(version)),
         ).fetchone()
-        return from_row(ServerPreset, row) if row is not None else None
+        return self._model(ServerPreset, row) if row is not None else None
 
     def list_camera_profiles(self) -> list[CameraProfile]:
         """The registry's camera profiles, by name."""
         rows = self._conn().execute(
             "SELECT * FROM camera_profile WHERE deleted_at IS NULL ORDER BY LOWER(name)"
         ).fetchall()
-        return [from_row(CameraProfile, r) for r in rows]
+        return [self._model(CameraProfile, r) for r in rows]
 
     def camera_profile_by_name(self, name: str) -> CameraProfile | None:
         """The profile row of this name, tombstoned or not.
@@ -2195,7 +2316,7 @@ class SurveyStore:
             "ORDER BY (deleted_at IS NULL) DESC LIMIT 1",
             (name,),
         ).fetchone()
-        return from_row(CameraProfile, row) if row is not None else None
+        return self._model(CameraProfile, row) if row is not None else None
 
     def camera_calibration(self, calibration_id: uuid.UUID) -> CameraCalibration | None:
         """One live measurement by id, whichever version it is."""
@@ -2203,7 +2324,7 @@ class SurveyStore:
             "SELECT * FROM camera_calibration WHERE id = ? AND deleted_at IS NULL",
             (str(calibration_id),),
         ).fetchone()
-        return from_row(CameraCalibration, row) if row is not None else None
+        return self._model(CameraCalibration, row) if row is not None else None
 
     def newest_camera_calibration(self, profile_id: uuid.UUID) -> CameraCalibration | None:
         """The latest measurement of one profile, deployed where none is named."""
@@ -2212,7 +2333,7 @@ class SurveyStore:
             "AND deleted_at IS NULL ORDER BY version DESC LIMIT 1",
             (str(profile_id),),
         ).fetchone()
-        return from_row(CameraCalibration, row) if row is not None else None
+        return self._model(CameraCalibration, row) if row is not None else None
 
     def record_run_provenance(self, run_id: uuid.UUID, provenance: Mapping[str, Any]) -> None:
         """Copy a finished run's provenance onto its row.
@@ -2236,7 +2357,7 @@ class SurveyStore:
             "ORDER BY created_at DESC LIMIT 1",
             (run_dir_name,),
         ).fetchone()
-        return from_row(RunRecord, row) if row is not None else None
+        return self._model(RunRecord, row) if row is not None else None
 
     def runs_for_pass(self, pass_id: uuid.UUID) -> list[RunRecord]:
         rows = self._conn().execute(
@@ -2244,7 +2365,7 @@ class SurveyStore:
             "ORDER BY created_at, rowid",
             (str(pass_id),),
         ).fetchall()
-        return [from_row(RunRecord, r) for r in rows]
+        return [self._model(RunRecord, r) for r in rows]
 
     def runs_for_transect(self, transect_id: uuid.UUID) -> list[RunRecord]:
         rows = self._conn().execute(
@@ -2258,7 +2379,7 @@ class SurveyStore:
             """,
             (str(transect_id),),
         ).fetchall()
-        return [from_row(RunRecord, r) for r in rows]
+        return [self._model(RunRecord, r) for r in rows]
 
     def succeeded_pass_ids(self, batch_id: uuid.UUID | None = None) -> set[uuid.UUID]:
         """Passes with at least one successful run, in one query.
@@ -2294,7 +2415,7 @@ class SurveyStore:
         rows = self._conn().execute(
             "SELECT * FROM notification WHERE resolved_at IS NULL ORDER BY created_at"
         ).fetchall()
-        return [from_row(Notification, r) for r in rows]
+        return [self._model(Notification, r) for r in rows]
 
     def list_notifications(
         self, limit: int = 500, severity: str = "", scope: str = ""
@@ -2311,7 +2432,7 @@ class SurveyStore:
         sql += " ORDER BY created_at DESC LIMIT ?"
         params.append(limit)
         rows = self._conn().execute(sql, params).fetchall()
-        return [from_row(Notification, r) for r in rows]
+        return [self._model(Notification, r) for r in rows]
 
     def resolve_notification(self, note_id: uuid.UUID, at: str) -> None:
         with self._conn() as conn:
@@ -2413,7 +2534,7 @@ class SurveyStore:
             )
             params.extend([since, _section_of(section)])
         rows = self._conn().execute(f"{sql} ORDER BY updated_at, rowid", params).fetchall()
-        return [from_row(_SYNC_MODELS[table], r) for r in rows]
+        return [self._model(_SYNC_MODELS[table], r) for r in rows]
 
     def count_changed_since(self, section: str, since: str | None = None) -> int:
         """How many rows are waiting to push, without loading any of them.
@@ -2485,7 +2606,7 @@ class SurveyStore:
                 # so a row that arrives partial says nothing about the rest.
                 merged = wire if stored is None else {**dict(stored), **wire}
                 try:
-                    row = to_row(from_row(cls, merged))
+                    row = self._row(self._model(cls, merged))
                 except _UNREADABLE_ROW as exc:
                     result.unreadable.append((row_id, str(exc)))
                     continue
@@ -2785,7 +2906,7 @@ class SurveyStore:
         row = self._conn().execute(
             f"SELECT * FROM {table} WHERE id = ?", (str(item_id),)
         ).fetchone()
-        return from_row(_SYNC_MODELS[table], row) if row is not None else None
+        return self._model(_SYNC_MODELS[table], row) if row is not None else None
 
     # --- Documents ---
 
@@ -2821,7 +2942,7 @@ class SurveyStore:
             for section, models in sections.items():
                 table = tables[section]
                 for model in models:
-                    row = to_row(model)
+                    row = self._row(model)
                     conn.execute(_insert_sql(table, row).replace("INSERT", "INSERT OR IGNORE", 1), row)
 
     # --- Rebuild from manifests ---
@@ -2838,8 +2959,11 @@ class SurveyStore:
         app said, not of what the survey is.
         """
         report = RebuildReport()
-        for manifest_path in sorted(out_root.glob("*/run_manifest.json")):
-            run_dir_name = manifest_path.parent.name
+        from deepreefmap_gui.survey.run_dirs import manifest_paths
+        from deepreefmap_gui.survey.run_dirs import run_dir_name as relative_run_dir
+
+        for manifest_path in manifest_paths(out_root):
+            run_dir_name = relative_run_dir(out_root, manifest_path.parent)
             try:
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
@@ -2889,25 +3013,31 @@ class SurveyStore:
 
     def _restore_transect(self, snapshot: dict[str, Any], report: RebuildReport) -> uuid.UUID:
         transect_id = uuid.UUID(snapshot["id"])
-        if not self.holds_id("transects", transect_id):
-            # A line the run was swum on after it had been retired comes back
-            # retired. It still names and scales the run, and reviving it would
-            # put a withdrawn line back in front of whoever withdrew it.
-            self.add_transect(Transect(
-                id=transect_id,
-                name=snapshot["name"],
-                start_lat=snapshot.get("start_lat"),
-                start_lon=snapshot.get("start_lon"),
-                end_lat=snapshot.get("end_lat"),
-                end_lon=snapshot.get("end_lon"),
-                site_id=self._restore_site(snapshot.get("site"), report),
-                length_m=snapshot.get("length_m"),
-                depth_m=snapshot.get("depth_m"),
-                start_depth_m=snapshot.get("start_depth_m"),
-                end_depth_m=snapshot.get("end_depth_m"),
-                deleted_at=snapshot.get("deleted_at"),
-            ))
-            report.transects += 1
+        if self.holds_id("transects", transect_id):
+            return transect_id
+        site_id = self._restore_site(snapshot.get("site"), report)
+        if snapshot.get("deleted_at") is None:
+            same = self._same_transect(snapshot["name"], site_id)
+            if same is not None:
+                return same
+        # A line the run was swum on after it had been retired comes back
+        # retired. It still names and scales the run, and reviving it would
+        # put a withdrawn line back in front of whoever withdrew it.
+        self.add_transect(Transect(
+            id=transect_id,
+            name=snapshot["name"],
+            start_lat=snapshot.get("start_lat"),
+            start_lon=snapshot.get("start_lon"),
+            end_lat=snapshot.get("end_lat"),
+            end_lon=snapshot.get("end_lon"),
+            site_id=site_id,
+            length_m=snapshot.get("length_m"),
+            depth_m=snapshot.get("depth_m"),
+            start_depth_m=snapshot.get("start_depth_m"),
+            end_depth_m=snapshot.get("end_depth_m"),
+            deleted_at=snapshot.get("deleted_at"),
+        ))
+        report.transects += 1
         return transect_id
 
     def _restore_site(self, snapshot: Any, report: RebuildReport) -> uuid.UUID | None:
@@ -2915,6 +3045,15 @@ class SurveyStore:
             return None
         site_id = uuid.UUID(snapshot["id"])
         if not self.holds_id("sites", site_id):
+            # Sites are unique by country and name, so both have to agree.
+            row = self._conn().execute(
+                "SELECT id FROM site WHERE deleted_at IS NULL AND LOWER(name) = LOWER(?) "
+                "AND LOWER(COALESCE(country, '')) = LOWER(COALESCE(?, ''))",
+                (snapshot.get("name") or "Recovered site", snapshot.get("country")),
+            ).fetchone()
+            same = uuid.UUID(row[0]) if row is not None else None
+            if same is not None:
+                return same
             self.add_site(Site(
                 id=site_id,
                 name=snapshot.get("name") or "Recovered site",
@@ -2929,6 +3068,12 @@ class SurveyStore:
             return None
         campaign_id = uuid.UUID(snapshot["id"])
         if not self.holds_id("campaigns", campaign_id):
+            # The same expedition made again under another id (an expedition
+            # folder imported before its old runs were copied in) is the one to
+            # file under: a second row by that name is refused anyway.
+            same = self._live_named("campaign", snapshot.get("name"))
+            if same is not None:
+                return same
             self.add_campaign(Campaign(
                 id=campaign_id,
                 name=snapshot.get("name") or "Recovered campaign",
@@ -2985,6 +3130,73 @@ class SurveyStore:
             video_ids.append(asset.id)
         return video_ids
 
+    def _same_transect(self, name: str, site_id: uuid.UUID | None) -> uuid.UUID | None:
+        """A live transect that is this line made again: same name, same site.
+
+        An expedition import makes transects without a site, so a site-less one
+        of that name is the same line too, and it takes the site the run knew.
+        """
+        rows = self._conn().execute(
+            "SELECT id, site_id FROM transect WHERE deleted_at IS NULL AND LOWER(name) = LOWER(?)", (name,)
+        ).fetchall()
+        wanted = None if site_id is None else str(site_id)
+        exact = next((row for row in rows if row[1] == wanted), None)
+        if exact is not None:
+            return uuid.UUID(exact[0])
+        siteless = next((row for row in rows if row[1] is None), None)
+        if siteless is None:
+            return None
+        found = uuid.UUID(siteless[0])
+        if site_id is not None:
+            transect = self.get_transect(found)
+            if transect is not None:
+                transect.site_id = site_id
+                self.update_transect(transect)
+        return found
+
+    def _live_named(self, table: str, name: Any) -> uuid.UUID | None:
+        """A live row of ``table`` with this name, ignoring case."""
+        if not isinstance(name, str) or not name.strip():
+            return None
+        row = self._conn().execute(
+            f"SELECT id FROM {table} WHERE deleted_at IS NULL AND LOWER(name) = LOWER(?)", (name,)
+        ).fetchone()
+        return uuid.UUID(row[0]) if row is not None else None
+
+    def _adopt_pass_for_run(
+        self, snapshot: dict[str, Any], transect_id: uuid.UUID | None, video_ids: list[uuid.UUID]
+    ) -> uuid.UUID | None:
+        """The pass already filed for this clip that a restored run belongs to.
+
+        A pass over the same window is that pass. Failing that, one an expedition
+        import made and nobody has touched yet (no run, still the whole
+        recording) takes the run's trim: the run is the record of where the swim
+        was cut, and a second pass beside it would only be the same swim untrimmed.
+        """
+        if not video_ids:
+            return None
+        same = self.pass_with_window(video_ids[0], snapshot["begin_s"], snapshot["end_s"])
+        if same is not None:
+            return same.id
+        from deepreefmap_gui.survey.completeness import is_untrimmed
+
+        videos = {v.id: v for v in self.list_videos()}
+        for candidate in self.list_passes(video_id=video_ids[0]):
+            if candidate.video_ids() != video_ids or self.runs_for_pass(candidate.id):
+                continue
+            if not is_untrimmed(candidate, videos) or (
+                transect_id is not None and candidate.transect_id not in (None, transect_id)
+            ):
+                continue
+            candidate.begin_s = snapshot["begin_s"]
+            candidate.end_s = snapshot["end_s"]
+            candidate.direction = candidate.direction or snapshot.get("direction")
+            candidate.quality = candidate.quality or snapshot.get("quality")
+            candidate.transect_id = candidate.transect_id or transect_id
+            self.update_pass(candidate)
+            return candidate.id
+        return None
+
     def _restore_pass(
         self,
         snapshot: dict[str, Any],
@@ -2995,6 +3207,9 @@ class SurveyStore:
     ) -> uuid.UUID:
         pass_id = uuid.UUID(snapshot["id"])
         if not self.holds_id("passes", pass_id):
+            adopted = self._adopt_pass_for_run(snapshot, transect_id, video_ids)
+            if adopted is not None:
+                return adopted
             self.add_pass(TransectPass(
                 id=pass_id,
                 transect_id=transect_id,

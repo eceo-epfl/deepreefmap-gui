@@ -17,6 +17,7 @@ import logging
 import threading
 import uuid
 from pathlib import Path
+from typing import TYPE_CHECKING, Any, cast
 
 from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtWidgets import (
@@ -72,12 +73,18 @@ from deepreefmap_gui.survey.video_groups import (
     DEFAULT_PERIOD,
     DEFAULT_SORT_COLUMN,
     DEFAULT_SORT_DESCENDING,
-    PERIODS,
+    FOLDER_VIEW,
     SORT_COLUMNS,
+    VIEW_KEYS,
+    VIEWS,
+    group_by_folder,
     group_by_period,
     pass_status,
     sort_groups,
 )
+
+if TYPE_CHECKING:
+    from deepreefmap_gui.survey.expedition import ImportReport
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +105,7 @@ _SEARCH_WIDTH = 240
 _DETAIL_SHARE = 0.30
 _DETAIL_MIN_WIDTH = 260
 
-_PERIOD_TOOLTIP = "The gap between clips that starts a new group."
+_PERIOD_TOOLTIP = "Group clips by when they were shot, or by the folders they sit in."
 
 # The sort order lands in QSettings as one of these words rather than a bool:
 # some backends hand a stored bool back as the string "false", which is truthy.
@@ -169,6 +176,8 @@ class VideoLibraryMixin(MixinBase):
 
     _video_clip_filter: str = "all"
     _video_period: str = DEFAULT_PERIOD
+    # True while an expedition import writes the store from its worker thread.
+    _expedition_importing: bool = False
     _video_sort_column: str = DEFAULT_SORT_COLUMN
     _video_sort_descending: bool = DEFAULT_SORT_DESCENDING
     _selected_pass_id: str | None = None
@@ -184,7 +193,8 @@ class VideoLibraryMixin(MixinBase):
         # Paths a single-clip recheck is already asking about, so a double click
         # on a sleeping drive queues one stat rather than two.
         self._clip_link_rechecking: set[str] = set()
-        self._video_period = str(self._settings.value("video_group_period", DEFAULT_PERIOD) or DEFAULT_PERIOD)
+        stored_period = str(self._settings.value("video_group_period", DEFAULT_PERIOD) or DEFAULT_PERIOD)
+        self._video_period = stored_period if stored_period in VIEW_KEYS else DEFAULT_PERIOD
         stored_column = str(self._settings.value("video_sort_column", DEFAULT_SORT_COLUMN) or "")
         self._video_sort_column = stored_column if stored_column in SORT_COLUMNS else DEFAULT_SORT_COLUMN
         stored_order = str(self._settings.value("video_sort_order", "") or "")
@@ -200,7 +210,7 @@ class VideoLibraryMixin(MixinBase):
         top_row = QHBoxLayout()
         top_row.setSpacing(GUTTER)
         top_row.addWidget(QLabel("Group by"))
-        self._video_period_chips = FilterChips(PERIODS)
+        self._video_period_chips = FilterChips(VIEWS)
         self._video_period_chips.setToolTip(_PERIOD_TOOLTIP)
         self._video_period_chips.set_current(self._video_period)
         self._video_period_chips.changed.connect(self._on_video_period_changed)
@@ -228,6 +238,21 @@ class VideoLibraryMixin(MixinBase):
         self._video_hidden_check.setVisible(False)
         top_row.addWidget(self._video_hidden_check)
         top_row.addStretch(1)
+        # An expedition folder is a workspace of its own: opening one makes it
+        # the output root, files its tree, and lists what it still lacks.
+        self._expedition_open_btn = QPushButton("Open expedition folder…")
+        self._expedition_open_btn.setProperty("quiet", "true")
+        self._expedition_open_btn.setToolTip(
+            "Read a folder laid out as expedition / transect / pass_NN_condition / fwd|bwd, "
+            "file every clip in it, and keep the results in each pass's RESULTS folder."
+        )
+        self._expedition_open_btn.clicked.connect(self._on_expedition_open)
+        top_row.addWidget(self._expedition_open_btn)
+        self._missing_data_btn = QPushButton("Missing data…")
+        self._missing_data_btn.setProperty("quiet", "true")
+        self._missing_data_btn.setToolTip("What the expedition still lacks: coordinates, dates, trims, cameras.")
+        self._missing_data_btn.clicked.connect(self._on_missing_data)
+        top_row.addWidget(self._missing_data_btn)
         self._video_add_btn = QPushButton("Add videos…")
         self._video_add_btn.clicked.connect(self._on_video_add_clicked)
         self._video_add_btn.setProperty("cta", "true")
@@ -348,6 +373,176 @@ class VideoLibraryMixin(MixinBase):
             action.toggled.connect(lambda checked, key=column: self._set_video_column(key, checked))
         self._video_columns.setMenu(menu)
         title.addWidget(self._video_columns)
+        self._video_export_btn = QPushButton("Export metadata…")
+        self._video_export_btn.setProperty("quiet", "true")
+        self._video_export_btn.setToolTip(
+            "One CSV row per clip in each pass: filing, comments, camera, review and "
+            "what the container recorded. Clips no pass uses are listed too."
+        )
+        self._video_export_btn.clicked.connect(self._on_video_metadata_export)
+        title.addWidget(self._video_export_btn)
+
+    def _on_video_metadata_export(self) -> None:
+        """Write the footage metadata table where the person chooses."""
+        from deepreefmap_gui.survey.metadata_export import build_metadata_rows, save_metadata_csv
+
+        store = self._try_survey_store()
+        if store is None:
+            self._status_label.setText("Cannot export: the survey database is unavailable.")
+            return
+        root = Path(self._out_root_input.text()).expanduser()
+        path_str, _ = QFileDialog.getSaveFileName(
+            self, "Export footage metadata", str(root / "footage_metadata.csv"), "CSV files (*.csv)"
+        )
+        if not path_str:
+            return
+        try:
+            written = save_metadata_csv(Path(path_str), build_metadata_rows(store))
+        except OSError as exc:
+            self._status_label.setText(f"Could not write {Path(path_str).name}: {exc}")
+            return
+        self._status_label.setText(f"Exported metadata for {written} clip row(s) to {Path(path_str).name}.")
+
+    # --- the expedition workspace -------------------------------------------
+
+    def _on_expedition_open(self) -> None:
+        """Make an expedition folder the workspace and file everything in it."""
+        from PySide6.QtWidgets import QMessageBox
+
+        from deepreefmap_gui.survey.expedition import scan_expedition
+
+        if self._survey_worker_running or self._expedition_importing:
+            self._status_label.setText("Wait for the running batch or import to finish before opening an expedition.")
+            return
+        start = str(Path(self._out_root_input.text()).expanduser().parent)
+        chosen = QFileDialog.getExistingDirectory(self, "Open expedition folder", start)
+        if not chosen:
+            return
+        layout = scan_expedition(Path(chosen))
+        if not layout.transects and not layout.loose:
+            self._status_label.setText(
+                f"{Path(chosen).name} has no transect with pass folders (pass_NN_…/fwd or bwd)."
+            )
+            return
+        recordings = sum(len(t.recordings) for t in layout.transects)
+        in_passes = sum(len(r.clips) for t in layout.transects for r in t.recordings)
+        lines = [
+            f"Expedition: {layout.name}",
+            f"Transects: {', '.join(t.name for t in layout.transects) or 'none'}",
+            f"Recordings in pass folders: {recordings}",
+            f"Clips outside pass folders (left out): {layout.clip_count - in_passes}",
+            "",
+            "This folder becomes the output folder: the survey database and every "
+            "result are kept inside it, results in each pass's RESULTS folder.",
+            "Only clips inside pass_… folders are imported. Reading them can take a few minutes.",
+        ]
+        if layout.warnings:
+            lines += ["", "Check:", *layout.warnings[:8]]
+        answer = QMessageBox.question(self, "Open expedition folder", "\n".join(lines))
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        previous_root = self._out_root_input.text()
+        self._out_root_input.setText(chosen)
+        store = self._try_survey_store()
+        if store is None:
+            self._out_root_input.setText(previous_root)
+            self._status_label.setText("Cannot import: the survey database in that folder will not open.")
+            return
+        self._status_label.setText(f"Reading {in_passes} clip(s) from {layout.name}…")
+        self._expedition_open_btn.setEnabled(False)
+        # Pins the store (see _survey_store) and holds off a batch until done.
+        self._expedition_importing = True
+
+        def worker() -> None:
+            from deepreefmap_gui.survey.expedition import import_expedition
+
+            try:
+                report = import_expedition(store, layout)
+            except Exception as exc:  # reported, not raised: the window must stay up
+                logger.exception("Expedition import failed")
+                self._sig_expedition_imported.emit((layout.name, None, str(exc), store))
+                return
+            self._sig_expedition_imported.emit((layout.name, report, None, store))
+
+        self._expedition_thread = threading.Thread(target=worker, daemon=True)
+        self._expedition_thread.start()
+
+    def _on_expedition_imported(self, result: object) -> None:
+        name, report, error, imported_into = cast("tuple[str, ImportReport | None, str | None, Any]", result)
+        self._expedition_importing = False
+        self._expedition_open_btn.setEnabled(True)
+        if error is not None or report is None:
+            self._status_label.setText(f"Import of {name} stopped: {error}")
+            return
+        self._status_label.setText(report.summary())
+        if report.duplicates:
+            from PySide6.QtWidgets import QMessageBox
+
+            root = Path(self._out_root_input.text()).expanduser()
+
+            def short(path: str) -> str:
+                try:
+                    return Path(path).relative_to(root).as_posix()
+                except ValueError:
+                    return path
+
+            lines = [f"{short(copy)}\n    same file as {short(original)}" for copy, original in report.duplicates[:12]]
+            more = len(report.duplicates) - len(lines)
+            QMessageBox.warning(
+                self,
+                "Duplicate files",
+                "These files are byte-for-byte copies of clips already in the library, so they were "
+                "left out. Remove the copy from the folder it does not belong in:\n\n"
+                + "\n".join(lines)
+                + (f"\n\n…and {more} more." if more > 0 else ""),
+            )
+        self._refresh_data_manager()
+        self._refresh_video_library()
+        # The checklist belongs to the database the import wrote, and only makes
+        # sense while that is still the one the window shows.
+        store = self._try_survey_store()
+        if store is None or store.path != imported_into.path:
+            return
+        campaign = next((c for c in store.list_campaigns() if c.name.lower() == name.lower()), None)
+        if campaign is not None:
+            self._show_missing_data(campaign.id)
+
+    def _on_missing_data(self) -> None:
+        store = self._try_survey_store()
+        if store is None:
+            return
+        chosen = self._video_campaign_filter.currentData()
+        campaign_id = None
+        if chosen not in (None, "all", "unassigned"):
+            campaign_id = uuid.UUID(str(chosen))
+        campaign_id = campaign_id or store.default_campaign_id()
+        if campaign_id is None:
+            self._status_label.setText("Pick a campaign in the filter, or open an expedition folder first.")
+            return
+        self._show_missing_data(campaign_id)
+
+    def _show_missing_data(self, campaign_id: uuid.UUID) -> None:
+        from deepreefmap_gui.simple.expedition_dialog import ChecklistActions, MissingDataDialog
+        from deepreefmap_gui.survey.ownership import own_device_id, read_only
+
+        store = self._try_survey_store()
+        if store is None:
+            return
+        previous = getattr(self, "_missing_dialog", None)
+        if previous is not None:
+            previous.close()
+        dialog = MissingDataDialog(
+            self,
+            store,
+            campaign_id,
+            ChecklistActions(
+                trim=lambda pass_id: self._on_section_retrim(str(pass_id)),
+                queue=self._add_pass_to_cart,
+                read_only=lambda row: read_only(row, own_device_id()),
+            ),
+        )
+        self._missing_dialog = dialog
+        dialog.show()
 
     def _set_video_column(self, column: str, visible: bool) -> None:
         self._settings.setValue(f"video_column_{column}", visible)
@@ -665,8 +860,14 @@ class VideoLibraryMixin(MixinBase):
             entry.queued_pass_ids = set(queued)
         self._refresh_video_metadata()
         clips = self._visible_clips()
+        if self._video_period == FOLDER_VIEW:
+            # The clips as the folders they sit in: for an expedition folder,
+            # transect / pass / direction, the same tree the field team keeps.
+            grouped = group_by_folder(clips, Path(self._out_root_input.text()))
+        else:
+            grouped = group_by_period(clips, self._video_period)
         groups = sort_groups(
-            group_by_period(clips, self._video_period),
+            grouped,
             self._video_sort_column,
             descending=self._video_sort_descending,
         )
@@ -1126,6 +1327,7 @@ class VideoLibraryMixin(MixinBase):
             direction=direction,
             campaign_id=campaign_id,
             quality=assign.quality_choice() if accepted else None,
+            notes=assign.notes_choice() if accepted else "",
             surveyed_on=captured_day(clip.video.captured_at),
         )
         store.add_pass(pass_)
@@ -1276,7 +1478,9 @@ class VideoLibraryMixin(MixinBase):
         video = store.get_video(clip.video.id)
         if video is None:
             return
-        dialog = ClipDetailsDialog(self, video, note=lock_note(video, own_device_id()))
+        dialog = ClipDetailsDialog(
+            self, video, note=lock_note(video, own_device_id()), known_cameras=store.camera_labels()
+        )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         dialog.apply_to(video)
@@ -1357,12 +1561,14 @@ class VideoLibraryMixin(MixinBase):
             transect_id=pass_.transect_id,
             direction=pass_.direction,
             quality=pass_.quality,
+            notes=pass_.notes,
             ok_label="Save",
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         pass_.transect_id, pass_.direction = dialog.choice()
         pass_.quality = dialog.quality_choice()
+        pass_.notes = dialog.notes_choice()
         pass_.campaign_id = dialog.campaign_choice()
         store.update_pass(pass_)
         self._refresh_video_library()
